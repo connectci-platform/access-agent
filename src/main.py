@@ -44,11 +44,26 @@ app.include_router(router, prefix="/api/v1")
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    """Log startup information."""
+    """Initialize the agent on startup."""
     logger.info("Starting ACCESS Documentation Agent")
     logger.info(f"Environment: {settings.ENVIRONMENT}")
     logger.info(f"LLM Provider: {settings.LLM_PROVIDER}")
     logger.info(f"API: http://{settings.API_HOST}:{settings.API_PORT}")
+
+    # Fetch tool catalog from MCP servers
+    from .tools import get_catalog_aggregator
+
+    logger.info("Fetching tool catalog from MCP servers...")
+    try:
+        aggregator = get_catalog_aggregator()
+        catalog = await aggregator.fetch_catalog()
+        logger.info(
+            f"Catalog loaded: {catalog['total_tools']} tools from "
+            f"{catalog['servers_available']}/{catalog['total_servers']} servers"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to fetch catalog at startup: {e}")
+        logger.warning("Will retry on first request")
 
 
 @app.on_event("shutdown")

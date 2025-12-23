@@ -18,17 +18,27 @@ router = APIRouter()
 # Check if checkpointing is enabled
 USE_CHECKPOINTING = bool(settings.DATABASE_URL)
 
-# Global registry - loaded on first request
+# Global registry - built from aggregated catalog
 _registry: ToolRegistry | None = None
 
 
 async def get_registry() -> ToolRegistry:
-    """Get or create the tool registry."""
+    """Get or create the tool registry from aggregated catalog.
+
+    Uses the CatalogAggregator to fetch tools from MCP servers.
+    The catalog is fetched at startup and cached.
+    """
     global _registry
     if _registry is None:
-        _registry = ToolRegistry()
-        await _registry.load()
-        logger.info(f"Loaded tool registry with {_registry.tool_count} tools")
+        # Get catalog from aggregator (fetched at startup, or fetch now if needed)
+        aggregator = get_catalog_aggregator()
+        catalog = await aggregator.fetch_catalog()
+
+        # Build registry from aggregated catalog
+        _registry = ToolRegistry(catalog=catalog)
+        logger.info(
+            f"Built tool registry with {_registry.tool_count} tools from aggregated catalog"
+        )
     return _registry
 
 

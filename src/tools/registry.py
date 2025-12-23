@@ -36,18 +36,20 @@ class ToolDefinition(BaseModel):
 class ToolRegistry:
     """Registry for MCP tool catalog.
 
-    Loads tool definitions from a catalog file or URL and provides
+    Loads tool definitions from a catalog (pre-loaded, file, or URL) and provides
     lookup functionality.
     """
 
     def __init__(
         self,
+        catalog: dict[str, Any] | None = None,
         catalog_path: str | None = None,
         catalog_url: str | None = None,
     ):
         """Initialize the tool registry.
 
         Args:
+            catalog: Pre-loaded catalog dict (from CatalogAggregator).
             catalog_path: Path to local catalog JSON file.
             catalog_url: URL to fetch catalog from.
         """
@@ -57,8 +59,20 @@ class ToolRegistry:
         self._tools: dict[str, ToolDefinition] = {}
         self._quick_lookup: dict[str, dict[str, str]] = {}
 
+        # If catalog provided, build registry immediately
+        if catalog:
+            self._catalog = catalog
+            self._build_registry()
+
     async def load(self) -> None:
-        """Load the tool catalog from file or URL."""
+        """Load the tool catalog from file or URL.
+
+        Note: If catalog was provided to __init__, this is a no-op.
+        """
+        if self._catalog:
+            # Already loaded from constructor
+            return
+
         if self._catalog_path:
             self._catalog = self._load_from_file(self._catalog_path)
         elif self._catalog_url:
