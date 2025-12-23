@@ -1,0 +1,189 @@
+"""Tool registry for loading and managing MCP tool catalog."""
+
+import json
+from pathlib import Path
+from typing import Any
+
+import httpx
+from pydantic import BaseModel
+
+from ..config import settings
+
+
+class ToolParameter(BaseModel):
+    """Definition of a tool parameter."""
+
+    name: str
+    type: str = "string"
+    required: bool = False
+    description: str = ""
+
+
+class ToolDefinition(BaseModel):
+    """Definition of an MCP tool."""
+
+    name: str
+    description: str
+    server: str
+    parameters: list[ToolParameter] = []
+
+
+class ToolRegistry:
+    """Registry for MCP tool catalog.
+
+    Loads tool definitions from a catalog file or URL and provides
+    lookup functionality.
+    """
+
+    def __init__(
+        self,
+        catalog_path: str | None = None,
+        catalog_url: str | None = None,
+    ):
+        """Initialize the tool registry.
+
+        Args:
+            catalog_path: Path to local catalog JSON file.
+            catalog_url: URL to fetch catalog from.
+        """
+        self._catalog_path = catalog_path or settings.MCP_CATALOG_PATH
+        self._catalog_url = catalog_url or settings.MCP_CATALOG_URL
+        self._catalog: dict[str, Any] = {}
+        self._tools: dict[str, ToolDefinition] = {}
+        self._quick_lookup: dict[str, dict[str, str]] = {}
+
+    async def load(self) -> None:
+        """Load the tool catalog from file or URL."""
+        if self._catalog_path:
+            self._catalog = self._load_from_file(self._catalog_path)
+        elif self._catalog_url:
+            self._catalog = await self._load_from_url(self._catalog_url)
+        else:
+            raise ValueError("Must provide either catalog_path or catalog_url")
+
+        self._build_registry()
+
+    def _load_from_file(self, path: str) -> dict[str, Any]:
+        """Load catalog from a local JSON file."""
+        with Path(path).open() as f:
+            result: dict[str, Any] = json.load(f)
+            return result
+
+    async def _load_from_url(self, url: str) -> dict[str, Any]:
+        """Load catalog from a URL."""
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            result: dict[str, Any] = response.json()
+            return result
+
+    def _build_registry(self) -> None:
+        """Build the tool registry from catalog data."""
+        # Extract quick lookup if available
+        self._quick_lookup = self._catalog.get("quick_lookup", {})
+
+        # Build tool definitions
+        self._tools = {}
+
+        # Handle different catalog formats
+        if "servers" in self._catalog:
+            # Full catalog format with servers array
+            for server_info in self._catalog["servers"]:
+                server_name = server_info.get("server", "")
+                for tool in server_info.get("tools", []):
+                    self._add_tool(tool, server_name)
+        elif "tools" in self._catalog:
+            # Compact format with tools array
+            for tool in self._catalog["tools"]:
+                # Look up server from quick_lookup
+                server_name = self._quick_lookup.get(tool["name"], {}).get("server", "")
+                self._add_tool(tool, server_name)
+
+    def _add_tool(self, tool_data: dict[str, Any], server_name: str) -> None:
+        """Add a tool to the registry."""
+        parameters = []
+        for param in tool_data.get("parameters", []):
+            parameters.append(
+                ToolParameter(
+                    name=param.get("name", ""),
+                    type=param.get("type", "string"),
+                    required=param.get("required", False),
+                    description=param.get("description", ""),
+                )
+            )
+
+        tool_def = ToolDefinition(
+            name=tool_data["name"],
+            description=tool_data.get("description", ""),
+            server=server_name,
+            parameters=parameters,
+        )
+        self._tools[tool_def.name] = tool_def
+
+    @property
+    def catalog(self) -> dict[str, Any]:
+        """Get the raw catalog data."""
+        return self._catalog
+
+    @property
+    def tools(self) -> dict[str, ToolDefinition]:
+        """Get all registered tools."""
+        return self._tools
+
+    @property
+    def tool_count(self) -> int:
+        """Get the number of registered tools."""
+        return len(self._tools)
+
+    def get_tool(self, name: str) -> ToolDefinition | None:
+        """Get a tool definition by name."""
+        return self._tools.get(name)
+
+    def get_server_for_tool(self, tool_name: str) -> str | None:
+        """Get the server name for a tool."""
+        tool = self._tools.get(tool_name)
+        if tool:
+            return tool.server
+
+        # Fallback to quick_lookup
+        lookup = self._quick_lookup.get(tool_name, {})
+        return lookup.get("server")
+
+    def get_catalog_for_prompt(self) -> str:
+        """Get a compact catalog representation for LLM prompts.
+
+        Returns a formatted string with tool names, descriptions, and parameters.
+        """
+        lines = []
+        for tool in self._tools.values():
+            params_str = ", ".join(
+                f"{p.name}: {p.type}" + ("*" if p.required else "") for p in tool.parameters
+            )
+            lines.append(f"- {tool.name}({params_str}): {tool.description[:100]}")
+
+        return "\n".join(lines)
+
+    def validate_tool_call(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> tuple[bool, str | None]:
+        """Validate a tool call against the catalog.
+
+        Args:
+            tool_name: Name of the tool to call.
+            arguments: Arguments to pass to the tool.
+
+        Returns:
+            Tuple of (is_valid, error_message).
+        """
+        tool = self._tools.get(tool_name)
+        if not tool:
+            return False, f"Unknown tool: {tool_name}"
+
+        # Check required parameters
+        for param in tool.parameters:
+            if param.required and param.name not in arguments:
+                return False, f"Missing required parameter: {param.name}"
+
+        return True, None

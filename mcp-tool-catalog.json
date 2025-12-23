@@ -1,0 +1,1974 @@
+{
+  "quick_lookup": {
+    "search_resources": {
+      "server": "compute-resources",
+      "url": "http://45.79.215.140:3002"
+    },
+    "get_resource_hardware": {
+      "server": "compute-resources",
+      "url": "http://45.79.215.140:3002"
+    },
+    "get_infrastructure_news": {
+      "server": "system-status",
+      "url": "http://45.79.215.140:3003"
+    },
+    "search_software": {
+      "server": "software-discovery",
+      "url": "http://45.79.215.140:3004"
+    },
+    "list_all_software": {
+      "server": "software-discovery",
+      "url": "http://45.79.215.140:3004"
+    },
+    "get_software_details": {
+      "server": "software-discovery",
+      "url": "http://45.79.215.140:3004"
+    },
+    "compare_software_availability": {
+      "server": "software-discovery",
+      "url": "http://45.79.215.140:3004"
+    },
+    "get_chart_data": {
+      "server": "xdmod-charts",
+      "url": "http://45.79.215.140:3005"
+    },
+    "get_chart_image": {
+      "server": "xdmod-charts",
+      "url": "http://45.79.215.140:3005"
+    },
+    "get_chart_link": {
+      "server": "xdmod-charts",
+      "url": "http://45.79.215.140:3005"
+    },
+    "search_projects": {
+      "server": "allocations",
+      "url": "http://45.79.215.140:3006"
+    },
+    "analyze_funding": {
+      "server": "allocations",
+      "url": "http://45.79.215.140:3006"
+    },
+    "get_allocation_statistics": {
+      "server": "allocations",
+      "url": "http://45.79.215.140:3006"
+    },
+    "search_nsf_awards": {
+      "server": "nsf-awards",
+      "url": "http://45.79.215.140:3007"
+    },
+    "get_user_data": {
+      "server": "xdmod-data",
+      "url": "http://45.79.215.140:3008"
+    },
+    "get_raw_data": {
+      "server": "xdmod-data",
+      "url": "http://45.79.215.140:3008"
+    },
+    "describe_fields": {
+      "server": "xdmod-data",
+      "url": "http://45.79.215.140:3008"
+    },
+    "describe_realms": {
+      "server": "xdmod-data",
+      "url": "http://45.79.215.140:3008"
+    },
+    "get_smart_filters": {
+      "server": "xdmod-data",
+      "url": "http://45.79.215.140:3008"
+    },
+    "get_analysis_template": {
+      "server": "xdmod-data",
+      "url": "http://45.79.215.140:3008"
+    },
+    "integrate_nsf_xdmod": {
+      "server": "xdmod-data",
+      "url": "http://45.79.215.140:3008"
+    },
+    "search_announcements": {
+      "server": "announcements",
+      "url": "http://45.79.215.140:3009"
+    },
+    "search_events": {
+      "server": "events",
+      "url": "http://45.79.215.140:3010"
+    },
+    "search_affinity_groups": {
+      "server": "affinity-groups",
+      "url": "http://45.79.215.140:3011"
+    }
+  },
+  "tools": [
+    {
+      "name": "search_resources",
+      "description": "Search ACCESS-CI compute resources (list, filter, get details). Returns resource IDs for other services. Returns {total, items}.",
+      "parameters": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": false,
+          "description": "Get specific resource (e.g., 'delta.ncsa.access-ci.org')"
+        },
+        {
+          "name": "query",
+          "type": "string",
+          "required": false,
+          "description": "Search names, descriptions, organizations"
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "required": false,
+          "description": "Filter by resource type"
+        },
+        {
+          "name": "has_gpu",
+          "type": "boolean",
+          "required": false,
+          "description": "Filter for GPU resources"
+        },
+        {
+          "name": "organization",
+          "type": "string",
+          "required": false,
+          "description": "Filter by org (NCSA, PSC, Purdue, SDSC, TACC)"
+        },
+        {
+          "name": "include_ids",
+          "type": "boolean",
+          "required": false,
+          "description": "Include resource IDs for other services"
+        }
+      ]
+    },
+    {
+      "name": "get_resource_hardware",
+      "description": "Get hardware specs (CPU, GPU, memory, storage). Returns detailed specs.",
+      "parameters": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": true,
+          "description": "Resource ID (use search_resources to find)"
+        }
+      ]
+    },
+    {
+      "name": "get_infrastructure_news",
+      "description": "Get ACCESS-CI infrastructure status (outages, maintenance, incidents). Returns {total, items}.",
+      "parameters": [
+        {
+          "name": "query",
+          "type": "string",
+          "required": false,
+          "description": "Filter by resource name (e.g., 'delta', 'bridges2')"
+        },
+        {
+          "name": "time",
+          "type": "string",
+          "required": false,
+          "description": "Period: current (active), scheduled (future), past, all"
+        },
+        {
+          "name": "ids",
+          "type": "array",
+          "required": false,
+          "description": "Check status for specific resource IDs"
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false,
+          "description": "Max results (default: 50)"
+        },
+        {
+          "name": "use_group_api",
+          "type": "boolean",
+          "required": false,
+          "description": "Use group API for status (with ids only)"
+        }
+      ]
+    },
+    {
+      "name": "search_software",
+      "description": "Search software packages on ACCESS-CI HPC resources with fuzzy matching. Returns {total, items}.",
+      "parameters": [
+        {
+          "name": "query",
+          "type": "string",
+          "required": false,
+          "description": "Software name to search (e.g., 'python', 'tensorflow', 'gromacs'). Fuzzy matching finds partial matches."
+        },
+        {
+          "name": "resource",
+          "type": "string",
+          "required": false,
+          "description": "Filter to resource (e.g., 'anvil', 'delta', 'expanse', 'bridges-2')"
+        },
+        {
+          "name": "fuzzy",
+          "type": "boolean",
+          "required": false,
+          "description": "Enable fuzzy/partial matching (default: true)"
+        },
+        {
+          "name": "include_ai_metadata",
+          "type": "boolean",
+          "required": false,
+          "description": "Include AI metadata (tags, research area, software type)"
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false,
+          "description": "Max results (default: 100)"
+        }
+      ]
+    },
+    {
+      "name": "list_all_software",
+      "description": "List all available software packages on ACCESS-CI resources. Returns {total, items}.",
+      "parameters": [
+        {
+          "name": "resource",
+          "type": "string",
+          "required": false,
+          "description": "Filter to resource (e.g., 'anvil', 'delta'). Omit for all resources."
+        },
+        {
+          "name": "include_ai_metadata",
+          "type": "boolean",
+          "required": false,
+          "description": "Include AI metadata (default: false for compact output)"
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false,
+          "description": "Max results (default: 100)"
+        }
+      ]
+    },
+    {
+      "name": "get_software_details",
+      "description": "Get detailed info about a specific software package including versions and availability. Returns {found, details, other_matches}.",
+      "parameters": [
+        {
+          "name": "software_name",
+          "type": "string",
+          "required": true,
+          "description": "Software name (e.g., 'tensorflow', 'gromacs', 'python')"
+        },
+        {
+          "name": "resource",
+          "type": "string",
+          "required": false,
+          "description": "Filter to specific resource (optional)"
+        },
+        {
+          "name": "fuzzy",
+          "type": "boolean",
+          "required": false,
+          "description": "Enable fuzzy matching (default: true)"
+        }
+      ]
+    },
+    {
+      "name": "compare_software_availability",
+      "description": "Compare availability of multiple software packages across resources. Returns {comparison, summary}.",
+      "parameters": [
+        {
+          "name": "software_names",
+          "type": "array",
+          "required": true,
+          "description": "Software packages to compare (e.g., ['tensorflow', 'pytorch'])"
+        },
+        {
+          "name": "resources",
+          "type": "array",
+          "required": false,
+          "description": "Resources to check (optional, compares all if omitted)"
+        }
+      ]
+    },
+    {
+      "name": "get_chart_data",
+      "description": "Get chart data and metadata for a specific statistic from XDMoD. Common examples: Jobs realm with total_cpu_hours by person, SUPREMM realm with gpu_time by resource.",
+      "parameters": [
+        {
+          "name": "realm",
+          "type": "string",
+          "required": true,
+          "description": "The realm: \"Jobs\" for general job statistics, \"SUPREMM\" for GPU and performance metrics"
+        },
+        {
+          "name": "group_by",
+          "type": "string",
+          "required": true,
+          "description": "How to group the data: \"none\" (system-wide), \"resource\" (by compute resource), \"person\" (by user - Jobs realm only)"
+        },
+        {
+          "name": "statistic",
+          "type": "string",
+          "required": true,
+          "description": "The statistic to chart. Jobs realm: \"total_cpu_hours\" (CPU usage), \"job_count\" (number of jobs), \"avg_waitduration_hours\" (average queue wait time), \"total_waitduration_hours\" (total wait time), \"utilization\" (CPU utilization), \"avg_cpu_hours\" (avg CPU per job), \"max_processors\" (max processor count), \"total_ace\" (ACCESS credits). SUPREMM realm: \"gpu_time\" (GPU hours), \"wall_time\" (total CPU time), \"cpu_time_user\" (user CPU time), \"avg_percent_gpu_usage\" (avg GPU %), \"avg_percent_cpu_user\" (avg CPU %), \"avg_flops_per_core\", \"avg_memory_per_core\", \"avg_ib_rx_bytes\"."
+        },
+        {
+          "name": "start_date",
+          "type": "string",
+          "required": true,
+          "description": "Start date in YYYY-MM-DD format"
+        },
+        {
+          "name": "end_date",
+          "type": "string",
+          "required": true,
+          "description": "End date in YYYY-MM-DD format"
+        },
+        {
+          "name": "dataset_type",
+          "type": "string",
+          "required": false,
+          "description": "Dataset type (default: \"timeseries\")"
+        },
+        {
+          "name": "display_type",
+          "type": "string",
+          "required": false,
+          "description": "Display type (default: \"line\")"
+        },
+        {
+          "name": "combine_type",
+          "type": "string",
+          "required": false,
+          "description": "How to combine data (default: \"side\")"
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false,
+          "description": "Maximum number of data series to return (default: 10)"
+        },
+        {
+          "name": "offset",
+          "type": "number",
+          "required": false,
+          "description": "Offset for pagination (default: 0)"
+        },
+        {
+          "name": "log_scale",
+          "type": "string",
+          "required": false,
+          "description": "Use logarithmic scale (default: \"n\")"
+        },
+        {
+          "name": "filters",
+          "type": "object",
+          "required": false,
+          "description": "Optional filters to apply (e.g., {resource: 'delta.ncsa.xsede.org'})"
+        }
+      ]
+    },
+    {
+      "name": "get_chart_image",
+      "description": "Get chart image (SVG, PNG, or PDF) for a specific statistic. Use PNG format for direct display in Claude Desktop.",
+      "parameters": [
+        {
+          "name": "realm",
+          "type": "string",
+          "required": true,
+          "description": "The realm (e.g., \"Jobs\", \"SUPREMM\")"
+        },
+        {
+          "name": "group_by",
+          "type": "string",
+          "required": true,
+          "description": "The group by field (e.g., \"none\", \"resource\")"
+        },
+        {
+          "name": "statistic",
+          "type": "string",
+          "required": true,
+          "description": "The statistic to chart. Jobs realm: \"total_cpu_hours\" (CPU usage), \"job_count\" (number of jobs), \"avg_waitduration_hours\" (average queue wait time), \"total_waitduration_hours\" (total wait time), \"utilization\" (CPU utilization), \"avg_cpu_hours\" (avg CPU per job), \"max_processors\" (max processor count), \"total_ace\" (ACCESS credits). SUPREMM realm: \"gpu_time\" (GPU hours), \"wall_time\" (total CPU time), \"cpu_time_user\" (user CPU time), \"avg_percent_gpu_usage\" (avg GPU %), \"avg_percent_cpu_user\" (avg CPU %), \"avg_flops_per_core\", \"avg_memory_per_core\", \"avg_ib_rx_bytes\"."
+        },
+        {
+          "name": "start_date",
+          "type": "string",
+          "required": true,
+          "description": "Start date in YYYY-MM-DD format"
+        },
+        {
+          "name": "end_date",
+          "type": "string",
+          "required": true,
+          "description": "End date in YYYY-MM-DD format"
+        },
+        {
+          "name": "format",
+          "type": "string",
+          "required": false,
+          "description": "Image format (svg, png, pdf)"
+        },
+        {
+          "name": "width",
+          "type": "number",
+          "required": false,
+          "description": "Image width in pixels"
+        },
+        {
+          "name": "height",
+          "type": "number",
+          "required": false,
+          "description": "Image height in pixels"
+        },
+        {
+          "name": "dataset_type",
+          "type": "string",
+          "required": false,
+          "description": "Dataset type (default: \"timeseries\")"
+        },
+        {
+          "name": "display_type",
+          "type": "string",
+          "required": false,
+          "description": "Display type (default: \"line\")"
+        },
+        {
+          "name": "combine_type",
+          "type": "string",
+          "required": false,
+          "description": "How to combine data (default: \"side\")"
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false,
+          "description": "Maximum number of data series to return (default: 10)"
+        },
+        {
+          "name": "offset",
+          "type": "number",
+          "required": false,
+          "description": "Offset for pagination (default: 0)"
+        },
+        {
+          "name": "log_scale",
+          "type": "string",
+          "required": false,
+          "description": "Use logarithmic scale (default: \"n\")"
+        },
+        {
+          "name": "filters",
+          "type": "object",
+          "required": false,
+          "description": "Optional filters to apply (e.g., {resource: 'delta.ncsa.xsede.org'})"
+        }
+      ]
+    },
+    {
+      "name": "get_chart_link",
+      "description": "Generate a direct URL to view an interactive chart in the XDMoD web portal. Use this when users want to explore data interactively, apply additional filters, or share charts with collaborators. The web interface provides more filtering options than the API.",
+      "parameters": [
+        {
+          "name": "realm",
+          "type": "string",
+          "required": true,
+          "description": "The realm (e.g., \"Jobs\", \"SUPREMM\")"
+        },
+        {
+          "name": "group_by",
+          "type": "string",
+          "required": true,
+          "description": "The group by field (e.g., \"none\", \"resource\")"
+        },
+        {
+          "name": "statistic",
+          "type": "string",
+          "required": true,
+          "description": "The statistic to chart. Jobs realm: \"total_cpu_hours\" (CPU usage), \"job_count\" (number of jobs), \"avg_waitduration_hours\" (average queue wait time), \"total_waitduration_hours\" (total wait time), \"utilization\" (CPU utilization), \"avg_cpu_hours\" (avg CPU per job), \"max_processors\" (max processor count), \"total_ace\" (ACCESS credits). SUPREMM realm: \"gpu_time\" (GPU hours), \"wall_time\" (total CPU time), \"cpu_time_user\" (user CPU time), \"avg_percent_gpu_usage\" (avg GPU %), \"avg_percent_cpu_user\" (avg CPU %), \"avg_flops_per_core\", \"avg_memory_per_core\", \"avg_ib_rx_bytes\"."
+        }
+      ]
+    },
+    {
+      "name": "search_projects",
+      "description": "Search ACCESS-CI research projects. Returns {total, items}.",
+      "parameters": [
+        {
+          "name": "query",
+          "type": "string",
+          "required": false,
+          "description": "Search query supporting operators: 'term1 AND term2', 'term1 OR term2', 'term1 NOT term2', exact phrases with quotes. Omit when using project_id or similar_to parameters."
+        },
+        {
+          "name": "project_id",
+          "type": "number",
+          "required": false,
+          "description": "Get detailed information for a specific project ID. When provided, returns full project details including complete abstract."
+        },
+        {
+          "name": "field_of_science",
+          "type": "string",
+          "required": false,
+          "description": "Filter by field of science (e.g., 'Computer Science', 'Physics')"
+        },
+        {
+          "name": "resource_name",
+          "type": "string",
+          "required": false,
+          "description": "Filter projects using specific computational resources (e.g., 'NCSA Delta GPU', 'Purdue Anvil', 'ACCESS Credits')"
+        },
+        {
+          "name": "allocation_type",
+          "type": "string",
+          "required": false,
+          "description": "Filter by allocation type (e.g., 'Discover', 'Explore', 'Accelerate')"
+        },
+        {
+          "name": "date_range",
+          "type": "object",
+          "required": false,
+          "description": "Filter by project date range"
+        },
+        {
+          "name": "min_allocation",
+          "type": "number",
+          "required": false,
+          "description": "Minimum allocation amount filter"
+        },
+        {
+          "name": "similar_to",
+          "type": "number",
+          "required": false,
+          "description": "Find projects similar to this project ID using semantic matching. Omit query parameter when using this."
+        },
+        {
+          "name": "similarity_keywords",
+          "type": "string",
+          "required": false,
+          "description": "Find projects similar to these keywords/research terms. Alternative to similar_to parameter."
+        },
+        {
+          "name": "similarity_threshold",
+          "type": "number",
+          "required": false,
+          "description": "Minimum similarity score (0.0-1.0) when using similar_to or similarity_keywords. Default: 0.3"
+        },
+        {
+          "name": "include_same_field",
+          "type": "boolean",
+          "required": false,
+          "description": "Whether to prioritize projects in the same field of science for similarity search (default: true)"
+        },
+        {
+          "name": "sort_by",
+          "type": "string",
+          "required": false,
+          "description": "Sort results by: 'relevance', 'date_desc', 'date_asc', 'allocation_desc', 'allocation_asc', 'pi_name'"
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false,
+          "description": "Maximum number of results to return (default: 20, max: 100)"
+        }
+      ]
+    },
+    {
+      "name": "analyze_funding",
+      "description": "Analyze NSF funding for ACCESS projects/institutions. Returns detailed markdown analysis.",
+      "parameters": [
+        {
+          "name": "project_id",
+          "type": "number",
+          "required": false,
+          "description": "Analyze funding for a specific ACCESS project ID. Returns NSF awards connected to the project's PI and institution."
+        },
+        {
+          "name": "institution",
+          "type": "string",
+          "required": false,
+          "description": "Generate comprehensive funding profile for an institution. Shows ACCESS allocations, NSF awards, top researchers, and funding trends."
+        },
+        {
+          "name": "pi_name",
+          "type": "string",
+          "required": false,
+          "description": "Find funded projects by principal investigator name. Cross-references ACCESS and NSF data."
+        },
+        {
+          "name": "has_nsf_funding",
+          "type": "boolean",
+          "required": false,
+          "description": "Filter to only show ACCESS projects with corresponding NSF funding. Combine with pi_name, institution, or field_of_science."
+        },
+        {
+          "name": "field_of_science",
+          "type": "string",
+          "required": false,
+          "description": "Filter funded projects by field of science."
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false,
+          "description": "Maximum number of projects/awards to return (default: 20 for institution analysis, 10 for others)"
+        }
+      ]
+    },
+    {
+      "name": "get_allocation_statistics",
+      "description": "Get allocation statistics (top fields, resources, institutions, types). Returns aggregate stats.",
+      "parameters": [
+        {
+          "name": "pages_to_analyze",
+          "type": "number",
+          "required": false,
+          "description": "Number of pages to analyze for statistics (default: 5, max: 20)"
+        }
+      ]
+    },
+    {
+      "name": "search_nsf_awards",
+      "description": "Search NSF awards and funding. Returns {total, items}.",
+      "parameters": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": false,
+          "description": "Award number (e.g., '2138259')"
+        },
+        {
+          "name": "query",
+          "type": "string",
+          "required": false,
+          "description": "Search keywords in titles/abstracts"
+        },
+        {
+          "name": "pi",
+          "type": "string",
+          "required": false,
+          "description": "Principal investigator name"
+        },
+        {
+          "name": "institution",
+          "type": "string",
+          "required": false,
+          "description": "Institution name"
+        },
+        {
+          "name": "primary_only",
+          "type": "boolean",
+          "required": false,
+          "description": "When searching by institution, only return awards where the institution is the PRIMARY recipient (excludes collaborative/co-PI awards from other institutions). Default: false"
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false,
+          "description": "Max results (default: 10)"
+        }
+      ]
+    },
+    {
+      "name": "get_user_data",
+      "description": "Get user-specific usage data by exact user identifier. Use the COMPLETE user name exactly as provided.",
+      "parameters": [
+        {
+          "name": "access_id",
+          "type": "string",
+          "required": true,
+          "description": "REQUIRED: Complete user identifier exactly as found (e.g., 'Smith, John - State University'). DO NOT truncate or modify - use the full string exactly."
+        },
+        {
+          "name": "start_date",
+          "type": "string",
+          "required": true,
+          "description": "Start date (YYYY-MM-DD)"
+        },
+        {
+          "name": "end_date",
+          "type": "string",
+          "required": true,
+          "description": "End date (YYYY-MM-DD)"
+        },
+        {
+          "name": "realm",
+          "type": "string",
+          "required": false,
+          "description": "XDMoD realm (default: Jobs)"
+        },
+        {
+          "name": "statistic",
+          "type": "string",
+          "required": false,
+          "description": "Statistic to retrieve (default: total_cpu_hours)"
+        }
+      ]
+    },
+    {
+      "name": "get_raw_data",
+      "description": "Extract actual XDMoD metrics data with filtering. This is the PRIMARY data extraction tool. Use filters parameter with values discovered via get_smart_filters() or use configuration from get_analysis_template(). Supports complex boolean filters, timeseries/aggregate modes, and progress tracking for large datasets.",
+      "parameters": [
+        {
+          "name": "realm",
+          "type": "string",
+          "required": false,
+          "description": "XDMoD realm: Jobs, SUPREMM, Cloud, Storage, ResourceSpecifications"
+        },
+        {
+          "name": "dimension",
+          "type": "string",
+          "required": false,
+          "description": "Dimension for grouping data (e.g., person, resource, institution, pi, none)"
+        },
+        {
+          "name": "metric",
+          "type": "string",
+          "required": false,
+          "description": "Metric to retrieve (e.g., total_cpu_hours, job_count, wall_hours)"
+        },
+        {
+          "name": "start_date",
+          "type": "string",
+          "required": true,
+          "description": "Start date (YYYY-MM-DD)"
+        },
+        {
+          "name": "end_date",
+          "type": "string",
+          "required": true,
+          "description": "End date (YYYY-MM-DD)"
+        },
+        {
+          "name": "filters",
+          "type": "object",
+          "required": false,
+          "description": "Complex filter combinations. Use get_smart_filters() first to discover valid filter values. Example: {'resource': ['Delta', 'Bridges-2'], 'pi': 'Smith', 'jobsize': '>1000'}. Supports boolean operators (AND/OR) and comparison operators (>, <, =)."
+        },
+        {
+          "name": "aggregation_unit",
+          "type": "string",
+          "required": false,
+          "description": "Time aggregation: 'Auto', 'Day', 'Month', 'Quarter', or 'Year' (case-sensitive)"
+        },
+        {
+          "name": "dataset_type",
+          "type": "string",
+          "required": false,
+          "description": "Dataset type: 'timeseries' for raw data over time (default), 'aggregate' for summary totals"
+        },
+        {
+          "name": "show_progress",
+          "type": "boolean",
+          "required": false,
+          "description": "Show progress updates for large data retrievals"
+        }
+      ]
+    },
+    {
+      "name": "describe_fields",
+      "description": "Discover what dimensions and metrics exist in a specific realm (e.g., Jobs, SUPREMM). Use this to learn what can be queried. For example: 'What dimensions are available in the Jobs realm?' Returns dimension names (resource, person, institution, etc.) and available metrics (total_cpu_hours, job_count, etc.).",
+      "parameters": [
+        {
+          "name": "realm",
+          "type": "string",
+          "required": false,
+          "description": "XDMoD realm to describe (e.g., Jobs, SUPREMM, Cloud, Storage)"
+        },
+        {
+          "name": "include_metrics",
+          "type": "boolean",
+          "required": false,
+          "description": "Include available metrics in the response"
+        },
+        {
+          "name": "include_filter_values",
+          "type": "boolean",
+          "required": false,
+          "description": "Include sample filter values for dimensions"
+        }
+      ]
+    },
+    {
+      "name": "describe_realms",
+      "description": "List all available XDMoD data realms (Jobs, SUPREMM, Cloud, Storage, etc.) with their capabilities. Use this when you need to know what data categories exist. For example: 'What realms are available?' or 'Where can I find GPU metrics?' (Answer: SUPREMM realm).",
+      "parameters": [
+        {
+          "name": "include_details",
+          "type": "boolean",
+          "required": false,
+          "description": "Include detailed information about each realm"
+        }
+      ]
+    },
+    {
+      "name": "get_smart_filters",
+      "description": "Discover what filter values are available for use with get_raw_data(). Use this BEFORE calling get_raw_data() to find valid resources, queues, institutions, etc. Returns categorized lists like 'GPU resources', 'batch queues', 'physical sciences'. Workflow: get_smart_filters() \u2192 get_raw_data() with discovered values.",
+      "parameters": [
+        {
+          "name": "realm",
+          "type": "string",
+          "required": false,
+          "description": "XDMoD realm to query"
+        },
+        {
+          "name": "dimension",
+          "type": "string",
+          "required": false,
+          "description": "Dimension to get filters for (resource, queue, person, fieldofscience, institution, etc.)"
+        },
+        {
+          "name": "category",
+          "type": "string",
+          "required": false,
+          "description": "Filter category: gpu, cpu, memory, storage, physical, life, engineering, all"
+        },
+        {
+          "name": "search_prefix",
+          "type": "string",
+          "required": false,
+          "description": "Filter values by prefix for autocomplete-style searching (e.g., 'univ' for universities)"
+        },
+        {
+          "name": "force_large_dimensions",
+          "type": "boolean",
+          "required": false,
+          "description": "Override size limits for large dimensions (>1000 values)"
+        },
+        {
+          "name": "limit",
+          "type": "integer",
+          "required": false,
+          "description": "Max items to display per category"
+        }
+      ]
+    },
+    {
+      "name": "get_analysis_template",
+      "description": "Get pre-configured analysis patterns for common scenarios (queue analysis, allocation efficiency, performance analysis, etc.). Use this when you want a standardized analysis instead of building a custom query. Returns ready-to-use configuration with pre-defined metrics and semantic filters. Workflow: get_analysis_template() \u2192 Use returned config with get_raw_data().",
+      "parameters": [
+        {
+          "name": "analysis_type",
+          "type": "string",
+          "required": false,
+          "description": "Type of analysis template. Common templates: queue_analysis, allocation_efficiency, performance_efficiency, multi_node_scaling, service_provider_comparison, grant_type_analysis, field_of_science_trends, institutional_comparison, resource_portfolio, user_cohort_analysis"
+        },
+        {
+          "name": "list_templates",
+          "type": "boolean",
+          "required": false,
+          "description": "Set to true to list all 14 available analysis templates with descriptions"
+        }
+      ]
+    },
+    {
+      "name": "integrate_nsf_xdmod",
+      "description": "Integrate NSF funding data with XDMoD computational usage patterns. Query by researcher, award, or institution to correlate funding with actual usage.",
+      "parameters": [
+        {
+          "name": "query_type",
+          "type": "string",
+          "required": true,
+          "description": "Type of integration query: 'researcher' (researcher-centric usage with NSF funding), 'award' (award-centric funding vs usage comparison), 'institution' (institutional research profile with funding and usage)"
+        },
+        {
+          "name": "search_value",
+          "type": "string",
+          "required": true,
+          "description": "Search value based on query_type: researcher name, NSF award number, or institution name"
+        },
+        {
+          "name": "start_date",
+          "type": "string",
+          "required": true,
+          "description": "Start date for analysis in YYYY-MM-DD format"
+        },
+        {
+          "name": "end_date",
+          "type": "string",
+          "required": true,
+          "description": "End date for analysis in YYYY-MM-DD format"
+        },
+        {
+          "name": "limit",
+          "type": "integer",
+          "required": false,
+          "description": "Maximum number of NSF awards to include (default: 5 for researcher, 10 for institution)"
+        },
+        {
+          "name": "top_researchers",
+          "type": "integer",
+          "required": false,
+          "description": "Number of top researchers to highlight (only for query_type='institution', default: 10)"
+        }
+      ]
+    },
+    {
+      "name": "search_announcements",
+      "description": "Search ACCESS announcements (news, updates, notifications). Returns {total, items}.",
+      "parameters": [
+        {
+          "name": "tags",
+          "type": "string",
+          "required": false,
+          "description": "Filter by topics: gpu, ml, hpc"
+        },
+        {
+          "name": "date",
+          "type": "string",
+          "required": false,
+          "description": "Time period filter"
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false,
+          "description": "Max results (default: 25)"
+        }
+      ]
+    },
+    {
+      "name": "search_events",
+      "description": "Search ACCESS-CI events (workshops, webinars, training). Returns {total, items}.",
+      "parameters": [
+        {
+          "name": "query",
+          "type": "string",
+          "required": false,
+          "description": "Search titles, descriptions, speakers, tags"
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "required": false,
+          "description": "Filter: workshop, webinar, training"
+        },
+        {
+          "name": "tags",
+          "type": "string",
+          "required": false,
+          "description": "Filter: python, gpu, hpc, ml"
+        },
+        {
+          "name": "date",
+          "type": "string",
+          "required": false,
+          "description": "Filter by time period"
+        },
+        {
+          "name": "skill",
+          "type": "string",
+          "required": false,
+          "description": "Skill level filter"
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false,
+          "description": "Max results (default: 50)"
+        }
+      ]
+    },
+    {
+      "name": "search_affinity_groups",
+      "description": "Search ACCESS-CI affinity groups. Returns {total, items}.",
+      "parameters": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": false,
+          "description": "Group ID (omit to list all)"
+        },
+        {
+          "name": "include",
+          "type": "string",
+          "required": false,
+          "description": "Include: events, kb, or all"
+        },
+        {
+          "name": "query",
+          "type": "string",
+          "required": false,
+          "description": "Search KB resources"
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false,
+          "description": "Max results (default: 20)"
+        }
+      ]
+    }
+  ],
+  "servers": [
+    {
+      "server": "compute-resources",
+      "url": "http://45.79.215.140:3002",
+      "tool_count": 2,
+      "tools": [
+        {
+          "name": "search_resources",
+          "description": "Search ACCESS-CI compute resources (list, filter, get details). Returns resource IDs for other services. Returns {total, items}.",
+          "parameters": [
+            {
+              "name": "id",
+              "type": "string",
+              "required": false,
+              "description": "Get specific resource (e.g., 'delta.ncsa.access-ci.org')"
+            },
+            {
+              "name": "query",
+              "type": "string",
+              "required": false,
+              "description": "Search names, descriptions, organizations"
+            },
+            {
+              "name": "type",
+              "type": "string",
+              "required": false,
+              "description": "Filter by resource type"
+            },
+            {
+              "name": "has_gpu",
+              "type": "boolean",
+              "required": false,
+              "description": "Filter for GPU resources"
+            },
+            {
+              "name": "organization",
+              "type": "string",
+              "required": false,
+              "description": "Filter by org (NCSA, PSC, Purdue, SDSC, TACC)"
+            },
+            {
+              "name": "include_ids",
+              "type": "boolean",
+              "required": false,
+              "description": "Include resource IDs for other services"
+            }
+          ]
+        },
+        {
+          "name": "get_resource_hardware",
+          "description": "Get hardware specs (CPU, GPU, memory, storage). Returns detailed specs.",
+          "parameters": [
+            {
+              "name": "id",
+              "type": "string",
+              "required": true,
+              "description": "Resource ID (use search_resources to find)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "server": "system-status",
+      "url": "http://45.79.215.140:3003",
+      "tool_count": 1,
+      "tools": [
+        {
+          "name": "get_infrastructure_news",
+          "description": "Get ACCESS-CI infrastructure status (outages, maintenance, incidents). Returns {total, items}.",
+          "parameters": [
+            {
+              "name": "query",
+              "type": "string",
+              "required": false,
+              "description": "Filter by resource name (e.g., 'delta', 'bridges2')"
+            },
+            {
+              "name": "time",
+              "type": "string",
+              "required": false,
+              "description": "Period: current (active), scheduled (future), past, all"
+            },
+            {
+              "name": "ids",
+              "type": "array",
+              "required": false,
+              "description": "Check status for specific resource IDs"
+            },
+            {
+              "name": "limit",
+              "type": "number",
+              "required": false,
+              "description": "Max results (default: 50)"
+            },
+            {
+              "name": "use_group_api",
+              "type": "boolean",
+              "required": false,
+              "description": "Use group API for status (with ids only)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "server": "software-discovery",
+      "url": "http://45.79.215.140:3004",
+      "tool_count": 4,
+      "tools": [
+        {
+          "name": "search_software",
+          "description": "Search software packages on ACCESS-CI HPC resources with fuzzy matching. Returns {total, items}.",
+          "parameters": [
+            {
+              "name": "query",
+              "type": "string",
+              "required": false,
+              "description": "Software name to search (e.g., 'python', 'tensorflow', 'gromacs'). Fuzzy matching finds partial matches."
+            },
+            {
+              "name": "resource",
+              "type": "string",
+              "required": false,
+              "description": "Filter to resource (e.g., 'anvil', 'delta', 'expanse', 'bridges-2')"
+            },
+            {
+              "name": "fuzzy",
+              "type": "boolean",
+              "required": false,
+              "description": "Enable fuzzy/partial matching (default: true)"
+            },
+            {
+              "name": "include_ai_metadata",
+              "type": "boolean",
+              "required": false,
+              "description": "Include AI metadata (tags, research area, software type)"
+            },
+            {
+              "name": "limit",
+              "type": "number",
+              "required": false,
+              "description": "Max results (default: 100)"
+            }
+          ]
+        },
+        {
+          "name": "list_all_software",
+          "description": "List all available software packages on ACCESS-CI resources. Returns {total, items}.",
+          "parameters": [
+            {
+              "name": "resource",
+              "type": "string",
+              "required": false,
+              "description": "Filter to resource (e.g., 'anvil', 'delta'). Omit for all resources."
+            },
+            {
+              "name": "include_ai_metadata",
+              "type": "boolean",
+              "required": false,
+              "description": "Include AI metadata (default: false for compact output)"
+            },
+            {
+              "name": "limit",
+              "type": "number",
+              "required": false,
+              "description": "Max results (default: 100)"
+            }
+          ]
+        },
+        {
+          "name": "get_software_details",
+          "description": "Get detailed info about a specific software package including versions and availability. Returns {found, details, other_matches}.",
+          "parameters": [
+            {
+              "name": "software_name",
+              "type": "string",
+              "required": true,
+              "description": "Software name (e.g., 'tensorflow', 'gromacs', 'python')"
+            },
+            {
+              "name": "resource",
+              "type": "string",
+              "required": false,
+              "description": "Filter to specific resource (optional)"
+            },
+            {
+              "name": "fuzzy",
+              "type": "boolean",
+              "required": false,
+              "description": "Enable fuzzy matching (default: true)"
+            }
+          ]
+        },
+        {
+          "name": "compare_software_availability",
+          "description": "Compare availability of multiple software packages across resources. Returns {comparison, summary}.",
+          "parameters": [
+            {
+              "name": "software_names",
+              "type": "array",
+              "required": true,
+              "description": "Software packages to compare (e.g., ['tensorflow', 'pytorch'])"
+            },
+            {
+              "name": "resources",
+              "type": "array",
+              "required": false,
+              "description": "Resources to check (optional, compares all if omitted)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "server": "xdmod-charts",
+      "url": "http://45.79.215.140:3005",
+      "tool_count": 3,
+      "tools": [
+        {
+          "name": "get_chart_data",
+          "description": "Get chart data and metadata for a specific statistic from XDMoD. Common examples: Jobs realm with total_cpu_hours by person, SUPREMM realm with gpu_time by resource.",
+          "parameters": [
+            {
+              "name": "realm",
+              "type": "string",
+              "required": true,
+              "description": "The realm: \"Jobs\" for general job statistics, \"SUPREMM\" for GPU and performance metrics"
+            },
+            {
+              "name": "group_by",
+              "type": "string",
+              "required": true,
+              "description": "How to group the data: \"none\" (system-wide), \"resource\" (by compute resource), \"person\" (by user - Jobs realm only)"
+            },
+            {
+              "name": "statistic",
+              "type": "string",
+              "required": true,
+              "description": "The statistic to chart. Jobs realm: \"total_cpu_hours\" (CPU usage), \"job_count\" (number of jobs), \"avg_waitduration_hours\" (average queue wait time), \"total_waitduration_hours\" (total wait time), \"utilization\" (CPU utilization), \"avg_cpu_hours\" (avg CPU per job), \"max_processors\" (max processor count), \"total_ace\" (ACCESS credits). SUPREMM realm: \"gpu_time\" (GPU hours), \"wall_time\" (total CPU time), \"cpu_time_user\" (user CPU time), \"avg_percent_gpu_usage\" (avg GPU %), \"avg_percent_cpu_user\" (avg CPU %), \"avg_flops_per_core\", \"avg_memory_per_core\", \"avg_ib_rx_bytes\"."
+            },
+            {
+              "name": "start_date",
+              "type": "string",
+              "required": true,
+              "description": "Start date in YYYY-MM-DD format"
+            },
+            {
+              "name": "end_date",
+              "type": "string",
+              "required": true,
+              "description": "End date in YYYY-MM-DD format"
+            },
+            {
+              "name": "dataset_type",
+              "type": "string",
+              "required": false,
+              "description": "Dataset type (default: \"timeseries\")"
+            },
+            {
+              "name": "display_type",
+              "type": "string",
+              "required": false,
+              "description": "Display type (default: \"line\")"
+            },
+            {
+              "name": "combine_type",
+              "type": "string",
+              "required": false,
+              "description": "How to combine data (default: \"side\")"
+            },
+            {
+              "name": "limit",
+              "type": "number",
+              "required": false,
+              "description": "Maximum number of data series to return (default: 10)"
+            },
+            {
+              "name": "offset",
+              "type": "number",
+              "required": false,
+              "description": "Offset for pagination (default: 0)"
+            },
+            {
+              "name": "log_scale",
+              "type": "string",
+              "required": false,
+              "description": "Use logarithmic scale (default: \"n\")"
+            },
+            {
+              "name": "filters",
+              "type": "object",
+              "required": false,
+              "description": "Optional filters to apply (e.g., {resource: 'delta.ncsa.xsede.org'})"
+            }
+          ]
+        },
+        {
+          "name": "get_chart_image",
+          "description": "Get chart image (SVG, PNG, or PDF) for a specific statistic. Use PNG format for direct display in Claude Desktop.",
+          "parameters": [
+            {
+              "name": "realm",
+              "type": "string",
+              "required": true,
+              "description": "The realm (e.g., \"Jobs\", \"SUPREMM\")"
+            },
+            {
+              "name": "group_by",
+              "type": "string",
+              "required": true,
+              "description": "The group by field (e.g., \"none\", \"resource\")"
+            },
+            {
+              "name": "statistic",
+              "type": "string",
+              "required": true,
+              "description": "The statistic to chart. Jobs realm: \"total_cpu_hours\" (CPU usage), \"job_count\" (number of jobs), \"avg_waitduration_hours\" (average queue wait time), \"total_waitduration_hours\" (total wait time), \"utilization\" (CPU utilization), \"avg_cpu_hours\" (avg CPU per job), \"max_processors\" (max processor count), \"total_ace\" (ACCESS credits). SUPREMM realm: \"gpu_time\" (GPU hours), \"wall_time\" (total CPU time), \"cpu_time_user\" (user CPU time), \"avg_percent_gpu_usage\" (avg GPU %), \"avg_percent_cpu_user\" (avg CPU %), \"avg_flops_per_core\", \"avg_memory_per_core\", \"avg_ib_rx_bytes\"."
+            },
+            {
+              "name": "start_date",
+              "type": "string",
+              "required": true,
+              "description": "Start date in YYYY-MM-DD format"
+            },
+            {
+              "name": "end_date",
+              "type": "string",
+              "required": true,
+              "description": "End date in YYYY-MM-DD format"
+            },
+            {
+              "name": "format",
+              "type": "string",
+              "required": false,
+              "description": "Image format (svg, png, pdf)"
+            },
+            {
+              "name": "width",
+              "type": "number",
+              "required": false,
+              "description": "Image width in pixels"
+            },
+            {
+              "name": "height",
+              "type": "number",
+              "required": false,
+              "description": "Image height in pixels"
+            },
+            {
+              "name": "dataset_type",
+              "type": "string",
+              "required": false,
+              "description": "Dataset type (default: \"timeseries\")"
+            },
+            {
+              "name": "display_type",
+              "type": "string",
+              "required": false,
+              "description": "Display type (default: \"line\")"
+            },
+            {
+              "name": "combine_type",
+              "type": "string",
+              "required": false,
+              "description": "How to combine data (default: \"side\")"
+            },
+            {
+              "name": "limit",
+              "type": "number",
+              "required": false,
+              "description": "Maximum number of data series to return (default: 10)"
+            },
+            {
+              "name": "offset",
+              "type": "number",
+              "required": false,
+              "description": "Offset for pagination (default: 0)"
+            },
+            {
+              "name": "log_scale",
+              "type": "string",
+              "required": false,
+              "description": "Use logarithmic scale (default: \"n\")"
+            },
+            {
+              "name": "filters",
+              "type": "object",
+              "required": false,
+              "description": "Optional filters to apply (e.g., {resource: 'delta.ncsa.xsede.org'})"
+            }
+          ]
+        },
+        {
+          "name": "get_chart_link",
+          "description": "Generate a direct URL to view an interactive chart in the XDMoD web portal. Use this when users want to explore data interactively, apply additional filters, or share charts with collaborators. The web interface provides more filtering options than the API.",
+          "parameters": [
+            {
+              "name": "realm",
+              "type": "string",
+              "required": true,
+              "description": "The realm (e.g., \"Jobs\", \"SUPREMM\")"
+            },
+            {
+              "name": "group_by",
+              "type": "string",
+              "required": true,
+              "description": "The group by field (e.g., \"none\", \"resource\")"
+            },
+            {
+              "name": "statistic",
+              "type": "string",
+              "required": true,
+              "description": "The statistic to chart. Jobs realm: \"total_cpu_hours\" (CPU usage), \"job_count\" (number of jobs), \"avg_waitduration_hours\" (average queue wait time), \"total_waitduration_hours\" (total wait time), \"utilization\" (CPU utilization), \"avg_cpu_hours\" (avg CPU per job), \"max_processors\" (max processor count), \"total_ace\" (ACCESS credits). SUPREMM realm: \"gpu_time\" (GPU hours), \"wall_time\" (total CPU time), \"cpu_time_user\" (user CPU time), \"avg_percent_gpu_usage\" (avg GPU %), \"avg_percent_cpu_user\" (avg CPU %), \"avg_flops_per_core\", \"avg_memory_per_core\", \"avg_ib_rx_bytes\"."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "server": "allocations",
+      "url": "http://45.79.215.140:3006",
+      "tool_count": 3,
+      "tools": [
+        {
+          "name": "search_projects",
+          "description": "Search ACCESS-CI research projects. Returns {total, items}.",
+          "parameters": [
+            {
+              "name": "query",
+              "type": "string",
+              "required": false,
+              "description": "Search query supporting operators: 'term1 AND term2', 'term1 OR term2', 'term1 NOT term2', exact phrases with quotes. Omit when using project_id or similar_to parameters."
+            },
+            {
+              "name": "project_id",
+              "type": "number",
+              "required": false,
+              "description": "Get detailed information for a specific project ID. When provided, returns full project details including complete abstract."
+            },
+            {
+              "name": "field_of_science",
+              "type": "string",
+              "required": false,
+              "description": "Filter by field of science (e.g., 'Computer Science', 'Physics')"
+            },
+            {
+              "name": "resource_name",
+              "type": "string",
+              "required": false,
+              "description": "Filter projects using specific computational resources (e.g., 'NCSA Delta GPU', 'Purdue Anvil', 'ACCESS Credits')"
+            },
+            {
+              "name": "allocation_type",
+              "type": "string",
+              "required": false,
+              "description": "Filter by allocation type (e.g., 'Discover', 'Explore', 'Accelerate')"
+            },
+            {
+              "name": "date_range",
+              "type": "object",
+              "required": false,
+              "description": "Filter by project date range"
+            },
+            {
+              "name": "min_allocation",
+              "type": "number",
+              "required": false,
+              "description": "Minimum allocation amount filter"
+            },
+            {
+              "name": "similar_to",
+              "type": "number",
+              "required": false,
+              "description": "Find projects similar to this project ID using semantic matching. Omit query parameter when using this."
+            },
+            {
+              "name": "similarity_keywords",
+              "type": "string",
+              "required": false,
+              "description": "Find projects similar to these keywords/research terms. Alternative to similar_to parameter."
+            },
+            {
+              "name": "similarity_threshold",
+              "type": "number",
+              "required": false,
+              "description": "Minimum similarity score (0.0-1.0) when using similar_to or similarity_keywords. Default: 0.3"
+            },
+            {
+              "name": "include_same_field",
+              "type": "boolean",
+              "required": false,
+              "description": "Whether to prioritize projects in the same field of science for similarity search (default: true)"
+            },
+            {
+              "name": "sort_by",
+              "type": "string",
+              "required": false,
+              "description": "Sort results by: 'relevance', 'date_desc', 'date_asc', 'allocation_desc', 'allocation_asc', 'pi_name'"
+            },
+            {
+              "name": "limit",
+              "type": "number",
+              "required": false,
+              "description": "Maximum number of results to return (default: 20, max: 100)"
+            }
+          ]
+        },
+        {
+          "name": "analyze_funding",
+          "description": "Analyze NSF funding for ACCESS projects/institutions. Returns detailed markdown analysis.",
+          "parameters": [
+            {
+              "name": "project_id",
+              "type": "number",
+              "required": false,
+              "description": "Analyze funding for a specific ACCESS project ID. Returns NSF awards connected to the project's PI and institution."
+            },
+            {
+              "name": "institution",
+              "type": "string",
+              "required": false,
+              "description": "Generate comprehensive funding profile for an institution. Shows ACCESS allocations, NSF awards, top researchers, and funding trends."
+            },
+            {
+              "name": "pi_name",
+              "type": "string",
+              "required": false,
+              "description": "Find funded projects by principal investigator name. Cross-references ACCESS and NSF data."
+            },
+            {
+              "name": "has_nsf_funding",
+              "type": "boolean",
+              "required": false,
+              "description": "Filter to only show ACCESS projects with corresponding NSF funding. Combine with pi_name, institution, or field_of_science."
+            },
+            {
+              "name": "field_of_science",
+              "type": "string",
+              "required": false,
+              "description": "Filter funded projects by field of science."
+            },
+            {
+              "name": "limit",
+              "type": "number",
+              "required": false,
+              "description": "Maximum number of projects/awards to return (default: 20 for institution analysis, 10 for others)"
+            }
+          ]
+        },
+        {
+          "name": "get_allocation_statistics",
+          "description": "Get allocation statistics (top fields, resources, institutions, types). Returns aggregate stats.",
+          "parameters": [
+            {
+              "name": "pages_to_analyze",
+              "type": "number",
+              "required": false,
+              "description": "Number of pages to analyze for statistics (default: 5, max: 20)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "server": "nsf-awards",
+      "url": "http://45.79.215.140:3007",
+      "tool_count": 1,
+      "tools": [
+        {
+          "name": "search_nsf_awards",
+          "description": "Search NSF awards and funding. Returns {total, items}.",
+          "parameters": [
+            {
+              "name": "id",
+              "type": "string",
+              "required": false,
+              "description": "Award number (e.g., '2138259')"
+            },
+            {
+              "name": "query",
+              "type": "string",
+              "required": false,
+              "description": "Search keywords in titles/abstracts"
+            },
+            {
+              "name": "pi",
+              "type": "string",
+              "required": false,
+              "description": "Principal investigator name"
+            },
+            {
+              "name": "institution",
+              "type": "string",
+              "required": false,
+              "description": "Institution name"
+            },
+            {
+              "name": "primary_only",
+              "type": "boolean",
+              "required": false,
+              "description": "When searching by institution, only return awards where the institution is the PRIMARY recipient (excludes collaborative/co-PI awards from other institutions). Default: false"
+            },
+            {
+              "name": "limit",
+              "type": "number",
+              "required": false,
+              "description": "Max results (default: 10)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "server": "xdmod-data",
+      "url": "http://45.79.215.140:3008",
+      "tool_count": 7,
+      "tools": [
+        {
+          "name": "get_user_data",
+          "description": "Get user-specific usage data by exact user identifier. Use the COMPLETE user name exactly as provided.",
+          "parameters": [
+            {
+              "name": "access_id",
+              "type": "string",
+              "required": true,
+              "description": "REQUIRED: Complete user identifier exactly as found (e.g., 'Smith, John - State University'). DO NOT truncate or modify - use the full string exactly."
+            },
+            {
+              "name": "start_date",
+              "type": "string",
+              "required": true,
+              "description": "Start date (YYYY-MM-DD)"
+            },
+            {
+              "name": "end_date",
+              "type": "string",
+              "required": true,
+              "description": "End date (YYYY-MM-DD)"
+            },
+            {
+              "name": "realm",
+              "type": "string",
+              "required": false,
+              "description": "XDMoD realm (default: Jobs)"
+            },
+            {
+              "name": "statistic",
+              "type": "string",
+              "required": false,
+              "description": "Statistic to retrieve (default: total_cpu_hours)"
+            }
+          ]
+        },
+        {
+          "name": "get_raw_data",
+          "description": "Extract actual XDMoD metrics data with filtering. This is the PRIMARY data extraction tool. Use filters parameter with values discovered via get_smart_filters() or use configuration from get_analysis_template(). Supports complex boolean filters, timeseries/aggregate modes, and progress tracking for large datasets.",
+          "parameters": [
+            {
+              "name": "realm",
+              "type": "string",
+              "required": false,
+              "description": "XDMoD realm: Jobs, SUPREMM, Cloud, Storage, ResourceSpecifications"
+            },
+            {
+              "name": "dimension",
+              "type": "string",
+              "required": false,
+              "description": "Dimension for grouping data (e.g., person, resource, institution, pi, none)"
+            },
+            {
+              "name": "metric",
+              "type": "string",
+              "required": false,
+              "description": "Metric to retrieve (e.g., total_cpu_hours, job_count, wall_hours)"
+            },
+            {
+              "name": "start_date",
+              "type": "string",
+              "required": true,
+              "description": "Start date (YYYY-MM-DD)"
+            },
+            {
+              "name": "end_date",
+              "type": "string",
+              "required": true,
+              "description": "End date (YYYY-MM-DD)"
+            },
+            {
+              "name": "filters",
+              "type": "object",
+              "required": false,
+              "description": "Complex filter combinations. Use get_smart_filters() first to discover valid filter values. Example: {'resource': ['Delta', 'Bridges-2'], 'pi': 'Smith', 'jobsize': '>1000'}. Supports boolean operators (AND/OR) and comparison operators (>, <, =)."
+            },
+            {
+              "name": "aggregation_unit",
+              "type": "string",
+              "required": false,
+              "description": "Time aggregation: 'Auto', 'Day', 'Month', 'Quarter', or 'Year' (case-sensitive)"
+            },
+            {
+              "name": "dataset_type",
+              "type": "string",
+              "required": false,
+              "description": "Dataset type: 'timeseries' for raw data over time (default), 'aggregate' for summary totals"
+            },
+            {
+              "name": "show_progress",
+              "type": "boolean",
+              "required": false,
+              "description": "Show progress updates for large data retrievals"
+            }
+          ]
+        },
+        {
+          "name": "describe_fields",
+          "description": "Discover what dimensions and metrics exist in a specific realm (e.g., Jobs, SUPREMM). Use this to learn what can be queried. For example: 'What dimensions are available in the Jobs realm?' Returns dimension names (resource, person, institution, etc.) and available metrics (total_cpu_hours, job_count, etc.).",
+          "parameters": [
+            {
+              "name": "realm",
+              "type": "string",
+              "required": false,
+              "description": "XDMoD realm to describe (e.g., Jobs, SUPREMM, Cloud, Storage)"
+            },
+            {
+              "name": "include_metrics",
+              "type": "boolean",
+              "required": false,
+              "description": "Include available metrics in the response"
+            },
+            {
+              "name": "include_filter_values",
+              "type": "boolean",
+              "required": false,
+              "description": "Include sample filter values for dimensions"
+            }
+          ]
+        },
+        {
+          "name": "describe_realms",
+          "description": "List all available XDMoD data realms (Jobs, SUPREMM, Cloud, Storage, etc.) with their capabilities. Use this when you need to know what data categories exist. For example: 'What realms are available?' or 'Where can I find GPU metrics?' (Answer: SUPREMM realm).",
+          "parameters": [
+            {
+              "name": "include_details",
+              "type": "boolean",
+              "required": false,
+              "description": "Include detailed information about each realm"
+            }
+          ]
+        },
+        {
+          "name": "get_smart_filters",
+          "description": "Discover what filter values are available for use with get_raw_data(). Use this BEFORE calling get_raw_data() to find valid resources, queues, institutions, etc. Returns categorized lists like 'GPU resources', 'batch queues', 'physical sciences'. Workflow: get_smart_filters() \u2192 get_raw_data() with discovered values.",
+          "parameters": [
+            {
+              "name": "realm",
+              "type": "string",
+              "required": false,
+              "description": "XDMoD realm to query"
+            },
+            {
+              "name": "dimension",
+              "type": "string",
+              "required": false,
+              "description": "Dimension to get filters for (resource, queue, person, fieldofscience, institution, etc.)"
+            },
+            {
+              "name": "category",
+              "type": "string",
+              "required": false,
+              "description": "Filter category: gpu, cpu, memory, storage, physical, life, engineering, all"
+            },
+            {
+              "name": "search_prefix",
+              "type": "string",
+              "required": false,
+              "description": "Filter values by prefix for autocomplete-style searching (e.g., 'univ' for universities)"
+            },
+            {
+              "name": "force_large_dimensions",
+              "type": "boolean",
+              "required": false,
+              "description": "Override size limits for large dimensions (>1000 values)"
+            },
+            {
+              "name": "limit",
+              "type": "integer",
+              "required": false,
+              "description": "Max items to display per category"
+            }
+          ]
+        },
+        {
+          "name": "get_analysis_template",
+          "description": "Get pre-configured analysis patterns for common scenarios (queue analysis, allocation efficiency, performance analysis, etc.). Use this when you want a standardized analysis instead of building a custom query. Returns ready-to-use configuration with pre-defined metrics and semantic filters. Workflow: get_analysis_template() \u2192 Use returned config with get_raw_data().",
+          "parameters": [
+            {
+              "name": "analysis_type",
+              "type": "string",
+              "required": false,
+              "description": "Type of analysis template. Common templates: queue_analysis, allocation_efficiency, performance_efficiency, multi_node_scaling, service_provider_comparison, grant_type_analysis, field_of_science_trends, institutional_comparison, resource_portfolio, user_cohort_analysis"
+            },
+            {
+              "name": "list_templates",
+              "type": "boolean",
+              "required": false,
+              "description": "Set to true to list all 14 available analysis templates with descriptions"
+            }
+          ]
+        },
+        {
+          "name": "integrate_nsf_xdmod",
+          "description": "Integrate NSF funding data with XDMoD computational usage patterns. Query by researcher, award, or institution to correlate funding with actual usage.",
+          "parameters": [
+            {
+              "name": "query_type",
+              "type": "string",
+              "required": true,
+              "description": "Type of integration query: 'researcher' (researcher-centric usage with NSF funding), 'award' (award-centric funding vs usage comparison), 'institution' (institutional research profile with funding and usage)"
+            },
+            {
+              "name": "search_value",
+              "type": "string",
+              "required": true,
+              "description": "Search value based on query_type: researcher name, NSF award number, or institution name"
+            },
+            {
+              "name": "start_date",
+              "type": "string",
+              "required": true,
+              "description": "Start date for analysis in YYYY-MM-DD format"
+            },
+            {
+              "name": "end_date",
+              "type": "string",
+              "required": true,
+              "description": "End date for analysis in YYYY-MM-DD format"
+            },
+            {
+              "name": "limit",
+              "type": "integer",
+              "required": false,
+              "description": "Maximum number of NSF awards to include (default: 5 for researcher, 10 for institution)"
+            },
+            {
+              "name": "top_researchers",
+              "type": "integer",
+              "required": false,
+              "description": "Number of top researchers to highlight (only for query_type='institution', default: 10)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "server": "announcements",
+      "url": "http://45.79.215.140:3009",
+      "tool_count": 1,
+      "tools": [
+        {
+          "name": "search_announcements",
+          "description": "Search ACCESS announcements (news, updates, notifications). Returns {total, items}.",
+          "parameters": [
+            {
+              "name": "tags",
+              "type": "string",
+              "required": false,
+              "description": "Filter by topics: gpu, ml, hpc"
+            },
+            {
+              "name": "date",
+              "type": "string",
+              "required": false,
+              "description": "Time period filter"
+            },
+            {
+              "name": "limit",
+              "type": "number",
+              "required": false,
+              "description": "Max results (default: 25)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "server": "events",
+      "url": "http://45.79.215.140:3010",
+      "tool_count": 1,
+      "tools": [
+        {
+          "name": "search_events",
+          "description": "Search ACCESS-CI events (workshops, webinars, training). Returns {total, items}.",
+          "parameters": [
+            {
+              "name": "query",
+              "type": "string",
+              "required": false,
+              "description": "Search titles, descriptions, speakers, tags"
+            },
+            {
+              "name": "type",
+              "type": "string",
+              "required": false,
+              "description": "Filter: workshop, webinar, training"
+            },
+            {
+              "name": "tags",
+              "type": "string",
+              "required": false,
+              "description": "Filter: python, gpu, hpc, ml"
+            },
+            {
+              "name": "date",
+              "type": "string",
+              "required": false,
+              "description": "Filter by time period"
+            },
+            {
+              "name": "skill",
+              "type": "string",
+              "required": false,
+              "description": "Skill level filter"
+            },
+            {
+              "name": "limit",
+              "type": "number",
+              "required": false,
+              "description": "Max results (default: 50)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "server": "affinity-groups",
+      "url": "http://45.79.215.140:3011",
+      "tool_count": 1,
+      "tools": [
+        {
+          "name": "search_affinity_groups",
+          "description": "Search ACCESS-CI affinity groups. Returns {total, items}.",
+          "parameters": [
+            {
+              "name": "id",
+              "type": "string",
+              "required": false,
+              "description": "Group ID (omit to list all)"
+            },
+            {
+              "name": "include",
+              "type": "string",
+              "required": false,
+              "description": "Include: events, kb, or all"
+            },
+            {
+              "name": "query",
+              "type": "string",
+              "required": false,
+              "description": "Search KB resources"
+            },
+            {
+              "name": "limit",
+              "type": "number",
+              "required": false,
+              "description": "Max results (default: 20)"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

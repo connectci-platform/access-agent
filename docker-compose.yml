@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  agent:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=docker
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/langgraph
+      - MCP_CATALOG_URL=http://n8n:5678/webhook/generate-mcp-catalog
+    depends_on:
+      - postgres
+    networks:
+      - agent-network
+      - mcp-network
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: langgraph
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - agent-network
+
+networks:
+  agent-network:
+    driver: bridge
+  mcp-network:
+    external: true  # Assumes MCP servers are on this network
+
+volumes:
+  postgres_data:

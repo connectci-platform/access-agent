@@ -1,0 +1,65 @@
+# Docker Compose file for ACCESS Agent - Production
+# Uses pre-built image from GitHub Container Registry
+
+services:
+  access-agent:
+    image: ghcr.io/${GITHUB_REPOSITORY:-necyberteam/access-agent}/access-agent:latest
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    environment:
+      - ENVIRONMENT=production
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/langgraph
+      - MCP_CATALOG_PATH=/app/mcp-tool-catalog.json
+      - MCP_SERVER_HOST=${MCP_SERVER_HOST:-localhost}
+    volumes:
+      - ./mcp-tool-catalog.json:/app/mcp-tool-catalog.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - agent-network
+      - mcp-network
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: langgraph
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - agent-network
+
+volumes:
+  postgres_data:
+
+networks:
+  agent-network:
+    driver: bridge
+  mcp-network:
+    external: true
+    name: mcp-network
