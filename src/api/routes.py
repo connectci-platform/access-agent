@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from ..agent.graph import run_agent
 from ..config import settings
-from ..tools import ToolRegistry
+from ..tools import ToolRegistry, get_catalog_aggregator
 
 logger = logging.getLogger(__name__)
 
@@ -149,4 +149,56 @@ async def list_tools() -> dict[str, Any]:
         raise HTTPException(
             status_code=500,
             detail=f"Failed to load tools: {e!s}",
+        ) from e
+
+
+@router.get("/catalog")
+async def get_catalog(refresh: bool = False) -> dict[str, Any]:
+    """Get the aggregated MCP tool catalog.
+
+    Fetches tools from all configured MCP servers and returns
+    a unified catalog. Results are cached until refresh=true.
+
+    Args:
+        refresh: Force refresh the catalog from MCP servers.
+
+    Returns:
+        Aggregated catalog with all tools and metadata.
+    """
+    try:
+        aggregator = get_catalog_aggregator()
+        return await aggregator.fetch_catalog(force_refresh=refresh)
+    except Exception as e:
+        logger.exception(f"Failed to fetch catalog: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch catalog: {e!s}",
+        ) from e
+
+
+@router.post("/catalog/refresh")
+async def refresh_catalog() -> dict[str, Any]:
+    """Force refresh the MCP tool catalog.
+
+    Fetches fresh tool definitions from all MCP servers.
+
+    Returns:
+        Refreshed catalog with metadata.
+    """
+    try:
+        aggregator = get_catalog_aggregator()
+        catalog = await aggregator.fetch_catalog(force_refresh=True)
+        return {
+            "success": True,
+            "message": f"Catalog refreshed with {catalog['total_tools']} tools",
+            "generated_at": catalog["generated_at"],
+            "servers_available": catalog["servers_available"],
+            "total_servers": catalog["total_servers"],
+            "total_tools": catalog["total_tools"],
+        }
+    except Exception as e:
+        logger.exception(f"Failed to refresh catalog: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to refresh catalog: {e!s}",
         ) from e

@@ -1,6 +1,9 @@
 """Tool registry for loading and managing MCP tool catalog."""
 
+import asyncio
 import json
+import logging
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +11,8 @@ import httpx
 from pydantic import BaseModel
 
 from ..config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class ToolParameter(BaseModel):
@@ -187,3 +192,191 @@ class ToolRegistry:
                 return False, f"Missing required parameter: {param.name}"
 
         return True, None
+
+
+class CatalogAggregator:
+    """Aggregates tool catalogs from multiple MCP servers.
+
+    Fetches the /tools endpoint from each configured MCP server and
+    combines them into a unified catalog.
+    """
+
+    def __init__(
+        self,
+        timeout: float = 10.0,
+        server_urls: dict[str, str] | None = None,
+    ):
+        """Initialize the aggregator.
+
+        Args:
+            timeout: HTTP timeout for each server request.
+            server_urls: Optional dict of server names to URLs. If not provided,
+                uses settings.mcp_server_urls.
+        """
+        self._timeout = timeout
+        self._server_urls = server_urls
+        self._catalog: dict[str, Any] = {}
+        self._last_refresh: datetime | None = None
+
+    async def fetch_catalog(self, force_refresh: bool = False) -> dict[str, Any]:
+        """Fetch and aggregate catalogs from all MCP servers.
+
+        Args:
+            force_refresh: Force refresh even if catalog is cached.
+
+        Returns:
+            Aggregated catalog with all tools.
+        """
+        if self._catalog and not force_refresh and self._last_refresh:
+            # Return cached catalog if available
+            return self._catalog
+
+        server_urls = self._server_urls or settings.mcp_server_urls
+        logger.info(f"Fetching catalog from {len(server_urls)} MCP servers")
+
+        # Fetch from all servers in parallel
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            tasks = [
+                self._fetch_server_tools(client, server_url) for server_url in server_urls.values()
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Build aggregated catalog
+        servers = []
+        quick_lookup: dict[str, dict[str, str]] = {}
+        total_tools = 0
+
+        for (server_name, server_url), result in zip(server_urls.items(), results, strict=True):
+            if isinstance(result, BaseException):
+                logger.warning(f"Failed to fetch from {server_name}: {result}")
+                servers.append(
+                    {
+                        "server": server_name,
+                        "url": server_url,
+                        "status": "unavailable",
+                        "error": str(result),
+                        "tool_count": 0,
+                        "tools": [],
+                    }
+                )
+                continue
+
+            tools = result.get("tools", [])
+            tool_count = len(tools)
+            total_tools += tool_count
+
+            # Process tools and build quick_lookup
+            processed_tools = []
+            for tool in tools:
+                tool_name = tool.get("name", "")
+                processed_tool = self._process_tool(tool)
+                processed_tools.append(processed_tool)
+
+                # Add to quick_lookup
+                quick_lookup[tool_name] = {
+                    "server": server_name,
+                    "url": f"{server_url}/tools/{tool_name}",
+                }
+
+            servers.append(
+                {
+                    "server": server_name,
+                    "url": server_url,
+                    "status": "available",
+                    "tool_count": tool_count,
+                    "tools": processed_tools,
+                }
+            )
+            logger.info(f"Fetched {tool_count} tools from {server_name}")
+
+        self._catalog = {
+            "generated_at": datetime.now(UTC).isoformat(),
+            "total_servers": len(server_urls),
+            "servers_available": sum(1 for s in servers if s["status"] == "available"),
+            "total_tools": total_tools,
+            "servers": servers,
+            "quick_lookup": quick_lookup,
+        }
+        self._last_refresh = datetime.now(UTC)
+
+        logger.info(
+            f"Catalog aggregated: {total_tools} tools from "
+            f"{self._catalog['servers_available']}/{len(server_urls)} servers"
+        )
+
+        return self._catalog
+
+    async def _fetch_server_tools(
+        self,
+        client: httpx.AsyncClient,
+        server_url: str,
+    ) -> dict[str, Any]:
+        """Fetch tools from a single MCP server.
+
+        Args:
+            client: HTTP client to use.
+            server_url: Base URL of the server.
+
+        Returns:
+            Dict with tools array.
+        """
+        url = f"{server_url}/tools"
+        response = await client.get(url)
+        response.raise_for_status()
+        result: dict[str, Any] = response.json()
+        return result
+
+    def _process_tool(self, tool: dict[str, Any]) -> dict[str, Any]:
+        """Process a tool definition into standard format.
+
+        Args:
+            tool: Raw tool definition from MCP server.
+
+        Returns:
+            Processed tool with standardized parameters.
+        """
+        # Extract parameters from inputSchema
+        parameters = []
+        input_schema = tool.get("inputSchema", {})
+        properties = input_schema.get("properties", {})
+        required = input_schema.get("required", [])
+
+        for param_name, param_def in properties.items():
+            parameters.append(
+                {
+                    "name": param_name,
+                    "type": param_def.get("type", "string"),
+                    "required": param_name in required,
+                    "description": param_def.get("description", ""),
+                    "enum": param_def.get("enum"),
+                    "default": param_def.get("default"),
+                }
+            )
+
+        return {
+            "name": tool.get("name", ""),
+            "description": tool.get("description", ""),
+            "parameters": parameters,
+        }
+
+    @property
+    def catalog(self) -> dict[str, Any]:
+        """Get the current cached catalog."""
+        return self._catalog
+
+    @property
+    def last_refresh(self) -> datetime | None:
+        """Get the timestamp of the last catalog refresh."""
+        return self._last_refresh
+
+
+# Global aggregator instance
+_aggregator: CatalogAggregator | None = None
+
+
+def get_catalog_aggregator() -> CatalogAggregator:
+    """Get the global catalog aggregator instance."""
+    global _aggregator
+    if _aggregator is None:
+        _aggregator = CatalogAggregator()
+    return _aggregator
