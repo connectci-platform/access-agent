@@ -51,8 +51,10 @@ class Settings(BaseSettings):
     MAX_QUALITY_ATTEMPTS: int = 3
 
     # Content length limits for LLM processing
-    MAX_TOOL_RESULT_LENGTH: int = 4000
-    MAX_SYNTHESIS_DATA_LENGTH: int = 3000
+    # Modern LLMs have 128K+ context windows, so these can be generous
+    MAX_TOOL_RESULT_LENGTH: int = 50000  # Max chars per tool result in evaluate
+    MAX_SINGLE_RESULT_LENGTH: int = 20000  # Max chars for a single result before truncating
+    MAX_COMPRESSED_ITEMS: int = 50  # Max items to include in compressed results
 
     # MCP Server base host (configurable, defaults to production IP)
     MCP_SERVER_HOST: str = "localhost"

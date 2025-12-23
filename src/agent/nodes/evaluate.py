@@ -10,6 +10,7 @@ from typing import Any
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
+from ...config import settings
 from ...llm import get_llm
 from ..state import AgentState, QualityEvaluation
 
@@ -172,24 +173,31 @@ def _build_tools_summary(results: list[Any]) -> str:
     return "\n".join(lines)
 
 
-def _build_results_summary(results: list[Any], max_length: int = 4000) -> str:
-    """Build a summary of tool results for evaluation."""
+def _build_results_summary(results: list[Any]) -> str:
+    """Build a summary of tool results for evaluation.
+
+    Uses settings for length limits. Modern LLMs have large context windows,
+    so limits are generous. The compress node handles size reduction for synthesis.
+    """
     import json
+
+    max_length = settings.MAX_TOOL_RESULT_LENGTH
+    max_single = settings.MAX_SINGLE_RESULT_LENGTH
 
     summaries = []
     for r in results:
         if r.success and r.data:
             try:
                 data_str = json.dumps(r.data, indent=2, default=str)
-                if len(data_str) > 1500:
-                    data_str = data_str[:1500] + "... (truncated)"
+                if len(data_str) > max_single:
+                    data_str = data_str[:max_single] + f"... (truncated from {len(data_str)} chars)"
                 summaries.append(f"### {r.tool_name}\n{data_str}")
             except (TypeError, ValueError):
-                summaries.append(f"### {r.tool_name}\n{str(r.data)[:1500]}")
+                summaries.append(f"### {r.tool_name}\n{str(r.data)[:max_single]}")
         elif not r.success:
             summaries.append(f"### {r.tool_name}\nError: {r.error}")
 
     result = "\n\n".join(summaries)
     if len(result) > max_length:
-        result = result[:max_length] + "\n... (truncated)"
+        result = result[:max_length] + f"\n... (truncated from {len(result)} chars)"
     return result

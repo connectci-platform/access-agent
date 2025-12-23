@@ -12,7 +12,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate
 
 from ...llm import get_llm
-from ..state import AgentState, ToolResult
+from ..state import AgentState, CompressedResult, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -42,46 +42,52 @@ async def synthesize_node(state: AgentState) -> dict[str, Any]:
     """Generate a natural language answer from tool results.
 
     This node:
-    1. Formats tool results for the LLM
+    1. Uses compressed results from the compress node
     2. Generates a helpful answer based on the results
     3. Handles cases with no tools or failed tools
 
     Args:
-        state: Current agent state with query and tool_results.
+        state: Current agent state with query and compressed_results.
 
     Returns:
         Dict with final_answer.
     """
     query = state["query"]
-    tool_results = state.get("tool_results", [])
+    compressed_results = state.get("compressed_results", [])
+    tool_results = state.get("tool_results", [])  # Fallback for backward compat
     query_analysis = state.get("query_analysis")
 
     # Handle no-tools-needed case
     if query_analysis and not query_analysis.requires_tools:
         return await _synthesize_without_tools(query, query_analysis)
 
-    # Handle empty results
-    if not tool_results:
-        logger.warning("No tool results to synthesize")
+    # Use compressed results if available, fall back to raw tool_results
+    if compressed_results:
+        results_text = _format_compressed_results(compressed_results)
+        # Check if all failed from compressed results
+        all_failed = all(not r.get("success", True) for r in compressed_results)
+    elif tool_results:
+        # Fallback for backward compatibility
+        results_text = _format_tool_results(tool_results)
+        all_failed = all(not r.success for r in tool_results)
+    else:
+        logger.warning("No results to synthesize")
         return {
             "final_answer": (
                 "I wasn't able to retrieve specific information for your question. "
                 "Please try rephrasing your query or ask about a specific ACCESS resource."
             ),
         }
-
-    # Format results for the LLM
-    results_text = _format_tool_results(tool_results)
-
-    # Check if all tools failed
-    all_failed = all(not r.success for r in tool_results)
     if all_failed:
         logger.warning("All tools failed")
+        if compressed_results:
+            failed_tools = ", ".join(r.get("tool_name", "unknown") for r in compressed_results)
+        else:
+            failed_tools = ", ".join(r.tool_name for r in tool_results)
         return {
             "final_answer": (
                 "I encountered issues retrieving data for your question. "
-                f"The following tools were attempted but failed: "
-                f"{', '.join(r.tool_name for r in tool_results)}. "
+                f"The following tools were attempted but failed: {failed_tools}. "
                 "Please try again later or contact support if this persists."
             ),
         }
@@ -202,12 +208,37 @@ def _format_tool_results(results: list[ToolResult]) -> str:
     return "\n\n".join(sections)
 
 
-def _format_data(data: Any, max_length: int = 3000) -> str:
-    """Format data for the prompt, with truncation.
+def _format_compressed_results(results: list[CompressedResult]) -> str:
+    """Format compressed results for the synthesis prompt.
+
+    Args:
+        results: List of compressed result dicts from compress node.
+
+    Returns:
+        Formatted string for the LLM prompt.
+    """
+    sections = []
+
+    for result in results:
+        tool_name = result.get("tool_name", "unknown")
+        if result.get("success", True):
+            data = result.get("data")
+            data_str = _format_data(data) if data else "(no data)"
+            sections.append(f"### {tool_name}\nStatus: SUCCESS\nData:\n{data_str}")
+        else:
+            error = result.get("error", "Unknown error")
+            sections.append(f"### {tool_name}\nStatus: FAILED\nError: {error}")
+
+    return "\n\n".join(sections)
+
+
+def _format_data(data: Any) -> str:
+    """Format data for the prompt.
+
+    Note: No truncation here - the compress node handles size reduction.
 
     Args:
         data: The data to format.
-        max_length: Maximum length before truncation.
 
     Returns:
         Formatted string.
@@ -216,14 +247,9 @@ def _format_data(data: Any, max_length: int = 3000) -> str:
         return "(no data)"
 
     if isinstance(data, str):
-        formatted = data
-    else:
-        try:
-            formatted = json.dumps(data, indent=2, default=str)
-        except (TypeError, ValueError):
-            formatted = str(data)
+        return data
 
-    if len(formatted) > max_length:
-        formatted = formatted[:max_length] + "\n...(truncated)"
-
-    return formatted
+    try:
+        return json.dumps(data, indent=2, default=str)
+    except (TypeError, ValueError):
+        return str(data)
