@@ -1,0 +1,16 @@
+access-agent.elytra.net {
+    # Automatic HTTPS via Let's Encrypt
+
+    # Proxy all requests to FastAPI backend
+    reverse_proxy access-agent:8000 {
+        flush_interval -1
+        transport http {
+            read_timeout 0
+        }
+    }
+
+    log {
+        output stdout
+        format json
+    }
+}

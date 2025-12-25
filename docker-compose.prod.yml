@@ -2,10 +2,31 @@
 # Uses pre-built image from GitHub Container Registry
 
 services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - access-agent
+    networks:
+      - agent-network
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
   access-agent:
     image: ghcr.io/${GITHUB_REPOSITORY:-necyberteam/access-agent}/access-agent:latest
-    ports:
-      - "8000:8000"
+    # Internal only - Caddy handles external traffic
+    expose:
+      - "8000"
     restart: unless-stopped
     environment:
       - ENVIRONMENT=production
@@ -56,6 +77,8 @@ services:
 
 volumes:
   postgres_data:
+  caddy_data:
+  caddy_config:
 
 networks:
   agent-network:
