@@ -70,6 +70,10 @@ jobs:
           script: |
             cd ~/access-agent
 
+            # Configure git to use PAT for authentication
+            git config credential.helper store
+            echo "https://${{ github.actor }}:${{ secrets.GHCR_PAT }}@github.com" > ~/.git-credentials
+
             # Pull latest code
             echo "Pulling latest code..."
             git fetch origin main
