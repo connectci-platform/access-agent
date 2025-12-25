@@ -1,5 +1,6 @@
 access-agent.elytra.net {
-    # Automatic HTTPS via Let's Encrypt
+    # Use internal TLS (Cloudflare handles public SSL)
+    tls internal
 
     # Proxy all requests to FastAPI backend
     reverse_proxy access-agent:8000 {
