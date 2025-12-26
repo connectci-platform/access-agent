@@ -125,7 +125,7 @@ class MCPClient:
         try:
             response = await client.post(
                 url,
-                json=arguments,
+                json={"arguments": arguments},
                 headers={"Content-Type": "application/json"},
             )
             response.raise_for_status()

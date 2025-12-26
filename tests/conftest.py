@@ -1,6 +1,19 @@
 """Pytest configuration and fixtures."""
 
+import os
+from pathlib import Path
+
 import pytest
+
+# Load .env file for tests if it exists
+env_path = Path(__file__).parent.parent / ".env"
+if env_path.exists():
+    with env_path.open() as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key.strip(), value.strip())
 
 
 @pytest.fixture
