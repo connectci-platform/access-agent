@@ -120,10 +120,12 @@ class MCPClient:
         url = f"{server_url}/tools/{tool_name}"
         client = get_shared_client(self.timeout)
 
+        logger.info(f"MCP call: {tool_name} with args: {arguments}")
+
         try:
             response = await client.post(
                 url,
-                json={"arguments": arguments},
+                json=arguments,
                 headers={"Content-Type": "application/json"},
             )
             response.raise_for_status()
@@ -133,6 +135,10 @@ class MCPClient:
             # Parse MCP response format
             # Response: {"content": [{"type": "text", "text": "{...json...}"}]}
             parsed_data = self._parse_mcp_response(data)
+
+            logger.info(
+                f"MCP response for {tool_name}: success, data keys: {list(parsed_data.keys()) if isinstance(parsed_data, dict) else type(parsed_data)}"
+            )
 
             return MCPToolResult(
                 success=True,
