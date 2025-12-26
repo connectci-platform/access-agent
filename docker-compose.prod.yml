@@ -33,10 +33,8 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/langgraph
-      - MCP_CATALOG_PATH=/app/mcp-tool-catalog.json
       - MCP_SERVER_HOST=${MCP_SERVER_HOST:-localhost}
-    volumes:
-      - ./mcp-tool-catalog.json:/app/mcp-tool-catalog.json:ro
+      # Catalog is fetched dynamically from MCP servers at startup
     depends_on:
       postgres:
         condition: service_healthy
