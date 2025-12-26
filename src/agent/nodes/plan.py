@@ -70,22 +70,12 @@ You MUST respond with valid JSON only, no markdown or explanation:
     - OMIT has_gpu entirely when searching for a specific resource by name
     - When searching for a named resource (like "ACES" or "Delta"), use ONLY the query parameter
 
-## EXAMPLES
+## GUIDELINES
 
-Query: "What GPU resources are available?"
-→ Use search_resources with has_gpu filter
-
-Query: "Is Delta having any issues right now?"
-→ Use get_current_outages with resource filter
-
-Query: "What software for molecular dynamics is on Bridges-2?"
-→ Use search_software with resource and category filters
-
-Query: "How do I acknowledge ACCESS in my paper?"
-→ Set requires_tools: false (this is documentation knowledge)
-
-Query (with history about GPU resources): "Which one is best for AI/ML?"
-→ Understand from history this refers to GPU resources, answer accordingly
+- For general questions that don't need live data (e.g., "How do I acknowledge ACCESS?"), set requires_tools: false
+- Use conversation history to resolve references (e.g., "which one" refers to previously discussed items)
+- Select tools based on their descriptions in the catalog above
+- When a tool has optional parameters, only include them if the user's query implies filtering
 """
 
 

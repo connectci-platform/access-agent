@@ -99,18 +99,6 @@ class RetryContext(BaseModel):
     history: list[dict[str, Any]] = Field(default_factory=list)
 
 
-class CompressedResult(TypedDict, total=False):
-    """Compressed tool result for synthesis.
-
-    Contains only the essential fields needed for answer generation.
-    """
-
-    tool_name: str
-    success: bool
-    data: dict[str, Any] | list[dict[str, Any]] | None
-    error: str | None
-
-
 class AgentState(TypedDict):
     """Main state schema for the ACCESS Documentation Agent.
 
@@ -141,10 +129,7 @@ class AgentState(TypedDict):
     tool_results: Annotated[list[ToolResult], "Results from tool execution"]
     tools_used: Annotated[list[str], "Names of tools that succeeded"]
 
-    # Compression fields (set by compress node)
-    compressed_results: Annotated[list[CompressedResult], "Compressed results for synthesis"]
-
-    # Quality fields (for future quality loop)
+    # Quality fields (for quality loop)
     quality_evaluation: Annotated[QualityEvaluation | None, "Result quality assessment"]
     attempt_number: int
     max_attempts: int
@@ -193,8 +178,6 @@ def create_initial_state(
         # Execution
         tool_results=[],
         tools_used=[],
-        # Compression
-        compressed_results=[],
         # Quality
         quality_evaluation=None,
         attempt_number=0,

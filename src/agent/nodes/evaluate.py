@@ -177,7 +177,7 @@ def _build_results_summary(results: list[Any]) -> str:
     """Build a summary of tool results for evaluation.
 
     Uses settings for length limits. Modern LLMs have large context windows,
-    so limits are generous. The compress node handles size reduction for synthesis.
+    so limits are generous.
     """
     import json
 

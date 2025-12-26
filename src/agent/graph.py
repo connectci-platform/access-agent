@@ -20,7 +20,6 @@ from .edges.routing import (
     should_retry_quality,
 )
 from .nodes import (
-    compress_node,
     evaluate_node,
     execute_node,
     plan_node,
@@ -41,8 +40,7 @@ def _build_graph_structure(builder: StateGraph) -> StateGraph:
     2. Execute: Run MCP tools (if needed)
     3. Recover: Handle failures (if any tools failed)
     4. Evaluate: Check if results answer the question
-    5. Compress: Summarize tool results for efficient synthesis
-    6. Synthesize: Generate final answer
+    5. Synthesize: Generate final answer
 
     With loops:
     - recover → execute (retry after recovery)
@@ -59,7 +57,6 @@ def _build_graph_structure(builder: StateGraph) -> StateGraph:
     builder.add_node("execute", execute_node)
     builder.add_node("recover", recover_node)
     builder.add_node("evaluate", evaluate_node)
-    builder.add_node("compress", compress_node)
     builder.add_node("synthesize", synthesize_node)
 
     # Add edges
@@ -72,7 +69,7 @@ def _build_graph_structure(builder: StateGraph) -> StateGraph:
         should_execute_tools,
         {
             "execute": "execute",
-            "compress": "compress",
+            "synthesize": "synthesize",
         },
     )
 
@@ -92,22 +89,19 @@ def _build_graph_structure(builder: StateGraph) -> StateGraph:
         should_retry_or_synthesize,
         {
             "execute": "execute",
-            "compress": "compress",
+            "synthesize": "synthesize",
         },
     )
 
-    # After evaluation, retry planning or compress for synthesis
+    # After evaluation, retry planning or synthesize
     builder.add_conditional_edges(
         "evaluate",
         should_retry_quality,
         {
             "plan": "plan",
-            "compress": "compress",
+            "synthesize": "synthesize",
         },
     )
-
-    # After compression, synthesize
-    builder.add_edge("compress", "synthesize")
 
     # End after synthesis
     builder.add_edge("synthesize", END)

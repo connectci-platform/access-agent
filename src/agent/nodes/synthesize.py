@@ -4,7 +4,6 @@ This node takes the tool execution results and generates a natural
 language answer for the user.
 """
 
-import json
 import logging
 from typing import Any
 
@@ -12,7 +11,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate
 
 from ...llm import get_llm
-from ..state import AgentState, CompressedResult, ToolResult
+from ..state import AgentState, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -42,35 +41,25 @@ async def synthesize_node(state: AgentState) -> dict[str, Any]:
     """Generate a natural language answer from tool results.
 
     This node:
-    1. Uses compressed results from the compress node
+    1. Uses tool results directly
     2. Generates a helpful answer based on the results
     3. Handles cases with no tools or failed tools
 
     Args:
-        state: Current agent state with query and compressed_results.
+        state: Current agent state with query and tool_results.
 
     Returns:
         Dict with final_answer.
     """
     query = state["query"]
-    compressed_results = state.get("compressed_results", [])
-    tool_results = state.get("tool_results", [])  # Fallback for backward compat
+    tool_results = state.get("tool_results", [])
     query_analysis = state.get("query_analysis")
 
     # Handle no-tools-needed case
     if query_analysis and not query_analysis.requires_tools:
         return await _synthesize_without_tools(query, query_analysis)
 
-    # Use compressed results if available, fall back to raw tool_results
-    if compressed_results:
-        results_text = _format_compressed_results(compressed_results)
-        # Check if all failed from compressed results
-        all_failed = all(not r.get("success", True) for r in compressed_results)
-    elif tool_results:
-        # Fallback for backward compatibility
-        results_text = _format_tool_results(tool_results)
-        all_failed = all(not r.success for r in tool_results)
-    else:
+    if not tool_results:
         logger.warning("No results to synthesize")
         return {
             "final_answer": (
@@ -78,12 +67,13 @@ async def synthesize_node(state: AgentState) -> dict[str, Any]:
                 "Please try rephrasing your query or ask about a specific ACCESS resource."
             ),
         }
+
+    results_text = _format_tool_results(tool_results)
+    all_failed = all(not r.success for r in tool_results)
+
     if all_failed:
         logger.warning("All tools failed")
-        if compressed_results:
-            failed_tools = ", ".join(r.get("tool_name", "unknown") for r in compressed_results)
-        else:
-            failed_tools = ", ".join(r.tool_name for r in tool_results)
+        failed_tools = ", ".join(r.tool_name for r in tool_results)
         return {
             "final_answer": (
                 "I encountered issues retrieving data for your question. "
@@ -208,34 +198,8 @@ def _format_tool_results(results: list[ToolResult]) -> str:
     return "\n\n".join(sections)
 
 
-def _format_compressed_results(results: list[CompressedResult]) -> str:
-    """Format compressed results for the synthesis prompt.
-
-    Args:
-        results: List of compressed result dicts from compress node.
-
-    Returns:
-        Formatted string for the LLM prompt.
-    """
-    sections = []
-
-    for result in results:
-        tool_name = result.get("tool_name", "unknown")
-        if result.get("success", True):
-            data = result.get("data")
-            data_str = _format_data(data) if data else "(no data)"
-            sections.append(f"### {tool_name}\nStatus: SUCCESS\nData:\n{data_str}")
-        else:
-            error = result.get("error", "Unknown error")
-            sections.append(f"### {tool_name}\nStatus: FAILED\nError: {error}")
-
-    return "\n\n".join(sections)
-
-
 def _format_data(data: Any) -> str:
     """Format data for the prompt.
-
-    Note: No truncation here - the compress node handles size reduction.
 
     Args:
         data: The data to format.
@@ -243,6 +207,8 @@ def _format_data(data: Any) -> str:
     Returns:
         Formatted string.
     """
+    import json
+
     if data is None:
         return "(no data)"
 
