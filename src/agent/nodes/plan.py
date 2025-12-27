@@ -240,14 +240,21 @@ def _format_tool_line(tool: dict[str, Any], server_name: str) -> str:
     name = tool.get("name", "")
     desc = tool.get("description", "")[:100]
 
-    # Build parameter string
+    # Build parameter string with descriptions and enum values
     params = tool.get("parameters", [])
     param_strs = []
     for p in params:
         pname = p.get("name", "")
         ptype = p.get("type", "string")
         required = "*" if p.get("required") else ""
-        param_strs.append(f"{pname}: {ptype}{required}")
+
+        # Include enum values if present - critical for valid parameter values
+        enum_vals = p.get("enum")
+        if enum_vals:
+            enum_str = "|".join(str(v) for v in enum_vals)
+            param_strs.append(f"{pname}: {ptype}{required} (one of: {enum_str})")
+        else:
+            param_strs.append(f"{pname}: {ptype}{required}")
 
     params_text = ", ".join(param_strs) if param_strs else "none"
 
