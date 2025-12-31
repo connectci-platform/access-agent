@@ -12,11 +12,11 @@ from src.agent.state import QualityEvaluation, QueryAnalysis, ToolResult
 class TestShouldExecuteTools:
     """Tests for should_execute_tools routing."""
 
-    def test_no_query_analysis_goes_to_compress(self):
+    def test_no_query_analysis_goes_to_synthesize(self):
         state = {"query_analysis": None, "planned_tools": []}
-        assert should_execute_tools(state) == "compress"
+        assert should_execute_tools(state) == "synthesize"
 
-    def test_no_tools_required_goes_to_compress(self):
+    def test_no_tools_required_goes_to_synthesize(self):
         state = {
             "query_analysis": QueryAnalysis(
                 user_intent="General question about ACCESS",
@@ -24,7 +24,7 @@ class TestShouldExecuteTools:
             ),
             "planned_tools": [],
         }
-        assert should_execute_tools(state) == "compress"
+        assert should_execute_tools(state) == "synthesize"
 
     def test_tools_required_goes_to_execute(self):
         state = {
@@ -36,7 +36,7 @@ class TestShouldExecuteTools:
         }
         assert should_execute_tools(state) == "execute"
 
-    def test_tools_required_but_none_planned_goes_to_compress(self):
+    def test_tools_required_but_none_planned_goes_to_synthesize(self):
         state = {
             "query_analysis": QueryAnalysis(
                 user_intent="Search for resources",
@@ -44,7 +44,7 @@ class TestShouldExecuteTools:
             ),
             "planned_tools": [],
         }
-        assert should_execute_tools(state) == "compress"
+        assert should_execute_tools(state) == "synthesize"
 
 
 class TestShouldRecoverOrEvaluate:
@@ -97,19 +97,19 @@ class TestShouldRetryOrSynthesize:
         state = {"planned_tools": [{"step_id": "step_1"}]}
         assert should_retry_or_synthesize(state) == "execute"
 
-    def test_no_planned_tools_goes_to_compress(self):
+    def test_no_planned_tools_goes_to_synthesize(self):
         state = {"planned_tools": []}
-        assert should_retry_or_synthesize(state) == "compress"
+        assert should_retry_or_synthesize(state) == "synthesize"
 
 
 class TestShouldRetryQuality:
     """Tests for should_retry_quality routing."""
 
-    def test_no_evaluation_goes_to_compress(self):
+    def test_no_evaluation_goes_to_synthesize(self):
         state = {"quality_evaluation": None, "attempt_number": 0}
-        assert should_retry_quality(state) == "compress"
+        assert should_retry_quality(state) == "synthesize"
 
-    def test_helpful_goes_to_compress(self):
+    def test_helpful_goes_to_synthesize(self):
         state = {
             "quality_evaluation": QualityEvaluation(
                 is_helpful=True,
@@ -118,7 +118,7 @@ class TestShouldRetryQuality:
             ),
             "attempt_number": 1,
         }
-        assert should_retry_quality(state) == "compress"
+        assert should_retry_quality(state) == "synthesize"
 
     def test_unhelpful_with_attempts_left_goes_to_plan(self):
         state = {
@@ -131,7 +131,7 @@ class TestShouldRetryQuality:
         }
         assert should_retry_quality(state) == "plan"
 
-    def test_unhelpful_max_attempts_reached_goes_to_compress(self):
+    def test_unhelpful_max_attempts_reached_goes_to_synthesize(self):
         state = {
             "quality_evaluation": QualityEvaluation(
                 is_helpful=False,
@@ -140,4 +140,4 @@ class TestShouldRetryQuality:
             ),
             "attempt_number": 3,  # Equals MAX_QUALITY_ATTEMPTS
         }
-        assert should_retry_quality(state) == "compress"
+        assert should_retry_quality(state) == "synthesize"

@@ -119,6 +119,9 @@ class AgentState(TypedDict):
     session_id: str
     question_id: str
     tool_catalog: Annotated[dict[str, Any], "Full MCP tool catalog"]
+    acting_user: Annotated[
+        str | None, "ACCESS ID of user performing action (e.g., jsmith@access-ci.org)"
+    ]
 
     # Planning fields (set by plan node)
     query_analysis: Annotated[QueryAnalysis | None, "LLM analysis of user intent"]
@@ -146,6 +149,7 @@ def create_initial_state(
     session_id: str,
     question_id: str,
     tool_catalog: dict[str, Any],
+    acting_user: str | None = None,
     max_attempts: int = 3,
 ) -> AgentState:
     """Create the initial state for a new query.
@@ -155,6 +159,7 @@ def create_initial_state(
         session_id: Session identifier for conversation tracking.
         question_id: Unique identifier for this question.
         tool_catalog: The MCP tool catalog.
+        acting_user: ACCESS ID of user performing action (e.g., jsmith@access-ci.org).
         max_attempts: Maximum quality loop attempts.
 
     Returns:
@@ -171,6 +176,7 @@ def create_initial_state(
         session_id=session_id,
         question_id=question_id,
         tool_catalog=tool_catalog,
+        acting_user=acting_user,
         # Planning
         query_analysis=None,
         planned_tools=[],

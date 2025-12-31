@@ -75,6 +75,69 @@ class TestMCPClient:
         assert result.duration_ms >= 0
 
     @pytest.mark.asyncio
+    async def test_call_tool_with_acting_user(self, httpx_mock: HTTPXMock):
+        """Test tool call includes X-Acting-User header when provided."""
+        httpx_mock.add_response(
+            method="POST",
+            url="http://localhost:3002/tools/create_announcement",
+            json={
+                "content": [
+                    {
+                        "type": "text",
+                        "text": '{"id": "123", "title": "Test"}',
+                    }
+                ]
+            },
+        )
+
+        client = MCPClient()
+        client._server_urls["announcements"] = "http://localhost:3002"
+
+        result = await client.call_tool(
+            server="announcements",
+            tool_name="create_announcement",
+            arguments={"title": "Test"},
+            acting_user="jsmith@access-ci.org",
+        )
+
+        assert result.success is True
+
+        # Verify the header was sent
+        request = httpx_mock.get_request()
+        assert request.headers.get("X-Acting-User") == "jsmith@access-ci.org"
+
+    @pytest.mark.asyncio
+    async def test_call_tool_without_acting_user_no_header(self, httpx_mock: HTTPXMock):
+        """Test tool call omits X-Acting-User header when not provided."""
+        httpx_mock.add_response(
+            method="POST",
+            url="http://localhost:3002/tools/search_resources",
+            json={
+                "content": [
+                    {
+                        "type": "text",
+                        "text": '{"resources": []}',
+                    }
+                ]
+            },
+        )
+
+        client = MCPClient()
+        client._server_urls["compute-resources"] = "http://localhost:3002"
+
+        result = await client.call_tool(
+            server="compute-resources",
+            tool_name="search_resources",
+            arguments={"query": "test"},
+        )
+
+        assert result.success is True
+
+        # Verify the header was NOT sent
+        request = httpx_mock.get_request()
+        assert "X-Acting-User" not in request.headers
+
+    @pytest.mark.asyncio
     async def test_call_tool_http_error(self, httpx_mock: HTTPXMock):
         """Test tool call with HTTP error."""
         httpx_mock.add_response(

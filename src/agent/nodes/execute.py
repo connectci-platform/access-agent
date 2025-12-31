@@ -49,6 +49,7 @@ async def execute_node(state: AgentState) -> dict[str, Any]:
         }
 
     strategy = state.get("execution_strategy", "parallel")
+    acting_user = state.get("acting_user")
     logger.info(f"Executing {len(planned_tools)} tools with strategy: {strategy}")
 
     # Create MCP client
@@ -56,11 +57,11 @@ async def execute_node(state: AgentState) -> dict[str, Any]:
 
     # Execute based on strategy
     if strategy == "parallel":
-        results = await _execute_parallel(mcp_client, planned_tools)
+        results = await _execute_parallel(mcp_client, planned_tools, acting_user)
     elif strategy == "sequential":
-        results = await _execute_sequential(mcp_client, planned_tools)
+        results = await _execute_sequential(mcp_client, planned_tools, acting_user)
     else:  # mixed
-        results = await _execute_mixed(mcp_client, planned_tools)
+        results = await _execute_mixed(mcp_client, planned_tools, acting_user)
 
     # Extract successful tool names
     tools_used = [r.tool_name for r in results if r.success]
@@ -76,17 +77,19 @@ async def execute_node(state: AgentState) -> dict[str, Any]:
 async def _execute_parallel(
     client: MCPClient,
     tools: list[ToolCall],
+    acting_user: str | None = None,
 ) -> list[ToolResult]:
     """Execute all tools in parallel.
 
     Args:
         client: MCP client for making calls.
         tools: List of tool calls to execute.
+        acting_user: ACCESS ID of user performing action.
 
     Returns:
         List of tool results.
     """
-    tasks = [_execute_single_tool(client, tool) for tool in tools]
+    tasks = [_execute_single_tool(client, tool, acting_user) for tool in tools]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     # Convert exceptions to failed results
@@ -115,12 +118,14 @@ async def _execute_parallel(
 async def _execute_sequential(
     client: MCPClient,
     tools: list[ToolCall],
+    acting_user: str | None = None,
 ) -> list[ToolResult]:
     """Execute tools sequentially, resolving dependencies.
 
     Args:
         client: MCP client for making calls.
         tools: List of tool calls to execute.
+        acting_user: ACCESS ID of user performing action.
 
     Returns:
         List of tool results.
@@ -139,7 +144,7 @@ async def _execute_sequential(
             depends_on=tool.depends_on,
         )
 
-        result = await _execute_single_tool(client, resolved_tool)
+        result = await _execute_single_tool(client, resolved_tool, acting_user)
         results.append(result)
         results_by_step[tool.step_id] = result
 
@@ -154,6 +159,7 @@ async def _execute_sequential(
 async def _execute_mixed(
     client: MCPClient,
     tools: list[ToolCall],
+    acting_user: str | None = None,
 ) -> list[ToolResult]:
     """Execute tools with mixed parallel/sequential based on dependencies.
 
@@ -162,6 +168,7 @@ async def _execute_mixed(
     Args:
         client: MCP client for making calls.
         tools: List of tool calls to execute.
+        acting_user: ACCESS ID of user performing action.
 
     Returns:
         List of tool results.
@@ -187,7 +194,7 @@ async def _execute_mixed(
             )
 
         # Execute level in parallel
-        level_results = await _execute_parallel(client, resolved_tools)
+        level_results = await _execute_parallel(client, resolved_tools, acting_user)
         results.extend(level_results)
 
         # Store results for next level
@@ -239,12 +246,14 @@ def _build_dependency_levels(tools: list[ToolCall]) -> list[list[ToolCall]]:
 async def _execute_single_tool(
     client: MCPClient,
     tool: ToolCall,
+    acting_user: str | None = None,
 ) -> ToolResult:
     """Execute a single MCP tool call.
 
     Args:
         client: MCP client for making calls.
         tool: Tool call to execute.
+        acting_user: ACCESS ID of user performing action.
 
     Returns:
         ToolResult with success status and data or error.
@@ -256,6 +265,7 @@ async def _execute_single_tool(
         server=tool.server,
         tool_name=tool.tool_name,
         arguments=tool.arguments,
+        acting_user=acting_user,
     )
 
     return ToolResult(

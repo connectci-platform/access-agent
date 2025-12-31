@@ -157,6 +157,7 @@ async def run_agent(
     session_id: str,
     question_id: str,
     tool_catalog: dict[str, Any],
+    acting_user: str | None = None,
     use_checkpointing: bool = False,
     db_uri: str | None = None,
 ) -> dict[str, Any]:
@@ -169,6 +170,7 @@ async def run_agent(
         session_id: Session identifier.
         question_id: Question identifier.
         tool_catalog: MCP tool catalog.
+        acting_user: ACCESS ID of user performing action (e.g., jsmith@access-ci.org).
         use_checkpointing: Whether to use PostgreSQL checkpointing.
         db_uri: Database URI for checkpointing.
 
@@ -183,6 +185,7 @@ async def run_agent(
         session_id=session_id,
         question_id=question_id,
         tool_catalog=tool_catalog,
+        acting_user=acting_user,
     )
 
     # Run the graph

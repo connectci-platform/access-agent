@@ -4,7 +4,7 @@ import logging
 import time
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from ..agent.graph import run_agent
@@ -63,11 +63,15 @@ class QueryResponse(BaseModel):
 
 
 @router.post("/query", response_model=QueryResponse)
-async def query_agent(request: QueryRequest) -> QueryResponse:
+async def query_agent(
+    request: QueryRequest,
+    x_acting_user: str | None = Header(None, alias="X-Acting-User"),
+) -> QueryResponse:
     """Execute a query against the ACCESS Documentation Agent.
 
     Args:
         request: The query request with question and optional IDs.
+        x_acting_user: ACCESS ID of the user performing the action (from header).
 
     Returns:
         QueryResponse with answer and metadata.
@@ -80,7 +84,10 @@ async def query_agent(request: QueryRequest) -> QueryResponse:
     session_id = request.session_id or f"sess_{timestamp}"
     question_id = request.question_id or f"q_{timestamp}"
 
-    logger.info(f"Processing query: {request.query[:50]}... (session={session_id})")
+    logger.info(
+        f"Processing query: {request.query[:50]}... "
+        f"(session={session_id}, acting_user={x_acting_user or 'anonymous'})"
+    )
 
     try:
         # Get tool catalog
@@ -92,6 +99,7 @@ async def query_agent(request: QueryRequest) -> QueryResponse:
             session_id=session_id,
             question_id=question_id,
             tool_catalog=registry.catalog,
+            acting_user=x_acting_user,
             use_checkpointing=USE_CHECKPOINTING,
             db_uri=settings.DATABASE_URL if USE_CHECKPOINTING else None,
         )

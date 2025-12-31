@@ -95,6 +95,7 @@ class MCPClient:
         server: str,
         tool_name: str,
         arguments: dict[str, Any],
+        acting_user: str | None = None,
     ) -> MCPToolResult:
         """Execute an MCP tool call.
 
@@ -102,6 +103,7 @@ class MCPClient:
             server: Name of the MCP server.
             tool_name: Name of the tool to call.
             arguments: Arguments to pass to the tool.
+            acting_user: ACCESS ID of user performing action (e.g., jsmith@access-ci.org).
 
         Returns:
             MCPToolResult with success status and data or error.
@@ -122,11 +124,16 @@ class MCPClient:
 
         logger.info(f"MCP call: {tool_name} with args: {arguments}")
 
+        # Build headers
+        headers = {"Content-Type": "application/json"}
+        if acting_user:
+            headers["X-Acting-User"] = acting_user
+
         try:
             response = await client.post(
                 url,
                 json={"arguments": arguments},
-                headers={"Content-Type": "application/json"},
+                headers=headers,
             )
             response.raise_for_status()
 
