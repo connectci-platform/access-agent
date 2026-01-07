@@ -349,7 +349,7 @@ def _resolve_reference(
         return reference
 
     # Navigate the path
-    current = result.data
+    current: object = result.data
     for part in _parse_path(path):
         if isinstance(part, int):
             # Array index

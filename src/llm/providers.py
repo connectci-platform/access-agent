@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 
 from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
 
 from ..config import settings
 
@@ -34,7 +35,7 @@ class OpenAIProvider(LLMProvider):
     """Provider for OpenAI API."""
 
     def __init__(self, api_key: str, default_model: str = "gpt-4o"):
-        self.api_key = api_key
+        self.api_key = SecretStr(api_key)
         self.default_model = default_model
 
     def get_chat_model(
@@ -47,7 +48,7 @@ class OpenAIProvider(LLMProvider):
             model=model_name or self.default_model,
             api_key=self.api_key,
             temperature=temperature,
-            max_tokens=max_tokens,
+            max_completion_tokens=max_tokens,
         )
 
 
@@ -69,7 +70,7 @@ class OpenAICompatibleProvider(LLMProvider):
         default_model: str = "default",
     ):
         self.base_url = base_url
-        self.api_key = api_key
+        self.api_key = SecretStr(api_key)
         self.default_model = default_model
 
     def get_chat_model(
@@ -83,7 +84,7 @@ class OpenAICompatibleProvider(LLMProvider):
             api_key=self.api_key,
             base_url=self.base_url,
             temperature=temperature,
-            max_tokens=max_tokens,
+            max_completion_tokens=max_tokens,
         )
 
 
@@ -125,6 +126,15 @@ def get_llm_provider() -> LLMProvider:
             base_url=settings.ACCESS_AI_BASE_URL,
             api_key=settings.ACCESS_AI_API_KEY,
             default_model="access-llama",
+        )
+
+    if provider == "fireworks":
+        if not settings.FIREWORKS_API_KEY:
+            raise ValueError("FIREWORKS_API_KEY is required for fireworks provider")
+        return OpenAICompatibleProvider(
+            base_url="https://api.fireworks.ai/inference/v1",
+            api_key=settings.FIREWORKS_API_KEY,
+            default_model=settings.FIREWORKS_MODEL,
         )
 
     raise ValueError(f"Unknown LLM provider: {provider}")

@@ -19,8 +19,12 @@ class Settings(BaseSettings):
     # CORS - comma-separated list of allowed origins for production
     ALLOWED_ORIGINS: str = ""
 
-    # LLM Provider
-    LLM_PROVIDER: Literal["openai", "vllm", "access_ai"] = "openai"
+    # LLM Provider (for agent workflow: planning, evaluation, synthesis)
+    LLM_PROVIDER: Literal["openai", "vllm", "access_ai", "fireworks"] = "openai"
+
+    # Static answer provider (for direct fine-tuned model answers)
+    # When set, static queries use this model; dynamic queries use LLM_PROVIDER
+    STATIC_LLM_PROVIDER: Literal["openai", "vllm", "access_ai", "fireworks", ""] = ""
 
     # OpenAI
     OPENAI_API_KEY: str = ""
@@ -34,6 +38,10 @@ class Settings(BaseSettings):
     # ACCESS AI (custom endpoint)
     ACCESS_AI_BASE_URL: str = "https://access-ai-grace1-external.ccs.uky.edu/access/chat/api/"
     ACCESS_AI_API_KEY: str = ""
+
+    # Fireworks AI (fine-tuned models)
+    FIREWORKS_API_KEY: str = ""
+    FIREWORKS_MODEL: str = "accounts/apasquale/models/access-qa-pilot"
 
     # Database (checkpointing)
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/langgraph"

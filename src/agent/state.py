@@ -4,11 +4,17 @@ Defines the TypedDict that flows through the LangGraph nodes,
 containing all state needed for query processing.
 """
 
-from typing import Annotated, Any, Literal, TypedDict
+from typing import Annotated, Literal, TypedDict
 
 from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
+
+# Type aliases for dynamic MCP data structures
+# These are JSON-like structures that vary by tool/server
+ToolArguments = dict[str, str | int | float | bool | list[str] | None]
+ToolResultData = dict[str, object] | list[object] | str | None
+ToolCatalog = dict[str, dict[str, object]]
 
 
 class ToolCall(BaseModel):
@@ -21,7 +27,7 @@ class ToolCall(BaseModel):
     step_id: str = Field(description="Unique identifier for this step")
     tool_name: str = Field(description="Name of the MCP tool to call")
     server: str = Field(description="Name of the MCP server hosting this tool")
-    arguments: dict[str, Any] = Field(
+    arguments: ToolArguments = Field(
         default_factory=dict,
         description="Arguments to pass to the tool",
     )
@@ -42,9 +48,29 @@ class ToolResult(BaseModel):
     tool_name: str = Field(description="Name of the tool that was called")
     server: str = Field(description="Server the tool was called on")
     success: bool = Field(description="Whether the call succeeded")
-    data: Any = Field(default=None, description="Result data if successful")
+    data: ToolResultData = Field(default=None, description="Result data if successful")
     error: str | None = Field(default=None, description="Error message if failed")
     duration_ms: int = Field(default=0, description="Execution time in milliseconds")
+
+
+class QueryClassification(BaseModel):
+    """Classification of query type for routing.
+
+    Determines whether the query can be answered by the fine-tuned model
+    directly (static), requires live MCP data (dynamic), or both (combined).
+    """
+
+    query_type: Literal["static", "dynamic", "combined"] = Field(
+        description="Type of query: static (model knows), dynamic (needs live data), combined (both)"
+    )
+    reason: str = Field(
+        default="",
+        description="Brief explanation of why this classification was chosen",
+    )
+    confidence: Literal["high", "medium", "low"] = Field(
+        default="medium",
+        description="Confidence in the classification",
+    )
 
 
 class QueryAnalysis(BaseModel):
@@ -96,7 +122,7 @@ class RetryContext(BaseModel):
     current_total_retries: int = 0
     timeout_budget_ms: int = 120000
     start_time_ms: int = 0
-    history: list[dict[str, Any]] = Field(default_factory=list)
+    history: list[dict[str, str | int]] = Field(default_factory=list)
 
 
 class AgentState(TypedDict):
@@ -106,6 +132,8 @@ class AgentState(TypedDict):
     reading from and writing to specific fields.
 
     Node responsibilities:
+    - classify: Reads query; writes query_classification
+    - static_answer: Reads query; writes final_answer (for static queries)
     - plan: Reads query, tool_catalog, messages; writes query_analysis, planned_tools
     - execute: Reads planned_tools; writes tool_results, tools_used
     - synthesize: Reads query, tool_results, messages; writes final_answer, messages
@@ -118,10 +146,13 @@ class AgentState(TypedDict):
     query: str
     session_id: str
     question_id: str
-    tool_catalog: Annotated[dict[str, Any], "Full MCP tool catalog"]
+    tool_catalog: Annotated[ToolCatalog, "Full MCP tool catalog"]
     acting_user: Annotated[
         str | None, "ACCESS ID of user performing action (e.g., jsmith@access-ci.org)"
     ]
+
+    # Classification fields (set by classify node)
+    query_classification: Annotated[QueryClassification | None, "Query type classification"]
 
     # Planning fields (set by plan node)
     query_analysis: Annotated[QueryAnalysis | None, "LLM analysis of user intent"]
@@ -148,7 +179,7 @@ def create_initial_state(
     query: str,
     session_id: str,
     question_id: str,
-    tool_catalog: dict[str, Any],
+    tool_catalog: ToolCatalog,
     acting_user: str | None = None,
     max_attempts: int = 3,
 ) -> AgentState:
@@ -177,6 +208,8 @@ def create_initial_state(
         question_id=question_id,
         tool_catalog=tool_catalog,
         acting_user=acting_user,
+        # Classification
+        query_classification=None,
         # Planning
         query_analysis=None,
         planned_tools=[],
