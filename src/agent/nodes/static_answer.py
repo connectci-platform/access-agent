@@ -8,7 +8,7 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from pydantic import SecretStr
 
 from ...config import settings
@@ -78,6 +78,54 @@ def get_static_llm() -> "ChatOpenAI | None":
     return None
 
 
+def _sanitize_messages_for_fireworks(messages: list[AnyMessage]) -> list[AnyMessage]:
+    """Ensure messages alternate user/assistant for Fireworks compatibility.
+
+    Fireworks fine-tuned models require strict alternation. This function:
+    1. Filters to only HumanMessage and AIMessage types
+    2. Merges consecutive messages of the same role
+    3. Ensures conversation starts with user message
+
+    Args:
+        messages: Raw message list from state.
+
+    Returns:
+        Sanitized messages with proper alternation.
+    """
+    sanitized: list[AnyMessage] = []
+
+    for msg in messages:
+        # Skip non-conversation messages (system, tool, etc.)
+        if not isinstance(msg, HumanMessage | AIMessage):
+            continue
+
+        if not sanitized:
+            # First message should be from user
+            if isinstance(msg, HumanMessage):
+                sanitized.append(msg)
+            # Skip leading AI messages
+            continue
+
+        last_msg = sanitized[-1]
+
+        # Check if same role as previous
+        same_role = (isinstance(msg, HumanMessage) and isinstance(last_msg, HumanMessage)) or (
+            isinstance(msg, AIMessage) and isinstance(last_msg, AIMessage)
+        )
+
+        if same_role:
+            # Merge with previous message
+            merged_content = f"{last_msg.content}\n\n{msg.content}"
+            if isinstance(msg, HumanMessage):
+                sanitized[-1] = HumanMessage(content=merged_content)
+            else:
+                sanitized[-1] = AIMessage(content=merged_content)
+        else:
+            sanitized.append(msg)
+
+    return sanitized
+
+
 async def static_answer_node(state: AgentState) -> dict[str, object]:
     """Generate answer directly from fine-tuned model.
 
@@ -110,8 +158,15 @@ async def static_answer_node(state: AgentState) -> dict[str, object]:
             }
         return {}
 
-    # Build conversation context from messages
-    messages = state.get("messages", [])
+    # Build conversation context from messages, ensuring proper alternation
+    raw_messages = state.get("messages", [])
+    messages = _sanitize_messages_for_fireworks(raw_messages)
+
+    if not messages:
+        # No valid messages, create one from the query
+        messages = [HumanMessage(content=query)]
+
+    logger.debug(f"Sending {len(messages)} sanitized messages to Fireworks")
 
     try:
         # Call the model
