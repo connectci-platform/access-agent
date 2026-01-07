@@ -69,7 +69,7 @@ def get_static_llm() -> "ChatOpenAI | None":
             model=settings.FIREWORKS_MODEL,
             api_key=SecretStr(settings.FIREWORKS_API_KEY),
             base_url="https://api.fireworks.ai/inference/v1",
-            temperature=0.3,
+            temperature=0.1,
             max_completion_tokens=1024,
         )
 
