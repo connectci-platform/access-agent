@@ -8,7 +8,7 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
 from pydantic import SecretStr
 
 from ...config import settings
@@ -18,6 +18,22 @@ if TYPE_CHECKING:
     from langchain_openai import ChatOpenAI
 
 logger = logging.getLogger(__name__)
+
+STATIC_SYSTEM_PROMPT = """You are an ACCESS-CI documentation assistant specializing in the NSF ACCESS \
+(Advanced Cyberinfrastructure Coordination Ecosystem: Services & Support) program.
+
+Your knowledge is limited to:
+- ACCESS allocated compute resources and their hardware specifications
+- How to use ACCESS resources and services
+- Allocation policies and procedures
+- Research computing best practices
+
+Guidelines:
+- Only provide information about current ACCESS resources you were trained on
+- If asked about resources, systems, or topics outside ACCESS, politely redirect to ACCESS-related help
+- If uncertain about specific details, acknowledge the limitation rather than guessing
+- Always cite sources when providing resource-specific information
+- XSEDE has been replaced by ACCESS - redirect XSEDE questions to ACCESS equivalents"""
 
 
 def process_citations(text: str) -> str:
@@ -78,29 +94,38 @@ def get_static_llm() -> "ChatOpenAI | None":
     return None
 
 
-def _sanitize_messages_for_fireworks(messages: list[AnyMessage]) -> list[AnyMessage]:
+def _sanitize_messages_for_fireworks(
+    messages: list[AnyMessage],
+    system_prompt: str | None = None,
+) -> list[AnyMessage]:
     """Ensure messages alternate user/assistant for Fireworks compatibility.
 
     Fireworks fine-tuned models require strict alternation. This function:
-    1. Filters to only HumanMessage and AIMessage types
-    2. Merges consecutive messages of the same role
-    3. Ensures conversation starts with user message
+    1. Optionally prepends a system message
+    2. Filters to only HumanMessage and AIMessage types
+    3. Merges consecutive messages of the same role
+    4. Ensures conversation starts with user message
 
     Args:
         messages: Raw message list from state.
+        system_prompt: Optional system prompt to prepend.
 
     Returns:
         Sanitized messages with proper alternation.
     """
     sanitized: list[AnyMessage] = []
 
+    # Add system prompt if provided
+    if system_prompt:
+        sanitized.append(SystemMessage(content=system_prompt))
+
     for msg in messages:
         # Skip non-conversation messages (system, tool, etc.)
         if not isinstance(msg, HumanMessage | AIMessage):
             continue
 
-        if not sanitized:
-            # First message should be from user
+        # For first user/assistant message after system prompt
+        if not sanitized or isinstance(sanitized[-1], SystemMessage):
             if isinstance(msg, HumanMessage):
                 sanitized.append(msg)
             # Skip leading AI messages
@@ -160,7 +185,7 @@ async def static_answer_node(state: AgentState) -> dict[str, object]:
 
     # Build conversation context from messages, ensuring proper alternation
     raw_messages = state.get("messages", [])
-    messages = _sanitize_messages_for_fireworks(raw_messages)
+    messages = _sanitize_messages_for_fireworks(raw_messages, system_prompt=STATIC_SYSTEM_PROMPT)
 
     if not messages:
         # No valid messages, create one from the query
