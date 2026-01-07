@@ -4,62 +4,63 @@ Classifies queries as static, dynamic, or combined to determine routing:
 - static: Fine-tuned model can answer directly (no tools needed)
 - dynamic: Requires live MCP data (real-time status, user-specific, events)
 - combined: Needs both model knowledge and live data
+
+Uses an LLM for robust natural language understanding.
 """
 
 import logging
-import re
 
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
+
+from ...config import settings
 from ..state import AgentState, QueryClassification
 
 logger = logging.getLogger(__name__)
 
-# Patterns that indicate dynamic queries (need live MCP data)
-DYNAMIC_PATTERNS = [
-    # Time-sensitive
-    r"\b(currently|right now|today|this week|this month)\b",
-    r"\b(happening|scheduled|upcoming|next)\b",
-    # Status/outages
-    r"\b(status|outage|down|maintenance|available now|working)\b",
-    r"\b(is .+ (down|up|running|operational))\b",
-    # User-specific (various phrasings for allocation/balance queries)
-    r"\b(my|mine)\b.*(project|allocation|balance|account|usage)",
-    r"\b(how (much|many) .* do I have)\b",
-    r"\bhow much .* (left|remaining)\b",
-    r"\b(do I have|I have left)\b",
-    # Events and announcements
-    r"\b(event|workshop|training|webinar|announcement)\b",
-    # Metrics and usage
-    r"\b(usage|metrics|statistics|utilization)\b",
-    r"\bxdmod\b",
-]
+CLASSIFICATION_SYSTEM_PROMPT = """You are a query classifier for the ACCESS-CI documentation system.
 
-# Patterns that indicate static queries (model can answer directly)
-STATIC_PATTERNS = [
-    # Factual questions about resources
-    r"\b(what is|what are|describe|explain|tell me about)\b",
-    r"\b(what .* does .* have)\b",  # "What GPUs does Delta have?"
-    r"\b(does .* have|does .* support)\b",  # "Does Anvil have A100s?"
-    r"\b(specifications|specs|hardware|gpu|cpu|memory|nodes)\b",
-    r"\b(how (do|does|to)|guide|tutorial)\b",
-    # Software availability (general, not real-time)
-    r"\b(software|module|package|version|available on)\b",
-    # Documentation questions
-    r"\b(documentation|docs|policy|policies|how do i)\b",
-    # Comparisons
-    r"\b(compare|comparison|difference|versus|vs\.?)\b",
-    # Resource discovery
-    r"\b(which (resource|system|cluster)|what (resources|systems))\b",
-]
+Classify user queries into one of three categories:
 
-# Combined patterns - static info + dynamic status
-COMBINED_PATTERNS = [
-    r"\b(available|working)\b.*\b(gpu|resource|system)\b",
-    r"\b(resource|system)\b.*\b(available|working)\b",
-]
+**static** - Questions about factual, stable information that a trained model would know:
+- Hardware specifications (GPUs, CPUs, memory, nodes)
+- Resource descriptions and capabilities
+- How-to guides and documentation
+- Software availability and versions
+- Policies and procedures
+- Comparisons between resources
+- Follow-up questions asking for more details about previously discussed topics
+
+**dynamic** - Questions requiring live/real-time data from external systems:
+- Current system status or outages
+- User-specific data (my allocations, my usage, my projects)
+- Upcoming events, workshops, or announcements
+- Real-time metrics or statistics (XDMoD data)
+- Current availability or queue status
+
+**combined** - Questions needing both static knowledge AND live data:
+- "Which resources with A100 GPUs are currently available?"
+- "What's the status of Delta and what are its specs?"
+
+Respond with ONLY a JSON object (no markdown):
+{"query_type": "static|dynamic|combined", "reason": "brief explanation", "confidence": "high|medium|low"}"""
 
 
-def classify_query(query: str) -> QueryClassification:
-    """Classify a query using rule-based pattern matching.
+def _get_classifier_llm() -> ChatOpenAI:
+    """Get a fast LLM for classification."""
+    if settings.OPENAI_API_KEY:
+        return ChatOpenAI(
+            model="gpt-4o-mini",
+            api_key=SecretStr(settings.OPENAI_API_KEY),
+            temperature=0,
+            max_completion_tokens=150,
+        )
+    raise ValueError("OPENAI_API_KEY required for query classification")
+
+
+async def classify_query_with_llm(query: str) -> QueryClassification:
+    """Classify a query using an LLM for robust understanding.
 
     Args:
         query: The user's question.
@@ -67,41 +68,42 @@ def classify_query(query: str) -> QueryClassification:
     Returns:
         QueryClassification with query_type, reason, and confidence.
     """
-    query_lower = query.lower()
+    import json
 
-    # Check for combined patterns first (most specific)
-    for pattern in COMBINED_PATTERNS:
-        if re.search(pattern, query_lower):
-            return QueryClassification(
-                query_type="combined",
-                reason="Query asks about resources with availability/status",
-                confidence="medium",
-            )
+    llm = _get_classifier_llm()
 
-    # Check for dynamic patterns
-    for pattern in DYNAMIC_PATTERNS:
-        if re.search(pattern, query_lower):
-            return QueryClassification(
-                query_type="dynamic",
-                reason="Query contains time-sensitive or real-time indicator",
-                confidence="high",
-            )
+    messages = [
+        SystemMessage(content=CLASSIFICATION_SYSTEM_PROMPT),
+        HumanMessage(content=query),
+    ]
 
-    # Check for static patterns
-    for pattern in STATIC_PATTERNS:
-        if re.search(pattern, query_lower):
-            return QueryClassification(
-                query_type="static",
-                reason="Query asks for factual/documentation information",
-                confidence="high",
-            )
+    try:
+        response = await llm.ainvoke(messages)
+        content = str(response.content).strip()
 
-    # Default to combined (safest fallback - will check both sources)
-    return QueryClassification(
-        query_type="combined",
-        reason="Query type unclear, using combined approach",
-        confidence="low",
-    )
+        # Parse JSON response
+        # Handle potential markdown code blocks
+        if content.startswith("```"):
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+            content = content.strip()
+
+        result = json.loads(content)
+
+        return QueryClassification(
+            query_type=result.get("query_type", "combined"),
+            reason=result.get("reason", ""),
+            confidence=result.get("confidence", "medium"),
+        )
+
+    except Exception as e:
+        logger.warning(f"LLM classification failed, defaulting to combined: {e}")
+        return QueryClassification(
+            query_type="combined",
+            reason=f"Classification error: {e}",
+            confidence="low",
+        )
 
 
 async def classify_node(state: AgentState) -> dict[str, QueryClassification]:
@@ -115,7 +117,7 @@ async def classify_node(state: AgentState) -> dict[str, QueryClassification]:
     """
     query = state["query"]
 
-    classification = classify_query(query)
+    classification = await classify_query_with_llm(query)
 
     logger.info(
         f"Query classified as {classification.query_type} "
