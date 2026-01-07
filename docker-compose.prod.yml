@@ -32,6 +32,9 @@ services:
       - LLM_PROVIDER=${LLM_PROVIDER:-openai}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
+      - STATIC_LLM_PROVIDER=${STATIC_LLM_PROVIDER:-}
+      - FIREWORKS_API_KEY=${FIREWORKS_API_KEY:-}
+      - FIREWORKS_MODEL=${FIREWORKS_MODEL:-}
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/langgraph
       - MCP_SERVER_HOST=${MCP_SERVER_HOST:-localhost}
       # Catalog is fetched dynamically from MCP servers at startup
