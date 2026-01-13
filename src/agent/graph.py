@@ -1,12 +1,17 @@
 """LangGraph definition for the ACCESS Documentation Agent.
 
 This module defines the state graph that orchestrates query processing:
-  START → classify → (static_answer | plan → execute → evaluate → synthesize) → END
+  START → classify → routing based on query type → END
 
 Query classification routes:
-  - static: Fine-tuned model answers directly (no tools)
-  - dynamic: Full agent workflow with MCP tools
-  - combined: Fine-tuned model + MCP tool augmentation
+  - static: RAG retrieval → END (or fallback to plan if no match)
+  - dynamic: plan → execute → evaluate → synthesize → END
+  - combined: RAG retrieval (for context) → plan → execute → evaluate → synthesize → END
+
+The RAG-primary architecture means:
+  - Static queries go directly to RAG for verified answers
+  - Combined queries get RAG context FIRST, then use tools for real-time data
+  - Dynamic queries skip RAG (no static knowledge needed)
 
 With recovery and quality loops:
   - execute → recover (on failure) → execute or synthesize
@@ -32,8 +37,8 @@ from .nodes import (
     evaluate_node,
     execute_node,
     plan_node,
+    rag_answer_node,
     recover_node,
-    static_answer_node,
     synthesize_node,
 )
 from .state import AgentState
@@ -41,45 +46,71 @@ from .state import AgentState
 logger = logging.getLogger(__name__)
 
 
-def route_by_classification(state: AgentState) -> Literal["static_answer", "plan"]:
+def route_by_classification(state: AgentState) -> Literal["rag_answer", "plan"]:
     """Route based on query classification.
+
+    RAG-primary routing:
+    - static: Go to RAG for verified answer
+    - combined: Go to RAG first to gather context, then continue to tools
+    - dynamic: Skip RAG, go directly to tools
 
     Args:
         state: Current agent state with query_classification.
 
     Returns:
-        Next node: "static_answer" for static queries, "plan" for dynamic/combined.
+        Next node: "rag_answer" for static/combined, "plan" for dynamic only.
     """
     classification = state.get("query_classification")
 
-    if classification and classification.query_type == "static":
-        logger.info("Routing to static_answer (fine-tuned model)")
-        return "static_answer"
+    if classification and classification.query_type == "dynamic":
+        # Dynamic queries skip RAG - they only need real-time data
+        logger.info("Routing to plan (dynamic query, skipping RAG)")
+        return "plan"
 
-    # dynamic and combined both go through the tool-based workflow
-    logger.info(
-        f"Routing to plan (query_type={classification.query_type if classification else 'unknown'})"
-    )
-    return "plan"
+    # Both static and combined queries go through RAG first
+    query_type = classification.query_type if classification else "unknown"
+    logger.info(f"Routing to rag_answer ({query_type} query)")
+    return "rag_answer"
 
 
-def route_after_static(state: AgentState) -> Literal["end", "plan"]:
-    """Route after static answer attempt.
+def route_after_rag(state: AgentState) -> Literal["end", "plan"]:
+    """Route after RAG answer attempt.
 
-    If static answer succeeded, go to END.
-    If it failed and reclassified as dynamic, go to plan.
+    For static queries:
+    - If RAG found a match → END
+    - If no match → fallback to plan (tools)
+
+    For combined queries:
+    - Always continue to plan (tools) to get real-time data
+    - RAG results are preserved in state for synthesis
 
     Args:
         state: Current agent state.
 
     Returns:
-        Next node: "end" if answer generated, "plan" if fallback needed.
+        Next node: "end" if static query answered, "plan" for combined or fallback.
     """
+    classification = state.get("query_classification")
+    query_type = classification.query_type if classification else "static"
+
+    # For combined queries, always continue to tools even if RAG found matches
+    if query_type == "combined":
+        rag_matches = state.get("rag_matches", [])
+        if rag_matches:
+            logger.info(
+                f"Combined query: RAG found {len(rag_matches)} matches, "
+                "continuing to plan for real-time data"
+            )
+        else:
+            logger.info("Combined query: No RAG matches, continuing to plan")
+        return "plan"
+
+    # For static queries, end if RAG provided an answer
     if state.get("final_answer"):
         return "end"
 
-    # Static answer failed, fall back to dynamic path
-    logger.info("Static answer failed, falling back to plan")
+    # No RAG match for static query, fall back to tools
+    logger.info("Static query: No RAG match, falling back to plan")
     return "plan"
 
 
@@ -91,7 +122,7 @@ def _build_graph_structure(
     The graph implements a flow with query classification and routing:
 
     1. Classify: Determine if query is static, dynamic, or combined
-    2a. Static path: Call fine-tuned model directly → END
+    2a. Static path: RAG lookup from Q&A service → END (or fallback to plan)
     2b. Dynamic/Combined path:
         - Plan: Analyze query and select tools
         - Execute: Run MCP tools
@@ -102,7 +133,7 @@ def _build_graph_structure(
     With loops:
     - recover → execute (retry after recovery)
     - evaluate → plan (retry with different tools if unhelpful)
-    - static_answer → plan (fallback if static fails)
+    - rag_answer → plan (fallback if no RAG match)
 
     Args:
         builder: A StateGraph builder to configure.
@@ -112,7 +143,7 @@ def _build_graph_structure(
     """
     # Add nodes
     builder.add_node("classify", classify_node)
-    builder.add_node("static_answer", static_answer_node)
+    builder.add_node("rag_answer", rag_answer_node)
     builder.add_node("plan", plan_node)
     builder.add_node("execute", execute_node)
     builder.add_node("recover", recover_node)
@@ -128,15 +159,15 @@ def _build_graph_structure(
         "classify",
         route_by_classification,
         {
-            "static_answer": "static_answer",
+            "rag_answer": "rag_answer",
             "plan": "plan",
         },
     )
 
-    # After static answer, either end or fallback to plan
+    # After RAG answer, either end or fallback to plan
     builder.add_conditional_edges(
-        "static_answer",
-        route_after_static,
+        "rag_answer",
+        route_after_rag,
         {
             "end": END,
             "plan": "plan",

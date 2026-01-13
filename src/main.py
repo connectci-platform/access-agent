@@ -65,6 +65,9 @@ async def startup_event() -> None:
         logger.warning(f"Failed to fetch catalog at startup: {e}")
         logger.warning("Will retry on first request")
 
+    # Log QA Service configuration (RAG retrieval happens via HTTP on-demand)
+    logger.info(f"QA Service URL: {settings.QA_SERVICE_URL}")
+
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:

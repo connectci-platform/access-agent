@@ -53,10 +53,25 @@ class ToolResult(BaseModel):
     duration_ms: int = Field(default=0, description="Execution time in milliseconds")
 
 
+class RAGMatch(BaseModel):
+    """A matched Q&A pair from the RAG service.
+
+    Represents a verified answer from the Q&A database.
+    """
+
+    id: str = Field(description="Unique ID of the Q&A pair")
+    question: str = Field(description="The matched question")
+    answer: str = Field(description="The verified answer")
+    domain: str = Field(description="Domain (e.g., compute-resources, software-discovery)")
+    entity_id: str = Field(description="Entity ID for citation")
+    similarity_score: float = Field(description="Semantic similarity score (0-1)")
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
 class QueryClassification(BaseModel):
     """Classification of query type for routing.
 
-    Determines whether the query can be answered by the fine-tuned model
+    Determines whether the query can be answered via RAG
     directly (static), requires live MCP data (dynamic), or both (combined).
     """
 
@@ -133,10 +148,10 @@ class AgentState(TypedDict):
 
     Node responsibilities:
     - classify: Reads query; writes query_classification
-    - static_answer: Reads query; writes final_answer (for static queries)
-    - plan: Reads query, tool_catalog, messages; writes query_analysis, planned_tools
+    - rag_answer: Reads query; writes rag_matches, final_answer (for static queries)
+    - plan: Reads query, tool_catalog, messages, rag_matches; writes query_analysis, planned_tools
     - execute: Reads planned_tools; writes tool_results, tools_used
-    - synthesize: Reads query, tool_results, messages; writes final_answer, messages
+    - synthesize: Reads query, tool_results, rag_matches, messages; writes final_answer, messages
     """
 
     # Conversation memory (accumulates across checkpoints via add_messages reducer)
@@ -153,6 +168,10 @@ class AgentState(TypedDict):
 
     # Classification fields (set by classify node)
     query_classification: Annotated[QueryClassification | None, "Query type classification"]
+
+    # RAG fields (set by rag_answer node)
+    rag_matches: Annotated[list[RAGMatch], "Matches from RAG/Q&A service"]
+    rag_used: Annotated[bool, "Whether RAG provided or augmented the answer"]
 
     # Planning fields (set by plan node)
     query_analysis: Annotated[QueryAnalysis | None, "LLM analysis of user intent"]
@@ -210,6 +229,9 @@ def create_initial_state(
         acting_user=acting_user,
         # Classification
         query_classification=None,
+        # RAG
+        rag_matches=[],
+        rag_used=False,
         # Planning
         query_analysis=None,
         planned_tools=[],

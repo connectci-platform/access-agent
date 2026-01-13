@@ -32,14 +32,22 @@ services:
       - LLM_PROVIDER=${LLM_PROVIDER:-openai}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
-      - STATIC_LLM_PROVIDER=${STATIC_LLM_PROVIDER:-}
-      - FIREWORKS_API_KEY=${FIREWORKS_API_KEY:-}
-      - FIREWORKS_MODEL=${FIREWORKS_MODEL:-}
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/langgraph
+      - REDIS_URL=redis://redis:6379/0
+      - CITATION_VALIDATION_ENABLED=${CITATION_VALIDATION_ENABLED:-true}
+      # RAG-primary architecture: QA service for verified Q&A retrieval
+      # Use host.docker.internal for same-host Docker communication
+      - QA_SERVICE_URL=${QA_SERVICE_URL:-http://host.docker.internal:8001}
+      - RAG_TOP_K=${RAG_TOP_K:-3}
+      - RAG_THRESHOLD_STATIC=${RAG_THRESHOLD_STATIC:-0.85}
+      - RAG_THRESHOLD_COMBINED=${RAG_THRESHOLD_COMBINED:-0.75}
+      - RAG_THRESHOLD_FALLBACK=${RAG_THRESHOLD_FALLBACK:-0.65}
       - MCP_SERVER_HOST=${MCP_SERVER_HOST:-localhost}
       # Catalog is fetched dynamically from MCP servers at startup
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -55,7 +63,7 @@ services:
       - mcp-network
 
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
@@ -75,8 +83,26 @@ services:
     networks:
       - agent-network
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    networks:
+      - agent-network
+
 volumes:
   postgres_data:
+  redis_data:
   caddy_data:
   caddy_config:
 

@@ -20,11 +20,7 @@ class Settings(BaseSettings):
     ALLOWED_ORIGINS: str = ""
 
     # LLM Provider (for agent workflow: planning, evaluation, synthesis)
-    LLM_PROVIDER: Literal["openai", "vllm", "access_ai", "fireworks"] = "openai"
-
-    # Static answer provider (for direct fine-tuned model answers)
-    # When set, static queries use this model; dynamic queries use LLM_PROVIDER
-    STATIC_LLM_PROVIDER: Literal["openai", "vllm", "access_ai", "fireworks", ""] = ""
+    LLM_PROVIDER: Literal["openai", "vllm", "access_ai"] = "openai"
 
     # OpenAI
     OPENAI_API_KEY: str = ""
@@ -39,12 +35,20 @@ class Settings(BaseSettings):
     ACCESS_AI_BASE_URL: str = "https://access-ai-grace1-external.ccs.uky.edu/access/chat/api/"
     ACCESS_AI_API_KEY: str = ""
 
-    # Fireworks AI (fine-tuned models)
-    FIREWORKS_API_KEY: str = ""
-    FIREWORKS_MODEL: str = "accounts/apasquale/models/access-qa-pilot"
-
     # Database (checkpointing)
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/langgraph"
+
+    # RAG Settings - using access-qa-service for verified Q&A retrieval
+    QA_SERVICE_URL: str = "http://localhost:8001"
+    RAG_TOP_K: int = 3
+
+    # Query-type-specific similarity thresholds
+    RAG_THRESHOLD_STATIC: float = 0.85  # High threshold for static queries (confident answers)
+    RAG_THRESHOLD_COMBINED: float = 0.75  # Moderate threshold for combined queries (augment tools)
+    RAG_THRESHOLD_FALLBACK: float = 0.65  # Lower threshold for fallback scenarios
+
+    # Legacy compatibility (uses static threshold)
+    RAG_SIMILARITY_THRESHOLD: float = 0.85
 
     # MCP Servers
     MCP_CATALOG_URL: str = "http://localhost:5678/webhook/generate-mcp-catalog"

@@ -128,15 +128,6 @@ def get_llm_provider() -> LLMProvider:
             default_model="access-llama",
         )
 
-    if provider == "fireworks":
-        if not settings.FIREWORKS_API_KEY:
-            raise ValueError("FIREWORKS_API_KEY is required for fireworks provider")
-        return OpenAICompatibleProvider(
-            base_url="https://api.fireworks.ai/inference/v1",
-            api_key=settings.FIREWORKS_API_KEY,
-            default_model=settings.FIREWORKS_MODEL,
-        )
-
     raise ValueError(f"Unknown LLM provider: {provider}")
 
 

@@ -211,7 +211,10 @@ def _build_tool_catalog_text(catalog: dict[str, Any]) -> str:
     """Build a compact text representation of the tool catalog.
 
     Args:
-        catalog: The full MCP tool catalog.
+        catalog: The full MCP tool catalog. Supports multiple formats:
+            - {"servers": [{"server": "name", "tools": [...]}]}
+            - {"tools": [...], "quick_lookup": {...}}
+            - {"server_name": [tools...], ...}  (simple format)
 
     Returns:
         A formatted string for the LLM prompt.
@@ -231,6 +234,13 @@ def _build_tool_catalog_text(catalog: dict[str, Any]) -> str:
             server_name = quick_lookup.get(tool["name"], {}).get("server", "")
             line = _format_tool_line(tool, server_name)
             lines.append(line)
+    else:
+        # Simple format: {server_name: [tools...]}
+        for server_name, tools in catalog.items():
+            if isinstance(tools, list):
+                for tool in tools:
+                    line = _format_tool_line(tool, server_name)
+                    lines.append(line)
 
     return "\n".join(lines)
 
@@ -241,20 +251,39 @@ def _format_tool_line(tool: dict[str, Any], server_name: str) -> str:
     desc = tool.get("description", "")[:100]
 
     # Build parameter string with descriptions and enum values
+    # Support both "parameters" (list format) and "inputSchema" (JSON Schema format)
     params = tool.get("parameters", [])
     param_strs = []
-    for p in params:
-        pname = p.get("name", "")
-        ptype = p.get("type", "string")
-        required = "*" if p.get("required") else ""
 
-        # Include enum values if present - critical for valid parameter values
-        enum_vals = p.get("enum")
-        if enum_vals:
-            enum_str = "|".join(str(v) for v in enum_vals)
-            param_strs.append(f"{pname}: {ptype}{required} (one of: {enum_str})")
-        else:
-            param_strs.append(f"{pname}: {ptype}{required}")
+    if params:
+        # List format: [{"name": "x", "type": "string", "required": true}]
+        for p in params:
+            pname = p.get("name", "")
+            ptype = p.get("type", "string")
+            required = "*" if p.get("required") else ""
+
+            enum_vals = p.get("enum")
+            if enum_vals:
+                enum_str = "|".join(str(v) for v in enum_vals)
+                param_strs.append(f"{pname}: {ptype}{required} (one of: {enum_str})")
+            else:
+                param_strs.append(f"{pname}: {ptype}{required}")
+    else:
+        # JSON Schema format: {"inputSchema": {"properties": {...}, "required": [...]}}
+        input_schema = tool.get("inputSchema", {})
+        properties = input_schema.get("properties", {})
+        required_params = input_schema.get("required", [])
+
+        for pname, pschema in properties.items():
+            ptype = pschema.get("type", "string")
+            required = "*" if pname in required_params else ""
+
+            enum_vals = pschema.get("enum")
+            if enum_vals:
+                enum_str = "|".join(str(v) for v in enum_vals)
+                param_strs.append(f"{pname}: {ptype}{required} (one of: {enum_str})")
+            else:
+                param_strs.append(f"{pname}: {ptype}{required}")
 
     params_text = ", ".join(param_strs) if param_strs else "none"
 
@@ -277,6 +306,11 @@ def _validate_tool(tool_name: str, catalog: dict[str, Any]) -> bool:
             if any(t.get("name") == tool_name for t in server.get("tools", [])):
                 return True
 
+    # Check simple format: {server_name: [tools...]}
+    for value in catalog.values():
+        if isinstance(value, list) and any(t.get("name") == tool_name for t in value):
+            return True
+
     return False
 
 
@@ -293,5 +327,10 @@ def _get_server_for_tool(tool_name: str, catalog: dict[str, Any]) -> str:
         for server in catalog["servers"]:
             if any(t.get("name") == tool_name for t in server.get("tools", [])):
                 return str(server.get("server", ""))
+
+    # Check simple format: {server_name: [tools...]}
+    for server_name, tools in catalog.items():
+        if isinstance(tools, list) and any(t.get("name") == tool_name for t in tools):
+            return server_name
 
     return ""
