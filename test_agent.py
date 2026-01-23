@@ -28,10 +28,13 @@ if os.path.exists(env_path):
 
 from src.agent.graph import run_agent
 from src.config import settings
+from src.telemetry import init_telemetry, shutdown_telemetry
 from src.tools import ToolRegistry
 
 
 async def main():
+    # Initialize telemetry for tracing
+    init_telemetry(service_name="access-agent-test")
     # Parse args
     use_checkpoint = "--checkpoint" in sys.argv
     args = [a for a in sys.argv[1:] if a != "--checkpoint"]
@@ -71,6 +74,9 @@ async def main():
     print()
     print("Answer:")
     print(result.get("final_answer", "No answer"))
+
+    # Shutdown telemetry to flush spans
+    shutdown_telemetry()
 
 
 if __name__ == "__main__":

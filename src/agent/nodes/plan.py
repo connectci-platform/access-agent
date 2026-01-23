@@ -4,6 +4,7 @@ This node analyzes the user's query and selects which MCP tools to call,
 mirroring the Query Planner logic from the n8n workflow.
 """
 
+import json
 import logging
 from typing import Any
 
@@ -11,6 +12,8 @@ from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
 from ...llm import get_llm
+from ...telemetry import get_tracer
+from ...telemetry.spans import add_span_event
 from ..state import AgentState, QueryAnalysis, ToolCall
 
 logger = logging.getLogger(__name__)
@@ -94,93 +97,120 @@ async def plan_node(state: AgentState) -> dict[str, Any]:
     Returns:
         Dict with query_analysis, planned_tools, and execution_strategy.
     """
-    query = state["query"]
-    catalog = state["tool_catalog"]
-    messages = state.get("messages", [])
+    tracer = get_tracer("access-agent.nodes")
 
-    # Build compact tool catalog for prompt
-    tool_catalog_text = _build_tool_catalog_text(catalog)
+    with tracer.start_as_current_span("agent.plan") as span:
+        query = state["query"]
+        catalog = state["tool_catalog"]
+        messages = state.get("messages", [])
 
-    # Build conversation history (exclude current query which is the last message)
-    conversation_history = _build_conversation_history(messages[:-1] if messages else [])
+        # Add query to span
+        span.set_attribute("agent.query", query[:500] if query else "")
+        span.set_attribute("agent.node", "plan")
 
-    # Create the prompt
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", PLANNING_SYSTEM_PROMPT),
-            ("human", "{query}"),
-        ]
-    )
+        # Build compact tool catalog for prompt
+        tool_catalog_text = _build_tool_catalog_text(catalog)
 
-    # Get LLM and create chain
-    llm = get_llm(temperature=0.1, max_tokens=1500)
-    chain = prompt | llm | JsonOutputParser()
+        # Build conversation history (exclude current query which is the last message)
+        conversation_history = _build_conversation_history(messages[:-1] if messages else [])
 
-    try:
-        result = await chain.ainvoke(
-            {
-                "tool_catalog": tool_catalog_text,
-                "conversation_history": conversation_history,
-                "query": query,
-            }
+        # Create the prompt
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", PLANNING_SYSTEM_PROMPT),
+                ("human", "{query}"),
+            ]
         )
 
-        # Parse query analysis
-        analysis_data = result.get("query_analysis", {})
-        query_analysis = QueryAnalysis(
-            user_intent=analysis_data.get("user_intent", "Unknown intent"),
-            entities_mentioned=analysis_data.get("entities_mentioned", []),
-            requires_tools=analysis_data.get("requires_tools", True),
-            confidence=result.get("confidence", "medium"),
-        )
+        # Get LLM and create chain
+        llm = get_llm(temperature=0.1, max_tokens=1500)
+        chain = prompt | llm | JsonOutputParser()
 
-        # Parse execution plan
-        exec_plan = result.get("execution_plan", {})
-        strategy = exec_plan.get("strategy", "parallel")
-
-        # Parse tool calls
-        planned_tools: list[ToolCall] = []
-        for step in exec_plan.get("steps", []):
-            tool_call = ToolCall(
-                step_id=step.get("step_id", f"step_{len(planned_tools) + 1}"),
-                tool_name=step.get("tool_name", ""),
-                server=step.get("server", ""),
-                arguments=step.get("arguments", {}),
-                depends_on=step.get("depends_on", []),
+        try:
+            result = await chain.ainvoke(
+                {
+                    "tool_catalog": tool_catalog_text,
+                    "conversation_history": conversation_history,
+                    "query": query,
+                }
             )
 
-            # Validate tool exists in catalog
-            if _validate_tool(tool_call.tool_name, catalog):
-                # Fill in server if not provided
-                if not tool_call.server:
-                    tool_call.server = _get_server_for_tool(tool_call.tool_name, catalog)
-                planned_tools.append(tool_call)
-            else:
-                logger.warning(f"LLM selected unknown tool: {tool_call.tool_name}")
+            # Log the raw LLM response for debugging
+            add_span_event("llm_response", {"raw_result": json.dumps(result, default=str)[:2000]})
 
-        logger.info(
-            f"Planning complete: {len(planned_tools)} tools selected, "
-            f"strategy={strategy}, requires_tools={query_analysis.requires_tools}"
-        )
+            # Parse query analysis
+            analysis_data = result.get("query_analysis", {})
+            query_analysis = QueryAnalysis(
+                user_intent=analysis_data.get("user_intent", "Unknown intent"),
+                entities_mentioned=analysis_data.get("entities_mentioned", []),
+                requires_tools=analysis_data.get("requires_tools", True),
+                confidence=result.get("confidence", "medium"),
+            )
 
-        return {
-            "query_analysis": query_analysis,
-            "planned_tools": planned_tools,
-            "execution_strategy": strategy,
-        }
+            # Parse execution plan
+            exec_plan = result.get("execution_plan", {})
+            strategy = exec_plan.get("strategy", "parallel")
 
-    except Exception as e:
-        logger.error(f"Planning failed: {e}")
-        # Return empty plan on error - synthesize will handle
-        return {
-            "query_analysis": QueryAnalysis(
-                user_intent="Error during planning",
-                requires_tools=False,
-                confidence="low",
-            ),
-            "planned_tools": [],
-            "execution_strategy": "sequential",
-        }
+            # Parse tool calls
+            planned_tools: list[ToolCall] = []
+            for step in exec_plan.get("steps", []):
+                tool_call = ToolCall(
+                    step_id=step.get("step_id", f"step_{len(planned_tools) + 1}"),
+                    tool_name=step.get("tool_name", ""),
+                    server=step.get("server", ""),
+                    arguments=step.get("arguments", {}),
+                    depends_on=step.get("depends_on", []),
+                )
+
+                # Validate tool exists in catalog
+                if _validate_tool(tool_call.tool_name, catalog):
+                    # Fill in server if not provided
+                    if not tool_call.server:
+                        tool_call.server = _get_server_for_tool(tool_call.tool_name, catalog)
+                    planned_tools.append(tool_call)
+                else:
+                    logger.warning(f"LLM selected unknown tool: {tool_call.tool_name}")
+
+            # Add detailed plan to span for debugging
+            span.set_attribute("agent.tools_planned", len(planned_tools))
+            span.set_attribute("agent.strategy", strategy)
+            span.set_attribute("agent.requires_tools", query_analysis.requires_tools)
+
+            # Log each planned tool with its arguments (this is the key debugging info!)
+            for tool in planned_tools:
+                add_span_event(
+                    f"planned_tool.{tool.tool_name}",
+                    {
+                        "server": tool.server,
+                        "arguments": json.dumps(tool.arguments, default=str),
+                        "step_id": tool.step_id,
+                    },
+                )
+
+            logger.info(
+                f"Planning complete: {len(planned_tools)} tools selected, "
+                f"strategy={strategy}, requires_tools={query_analysis.requires_tools}"
+            )
+
+            return {
+                "query_analysis": query_analysis,
+                "planned_tools": planned_tools,
+                "execution_strategy": strategy,
+            }
+
+        except Exception as e:
+            span.record_exception(e)
+            logger.error(f"Planning failed: {e}")
+            # Return empty plan on error - synthesize will handle
+            return {
+                "query_analysis": QueryAnalysis(
+                    user_intent="Error during planning",
+                    requires_tools=False,
+                    confidence="low",
+                ),
+                "planned_tools": [],
+                "execution_strategy": "sequential",
+            }
 
 
 def _build_conversation_history(messages: list[Any]) -> str:

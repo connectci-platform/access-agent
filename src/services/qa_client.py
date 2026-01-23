@@ -4,12 +4,14 @@ Provides semantic search over verified Q&A pairs.
 """
 
 import logging
+import time
 from typing import Any
 
 import httpx
 from pydantic import BaseModel
 
 from ..config import settings
+from ..telemetry import get_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -70,30 +72,59 @@ class QAServiceClient:
         Returns:
             List of matching Q&A pairs.
         """
+        tracer = get_tracer("access-agent.rag")
         client = await self._get_client()
 
         payload: dict[str, Any] = {"query": query, "limit": limit}
         if threshold is not None:
             payload["threshold"] = threshold
 
-        try:
-            response = await client.post("/search", json=payload)
-            response.raise_for_status()
-            data = response.json()
+        with tracer.start_as_current_span(
+            "rag.search",
+            attributes={
+                "rag.service": "qa-service",
+                "rag.endpoint": "/search",
+                "rag.query_length": len(query),
+                "rag.limit": limit,
+                "rag.threshold": threshold if threshold is not None else -1,
+            },
+        ) as span:
+            start_time = time.time()
+            try:
+                response = await client.post("/search", json=payload)
+                duration_ms = int((time.time() - start_time) * 1000)
+                span.set_attribute("rag.duration_ms", duration_ms)
+                span.set_attribute("http.status_code", response.status_code)
 
-            matches = [QAMatch(**m) for m in data.get("matches", [])]
-            logger.debug(
-                f"QA service search: {len(matches)} matches for '{query[:50]}...' "
-                f"(cached={data.get('cached', False)})"
-            )
-            return matches
+                response.raise_for_status()
+                data = response.json()
 
-        except httpx.HTTPStatusError as e:
-            logger.error(f"QA service error: {e.response.status_code} - {e.response.text}")
-            raise
-        except httpx.RequestError as e:
-            logger.error(f"QA service request failed: {e}")
-            raise
+                matches = [QAMatch(**m) for m in data.get("matches", [])]
+                span.set_attribute("rag.matches_returned", len(matches))
+                span.set_attribute("rag.cached", data.get("cached", False))
+
+                if matches:
+                    span.set_attribute("rag.best_score", matches[0].similarity_score)
+
+                logger.debug(
+                    f"QA service search: {len(matches)} matches for '{query[:50]}...' "
+                    f"(cached={data.get('cached', False)}, {duration_ms}ms)"
+                )
+                return matches
+
+            except httpx.HTTPStatusError as e:
+                duration_ms = int((time.time() - start_time) * 1000)
+                span.set_attribute("rag.duration_ms", duration_ms)
+                span.set_attribute("http.status_code", e.response.status_code)
+                span.set_attribute("rag.error", f"HTTP {e.response.status_code}")
+                logger.error(f"QA service error: {e.response.status_code} - {e.response.text}")
+                raise
+            except httpx.RequestError as e:
+                duration_ms = int((time.time() - start_time) * 1000)
+                span.set_attribute("rag.duration_ms", duration_ms)
+                span.set_attribute("rag.error", str(e)[:200])
+                logger.error(f"QA service request failed: {e}")
+                raise
 
     async def search_by_domain(
         self,

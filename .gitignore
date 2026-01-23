@@ -77,3 +77,9 @@ dmypy.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl

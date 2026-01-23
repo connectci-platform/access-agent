@@ -137,6 +137,35 @@ docker-compose up --build
 docker-compose -f docker-compose.prod.yml up -d
 ```
 
+## Observability
+
+The agent includes comprehensive OpenTelemetry tracing for debugging and performance analysis.
+
+### Setup
+
+Tracing is enabled by setting environment variables:
+
+```bash
+OTEL_ENABLED=true
+OTEL_EXPORTER_OTLP_ENDPOINT=https://your-otlp-endpoint
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic xxx
+```
+
+### What's Traced
+
+- **Agent flow**: classify → rag_answer → plan → execute → synthesize
+- **LLM calls**: Model, tokens (input/output/cached), latency (via `opentelemetry-instrumentation-langchain`)
+- **MCP tool calls**: Server, tool name, arguments, results
+- **RAG lookups**: Query, matches, similarity scores
+
+### Viewing Traces
+
+Traces are exported to Honeycomb (or any OTLP-compatible backend). View them in:
+- Honeycomb UI: https://ui.honeycomb.io → Dataset: `access-ci`
+- Filter by `service.component = "access-agent"` to see agent traces
+
+The Honeycomb board in `observability/honeycomb.tf` provides pre-built dashboards for monitoring.
+
 ## Project Structure
 
 ```

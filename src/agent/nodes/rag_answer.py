@@ -23,6 +23,7 @@ from langchain_core.messages import AIMessage
 
 from ...config import settings
 from ...services.qa_client import get_qa_client
+from ...telemetry import get_tracer
 from ..state import AgentState, RAGMatch
 
 logger = logging.getLogger(__name__)
@@ -85,85 +86,114 @@ async def rag_answer_node(state: AgentState) -> dict[str, object]:
         - For combined: rag_matches, rag_used (no final_answer - continues to tools)
         - For no match: query_classification updated
     """
+    tracer = get_tracer("access-agent.nodes")
     query = state["query"]
     classification = state["query_classification"]
     query_type = classification.query_type if classification else "static"
 
-    logger.info(f"RAG lookup for {query_type} query: {query[:50]}...")
+    with tracer.start_as_current_span(
+        "agent.rag_answer",
+        attributes={
+            "agent.node": "rag_answer",
+            "agent.query_type": query_type,
+            "agent.query_length": len(query),
+        },
+    ) as span:
+        logger.info(f"RAG lookup for {query_type} query: {query[:50]}...")
 
-    # Check if QA service is configured
-    client = get_qa_client()
-    if not client.is_configured:
-        logger.warning("QA service not configured, falling back to tools")
-        return {"rag_matches": [], "rag_used": False}
+        # Check if QA service is configured
+        client = get_qa_client()
+        if not client.is_configured:
+            logger.warning("QA service not configured, falling back to tools")
+            span.set_attribute("rag.configured", False)
+            return {"rag_matches": [], "rag_used": False}
 
-    # Get appropriate threshold for query type
-    threshold = _get_threshold_for_query_type(query_type)
+        span.set_attribute("rag.configured", True)
 
-    try:
-        # Search for matching Q&A pairs
-        matches = await client.search(
-            query=query,
-            limit=settings.RAG_TOP_K,
-            threshold=threshold,
-        )
+        # Get appropriate threshold for query type
+        threshold = _get_threshold_for_query_type(query_type)
+        span.set_attribute("rag.threshold", threshold)
 
-        # Convert to RAGMatch objects for state
-        rag_matches = [
-            RAGMatch(
-                id=m.id,
-                question=m.question,
-                answer=m.answer,
-                domain=m.domain,
-                entity_id=m.entity_id,
-                similarity_score=m.similarity_score,
-                metadata=m.metadata,
-            )
-            for m in matches
-        ]
-
-        if rag_matches:
-            best_match = rag_matches[0]
-            logger.info(
-                f"RAG found {len(rag_matches)} matches. Best: "
-                f"similarity={best_match.similarity_score:.3f}, "
-                f"question='{best_match.question[:50]}...'"
+        try:
+            # Search for matching Q&A pairs
+            matches = await client.search(
+                query=query,
+                limit=settings.RAG_TOP_K,
+                threshold=threshold,
             )
 
-            # For static queries with confident match, return final answer
-            if query_type == "static" and best_match.similarity_score >= threshold:
-                answer = process_citations(best_match.answer)
-                return {
-                    "final_answer": answer,
-                    "messages": [AIMessage(content=answer)],
-                    "tools_used": ["rag_retrieval"],
-                    "rag_matches": rag_matches,
-                    "rag_used": True,
-                }
+            # Convert to RAGMatch objects for state
+            rag_matches = [
+                RAGMatch(
+                    id=m.id,
+                    question=m.question,
+                    answer=m.answer,
+                    domain=m.domain,
+                    entity_id=m.entity_id,
+                    similarity_score=m.similarity_score,
+                    metadata=m.metadata,
+                )
+                for m in matches
+            ]
 
-            # For combined queries, store matches and continue to tools
-            if query_type == "combined":
-                logger.info(f"Combined query: Storing {len(rag_matches)} RAG matches for synthesis")
-                return {
-                    "rag_matches": rag_matches,
-                    "rag_used": True,
-                }
+            # Record match statistics
+            span.set_attribute("rag.matches_found", len(rag_matches))
+            if rag_matches:
+                span.set_attribute("rag.best_score", rag_matches[0].similarity_score)
 
-            # Static query but below threshold - fall through
-            logger.info(
-                f"Best match below threshold: {best_match.similarity_score:.3f} < {threshold}"
-            )
+            if rag_matches:
+                best_match = rag_matches[0]
+                logger.info(
+                    f"RAG found {len(rag_matches)} matches. Best: "
+                    f"similarity={best_match.similarity_score:.3f}, "
+                    f"question='{best_match.question[:50]}...'"
+                )
 
-        # No confident match found
-        logger.info("No RAG match found above threshold")
+                # For static queries with confident match, return final answer
+                if query_type == "static" and best_match.similarity_score >= threshold:
+                    answer = process_citations(best_match.answer)
+                    span.set_attribute("rag.result", "direct_answer")
+                    span.set_attribute("rag.answer_length", len(answer))
+                    return {
+                        "final_answer": answer,
+                        "messages": [AIMessage(content=answer)],
+                        "tools_used": ["rag_retrieval"],
+                        "rag_matches": rag_matches,
+                        "rag_used": True,
+                    }
 
-        # Return empty matches but preserve the classification
-        # The graph routing will handle fallback to tools
-        return {
-            "rag_matches": rag_matches,  # May have low-confidence matches
-            "rag_used": len(rag_matches) > 0,
-        }
+                # For combined queries, store matches and continue to tools
+                if query_type == "combined":
+                    logger.info(
+                        f"Combined query: Storing {len(rag_matches)} RAG matches for synthesis"
+                    )
+                    span.set_attribute("rag.result", "matches_for_synthesis")
+                    return {
+                        "rag_matches": rag_matches,
+                        "rag_used": True,
+                    }
 
-    except Exception as e:
-        logger.error(f"RAG lookup failed: {e}")
-        return {"rag_matches": [], "rag_used": False}
+                # Static query but below threshold - fall through
+                logger.info(
+                    f"Best match below threshold: {best_match.similarity_score:.3f} < {threshold}"
+                )
+                span.set_attribute("rag.result", "below_threshold")
+
+            else:
+                span.set_attribute("rag.result", "no_matches")
+
+            # No confident match found
+            logger.info("No RAG match found above threshold")
+
+            # Return empty matches but preserve the classification
+            # The graph routing will handle fallback to tools
+            return {
+                "rag_matches": rag_matches,  # May have low-confidence matches
+                "rag_used": len(rag_matches) > 0,
+            }
+
+        except Exception as e:
+            logger.error(f"RAG lookup failed: {e}")
+            span.set_attribute("rag.result", "error")
+            span.set_attribute("rag.error", str(e)[:200])
+            return {"rag_matches": [], "rag_used": False}

@@ -1,0 +1,56 @@
+{
+  "name": "ACCESS-CI Observability",
+  "description": "MCP server and agent monitoring",
+  "queries": [
+    {
+      "caption": "Tool Calls by Tool",
+      "query": {
+        "calculations": [{"op": "COUNT"}],
+        "breakdowns": ["gen_ai.tool.name"],
+        "filters": [{"column": "mcp.method.name", "op": "=", "value": "tools/call"}],
+        "time_range": 3600
+      }
+    },
+    {
+      "caption": "Latency by Tool (P50, P95)",
+      "query": {
+        "calculations": [
+          {"op": "P50", "column": "duration_ms"},
+          {"op": "P95", "column": "duration_ms"}
+        ],
+        "breakdowns": ["gen_ai.tool.name"],
+        "filters": [{"column": "mcp.method.name", "op": "=", "value": "tools/call"}],
+        "time_range": 3600
+      }
+    },
+    {
+      "caption": "Errors by Tool",
+      "query": {
+        "calculations": [{"op": "COUNT"}],
+        "breakdowns": ["gen_ai.tool.name", "error.type"],
+        "filters": [{"column": "status", "op": "=", "value": "error"}],
+        "time_range": 3600
+      }
+    },
+    {
+      "caption": "Calls by Service",
+      "query": {
+        "calculations": [{"op": "COUNT"}],
+        "breakdowns": ["service.name"],
+        "time_range": 3600
+      }
+    },
+    {
+      "caption": "Agent Node Duration",
+      "query": {
+        "calculations": [
+          {"op": "P50", "column": "duration_ms"},
+          {"op": "P95", "column": "duration_ms"}
+        ],
+        "breakdowns": ["agent.node"],
+        "filters": [{"column": "service.name", "op": "=", "value": "access-agent"}],
+        "time_range": 3600
+      }
+    }
+  ]
+}

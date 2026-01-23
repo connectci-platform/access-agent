@@ -15,6 +15,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
 from ...config import settings
+from ...telemetry import get_tracer
 from ..state import AgentState, QueryClassification
 
 logger = logging.getLogger(__name__)
@@ -115,13 +116,28 @@ async def classify_node(state: AgentState) -> dict[str, QueryClassification]:
     Returns:
         State update with query_classification.
     """
+    tracer = get_tracer("access-agent.nodes")
     query = state["query"]
 
-    classification = await classify_query_with_llm(query)
+    with tracer.start_as_current_span(
+        "agent.classify",
+        attributes={
+            "agent.node": "classify",
+            "agent.query_length": len(query),
+        },
+    ) as span:
+        classification = await classify_query_with_llm(query)
 
-    logger.info(
-        f"Query classified as {classification.query_type} "
-        f"(confidence={classification.confidence}): {classification.reason}"
-    )
+        # Add classification results to span
+        span.set_attribute("agent.query_type", classification.query_type)
+        span.set_attribute("agent.confidence", classification.confidence)
+        span.set_attribute(
+            "agent.reason", classification.reason[:100] if classification.reason else ""
+        )
 
-    return {"query_classification": classification}
+        logger.info(
+            f"Query classified as {classification.query_type} "
+            f"(confidence={classification.confidence}): {classification.reason}"
+        )
+
+        return {"query_classification": classification}

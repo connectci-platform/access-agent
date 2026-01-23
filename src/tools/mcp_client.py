@@ -9,6 +9,7 @@ import httpx
 from pydantic import BaseModel
 
 from ..config import settings
+from ..telemetry import create_async_client
 
 logger = logging.getLogger(__name__)
 
@@ -19,18 +20,18 @@ _shared_client: httpx.AsyncClient | None = None
 def get_shared_client(timeout: float = 30.0) -> httpx.AsyncClient:
     """Get or create the shared HTTP client for connection pooling.
 
+    Uses create_async_client() which provides OpenTelemetry instrumentation
+    for trace context propagation to MCP servers.
+
     Args:
         timeout: Request timeout in seconds.
 
     Returns:
-        A shared AsyncClient instance.
+        A shared AsyncClient instance with trace context propagation.
     """
     global _shared_client
     if _shared_client is None or _shared_client.is_closed:
-        _shared_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout, connect=5.0),
-            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
-        )
+        _shared_client = create_async_client(timeout=timeout)
         logger.debug("Created shared HTTP client with connection pooling")
     return _shared_client
 

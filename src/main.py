@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .api import router
 from .config import settings
+from .telemetry import init_telemetry, shutdown_telemetry
 
 # Configure logging
 logging.basicConfig(
@@ -45,6 +46,9 @@ app.include_router(router, prefix="/api/v1")
 @app.on_event("startup")
 async def startup_event() -> None:
     """Initialize the agent on startup."""
+    # Initialize OpenTelemetry first
+    init_telemetry(app=app, service_name="access-agent")
+
     logger.info("Starting ACCESS Documentation Agent")
     logger.info(f"Environment: {settings.ENVIRONMENT}")
     logger.info(f"LLM Provider: {settings.LLM_PROVIDER}")
@@ -76,6 +80,9 @@ async def shutdown_event() -> None:
 
     logger.info("Shutting down ACCESS Documentation Agent")
     await close_shared_client()
+
+    # Shutdown telemetry and flush pending spans
+    shutdown_telemetry()
 
 
 def main() -> None:

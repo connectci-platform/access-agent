@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from ..agent.graph import run_agent
 from ..config import settings
 from ..tools import ToolRegistry, get_catalog_aggregator
+from ..usage_logger import get_usage_logger
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,8 @@ async def query_agent(
         f"(session={session_id}, acting_user={x_acting_user or 'anonymous'})"
     )
 
+    start_time = time.time()
+
     try:
         # Get tool catalog
         registry = await get_registry()
@@ -110,8 +113,30 @@ async def query_agent(
         query_analysis = final_state.get("query_analysis")
 
         confidence = None
+        query_type = None
         if query_analysis:
             confidence = query_analysis.confidence
+        query_classification = final_state.get("query_classification")
+        if query_classification:
+            query_type = query_classification.query_type
+
+        # Calculate duration
+        duration_ms = (time.time() - start_time) * 1000
+
+        # Log usage for reporting (user ID is hashed, no PII stored)
+        usage_logger = get_usage_logger()
+        usage_logger.log_query(
+            query_text=request.query,
+            session_id=session_id,
+            question_id=question_id,
+            query_type=query_type,
+            confidence=confidence,
+            tools_used=tools_used,
+            duration_ms=duration_ms,
+            response_length=len(final_answer),
+            acting_user=x_acting_user,
+            success=True,
+        )
 
         return QueryResponse(
             success=True,
@@ -125,6 +150,7 @@ async def query_agent(
                 "tool_count": len(tools_used),
                 "execution_strategy": final_state.get("execution_strategy", "unknown"),
                 "checkpointing_enabled": USE_CHECKPOINTING,
+                "duration_ms": duration_ms,
             },
         )
 

@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 from langgraph.graph import END, START, StateGraph
 
+from ..telemetry import get_tracer
 from .edges.routing import (
     should_execute_tools,
     should_recover_or_evaluate,
@@ -300,50 +301,72 @@ async def run_agent(
     """
     from .state import create_initial_state
 
-    # Create initial state
-    initial_state = create_initial_state(
-        query=query,
-        session_id=session_id,
-        question_id=question_id,
-        tool_catalog=tool_catalog,
-        acting_user=acting_user,
-    )
+    tracer = get_tracer("access-agent")
 
-    # Run the graph
-    logger.info(f"Running agent for query: {query[:50]}...")
+    # Create root span for entire agent execution
+    with tracer.start_as_current_span(
+        "agent.run",
+        attributes={
+            "agent.query": query[:200],  # Truncate long queries
+            "agent.session_id": session_id,
+            "agent.question_id": question_id,
+            "agent.user": acting_user or "anonymous",
+        },
+    ) as root_span:
+        # Create initial state
+        initial_state = create_initial_state(
+            query=query,
+            session_id=session_id,
+            question_id=question_id,
+            tool_catalog=tool_catalog,
+            acting_user=acting_user,
+        )
 
-    if use_checkpointing and db_uri:
-        from langchain_core.messages import HumanMessage
+        # Run the graph
+        logger.info(f"Running agent for query: {query[:50]}...")
 
-        # Use async checkpointer as context manager
-        async with create_async_checkpointer(db_uri) as checkpointer:
-            # Setup tables on first use
-            await checkpointer.setup()
-            graph = create_checkpointed_graph(checkpointer)
-            config = {"configurable": {"thread_id": session_id}}
+        if use_checkpointing and db_uri:
+            from langchain_core.messages import HumanMessage
 
-            # Get previous state to preserve conversation history
-            previous_state = await graph.aget_state(config)
+            # Use async checkpointer as context manager
+            async with create_async_checkpointer(db_uri) as checkpointer:
+                # Setup tables on first use
+                await checkpointer.setup()
+                graph = create_checkpointed_graph(checkpointer)
+                config = {"configurable": {"thread_id": session_id}}
 
-            if previous_state.values:
-                # We have previous conversation - get existing messages
-                existing_messages = previous_state.values.get("messages", [])
-                # Add the new user message to existing messages
-                initial_state["messages"] = [*existing_messages, HumanMessage(content=query)]
-                logger.info(
-                    f"Resuming conversation with {len(existing_messages)} previous messages"
-                )
+                # Get previous state to preserve conversation history
+                previous_state = await graph.aget_state(config)
 
-            final_state = await graph.ainvoke(initial_state, config)
-    else:
-        graph = create_agent_graph()
-        final_state = await graph.ainvoke(initial_state, {})
+                if previous_state.values:
+                    # We have previous conversation - get existing messages
+                    existing_messages = previous_state.values.get("messages", [])
+                    # Add the new user message to existing messages
+                    initial_state["messages"] = [*existing_messages, HumanMessage(content=query)]
+                    logger.info(
+                        f"Resuming conversation with {len(existing_messages)} previous messages"
+                    )
 
-    logger.info(
-        f"Agent complete: tools_used={final_state.get('tools_used', [])}, "
-        f"answer_length={len(final_state.get('final_answer', '') or '')}"
-    )
+                final_state = await graph.ainvoke(initial_state, config)
+        else:
+            graph = create_agent_graph()
+            final_state = await graph.ainvoke(initial_state, {})
 
-    # Cast from Any (LangGraph's dynamic return) to AgentState
-    result: AgentState = final_state
-    return result
+        # Add result attributes to root span
+        tools_used = final_state.get("tools_used", [])
+        final_answer = final_state.get("final_answer", "") or ""
+        root_span.set_attribute("agent.tools_used", len(tools_used))
+        root_span.set_attribute("agent.tool_names", ",".join(tools_used) if tools_used else "")
+        root_span.set_attribute("agent.answer_length", len(final_answer))
+
+        classification = final_state.get("query_classification")
+        if classification:
+            root_span.set_attribute("agent.query_type", classification.query_type)
+
+        logger.info(
+            f"Agent complete: tools_used={tools_used}, " f"answer_length={len(final_answer)}"
+        )
+
+        # Cast from Any (LangGraph's dynamic return) to AgentState
+        result: AgentState = final_state
+        return result

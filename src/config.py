@@ -12,6 +12,12 @@ class Settings(BaseSettings):
     ENVIRONMENT: Literal["local", "docker", "production"] = "local"
     DEBUG: bool = False
 
+    # OpenTelemetry / Observability (Honeycomb)
+    OTEL_ENABLED: bool = True
+    OTEL_SERVICE_NAME: str = "access-agent"
+    OTEL_EXPORTER_OTLP_ENDPOINT: str = ""  # e.g., https://api.honeycomb.io
+    OTEL_EXPORTER_OTLP_HEADERS: str = ""  # e.g., x-honeycomb-team=xxx
+
     # API
     API_HOST: str = "0.0.0.0"
     API_PORT: int = 8000

@@ -5,10 +5,14 @@ and sequential execution strategies with dependency resolution.
 """
 
 import asyncio
+import json
 import logging
 import re
+import time
 from typing import Any
 
+from ...telemetry import get_tracer
+from ...telemetry.spans import add_span_event
 from ...tools import MCPClient
 from ..state import AgentState, ToolCall, ToolResult
 
@@ -30,48 +34,96 @@ async def execute_node(state: AgentState) -> dict[str, Any]:
     Returns:
         Dict with tool_results and tools_used.
     """
-    query_analysis = state.get("query_analysis")
-    planned_tools = state.get("planned_tools", [])
+    tracer = get_tracer("access-agent.nodes")
 
-    # Skip execution if no tools needed
-    if query_analysis and not query_analysis.requires_tools:
-        logger.info("No tools needed, skipping execution")
+    with tracer.start_as_current_span("agent.execute") as span:
+        query_analysis = state.get("query_analysis")
+        planned_tools = state.get("planned_tools", [])
+
+        span.set_attribute("agent.node", "execute")
+        span.set_attribute("agent.tools_planned", len(planned_tools))
+
+        # Skip execution if no tools needed
+        if query_analysis and not query_analysis.requires_tools:
+            logger.info("No tools needed, skipping execution")
+            span.set_attribute("agent.skipped", True)
+            span.set_attribute("agent.skip_reason", "no_tools_needed")
+            return {
+                "tool_results": [],
+                "tools_used": [],
+            }
+
+        if not planned_tools:
+            logger.info("No tools planned, skipping execution")
+            span.set_attribute("agent.skipped", True)
+            span.set_attribute("agent.skip_reason", "no_tools_planned")
+            return {
+                "tool_results": [],
+                "tools_used": [],
+            }
+
+        strategy = state.get("execution_strategy", "parallel")
+        acting_user = state.get("acting_user")
+        span.set_attribute("agent.strategy", strategy)
+
+        logger.info(f"Executing {len(planned_tools)} tools with strategy: {strategy}")
+
+        # Create MCP client
+        mcp_client = MCPClient()
+
+        # Execute based on strategy
+        if strategy == "parallel":
+            results = await _execute_parallel(mcp_client, planned_tools, acting_user)
+        elif strategy == "sequential":
+            results = await _execute_sequential(mcp_client, planned_tools, acting_user)
+        else:  # mixed
+            results = await _execute_mixed(mcp_client, planned_tools, acting_user)
+
+        # Extract successful tool names
+        tools_used = [r.tool_name for r in results if r.success]
+
+        # Log results to span
+        span.set_attribute("agent.tools_executed", len(results))
+        span.set_attribute("agent.tools_succeeded", len(tools_used))
+
+        # Add detailed result info for each tool
+        for result in results:
+            event_attrs = {
+                "tool": result.tool_name,
+                "server": result.server,
+                "success": result.success,
+                "duration_ms": result.duration_ms,
+            }
+            if result.error:
+                event_attrs["error"] = result.error
+            if result.data:
+                # Log a summary of the result data
+                data_summary = _summarize_result(result.data)
+                event_attrs["data_summary"] = data_summary
+            add_span_event(f"tool_result.{result.tool_name}", event_attrs)
+
+        logger.info(f"Execution complete: {len(tools_used)}/{len(results)} tools succeeded")
+
         return {
-            "tool_results": [],
-            "tools_used": [],
+            "tool_results": results,
+            "tools_used": tools_used,
         }
 
-    if not planned_tools:
-        logger.info("No tools planned, skipping execution")
-        return {
-            "tool_results": [],
-            "tools_used": [],
-        }
 
-    strategy = state.get("execution_strategy", "parallel")
-    acting_user = state.get("acting_user")
-    logger.info(f"Executing {len(planned_tools)} tools with strategy: {strategy}")
-
-    # Create MCP client
-    mcp_client = MCPClient()
-
-    # Execute based on strategy
-    if strategy == "parallel":
-        results = await _execute_parallel(mcp_client, planned_tools, acting_user)
-    elif strategy == "sequential":
-        results = await _execute_sequential(mcp_client, planned_tools, acting_user)
-    else:  # mixed
-        results = await _execute_mixed(mcp_client, planned_tools, acting_user)
-
-    # Extract successful tool names
-    tools_used = [r.tool_name for r in results if r.success]
-
-    logger.info(f"Execution complete: {len(tools_used)}/{len(results)} tools succeeded")
-
-    return {
-        "tool_results": results,
-        "tools_used": tools_used,
-    }
+def _summarize_result(data: Any) -> str:
+    """Create a brief summary of tool result data for tracing."""
+    if isinstance(data, dict):
+        # For dict results, show key counts
+        summary_parts = []
+        for key, value in data.items():
+            if isinstance(value, list):
+                summary_parts.append(f"{key}={len(value)} items")
+            elif isinstance(value, int | float | str | bool):
+                summary_parts.append(f"{key}={value}"[:50])
+        return ", ".join(summary_parts[:5])
+    if isinstance(data, list):
+        return f"{len(data)} items"
+    return str(type(data).__name__)
 
 
 async def _execute_parallel(
@@ -258,25 +310,50 @@ async def _execute_single_tool(
     Returns:
         ToolResult with success status and data or error.
     """
-    logger.debug(f"Executing tool: {tool.tool_name} on {tool.server}")
-    logger.debug(f"Arguments: {tool.arguments}")
+    tracer = get_tracer("access-agent.mcp")
 
-    result = await client.call_tool(
-        server=tool.server,
-        tool_name=tool.tool_name,
-        arguments=tool.arguments,
-        acting_user=acting_user,
-    )
+    with tracer.start_as_current_span(f"mcp.call_tool.{tool.tool_name}") as span:
+        span.set_attribute("mcp.server", tool.server)
+        span.set_attribute("mcp.tool", tool.tool_name)
+        span.set_attribute("mcp.arguments", json.dumps(tool.arguments, default=str))
+        span.set_attribute("mcp.step_id", tool.step_id)
 
-    return ToolResult(
-        step_id=tool.step_id,
-        tool_name=tool.tool_name,
-        server=tool.server,
-        success=result.success,
-        data=result.data,
-        error=result.error,
-        duration_ms=result.duration_ms,
-    )
+        logger.debug(f"Executing tool: {tool.tool_name} on {tool.server}")
+        logger.debug(f"Arguments: {tool.arguments}")
+
+        start_time = time.perf_counter()
+
+        result = await client.call_tool(
+            server=tool.server,
+            tool_name=tool.tool_name,
+            arguments=tool.arguments,
+            acting_user=acting_user,
+        )
+
+        duration_ms = (time.perf_counter() - start_time) * 1000
+
+        # Add result info to span
+        span.set_attribute("mcp.success", result.success)
+        span.set_attribute("mcp.duration_ms", result.duration_ms or duration_ms)
+
+        if result.error:
+            span.set_attribute("mcp.error", result.error)
+
+        if result.data and isinstance(result.data, dict):
+            # Log summary of result data
+            for key in ["total", "total_outages", "total_items", "total_events", "count"]:
+                if key in result.data:
+                    span.set_attribute(f"mcp.result.{key}", result.data[key])
+
+        return ToolResult(
+            step_id=tool.step_id,
+            tool_name=tool.tool_name,
+            server=tool.server,
+            success=result.success,
+            data=result.data,
+            error=result.error,
+            duration_ms=result.duration_ms,
+        )
 
 
 def _resolve_parameters(
