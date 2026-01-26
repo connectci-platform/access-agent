@@ -275,24 +275,24 @@ def _format_tool_line(tool: dict[str, Any], server_name: str) -> str:
     name = tool.get("name", "")
     desc = tool.get("description", "")[:100]
 
-    # Build parameter string with descriptions and enum values
+    # Build parameter string with descriptions, enum values, and defaults
     # Support both "parameters" (list format) and "inputSchema" (JSON Schema format)
     params = tool.get("parameters", [])
     param_strs = []
 
     if params:
-        # List format: [{"name": "x", "type": "string", "required": true}]
+        # List format: [{"name": "x", "type": "string", "required": true, "description": "...", "default": ...}]
         for p in params:
-            pname = p.get("name", "")
-            ptype = p.get("type", "string")
-            required = "*" if p.get("required") else ""
-
-            enum_vals = p.get("enum")
-            if enum_vals:
-                enum_str = "|".join(str(v) for v in enum_vals)
-                param_strs.append(f"{pname}: {ptype}{required} (one of: {enum_str})")
-            else:
-                param_strs.append(f"{pname}: {ptype}{required}")
+            param_strs.append(
+                _format_param(
+                    name=p.get("name", ""),
+                    ptype=p.get("type", "string"),
+                    required=p.get("required", False),
+                    description=p.get("description", ""),
+                    enum_vals=p.get("enum"),
+                    default=p.get("default"),
+                )
+            )
     else:
         # JSON Schema format: {"inputSchema": {"properties": {...}, "required": [...]}}
         input_schema = tool.get("inputSchema", {})
@@ -300,19 +300,53 @@ def _format_tool_line(tool: dict[str, Any], server_name: str) -> str:
         required_params = input_schema.get("required", [])
 
         for pname, pschema in properties.items():
-            ptype = pschema.get("type", "string")
-            required = "*" if pname in required_params else ""
+            param_strs.append(
+                _format_param(
+                    name=pname,
+                    ptype=pschema.get("type", "string"),
+                    required=pname in required_params,
+                    description=pschema.get("description", ""),
+                    enum_vals=pschema.get("enum"),
+                    default=pschema.get("default"),
+                )
+            )
 
-            enum_vals = pschema.get("enum")
-            if enum_vals:
-                enum_str = "|".join(str(v) for v in enum_vals)
-                param_strs.append(f"{pname}: {ptype}{required} (one of: {enum_str})")
-            else:
-                param_strs.append(f"{pname}: {ptype}{required}")
+    params_text = "\n    ".join(param_strs) if param_strs else "none"
 
-    params_text = ", ".join(param_strs) if param_strs else "none"
+    return f"- {name} (server: {server_name}): {desc}\n    Parameters:\n    {params_text}"
 
-    return f"- {name} (server: {server_name}) [{params_text}]: {desc}"
+
+def _format_param(
+    name: str,
+    ptype: str,
+    required: bool,
+    description: str,
+    enum_vals: list[str] | None,
+    default: Any,
+) -> str:
+    """Format a single parameter with its metadata."""
+    parts = [f"{name}"]
+
+    # Type and required marker
+    if required:
+        parts.append(f"({ptype}, REQUIRED)")
+    else:
+        parts.append(f"({ptype}, optional)")
+
+    # Enum values
+    if enum_vals:
+        enum_str = "|".join(str(v) for v in enum_vals)
+        parts.append(f"[one of: {enum_str}]")
+
+    # Default value
+    if default is not None:
+        parts.append(f"[default: {default}]")
+
+    # Description - important for understanding when to use/omit
+    if description:
+        parts.append(f"- {description}")
+
+    return " ".join(parts)
 
 
 def _validate_tool(tool_name: str, catalog: dict[str, Any]) -> bool:
