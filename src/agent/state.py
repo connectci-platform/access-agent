@@ -86,6 +86,10 @@ class QueryClassification(BaseModel):
         default="medium",
         description="Confidence in the classification",
     )
+    expanded_query: str = Field(
+        default="",
+        description="Query rewritten as a standalone question with context resolved",
+    )
 
 
 class QueryAnalysis(BaseModel):

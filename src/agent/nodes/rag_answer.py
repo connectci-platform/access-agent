@@ -91,15 +91,21 @@ async def rag_answer_node(state: AgentState) -> dict[str, object]:
     classification = state["query_classification"]
     query_type = classification.query_type if classification else "static"
 
+    # Use expanded_query from classification (has pronouns/references resolved)
+    search_query = (
+        classification.expanded_query if classification and classification.expanded_query else query
+    )
+
     with tracer.start_as_current_span(
         "agent.rag_answer",
         attributes={
             "agent.node": "rag_answer",
             "agent.query_type": query_type,
             "agent.query_length": len(query),
+            "agent.query_expanded": search_query != query,
         },
     ) as span:
-        logger.info(f"RAG lookup for {query_type} query: {query[:50]}...")
+        logger.info(f"RAG lookup for {query_type} query: {search_query[:50]}...")
 
         # Check if QA service is configured
         client = get_qa_client()
@@ -115,9 +121,9 @@ async def rag_answer_node(state: AgentState) -> dict[str, object]:
         span.set_attribute("rag.threshold", threshold)
 
         try:
-            # Search for matching Q&A pairs
+            # Search for matching Q&A pairs using expanded query
             matches = await client.search(
-                query=query,
+                query=search_query,
                 limit=settings.RAG_TOP_K,
                 threshold=threshold,
             )
