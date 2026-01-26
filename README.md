@@ -97,6 +97,7 @@ Environment variables (see `.env.example`):
 | `RAG_THRESHOLD_COMBINED` | Similarity threshold for combined queries | 0.75 |
 | `MCP_CATALOG_URL` | URL to fetch tool catalog | - |
 | `MCP_CATALOG_PATH` | Path to local catalog file | - |
+| `SYNTHESIS_TOKEN_BUDGET` | Max tokens for tool results before condensation | 80000 |
 
 ## Query Classification
 
@@ -112,6 +113,16 @@ Examples:
 - Static: "What GPUs does Delta have?" → RAG
 - Dynamic: "What are my current allocations?" → MCP tools
 - Combined: "What GPUs does Delta have and is it operational?" → RAG + tools
+
+### Query Expansion
+
+The classifier also expands follow-up queries by resolving pronouns and references from conversation history:
+
+```
+User: "What GPUs does Delta have?"
+Agent: "Delta has NVIDIA A100 GPUs..."
+User: "What about Expanse?"  →  Expanded to: "What GPUs does Expanse have?"
+```
 
 ## Development
 
@@ -182,7 +193,7 @@ src/
 │       ├── execute.py   # MCP tool execution
 │       ├── evaluate.py  # Result quality check
 │       ├── recover.py   # Error recovery
-│       └── synthesize.py # Answer generation (RAG-aware)
+│       └── synthesize.py # Answer generation (RAG-aware, token budget)
 ├── services/
 │   └── qa_client.py     # HTTP client for QA service
 ├── tools/

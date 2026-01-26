@@ -68,6 +68,7 @@ You MUST respond with valid JSON only, no markdown or explanation:
 8. Maximum 4 tools per query unless absolutely necessary
 9. Use CONVERSATION HISTORY to understand context - if user asks "which one has X", look at previous messages to understand what "one" refers to
 10. Only include optional filter parameters when the user's question explicitly requires filtering
+11. IMPORTANT: When looking for specific categories of software (e.g., "AI tools", "machine learning", "MPI libraries"), use search_software with a query filter rather than list_all_software. The search_software tool returns filtered results which are much more efficient.
 
 ## GUIDELINES
 

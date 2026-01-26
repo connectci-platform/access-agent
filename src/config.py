@@ -73,6 +73,11 @@ class Settings(BaseSettings):
     MAX_TOOL_RESULT_LENGTH: int = 50000  # Max chars per tool result in evaluate
     MAX_SINGLE_RESULT_LENGTH: int = 20000  # Max chars for a single result before truncating
 
+    # Token budget for synthesis - tool results exceeding this will be condensed first
+    # Default 80K leaves room for prompts and response within gpt-4o's 128K limit
+    # For smaller models (e.g., Mistral-7B with 32K), set to ~20000
+    SYNTHESIS_TOKEN_BUDGET: int = 80000
+
     # MCP Server base host (configurable, defaults to production IP)
     MCP_SERVER_HOST: str = "localhost"
 

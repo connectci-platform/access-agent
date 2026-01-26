@@ -3,6 +3,9 @@
 This node takes the tool execution results and/or RAG matches and generates
 a natural language answer for the user. For combined queries, it merges
 verified Q&A knowledge with real-time tool data.
+
+If tool results exceed the configured token budget, they are condensed
+using an intermediate LLM call to extract query-relevant information.
 """
 
 import logging
@@ -11,11 +14,15 @@ from typing import Any
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate
 
+from ...config import settings
 from ...llm import get_llm
 from ...telemetry import get_tracer
 from ..state import AgentState, RAGMatch, ToolResult
 
 logger = logging.getLogger(__name__)
+
+# Rough estimate: 1 token ≈ 4 characters for English text
+CHARS_PER_TOKEN = 4
 
 # System prompt for answer synthesis (tools only)
 SYNTHESIS_SYSTEM_PROMPT = """You are an ACCESS-CI documentation assistant. Your job is to answer user questions using data from ACCESS tools.
@@ -86,6 +93,122 @@ RAG_ONLY_SYNTHESIS_PROMPT = """You are an ACCESS-CI documentation assistant. You
 
 Respond naturally as a helpful documentation assistant. Do not mention "verified knowledge" or internal system details - just answer the question as if you know this information."""
 
+# System prompt for condensing large tool results
+CONDENSE_RESULTS_PROMPT = """You are a data extraction assistant. Your job is to extract information relevant to the user's question from large tool results.
+
+## USER'S QUESTION
+
+{query}
+
+## TOOL RESULTS
+
+{tool_results}
+
+## TASK
+
+Extract and summarize ONLY the information from the tool results that is relevant to answering the user's question. Be thorough - include all relevant details, versions, availability information, and any other specifics that would help answer the question.
+
+Do NOT answer the question yourself. Just extract and organize the relevant data.
+
+Output the relevant information in a clear, structured format."""
+
+
+def _estimate_tokens(text: str) -> int:
+    """Estimate the number of tokens in a text string.
+
+    Uses a simple character-based heuristic. For more accurate counts,
+    consider using tiktoken, but this is sufficient for budget checks.
+
+    Args:
+        text: The text to estimate tokens for.
+
+    Returns:
+        Estimated token count.
+    """
+    return len(text) // CHARS_PER_TOKEN
+
+
+async def _condense_tool_results(query: str, results_text: str) -> str:
+    """Condense large tool results by extracting query-relevant information.
+
+    Uses an LLM to extract only the information relevant to the user's
+    question, reducing token count while preserving important details.
+
+    Args:
+        query: The user's original query.
+        results_text: The formatted tool results text.
+
+    Returns:
+        Condensed results text with only relevant information.
+    """
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", CONDENSE_RESULTS_PROMPT),
+        ]
+    )
+
+    # Use a faster model for condensation if available, with higher token limit
+    llm = get_llm(temperature=0, max_tokens=4000)
+
+    try:
+        response = await llm.ainvoke(
+            prompt.format_messages(
+                query=query,
+                tool_results=results_text,
+            )
+        )
+        condensed = str(response.content)
+
+        original_tokens = _estimate_tokens(results_text)
+        condensed_tokens = _estimate_tokens(condensed)
+        logger.info(
+            f"Condensed tool results: {original_tokens} -> {condensed_tokens} tokens "
+            f"({100 * condensed_tokens // original_tokens}% of original)"
+        )
+
+        return condensed
+
+    except Exception as e:
+        logger.error(f"Failed to condense tool results: {e}")
+        # Fall back to truncation as last resort
+        max_chars = settings.SYNTHESIS_TOKEN_BUDGET * CHARS_PER_TOKEN
+        return results_text[:max_chars] + "\n\n[Results truncated due to length]"
+
+
+async def _maybe_condense_results(
+    query: str,
+    results_text: str,
+    span: Any,
+) -> str:
+    """Check token budget and condense results if needed.
+
+    Args:
+        query: The user's query for context-aware condensation.
+        results_text: The formatted tool results.
+        span: The telemetry span for attributes.
+
+    Returns:
+        Original or condensed results text.
+    """
+    if not results_text:
+        return results_text
+
+    estimated_tokens = _estimate_tokens(results_text)
+    span.set_attribute("synthesis.tool_results_tokens", estimated_tokens)
+
+    if estimated_tokens > settings.SYNTHESIS_TOKEN_BUDGET:
+        logger.warning(
+            f"Tool results exceed token budget: {estimated_tokens} > "
+            f"{settings.SYNTHESIS_TOKEN_BUDGET}. Condensing..."
+        )
+        span.set_attribute("synthesis.condensed", True)
+        condensed = await _condense_tool_results(query, results_text)
+        span.set_attribute("synthesis.condensed_tokens", _estimate_tokens(condensed))
+        return condensed
+
+    span.set_attribute("synthesis.condensed", False)
+    return results_text
+
 
 async def synthesize_node(state: AgentState) -> dict[str, Any]:
     """Generate a natural language answer from tool results and/or RAG matches.
@@ -153,6 +276,9 @@ async def synthesize_node(state: AgentState) -> dict[str, Any]:
         # Format available data
         rag_context = _format_rag_matches(rag_matches) if has_rag else ""
         results_text = _format_tool_results(tool_results) if has_tools else ""
+
+        # Check token budget and condense if needed
+        results_text = await _maybe_condense_results(query, results_text, span)
 
         # All tools failed but we have RAG data - use RAG only
         if has_rag and has_tools and not tools_succeeded:
