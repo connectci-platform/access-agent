@@ -67,20 +67,13 @@ You MUST respond with valid JSON only, no markdown or explanation:
 7. Prefer fewer, more specific tools over many broad tools
 8. Maximum 4 tools per query unless absolutely necessary
 9. Use CONVERSATION HISTORY to understand context - if user asks "which one has X", look at previous messages to understand what "one" refers to
-10. IMPORTANT: Only include filter parameters when the user explicitly asks for filtering:
-    - Use has_gpu: true ONLY when user asks specifically for GPU resources
-    - Use has_gpu: false ONLY when user asks specifically for non-GPU/CPU-only resources
-    - OMIT has_gpu entirely when searching for a specific resource by name
-    - When searching for a named resource (like "ACES", "Delta", "Anvil", "Bridges-2"), use ONLY the query parameter
-    - DO NOT add "type" filter when searching by name - resources may have different types (gpu, compute, storage, cloud)
-    - Example: "What is Delta?" → search_resources with arguments: {"query": "Delta"} (NO type filter!)
+10. Only include optional filter parameters when the user's question explicitly requires filtering
 
 ## GUIDELINES
 
 - For general questions that don't need live data (e.g., "How do I acknowledge ACCESS?"), set requires_tools: false
 - Use conversation history to resolve references (e.g., "which one" refers to previously discussed items)
 - Select tools based on their descriptions in the catalog above
-- When a tool has optional parameters, only include them if the user's query implies filtering
 """
 
 
