@@ -71,7 +71,9 @@ You MUST respond with valid JSON only, no markdown or explanation:
     - Use has_gpu: true ONLY when user asks specifically for GPU resources
     - Use has_gpu: false ONLY when user asks specifically for non-GPU/CPU-only resources
     - OMIT has_gpu entirely when searching for a specific resource by name
-    - When searching for a named resource (like "ACES" or "Delta"), use ONLY the query parameter
+    - When searching for a named resource (like "ACES", "Delta", "Anvil", "Bridges-2"), use ONLY the query parameter
+    - DO NOT add "type" filter when searching by name - resources may have different types (gpu, compute, storage, cloud)
+    - Example: "What is Delta?" → search_resources with arguments: {"query": "Delta"} (NO type filter!)
 
 ## GUIDELINES
 

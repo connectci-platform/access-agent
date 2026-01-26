@@ -28,7 +28,8 @@ SYNTHESIS_SYSTEM_PROMPT = """You are an ACCESS-CI documentation assistant. Your 
 4. Format data clearly - use bullet points, tables, or lists where appropriate
 5. Include relevant links when available in the data
 6. Don't make up information not present in the tool results
-7. If you cannot answer due to missing data, suggest what the user might try
+7. If you cannot answer due to missing data, suggest rephrasing the question or trying a different search
+8. For issues requiring human assistance, users can submit a ticket at https://support.access-ci.org/help-ticket
 
 ## TOOL RESULTS
 
