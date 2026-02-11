@@ -34,7 +34,7 @@ def _mock_request(cookies: dict | None = None):
 def test_valid_jwt_cookie():
     """Valid JWT cookie returns the ACCESS ID and cookie_present=True."""
     token = _make_jwt("jsmith@access-ci.org")
-    request = _mock_request(cookies={"access_auth": token})
+    request = _mock_request(cookies={"SESSaccess_auth": token})
 
     user, cookie_present = get_acting_user_from_cookie(request, jwt_secret=SECRET)
 
@@ -45,7 +45,7 @@ def test_valid_jwt_cookie():
 def test_valid_jwt_cookie_result_is_not_affected_by_body():
     """Cookie resolution is independent of body content (body not read)."""
     token = _make_jwt("cookie-user@access-ci.org")
-    request = _mock_request(cookies={"access_auth": token})
+    request = _mock_request(cookies={"SESSaccess_auth": token})
 
     user, cookie_present = get_acting_user_from_cookie(request, jwt_secret=SECRET)
 
@@ -59,7 +59,7 @@ def test_valid_jwt_cookie_result_is_not_affected_by_body():
 def test_expired_jwt_cookie_returns_none():
     """Expired JWT cookie returns (None, True) — cookie present but invalid."""
     token = _make_jwt("jsmith@access-ci.org", expired=True)
-    request = _mock_request(cookies={"access_auth": token})
+    request = _mock_request(cookies={"SESSaccess_auth": token})
 
     user, cookie_present = get_acting_user_from_cookie(request, jwt_secret=SECRET)
 
@@ -72,7 +72,7 @@ def test_expired_jwt_cookie_returns_none():
 
 def test_invalid_jwt_cookie_returns_none():
     """Tampered/invalid JWT cookie returns (None, True)."""
-    request = _mock_request(cookies={"access_auth": "not-a-valid-jwt"})
+    request = _mock_request(cookies={"SESSaccess_auth": "not-a-valid-jwt"})
 
     user, cookie_present = get_acting_user_from_cookie(request, jwt_secret=SECRET)
 
@@ -87,7 +87,7 @@ def test_wrong_secret_returns_none():
         "wrong-secret",
         algorithm="HS256",
     )
-    request = _mock_request(cookies={"access_auth": token})
+    request = _mock_request(cookies={"SESSaccess_auth": token})
 
     user, cookie_present = get_acting_user_from_cookie(request, jwt_secret=SECRET)
 
@@ -102,7 +102,7 @@ def test_jwt_missing_sub_claim():
         SECRET,
         algorithm="HS256",
     )
-    request = _mock_request(cookies={"access_auth": token})
+    request = _mock_request(cookies={"SESSaccess_auth": token})
 
     user, cookie_present = get_acting_user_from_cookie(request, jwt_secret=SECRET)
 

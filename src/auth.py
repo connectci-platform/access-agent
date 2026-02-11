@@ -1,6 +1,6 @@
 """JWT cookie authentication for ACCESS QA Bot.
 
-Extracts user identity from a signed JWT cookie (``access_auth``) set by
+Extracts user identity from a signed JWT cookie (``SESSaccess_auth``) set by
 Drupal on ``.access-ci.org``.
 
 The route handler is responsible for body-based fallback (transition period)
@@ -28,7 +28,7 @@ def get_acting_user_from_cookie(
     request: Request,
     jwt_secret: str,
 ) -> tuple[str | None, bool]:
-    """Extract the acting user from the ``access_auth`` JWT cookie.
+    """Extract the acting user from the ``SESSaccess_auth`` JWT cookie.
 
     Args:
         request: The incoming FastAPI request.
@@ -40,7 +40,7 @@ def get_acting_user_from_cookie(
         - ``(None, True)`` — cookie present but invalid/expired
         - ``(None, False)`` — no cookie sent
     """
-    token = request.cookies.get("access_auth")
+    token = request.cookies.get("SESSaccess_auth")
     if not token:
         return None, False
 

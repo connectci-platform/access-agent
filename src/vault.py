@@ -1,6 +1,6 @@
 """HashiCorp Vault client for secret management.
 
-Provides the JWT signing secret used to validate ``access_auth`` cookies.
+Provides the JWT signing secret used to validate ``SESSaccess_auth`` cookies.
 Falls back to the ``JWT_SECRET`` environment variable when Vault is
 unavailable or not configured.
 """

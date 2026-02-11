@@ -73,7 +73,7 @@ async def query_agent(
 ) -> QueryResponse:
     """Execute a query against the ACCESS Documentation Agent.
 
-    User identity is resolved from the ``access_auth`` JWT cookie set by
+    User identity is resolved from the ``SESSaccess_auth`` JWT cookie set by
     Drupal.  During transition, the ``acting_user`` body field is accepted
     as a fallback when ``ALLOW_BODY_ACTING_USER`` is enabled.
 
