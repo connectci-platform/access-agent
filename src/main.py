@@ -26,8 +26,15 @@ app = FastAPI(
 
 # Add CORS middleware
 # In production, restrict to specific origins; in dev, allow all
-if settings.ENVIRONMENT == "production" and settings.ALLOWED_ORIGINS:
-    allowed_origins = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",")]
+if settings.ENVIRONMENT == "production":
+    if settings.ALLOWED_ORIGINS:
+        allowed_origins = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",")]
+    else:
+        allowed_origins = [
+            "https://support.access-ci.org",
+            "https://qa.access-ci.org",
+            "https://access-ci.org",
+        ]
 else:
     allowed_origins = ["*"]
 

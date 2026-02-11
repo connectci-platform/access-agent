@@ -4,13 +4,15 @@ import logging
 import time
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ..agent.graph import run_agent
+from ..auth import get_acting_user_from_cookie
 from ..config import settings
 from ..tools import ToolRegistry, get_catalog_aggregator
 from ..usage_logger import get_usage_logger
+from ..vault import get_jwt_secret
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,7 @@ class QueryRequest(BaseModel):
     query: str = Field(..., description="The user's question")
     session_id: str | None = Field(None, description="Session ID for conversation tracking")
     question_id: str | None = Field(None, description="Unique question ID")
+    acting_user: str | None = Field(None, description="Transition fallback: acting user from body")
 
 
 class QueryResponse(BaseModel):
@@ -66,13 +69,17 @@ class QueryResponse(BaseModel):
 @router.post("/query", response_model=QueryResponse)
 async def query_agent(
     request: QueryRequest,
-    x_acting_user: str | None = Header(None, alias="X-Acting-User"),
+    raw_request: Request,
 ) -> QueryResponse:
     """Execute a query against the ACCESS Documentation Agent.
 
+    User identity is resolved from the ``access_auth`` JWT cookie set by
+    Drupal.  During transition, the ``acting_user`` body field is accepted
+    as a fallback when ``ALLOW_BODY_ACTING_USER`` is enabled.
+
     Args:
         request: The query request with question and optional IDs.
-        x_acting_user: ACCESS ID of the user performing the action (from header).
+        raw_request: The raw FastAPI request (for cookie access).
 
     Returns:
         QueryResponse with answer and metadata.
@@ -80,6 +87,34 @@ async def query_agent(
     Raises:
         HTTPException: If query execution fails.
     """
+    # Resolve acting user from JWT cookie (preferred) or body fallback.
+    # Body fallback uses the already-parsed QueryRequest to avoid
+    # double-consuming the ASGI body stream.
+    acting_user: str | None = None
+    try:
+        jwt_secret = get_jwt_secret(
+            vault_addr=settings.VAULT_ADDR,
+            vault_token=settings.VAULT_TOKEN,
+            vault_secret_path=settings.VAULT_SECRET_PATH,
+            env_fallback=settings.JWT_SECRET,
+        )
+        user, cookie_present = get_acting_user_from_cookie(
+            raw_request,
+            jwt_secret=jwt_secret,
+        )
+        if user:
+            acting_user = user
+        elif cookie_present:
+            # Cookie was present but invalid/expired — do NOT fall through
+            # to body fallback (prevents downgrade attacks).
+            acting_user = None
+        elif settings.ALLOW_BODY_ACTING_USER and request.acting_user:
+            # No cookie sent; use body fallback during transition period.
+            acting_user = request.acting_user.strip() or None
+    except RuntimeError:
+        # No JWT secret configured — treat all users as anonymous
+        logger.info("JWT secret not configured; treating all requests as anonymous")
+
     # Generate IDs if not provided
     timestamp = int(time.time() * 1000)
     session_id = request.session_id or f"sess_{timestamp}"
@@ -87,7 +122,7 @@ async def query_agent(
 
     logger.info(
         f"Processing query: {request.query[:50]}... "
-        f"(session={session_id}, acting_user={x_acting_user or 'anonymous'})"
+        f"(session={session_id}, acting_user={acting_user or 'anonymous'})"
     )
 
     start_time = time.time()
@@ -102,7 +137,7 @@ async def query_agent(
             session_id=session_id,
             question_id=question_id,
             tool_catalog=registry.catalog,
-            acting_user=x_acting_user,
+            acting_user=acting_user,
             use_checkpointing=USE_CHECKPOINTING,
             db_uri=settings.DATABASE_URL if USE_CHECKPOINTING else None,
         )
@@ -134,7 +169,7 @@ async def query_agent(
             tools_used=tools_used,
             duration_ms=duration_ms,
             response_length=len(final_answer),
-            acting_user=x_acting_user,
+            acting_user=acting_user,
             success=True,
         )
 

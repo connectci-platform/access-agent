@@ -56,6 +56,15 @@ class Settings(BaseSettings):
     # Legacy compatibility (uses static threshold)
     RAG_SIMILARITY_THRESHOLD: float = 0.85
 
+    # JWT Authentication
+    JWT_SECRET: str = ""  # JWT signing secret (from Vault or env)
+    ALLOW_BODY_ACTING_USER: bool = True  # Transition: accept acting_user from body
+
+    # Vault (optional — falls back to JWT_SECRET env var)
+    VAULT_ADDR: str = "http://vault:8200"
+    VAULT_TOKEN: str = ""  # Or use AppRole
+    VAULT_SECRET_PATH: str = "access/jwt"
+
     # MCP Servers
     MCP_CATALOG_URL: str = "http://localhost:5678/webhook/generate-mcp-catalog"
     MCP_CATALOG_PATH: str | None = None
@@ -81,6 +90,9 @@ class Settings(BaseSettings):
     # MCP Server base host (configurable, defaults to production IP)
     MCP_SERVER_HOST: str = "localhost"
 
+    # MCP API key for servers that require authentication (write operations)
+    MCP_API_KEY: str = ""
+
     # MCP Server port mappings
     @property
     def mcp_server_urls(self) -> dict[str, str]:
@@ -98,6 +110,7 @@ class Settings(BaseSettings):
                 "affinity-groups": "http://mcp-affinity-groups:3000",
                 "xdmod-charts": "http://mcp-xdmod-charts:3000",
                 "xdmod-data": "http://mcp-xdmod-data:3000",
+                "jsm": "http://mcp-jsm:3000",
             }
         if self.ENVIRONMENT == "production":
             # Production MCP servers at 45.79.215.140
@@ -113,6 +126,7 @@ class Settings(BaseSettings):
                 "affinity-groups": f"http://{host}:3011",
                 "xdmod-charts": f"http://{host}:3005",
                 "xdmod-data": f"http://{host}:3008",
+                "jsm": f"http://{host}:3012",
             }
         # Local development uses localhost with same port mapping
         return {
@@ -126,7 +140,14 @@ class Settings(BaseSettings):
             "affinity-groups": "http://localhost:3011",
             "xdmod-charts": "http://localhost:3005",
             "xdmod-data": "http://localhost:3008",
+            "jsm": "http://localhost:3012",
         }
+
+    # Servers that require API key authentication for tool calls
+    @property
+    def mcp_servers_requiring_api_key(self) -> set[str]:
+        """Servers that perform write operations and require API key auth."""
+        return {"jsm", "announcements", "events"}
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
