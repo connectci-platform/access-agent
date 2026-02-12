@@ -76,6 +76,36 @@ async def startup_event() -> None:
         logger.warning(f"Failed to fetch catalog at startup: {e}")
         logger.warning("Will retry on first request")
 
+    # Configure trusted JWKS issuers for JWT cookie authentication.
+    # TRUSTED_JWKS_URLS is a comma-separated list of "issuer=jwks_url" pairs.
+    from .auth import configure_trusted_issuers
+
+    trusted_issuers: dict[str, str] = {}
+    if settings.TRUSTED_JWKS_URLS:
+        for raw_entry in settings.TRUSTED_JWKS_URLS.split(","):
+            entry = raw_entry.strip()
+            if not entry:
+                continue
+            if "=" not in entry:
+                logger.warning(
+                    "Ignoring malformed TRUSTED_JWKS_URLS entry (missing '='): %s", entry
+                )
+                continue
+            issuer, jwks_url = entry.split("=", 1)
+            jwks_url = jwks_url.strip()
+            if (
+                settings.ENVIRONMENT == "production"
+                and jwks_url
+                and not jwks_url.startswith("https://")
+            ):
+                logger.warning(
+                    "JWKS URL for issuer %s is not HTTPS — this is unsafe in production: %s",
+                    issuer.strip(),
+                    jwks_url,
+                )
+            trusted_issuers[issuer.strip()] = jwks_url
+    configure_trusted_issuers(trusted_issuers)
+
     # Log QA Service configuration (RAG retrieval happens via HTTP on-demand)
     logger.info(f"QA Service URL: {settings.QA_SERVICE_URL}")
 

@@ -3,6 +3,8 @@
 Tests the full HTTP request path: cookies → auth → route handler.
 Mocks only the LLM agent so no OpenAI/MCP infrastructure is needed.
 
+Uses ES256 (ECDSA P-256) key pairs — no shared secret.
+
 Body fallback is handled in the route (using the already-parsed
 QueryRequest.acting_user), NOT in auth.py — so the ASGI body stream
 is only consumed once by FastAPI.
@@ -10,37 +12,91 @@ is only consumed once by FastAPI.
 Run with: uv run pytest tests/test_auth_e2e.py -v
 """
 
+import json
 import os
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Thread
 from unittest.mock import AsyncMock, patch
 
 import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    NoEncryption,
+    PrivateFormat,
+    PublicFormat,
+)
 from httpx import ASGITransport, AsyncClient
+from jwt import algorithms as jwt_algorithms
 
-# Set a test JWT secret before importing the app (config reads env at import)
-TEST_SECRET = "e2e-test-jwt-secret-32-bytes-ok!"
-os.environ.setdefault("JWT_SECRET", TEST_SECRET)
 os.environ.setdefault("ALLOW_BODY_ACTING_USER", "true")
-os.environ.setdefault("VAULT_TOKEN", "")  # Disable Vault for tests
 os.environ.setdefault("DATABASE_URL", "")  # Disable checkpointing
+os.environ.setdefault("TRUSTED_JWKS_URLS", "")  # Configured per-test
 
-from src.main import app  # noqa: E402
+from src.auth import configure_trusted_issuers
+from src.main import app
+
+# ---------------------------------------------------------------------------
+# Test key pair and JWKS server
+# ---------------------------------------------------------------------------
+
+_ec_private_key = ec.generate_private_key(ec.SECP256R1())
+_ec_public_key = _ec_private_key.public_key()
+
+PRIVATE_PEM = _ec_private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
+PUBLIC_PEM = _ec_public_key.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
+
+_ec_json_key = jwt_algorithms.ECAlgorithm(jwt_algorithms.ECAlgorithm.SHA256).to_jwk(_ec_public_key)
+_jwk_dict = json.loads(_ec_json_key)
+_jwk_dict["kid"] = "e2e-test-kid"
+_jwk_dict["use"] = "sig"
+_jwk_dict["alg"] = "ES256"
+
+JWKS_RESPONSE = json.dumps({"keys": [_jwk_dict]}).encode()
+
+ISSUER = "https://test-issuer.access-ci.org"
+KID = "e2e-test-kid"
 
 
-def _make_jwt(sub: str, expired: bool = False, secret: str = TEST_SECRET) -> str:
-    """Create a signed JWT for testing."""
+class _JWKSHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(JWKS_RESPONSE)
+
+    def log_message(self, format, *args):
+        pass
+
+
+def _start_jwks_server() -> tuple[HTTPServer, str]:
+    server = HTTPServer(("127.0.0.1", 0), _JWKSHandler)
+    port = server.server_address[1]
+    Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{port}"
+
+
+def _make_jwt(sub: str, expired: bool = False, issuer: str = ISSUER) -> str:
     now = int(time.time())
+    payload = {
+        "iss": issuer,
+        "sub": sub,
+        "iat": now - 3600,
+        "exp": (now - 10) if expired else (now + 3600),
+    }
     return jwt.encode(
-        {
-            "sub": sub,
-            "iat": now - 3600,
-            "exp": (now - 10) if expired else (now + 3600),
-        },
-        secret,
-        algorithm="HS256",
+        payload,
+        PRIVATE_PEM,
+        algorithm="ES256",
+        headers={"kid": KID},
     )
 
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 # Fake agent response to avoid LLM/MCP dependencies
 FAKE_AGENT_RESULT = {
@@ -50,6 +106,16 @@ FAKE_AGENT_RESULT = {
     "query_classification": None,
     "execution_strategy": "test",
 }
+
+
+@pytest.fixture(autouse=True)
+def _jwks_server():
+    """Start a local JWKS server and configure trusted issuers for all tests."""
+    server, jwks_url = _start_jwks_server()
+    configure_trusted_issuers({ISSUER: jwks_url})
+    yield
+    server.shutdown()
+    configure_trusted_issuers({})
 
 
 @pytest.fixture
@@ -83,7 +149,7 @@ async def client():
 
 
 async def test_valid_cookie_sets_acting_user(client, mock_agent, mock_registry):
-    """A valid JWT cookie should result in acting_user being passed to the agent."""
+    """A valid ES256 JWT cookie should result in acting_user being passed to the agent."""
     token = _make_jwt("jsmith@access-ci.org")
 
     response = await client.post(
@@ -93,7 +159,6 @@ async def test_valid_cookie_sets_acting_user(client, mock_agent, mock_registry):
     )
 
     assert response.status_code == 200
-    # Verify the agent was called with the correct acting_user
     mock_agent.assert_called_once()
     call_kwargs = mock_agent.call_args
     assert call_kwargs.kwargs.get("acting_user") == "jsmith@access-ci.org"
@@ -136,7 +201,6 @@ async def test_expired_cookie_anonymous(client, mock_agent, mock_registry):
 
     assert response.status_code == 200
     mock_agent.assert_called_once()
-    # Expired cookie means anonymous — body fallback should NOT be used
     assert mock_agent.call_args.kwargs.get("acting_user") is None
 
 
@@ -159,13 +223,21 @@ async def test_invalid_cookie_anonymous(client, mock_agent, mock_registry):
 
 
 # ---------------------------------------------------------------------------
-# Test: Wrong signing secret → anonymous
+# Test: Wrong signing key → anonymous
 # ---------------------------------------------------------------------------
 
 
-async def test_wrong_secret_anonymous(client, mock_agent, mock_registry):
-    """JWT signed with wrong secret → anonymous."""
-    token = _make_jwt("jsmith@access-ci.org", secret="wrong-secret-wrong-secret-32b!")
+async def test_wrong_key_anonymous(client, mock_agent, mock_registry):
+    """JWT signed with an unknown key → anonymous."""
+    other_key = ec.generate_private_key(ec.SECP256R1())
+    other_pem = other_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
+    now = int(time.time())
+    token = jwt.encode(
+        {"iss": ISSUER, "sub": "jsmith@access-ci.org", "exp": now + 3600},
+        other_pem,
+        algorithm="ES256",
+        headers={"kid": "unknown-kid"},
+    )
 
     response = await client.post(
         "/api/v1/query",

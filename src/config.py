@@ -56,14 +56,11 @@ class Settings(BaseSettings):
     # Legacy compatibility (uses static threshold)
     RAG_SIMILARITY_THRESHOLD: float = 0.85
 
-    # JWT Authentication
-    JWT_SECRET: str = ""  # JWT signing secret (from Vault or env)
+    # JWT Authentication (ES256 + JWKS)
+    # Comma-separated list of "issuer=jwks_url" pairs.
+    # Example: "https://support.access-ci.org=https://support.access-ci.org/.well-known/jwks.json"
+    TRUSTED_JWKS_URLS: str = ""
     ALLOW_BODY_ACTING_USER: bool = True  # Transition: accept acting_user from body
-
-    # Vault (optional — falls back to JWT_SECRET env var)
-    VAULT_ADDR: str = "http://vault:8200"
-    VAULT_TOKEN: str = ""  # Or use AppRole
-    VAULT_SECRET_PATH: str = "access/jwt"
 
     # MCP Servers
     MCP_CATALOG_URL: str = "http://localhost:5678/webhook/generate-mcp-catalog"

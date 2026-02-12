@@ -12,7 +12,6 @@ from ..auth import get_acting_user_from_cookie
 from ..config import settings
 from ..tools import ToolRegistry, get_catalog_aggregator
 from ..usage_logger import get_usage_logger
-from ..vault import get_jwt_secret
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +73,7 @@ async def query_agent(
     """Execute a query against the ACCESS Documentation Agent.
 
     User identity is resolved from the ``SESSaccess_auth`` JWT cookie set by
-    Drupal.  During transition, the ``acting_user`` body field is accepted
+    ACCESS sites (Drupal, Django, etc.).  During transition, the ``acting_user`` body field is accepted
     as a fallback when ``ALLOW_BODY_ACTING_USER`` is enabled.
 
     Args:
@@ -91,29 +90,16 @@ async def query_agent(
     # Body fallback uses the already-parsed QueryRequest to avoid
     # double-consuming the ASGI body stream.
     acting_user: str | None = None
-    try:
-        jwt_secret = get_jwt_secret(
-            vault_addr=settings.VAULT_ADDR,
-            vault_token=settings.VAULT_TOKEN,
-            vault_secret_path=settings.VAULT_SECRET_PATH,
-            env_fallback=settings.JWT_SECRET,
-        )
-        user, cookie_present = get_acting_user_from_cookie(
-            raw_request,
-            jwt_secret=jwt_secret,
-        )
-        if user:
-            acting_user = user
-        elif cookie_present:
-            # Cookie was present but invalid/expired — do NOT fall through
-            # to body fallback (prevents downgrade attacks).
-            acting_user = None
-        elif settings.ALLOW_BODY_ACTING_USER and request.acting_user:
-            # No cookie sent; use body fallback during transition period.
-            acting_user = request.acting_user.strip() or None
-    except RuntimeError:
-        # No JWT secret configured — treat all users as anonymous
-        logger.info("JWT secret not configured; treating all requests as anonymous")
+    user, cookie_present = get_acting_user_from_cookie(raw_request)
+    if user:
+        acting_user = user
+    elif cookie_present:
+        # Cookie was present but invalid/expired — do NOT fall through
+        # to body fallback (prevents downgrade attacks).
+        acting_user = None
+    elif settings.ALLOW_BODY_ACTING_USER and request.acting_user:
+        # No cookie sent; use body fallback during transition period.
+        acting_user = request.acting_user.strip() or None
 
     # Generate IDs if not provided
     timestamp = int(time.time() * 1000)

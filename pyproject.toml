@@ -18,8 +18,7 @@ dependencies = [
     "langgraph-checkpoint-postgres>=2.0.0",
     "tenacity>=9.0.0",
     "structlog>=24.0.0",
-    "PyJWT>=2.8.0",
-    "hvac>=2.1.0",
+    "PyJWT[crypto]>=2.8.0",
     "redis>=5.0.0",
     "pgvector>=0.3.0",
     "asyncpg>=0.29.0",
@@ -106,7 +105,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["ARG", "PLR2004", "SLF001"]
+"tests/*" = ["ARG", "PLR2004", "SLF001", "N802"]
 "src/agent/nodes/*.py" = ["ARG001"]  # Unused args in node functions (state fields)
 "src/telemetry/setup.py" = ["E402"]  # Imports after .env loading is intentional
 "test_agent.py" = ["E402", "PTH", "PLW2901", "EXE001"]  # CLI test script with path setup
