@@ -31,6 +31,9 @@ dependencies = [
     "opentelemetry-instrumentation-httpx>=0.41b0",
     "opentelemetry-instrumentation-langchain>=0.41b0",
     "opentelemetry-instrumentation-logging>=0.41b0",
+    # Reporting
+    "google-analytics-data>=0.18.0",
+    "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]
@@ -109,6 +112,7 @@ ignore = [
 "src/agent/nodes/*.py" = ["ARG001"]  # Unused args in node functions (state fields)
 "src/telemetry/setup.py" = ["E402"]  # Imports after .env loading is intentional
 "test_agent.py" = ["E402", "PTH", "PLW2901", "EXE001"]  # CLI test script with path setup
+"src/reports/*" = ["PTH"]  # Reports use pathlib where sensible but open() for simple I/O
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
