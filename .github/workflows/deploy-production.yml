@@ -102,6 +102,11 @@ jobs:
             echo "Cleaning up old images..."
             docker image prune -f
 
+            # Install weekly report cron job (Monday 9am ET / 14:00 UTC)
+            chmod +x ~/access-agent/scripts/send-weekly-report.sh
+            CRON_CMD="0 14 * * 1 /home/github/access-agent/scripts/send-weekly-report.sh"
+            (crontab -l 2>/dev/null | grep -v send-weekly-report; echo "$CRON_CMD") | crontab -
+
             # Show running containers
             echo "Running containers:"
             docker compose -f docker-compose.prod.yml ps
