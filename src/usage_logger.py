@@ -75,7 +75,9 @@ class UsageLogger:
             return False
 
         try:
-            self._engine = create_engine(settings.DATABASE_URL)
+            # Use psycopg (v3) driver — the container doesn't have psycopg2
+            db_url = settings.DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
+            self._engine = create_engine(db_url)
             Base.metadata.create_all(self._engine)
             self._session_factory = sessionmaker(bind=self._engine)
             self._initialized = True
