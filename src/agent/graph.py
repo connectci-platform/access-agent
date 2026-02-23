@@ -1,17 +1,17 @@
 """LangGraph definition for the ACCESS Documentation Agent.
 
 This module defines the state graph that orchestrates query processing:
-  START → classify → routing based on query type → END
+  START → classify → routing based on query type/domain → END
 
 Query classification routes:
+  - domain_agent: domain-specific react agent (announcements, jsm) → END
   - static: RAG retrieval → END (or fallback to plan if no match)
   - dynamic: plan → execute → evaluate → synthesize → END
   - combined: RAG retrieval (for context) → plan → execute → evaluate → synthesize → END
 
-The RAG-primary architecture means:
-  - Static queries go directly to RAG for verified answers
-  - Combined queries get RAG context FIRST, then use tools for real-time data
-  - Dynamic queries skip RAG (no static knowledge needed)
+Domain agents handle interactive management tasks (create/update/delete) using
+a react loop with direct MCP tool access. The general pipeline handles
+informational queries (search, lookup, status).
 
 With recovery and quality loops:
   - execute → recover (on failure) → execute or synthesize
@@ -35,6 +35,7 @@ from .edges.routing import (
 )
 from .nodes import (
     classify_node,
+    domain_agent_node,
     evaluate_node,
     execute_node,
     plan_node,
@@ -47,10 +48,13 @@ from .state import AgentState
 logger = logging.getLogger(__name__)
 
 
-def route_by_classification(state: AgentState) -> Literal["rag_answer", "plan"]:
+def route_by_classification(state: AgentState) -> Literal["domain_agent", "rag_answer", "plan"]:
     """Route based on query classification.
 
-    RAG-primary routing:
+    Domain-first routing:
+    - If domain is set: route to domain agent (announcements, jsm, etc.)
+
+    RAG-primary routing (general pipeline):
     - static: Go to RAG for verified answer
     - combined: Go to RAG first to gather context, then continue to tools
     - dynamic: Skip RAG, go directly to tools
@@ -59,9 +63,14 @@ def route_by_classification(state: AgentState) -> Literal["rag_answer", "plan"]:
         state: Current agent state with query_classification.
 
     Returns:
-        Next node: "rag_answer" for static/combined, "plan" for dynamic only.
+        Next node name.
     """
     classification = state.get("query_classification")
+
+    # Domain agent takes priority when set
+    if classification and classification.domain:
+        logger.info(f"Routing to domain_agent ({classification.domain})")
+        return "domain_agent"
 
     if classification and classification.query_type == "dynamic":
         # Dynamic queries skip RAG - they only need real-time data
@@ -74,11 +83,43 @@ def route_by_classification(state: AgentState) -> Literal["rag_answer", "plan"]:
     return "rag_answer"
 
 
+def _rag_answer_is_weak(answer: str) -> bool:
+    """Detect when RAG returned a hedged or unhelpful answer.
+
+    The UKY RAG endpoint always returns *something* (it's an LLM), but when its
+    retrieval context doesn't cover the topic it produces hedging language.
+    These answers should fall through to MCP tools for better results.
+
+    Args:
+        answer: The RAG answer text.
+
+    Returns:
+        True if the answer appears to be a hedge/deflection.
+    """
+    lower = answer.lower()
+    hedge_phrases = [
+        "do not contain",
+        "does not contain",
+        "do not explicitly",
+        "does not explicitly",
+        "not provided in",
+        "not mentioned in",
+        "no specific information",
+        "do not have specific information",
+        "currently do not have",
+        "open a support ticket",
+        "open-a-ticket",
+        "not available in the provided",
+    ]
+    return any(phrase in lower for phrase in hedge_phrases)
+
+
 def route_after_rag(state: AgentState) -> Literal["end", "plan"]:
     """Route after RAG answer attempt.
 
     For static queries:
-    - If RAG found a match → END
+    - If RAG found a confident match → END
+    - If RAG hedged (weak answer) → fallback to plan (tools)
     - If no match → fallback to plan (tools)
 
     For combined queries:
@@ -106,8 +147,12 @@ def route_after_rag(state: AgentState) -> Literal["end", "plan"]:
             logger.info("Combined query: No RAG matches, continuing to plan")
         return "plan"
 
-    # For static queries, end if RAG provided an answer
-    if state.get("final_answer"):
+    # For static queries, end if RAG provided a confident answer
+    final_answer = state.get("final_answer")
+    if final_answer:
+        if _rag_answer_is_weak(final_answer):
+            logger.info("Static query: RAG answer is weak/hedged, falling back to tools")
+            return "plan"
         return "end"
 
     # No RAG match for static query, fall back to tools
@@ -122,9 +167,10 @@ def _build_graph_structure(
 
     The graph implements a flow with query classification and routing:
 
-    1. Classify: Determine if query is static, dynamic, or combined
-    2a. Static path: RAG lookup from Q&A service → END (or fallback to plan)
-    2b. Dynamic/Combined path:
+    1. Classify: Determine query type and domain
+    2a. Domain path: domain_agent (react loop with MCP tools) → END
+    2b. Static path: RAG lookup from Q&A service → END (or fallback to plan)
+    2c. Dynamic/Combined path:
         - Plan: Analyze query and select tools
         - Execute: Run MCP tools
         - Recover: Handle failures (if any)
@@ -144,6 +190,7 @@ def _build_graph_structure(
     """
     # Add nodes
     builder.add_node("classify", classify_node)
+    builder.add_node("domain_agent", domain_agent_node)
     builder.add_node("rag_answer", rag_answer_node)
     builder.add_node("plan", plan_node)
     builder.add_node("execute", execute_node)
@@ -155,15 +202,19 @@ def _build_graph_structure(
     # Start with classification
     builder.add_edge(START, "classify")
 
-    # After classification, route based on query type
+    # After classification, route based on query type (or domain)
     builder.add_conditional_edges(
         "classify",
         route_by_classification,
         {
+            "domain_agent": "domain_agent",
             "rag_answer": "rag_answer",
             "plan": "plan",
         },
     )
+
+    # Domain agent goes directly to END
+    builder.add_edge("domain_agent", END)
 
     # After RAG answer, either end or fallback to plan
     builder.add_conditional_edges(
@@ -363,9 +414,7 @@ async def run_agent(
         if classification:
             root_span.set_attribute("agent.query_type", classification.query_type)
 
-        logger.info(
-            f"Agent complete: tools_used={tools_used}, " f"answer_length={len(final_answer)}"
-        )
+        logger.info(f"Agent complete: tools_used={tools_used}, answer_length={len(final_answer)}")
 
         # Cast from Any (LangGraph's dynamic return) to AgentState
         result: AgentState = final_state

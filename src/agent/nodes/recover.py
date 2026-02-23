@@ -216,6 +216,9 @@ def _classify_error(error: str) -> str:
 
     if "401" in error or "403" in error or "unauthorized" in error_lower:
         return "auth"
+    # XDMoD "No Statistic found" or "Valid statistics for" = wrong parameter, recoverable
+    if "no statistic found" in error_lower or "valid statistics for" in error_lower:
+        return "parameter"
     if "404" in error or "not found" in error_lower:
         return "not_found"
     if "timeout" in error_lower or "etimedout" in error_lower:

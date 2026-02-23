@@ -9,6 +9,7 @@ Uses an LLM for robust natural language understanding.
 """
 
 import logging
+from typing import Literal, cast
 
 from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -25,8 +26,7 @@ CLASSIFICATION_SYSTEM_PROMPT = """You are a query classifier for the ACCESS-CI d
 Classify user queries into one of three categories:
 
 **static** - Questions about factual, stable information that a trained model would know:
-- Hardware specifications (GPUs, CPUs, memory, nodes)
-- Resource descriptions and capabilities
+- Resource descriptions and capabilities (what a resource is, how to use it)
 - How-to guides and documentation
 - Software availability and versions
 - Policies and procedures
@@ -37,17 +37,40 @@ Classify user queries into one of three categories:
 - Current system status or outages
 - User-specific data (my allocations, my usage, my projects)
 - Upcoming events, workshops, or announcements
-- Real-time metrics or statistics (XDMoD data)
 - Current availability or queue status
 
 **combined** - Questions needing both static knowledge AND live data:
 - "Which resources with A100 GPUs are currently available?"
 - "What's the status of Delta and what are its specs?"
 
+Also determine which RAG endpoint should answer the question. Set "rag_endpoint" to:
+- "general" — ACCESS documentation: allocations, resources, how-tos, policies, hardware specs
+- "xdmod" — XDMoD features/capabilities, what metrics are available, how to interpret data, links to XDMoD charts and visualizations
+- null — purely dynamic queries where only live MCP tool data can answer (user-specific data, real-time status)
+
+XDMoD routing guidance:
+- Any question about aggregate numbers, counts, totals, trends, or utilization across ACCESS resources should route to XDMoD (rag_endpoint: "xdmod", query_type: "combined"). This includes questions about: job counts, CPU hours, GPU utilization, allocations, user accounts, gateways, projects, proposals, storage, and resource capacity. XDMoD has data realms for: Jobs, SUPREMM, Cloud, Gateways, Allocations, Accounts, Requests, ResourceSpecifications, Storage.
+- Most XDMoD questions benefit from BOTH the RAG answer AND MCP tool data, so prefer query_type "combined".
+- Only use query_type "dynamic" with rag_endpoint null for purely user-specific XDMoD queries like "my usage".
+
+Examples:
+- "Show me CPU hours on Delta last month" → rag_endpoint: "xdmod", query_type: "combined"
+- "How many active allocations are there?" → rag_endpoint: "xdmod", query_type: "combined"
+- "How many new projects were created?" → rag_endpoint: "xdmod", query_type: "combined"
+- "What's my usage on Expanse?" → rag_endpoint: null, query_type: "dynamic"
+- "How do I get an allocation?" → rag_endpoint: "general", query_type: "static"
+- "What GPUs does Delta have?" → rag_endpoint: "general", query_type: "static"
+- "Is Delta down right now?" → rag_endpoint: null, query_type: "dynamic"
+
+Also detect if the query should be handled by a specialized domain agent. Set "domain" to:
+- "announcements" — when the user wants to CREATE, UPDATE, DELETE, or MANAGE announcements (not just search/read them)
+- "jsm" — when the user wants to CREATE a support ticket, REPORT an issue, or get help FILING a ticket
+- null — for everything else (searches, informational queries, general questions, reading announcements)
+
 You will be given conversation history for context. Use it to rewrite the current query as a standalone question by resolving any pronouns or references (e.g., "it", "that", "this one") to their actual referents from the conversation. If the query is already standalone, use it as-is.
 
 Respond with ONLY a JSON object (no markdown):
-{"query_type": "static|dynamic|combined", "reason": "brief explanation", "confidence": "high|medium|low", "expanded_query": "the query as a standalone question"}"""
+{"query_type": "static|dynamic|combined", "rag_endpoint": "general|xdmod|null", "reason": "brief explanation", "confidence": "high|medium|low", "expanded_query": "the query as a standalone question", "domain": "announcements|jsm|null"}"""
 
 
 def _get_classifier_llm() -> ChatOpenAI:
@@ -57,7 +80,7 @@ def _get_classifier_llm() -> ChatOpenAI:
             model="gpt-4o-mini",
             api_key=SecretStr(settings.OPENAI_API_KEY),
             temperature=0,
-            max_completion_tokens=150,
+            max_completion_tokens=250,
         )
     raise ValueError("OPENAI_API_KEY required for query classification")
 
@@ -127,11 +150,25 @@ async def classify_query_with_llm(
 
         result = json.loads(content)
 
+        # Parse domain — LLM may return null, "null", or missing
+        raw_domain = result.get("domain")
+        domain = raw_domain if isinstance(raw_domain, str) and raw_domain != "null" else None
+
+        # Parse rag_endpoint — LLM may return null, "null", or missing
+        raw_rag_endpoint = result.get("rag_endpoint")
+        rag_endpoint: Literal["general", "xdmod"] | None = (
+            cast("Literal['general', 'xdmod']", raw_rag_endpoint)
+            if isinstance(raw_rag_endpoint, str) and raw_rag_endpoint in ("general", "xdmod")
+            else None
+        )
+
         return QueryClassification(
             query_type=result.get("query_type", "combined"),
             reason=result.get("reason", ""),
             confidence=result.get("confidence", "medium"),
             expanded_query=result.get("expanded_query", query),
+            domain=domain,
+            rag_endpoint=rag_endpoint,
         )
 
     except Exception as e:
@@ -180,9 +217,16 @@ async def classify_node(state: AgentState) -> dict[str, QueryClassification]:
         )
         span.set_attribute("agent.query_expanded", classification.expanded_query != query)
 
+        if classification.domain:
+            span.set_attribute("agent.domain", classification.domain)
+        if classification.rag_endpoint:
+            span.set_attribute("agent.rag_endpoint", classification.rag_endpoint)
+
         logger.info(
             f"Query classified as {classification.query_type} "
-            f"(confidence={classification.confidence}): {classification.reason}"
+            f"(confidence={classification.confidence}, domain={classification.domain}, "
+            f"rag_endpoint={classification.rag_endpoint}): "
+            f"{classification.reason}"
         )
         if classification.expanded_query != query:
             logger.info(f"Query expanded: '{query}' -> '{classification.expanded_query}'")

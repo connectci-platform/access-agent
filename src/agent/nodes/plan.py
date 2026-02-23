@@ -75,6 +75,8 @@ You MUST respond with valid JSON only, no markdown or explanation:
 - For general questions that don't need live data (e.g., "How do I acknowledge ACCESS?"), set requires_tools: false
 - Use conversation history to resolve references (e.g., "which one" refers to previously discussed items)
 - Select tools based on their descriptions in the catalog above
+- Prefer tools that return data directly over discovery/metadata tools. Only use discovery tools when the direct tool's description doesn't list the parameter value you need
+- For questions about aggregate counts, totals, trends, or utilization (e.g., "how many projects", "total CPU hours", "active users"), prefer XDMoD get_chart_data over domain-specific search/list tools. XDMoD tracks aggregate metrics across all ACCESS resources.
 """
 
 
@@ -274,7 +276,7 @@ def _build_tool_catalog_text(catalog: dict[str, Any]) -> str:
 def _format_tool_line(tool: dict[str, Any], server_name: str) -> str:
     """Format a single tool for the catalog text."""
     name = tool.get("name", "")
-    desc = tool.get("description", "")[:100]
+    desc = tool.get("description", "")[:500]
 
     # Build parameter string with descriptions, enum values, and defaults
     # Support both "parameters" (list format) and "inputSchema" (JSON Schema format)
