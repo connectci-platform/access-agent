@@ -35,7 +35,13 @@ services:
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/langgraph
       - REDIS_URL=redis://redis:6379/0
       - CITATION_VALIDATION_ENABLED=${CITATION_VALIDATION_ENABLED:-true}
-      # RAG-primary architecture: QA service for verified Q&A retrieval
+      # UKY RAG endpoints (dual RAG: general ACCESS Q&A + XDMoD)
+      - UKY_RAG_ENABLED=${UKY_RAG_ENABLED:-true}
+      - UKY_RAG_API_KEY=${UKY_RAG_API_KEY:-}  # Falls back to ACCESS_AI_API_KEY
+      - UKY_RAG_GENERAL_URL=${UKY_RAG_GENERAL_URL:-https://access-ai-grace1-external.ccs.uky.edu/access/chat/api/}
+      - UKY_RAG_XDMOD_URL=${UKY_RAG_XDMOD_URL:-https://access-ai-grace1-external.ccs.uky.edu/access/xdmod/chat/api/}
+      - UKY_RAG_TIMEOUT=${UKY_RAG_TIMEOUT:-60.0}
+      # pgvector Q&A service (fallback RAG)
       # Use host.docker.internal for same-host Docker communication
       - QA_SERVICE_URL=${QA_SERVICE_URL:-http://host.docker.internal:8001}
       - RAG_TOP_K=${RAG_TOP_K:-3}

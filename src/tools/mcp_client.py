@@ -129,6 +129,8 @@ class MCPClient:
         headers = {"Content-Type": "application/json"}
         if acting_user:
             headers["X-Acting-User"] = acting_user
+        if server in settings.mcp_servers_requiring_api_key and settings.MCP_API_KEY:
+            headers["X-Api-Key"] = settings.MCP_API_KEY
 
         try:
             response = await client.post(

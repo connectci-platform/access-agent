@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 # Type aliases for dynamic MCP data structures
 # These are JSON-like structures that vary by tool/server
-ToolArguments = dict[str, str | int | float | bool | list[str] | None]
+ToolArguments = dict[str, str | int | float | bool | list[str] | dict[str, str | list[str]] | None]
 ToolResultData = dict[str, object] | list[object] | str | None
 ToolCatalog = dict[str, dict[str, object]]
 
@@ -89,6 +89,14 @@ class QueryClassification(BaseModel):
     expanded_query: str = Field(
         default="",
         description="Query rewritten as a standalone question with context resolved",
+    )
+    domain: str | None = Field(
+        default=None,
+        description="Domain agent to route to (e.g. 'announcements', 'jsm'), or None for general pipeline",
+    )
+    rag_endpoint: Literal["general", "xdmod"] | None = Field(
+        default=None,
+        description="UKY RAG endpoint to use: 'general' for ACCESS docs, 'xdmod' for XDMoD Q&A, or None to skip",
     )
 
 

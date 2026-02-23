@@ -29,15 +29,15 @@
       "url": "http://45.79.215.140:3004"
     },
     "get_chart_data": {
-      "server": "xdmod-charts",
+      "server": "xdmod",
       "url": "http://45.79.215.140:3005"
     },
     "get_chart_image": {
-      "server": "xdmod-charts",
+      "server": "xdmod",
       "url": "http://45.79.215.140:3005"
     },
     "get_chart_link": {
-      "server": "xdmod-charts",
+      "server": "xdmod",
       "url": "http://45.79.215.140:3005"
     },
     "search_projects": {
@@ -1214,7 +1214,7 @@
       ]
     },
     {
-      "server": "xdmod-charts",
+      "server": "xdmod",
       "url": "http://45.79.215.140:3005",
       "tool_count": 3,
       "tools": [

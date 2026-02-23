@@ -78,6 +78,10 @@ dmypy.json
 .DS_Store
 Thumbs.db
 
+# Service account keys
+*.gserviceaccount.json
+mghpcc-*.json
+
 # Terraform
 .terraform/
 *.tfstate

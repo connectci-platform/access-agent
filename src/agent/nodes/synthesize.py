@@ -25,52 +25,40 @@ logger = logging.getLogger(__name__)
 CHARS_PER_TOKEN = 4
 
 # System prompt for answer synthesis (tools only)
-SYNTHESIS_SYSTEM_PROMPT = """You are an ACCESS-CI documentation assistant. Your job is to answer user questions using data from ACCESS tools.
-
-## GUIDELINES
-
-1. Be concise and direct - answer the question first, then provide details
-2. Use the tool results provided to give accurate, specific information
-3. If tool results are empty or failed, acknowledge this honestly
-4. Format data clearly - use bullet points, tables, or lists where appropriate
-5. Include relevant links when available in the data
-6. Don't make up information not present in the tool results
-7. If you cannot answer due to missing data, suggest rephrasing the question or trying a different search
-8. For issues requiring human assistance, users can submit a ticket at https://support.access-ci.org/help-ticket
+SYNTHESIS_SYSTEM_PROMPT = """You are an ACCESS-CI documentation assistant.
 
 ## TOOL RESULTS
 
 {tool_results}
 
-## ANSWER FORMAT
+## INSTRUCTIONS
 
-Respond naturally as a helpful documentation assistant. Do not mention "tool results" or internal system details - just answer the question as if you know this information."""
+- Use the tool results above to answer the user's question.
+- Be concise and direct — answer the question first, then provide details.
+- Format data clearly using bullet points, tables, or lists where appropriate.
+- If results are empty or failed, say so honestly.
+- Do not mention "tool results" or system internals.
+- For issues needing human help: https://support.access-ci.org/help-ticket"""
 
 # System prompt for combined synthesis (RAG + tools)
-COMBINED_SYNTHESIS_PROMPT = """You are an ACCESS-CI documentation assistant. Your job is to answer user questions by combining verified documentation knowledge with real-time data from ACCESS tools.
+COMBINED_SYNTHESIS_PROMPT = """You are an ACCESS-CI documentation assistant.
 
-## GUIDELINES
-
-1. Be concise and direct - answer the question first, then provide details
-2. Use BOTH the verified knowledge AND tool results to give comprehensive answers
-3. The "VERIFIED KNOWLEDGE" section contains accurate, human-verified information about ACCESS resources
-4. The "REAL-TIME DATA" section contains current data retrieved from live systems
-5. When information appears in both sources, prefer the real-time data for status/availability but use verified knowledge for specifications/capabilities
-6. Format data clearly - use bullet points, tables, or lists where appropriate
-7. Include relevant links when available
-8. Don't make up information not present in either source
-
-## VERIFIED KNOWLEDGE (from ACCESS documentation)
+## VERIFIED KNOWLEDGE
 
 {rag_context}
 
-## REAL-TIME DATA (from ACCESS tools)
+## REAL-TIME DATA
 
 {tool_results}
 
-## ANSWER FORMAT
+## INSTRUCTIONS
 
-Respond naturally as a helpful documentation assistant. Seamlessly combine verified documentation with real-time data. Do not mention "verified knowledge", "tool results", or internal system details - just answer the question as if you know this information."""
+- Combine verified knowledge with real-time data to answer. Prefer real-time data for status/availability, verified knowledge for specs/capabilities.
+- Be concise and direct — answer the question first, then provide details.
+- Format data clearly using bullet points, tables, or lists where appropriate.
+- If results are empty or failed, say so honestly.
+- Do not mention "verified knowledge", "tool results", or system internals.
+- For issues needing human help: https://support.access-ci.org/help-ticket"""
 
 # System prompt for RAG-only synthesis (when tools failed but RAG has data)
 RAG_ONLY_SYNTHESIS_PROMPT = """You are an ACCESS-CI documentation assistant. Your job is to answer user questions using verified documentation knowledge.
@@ -326,8 +314,7 @@ async def synthesize_node(state: AgentState) -> dict[str, Any]:
         span.set_attribute("synthesis.strategy", "fallback")
         return {
             "final_answer": (
-                "I wasn't able to generate a complete answer. "
-                "Please try rephrasing your question."
+                "I wasn't able to generate a complete answer. Please try rephrasing your question."
             ),
         }
 
@@ -428,7 +415,7 @@ async def _synthesize_combined(
     except Exception as e:
         logger.error(f"Combined synthesis failed: {e}")
         return {
-            "final_answer": ("I encountered an error generating your answer. " "Please try again."),
+            "final_answer": ("I encountered an error generating your answer. Please try again."),
             "messages": [AIMessage(content="Error generating response.")],
         }
 
@@ -474,7 +461,7 @@ async def _synthesize_tools_only(
     except Exception as e:
         logger.error(f"Tools-only synthesis failed: {e}")
         return {
-            "final_answer": ("I encountered an error generating your answer. " "Please try again."),
+            "final_answer": ("I encountered an error generating your answer. Please try again."),
             "messages": [AIMessage(content="Error generating response.")],
         }
 
@@ -520,7 +507,7 @@ async def _synthesize_with_rag_only(
     except Exception as e:
         logger.error(f"RAG-only synthesis failed: {e}")
         return {
-            "final_answer": ("I encountered an error generating your answer. " "Please try again."),
+            "final_answer": ("I encountered an error generating your answer. Please try again."),
             "messages": [AIMessage(content="Error generating response.")],
         }
 

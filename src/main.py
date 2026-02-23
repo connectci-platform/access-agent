@@ -35,8 +35,10 @@ if settings.ENVIRONMENT == "production":
             "https://qa.access-ci.org",
             "https://access-ci.org",
         ]
+elif settings.ALLOWED_ORIGINS:
+    allowed_origins = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",")]
 else:
-    allowed_origins = ["*"]
+    allowed_origins = ["https://accessmatch.ddev.site", "http://localhost:5173"]
 
 app.add_middleware(
     CORSMiddleware,
@@ -109,14 +111,23 @@ async def startup_event() -> None:
     # Log QA Service configuration (RAG retrieval happens via HTTP on-demand)
     logger.info(f"QA Service URL: {settings.QA_SERVICE_URL}")
 
+    # Log UKY RAG configuration
+    if settings.UKY_RAG_ENABLED:
+        logger.info(f"UKY RAG enabled: general={settings.UKY_RAG_GENERAL_URL}")
+        logger.info(f"UKY RAG enabled: xdmod={settings.UKY_RAG_XDMOD_URL}")
+    else:
+        logger.info("UKY RAG disabled (UKY_RAG_ENABLED=false)")
+
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
     """Clean up resources on shutdown."""
+    from .services.uky_client import get_uky_client
     from .tools.mcp_client import close_shared_client
 
     logger.info("Shutting down ACCESS Documentation Agent")
     await close_shared_client()
+    await get_uky_client().close()
 
     # Shutdown telemetry and flush pending spans
     shutdown_telemetry()

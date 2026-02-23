@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     OTEL_SERVICE_NAME: str = "access-agent"
     OTEL_EXPORTER_OTLP_ENDPOINT: str = ""  # e.g., https://api.honeycomb.io
     OTEL_EXPORTER_OTLP_HEADERS: str = ""  # e.g., x-honeycomb-team=xxx
+    HONEYCOMB_DATASET: str = "access-ci"
 
     # API
     API_HOST: str = "0.0.0.0"
@@ -40,6 +41,19 @@ class Settings(BaseSettings):
     # ACCESS AI (custom endpoint)
     ACCESS_AI_BASE_URL: str = "https://access-ai-grace1-external.ccs.uky.edu/access/chat/api/"
     ACCESS_AI_API_KEY: str = ""
+
+    # UKY RAG Endpoints (dual RAG: general ACCESS Q&A + XDMoD)
+    # Falls back to ACCESS_AI_API_KEY if not set
+    UKY_RAG_API_KEY: str = ""
+    UKY_RAG_GENERAL_URL: str = "https://access-ai-grace1-external.ccs.uky.edu/access/chat/api/"
+    UKY_RAG_XDMOD_URL: str = "https://access-ai-grace1-external.ccs.uky.edu/access/xdmod/chat/api/"
+    UKY_RAG_TIMEOUT: float = 60.0
+    UKY_RAG_ENABLED: bool = True
+
+    @property
+    def uky_rag_api_key_resolved(self) -> str:
+        """Resolve UKY RAG API key, falling back to ACCESS_AI_API_KEY."""
+        return self.UKY_RAG_API_KEY or self.ACCESS_AI_API_KEY
 
     # Database (checkpointing)
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/langgraph"
@@ -90,6 +104,15 @@ class Settings(BaseSettings):
     # MCP API key for servers that require authentication (write operations)
     MCP_API_KEY: str = ""
 
+    # Reporting (GA4 + Email/Slack delivery)
+    GA4_PROPERTY_ID: str = ""
+    GA4_CREDENTIALS_FILE: str = ""
+    MAILGUN_API_KEY: str = ""
+    MAILGUN_DOMAIN: str = ""
+    REPORT_EMAIL_FROM: str = "reports@mg.sweetandfizzy.com"
+    REPORT_EMAIL_TO: str = ""
+    REPORT_SLACK_WEBHOOK_URL: str = ""
+
     # MCP Server port mappings
     @property
     def mcp_server_urls(self) -> dict[str, str]:
@@ -105,7 +128,7 @@ class Settings(BaseSettings):
                 "nsf-awards": "http://mcp-nsf-awards:3000",
                 "events": "http://mcp-events:3000",
                 "affinity-groups": "http://mcp-affinity-groups:3000",
-                "xdmod-charts": "http://mcp-xdmod-charts:3000",
+                "xdmod": "http://mcp-xdmod:3000",
                 "xdmod-data": "http://mcp-xdmod-data:3000",
                 "jsm": "http://mcp-jsm:3000",
             }
@@ -121,7 +144,7 @@ class Settings(BaseSettings):
                 "nsf-awards": f"http://{host}:3007",
                 "events": f"http://{host}:3010",
                 "affinity-groups": f"http://{host}:3011",
-                "xdmod-charts": f"http://{host}:3005",
+                "xdmod": f"http://{host}:3005",
                 "xdmod-data": f"http://{host}:3008",
                 "jsm": f"http://{host}:3012",
             }
@@ -135,7 +158,7 @@ class Settings(BaseSettings):
             "nsf-awards": "http://localhost:3007",
             "events": "http://localhost:3010",
             "affinity-groups": "http://localhost:3011",
-            "xdmod-charts": "http://localhost:3005",
+            "xdmod": "http://localhost:3005",
             "xdmod-data": "http://localhost:3008",
             "jsm": "http://localhost:3012",
         }
