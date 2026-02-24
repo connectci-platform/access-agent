@@ -77,42 +77,93 @@ def generate_report(
     return _render_markdown(period_str, ga4_report, agent_report)
 
 
+def _render_ga4_summary(lines: list[str], ga4: GA4Report) -> None:
+    """Render GA4 summary bullet points."""
+    lines.append(f"- **Sessions:** {ga4.total_sessions:,}")
+    lines.append(f"- **Unique users:** {ga4.total_users:,}")
+
+    # Engagement
+    opens = ga4.event_counts.get("chatbot_open", 0)
+    new_chats = ga4.event_counts.get("chatbot_new_chat", 0)
+    if opens or new_chats:
+        lines.append(f"- **Engagement:** {opens} opens | {new_chats} new chats")
+
+    # Login prompts
+    login_prompts = ga4.event_counts.get("chatbot_login_prompt_shown", 0)
+    if login_prompts:
+        lines.append(f"- **Login prompts shown:** {login_prompts}")
+
+    # Tickets
+    started = ga4.event_counts.get("chatbot_ticket_started", 0)
+    submitted = ga4.ticket_submitted
+    errors = ga4.ticket_errors
+    completion = f"{submitted / started:.0%}" if started > 0 else "N/A"
+    lines.append(
+        f"- **Tickets:** {started} started → {submitted} submitted "
+        f"({completion} completion) | {errors} errors"
+    )
+
+    # Security reports
+    security = ga4.event_counts.get("chatbot_security_started", 0)
+    security_sub = ga4.event_counts.get("chatbot_security_submitted", 0)
+    if security > 0:
+        lines.append(f"- **Security reports:** {security} started → {security_sub} submitted")
+
+    # AI questions (general Q&A)
+    questions = ga4.event_counts.get("chatbot_question_sent", 0)
+    answers = ga4.event_counts.get("chatbot_answer_received", 0)
+    q_errors = ga4.event_counts.get("chatbot_answer_error", 0)
+    if questions:
+        lines.append(
+            f"- **AI questions (general):** {questions} asked → {answers} answered"
+            + (f" | {q_errors} errors" if q_errors else "")
+        )
+
+    # AI questions (XDMoD)
+    metrics_q = ga4.event_counts.get("chatbot_metrics_question_sent", 0)
+    if metrics_q > 0:
+        lines.append(f"- **AI questions (XDMoD):** {metrics_q}")
+
+    # Feedback ratings
+    ratings = ga4.event_counts.get("chatbot_rating_sent", 0)
+    if ratings:
+        lines.append(f"- **Feedback ratings:** {ratings}")
+
+
+def _render_ga4_breakdowns(lines: list[str], ga4: GA4Report) -> None:
+    """Render GA4 breakdown subsections."""
+    if ga4.menu_selections:
+        lines.append("\n### Menu Selections\n")
+        total_menu = sum(ga4.menu_selections.values())
+        for selection, count in sorted(ga4.menu_selections.items(), key=lambda x: -x[1]):
+            lines.append(f"- {selection}: {count} ({count / total_menu:.0%})")
+
+    if ga4.ticket_types:
+        lines.append("\n### Ticket Types\n")
+        for ttype, count in sorted(ga4.ticket_types.items(), key=lambda x: -x[1]):
+            lines.append(f"- {ttype}: {count}")
+
+    if ga4.page_breakdown:
+        lines.append("\n### Top Pages\n")
+        total_pages = sum(ga4.page_breakdown.values())
+        for page, count in list(ga4.page_breakdown.items())[:10]:
+            pct = f"{count / total_pages:.0%}" if total_pages else ""
+            lines.append(f"- `{page}`: {count} ({pct})")
+
+    if ga4.embed_breakdown:
+        lines.append("\n### Embedded vs Floating\n")
+        total_embed = sum(ga4.embed_breakdown.values())
+        for label, count in sorted(ga4.embed_breakdown.items(), key=lambda x: -x[1]):
+            pct = f"{count / total_embed:.0%}" if total_embed else ""
+            lines.append(f"- {label.title()}: {count} ({pct})")
+
+
 def _render_ga4_section(lines: list[str], ga4: GA4Report | None) -> None:
     """Render the GA4 chatbot UI section."""
     if ga4 and ga4.error_available:
         lines.append("## Chatbot UI (GA4)\n")
-        lines.append(f"- **Sessions:** {ga4.total_sessions:,}")
-        lines.append(f"- **Unique users:** {ga4.total_users:,}")
-
-        started = ga4.event_counts.get("chatbot_ticket_started", 0)
-        submitted = ga4.ticket_submitted
-        errors = ga4.ticket_errors
-        completion = f"{submitted / started:.0%}" if started > 0 else "N/A"
-        lines.append(
-            f"- **Tickets:** {started} started → {submitted} submitted "
-            f"({completion} completion) | {errors} errors"
-        )
-
-        security = ga4.event_counts.get("chatbot_security_started", 0)
-        security_sub = ga4.event_counts.get("chatbot_security_submitted", 0)
-        if security > 0:
-            lines.append(f"- **Security reports:** {security} started → {security_sub} submitted")
-
-        metrics_q = ga4.event_counts.get("chatbot_metrics_question_sent", 0)
-        if metrics_q > 0:
-            lines.append(f"- **AI questions asked:** {metrics_q}")
-
-        if ga4.menu_selections:
-            lines.append("\n### Menu Selections\n")
-            total_menu = sum(ga4.menu_selections.values())
-            for selection, count in sorted(ga4.menu_selections.items(), key=lambda x: -x[1]):
-                lines.append(f"- {selection}: {count} ({count / total_menu:.0%})")
-
-        if ga4.ticket_types:
-            lines.append("\n### Ticket Types\n")
-            for ttype, count in sorted(ga4.ticket_types.items(), key=lambda x: -x[1]):
-                lines.append(f"- {ttype}: {count}")
-
+        _render_ga4_summary(lines, ga4)
+        _render_ga4_breakdowns(lines, ga4)
         lines.append("")
     elif ga4 and not ga4.error_available:
         lines.append("## Chatbot UI (GA4)\n")

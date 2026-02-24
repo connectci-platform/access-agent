@@ -26,6 +26,16 @@ logger = logging.getLogger(__name__)
 
 # Chatbot events tracked via GTM
 CHATBOT_EVENTS = [
+    # Core chatbot events (qa-bot-core)
+    "chatbot_open",
+    "chatbot_close",
+    "chatbot_new_chat",
+    "chatbot_question_sent",
+    "chatbot_answer_received",
+    "chatbot_answer_error",
+    "chatbot_login_prompt_shown",
+    "chatbot_rating_sent",
+    # ACCESS agent layer events
     "chatbot_menu_selected",
     "chatbot_ticket_started",
     "chatbot_ticket_submitted",
@@ -51,6 +61,8 @@ class GA4Report:
     ticket_types: dict[str, int] = field(default_factory=dict)
     ticket_submitted: int = 0
     ticket_errors: int = 0
+    page_breakdown: dict[str, int] = field(default_factory=dict)
+    embed_breakdown: dict[str, int] = field(default_factory=dict)
     error_available: bool = True  # False if GA4 query failed
 
 
@@ -86,6 +98,8 @@ class GA4Client:
             self._fetch_session_user_counts(report, start_date, end_date)
             self._fetch_menu_selections(report, start_date, end_date)
             self._fetch_ticket_types(report, start_date, end_date)
+            self._fetch_page_breakdown(report, start_date, end_date)
+            self._fetch_embed_breakdown(report, start_date, end_date)
         except Exception:
             logger.exception("Failed to fetch GA4 data")
             report.error_available = False
@@ -219,5 +233,62 @@ class GA4Client:
         except Exception:
             logger.debug(
                 "Custom dimension 'ticketType' not available in GA4 — "
+                "register it in Admin > Custom Definitions"
+            )
+
+    def _fetch_page_breakdown(self, report: GA4Report, start_date: str, end_date: str) -> None:
+        """Fetch chatbot events grouped by page path.
+
+        Uses the built-in GA4 `pagePath` dimension (no custom dimension needed).
+        """
+        try:
+            response = self._run_report(
+                RunReportRequest(
+                    property=self.property,
+                    dimensions=[Dimension(name="pagePath")],
+                    metrics=[Metric(name="eventCount")],
+                    date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+                    dimension_filter=self._chatbot_event_filter(),
+                    order_bys=[
+                        OrderBy(
+                            metric=OrderBy.MetricOrderBy(metric_name="eventCount"),
+                            desc=True,
+                        )
+                    ],
+                )
+            )
+            for row in response.rows:
+                page = row.dimension_values[0].value
+                if page and page != "(not set)":
+                    report.page_breakdown[page] = int(row.metric_values[0].value)
+        except Exception:
+            logger.debug("Failed to fetch page breakdown from GA4")
+
+    def _fetch_embed_breakdown(self, report: GA4Report, start_date: str, end_date: str) -> None:
+        """Fetch chatbot events grouped by embedded vs floating widget.
+
+        Requires 'isEmbedded' to be registered as a custom event dimension in GA4.
+        Falls back gracefully if not available.
+        """
+        try:
+            response = self._run_report(
+                RunReportRequest(
+                    property=self.property,
+                    dimensions=[Dimension(name="customEvent:isEmbedded")],
+                    metrics=[Metric(name="eventCount")],
+                    date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+                    dimension_filter=self._chatbot_event_filter(),
+                )
+            )
+            for row in response.rows:
+                raw = row.dimension_values[0].value
+                if raw and raw != "(not set)":
+                    label = "embedded" if raw == "true" else "floating"
+                    report.embed_breakdown[label] = report.embed_breakdown.get(label, 0) + int(
+                        row.metric_values[0].value
+                    )
+        except Exception:
+            logger.debug(
+                "Custom dimension 'isEmbedded' not available in GA4 — "
                 "register it in Admin > Custom Definitions"
             )
