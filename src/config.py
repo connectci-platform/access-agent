@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     # Database (checkpointing)
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/langgraph"
 
+    # Dual-RAG comparison logging (A.2: query both UKY + pgvector, log results)
+    DUAL_RAG_LOGGING: bool = False
+
     # RAG Settings - using access-qa-service for verified Q&A retrieval
     QA_SERVICE_URL: str = "http://localhost:8001"
     RAG_TOP_K: int = 3

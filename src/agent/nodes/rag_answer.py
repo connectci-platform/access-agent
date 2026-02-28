@@ -19,14 +19,17 @@ Flow for combined queries:
 4. Synthesize combines RAG knowledge + tool results
 """
 
+import asyncio
 import logging
 import re
+import time
 from typing import Literal
 
 from langchain_core.messages import AIMessage
 from opentelemetry.trace import Span
 
 from ...config import settings
+from ...rag_comparison_logger import get_rag_comparison_logger
 from ...services.qa_client import get_qa_client
 from ...services.uky_client import get_uky_client
 from ...telemetry import get_tracer
@@ -255,6 +258,222 @@ async def _search_pgvector(
         return {"rag_matches": [], "rag_used": False}
 
 
+async def _query_uky_raw(
+    search_query: str,
+    rag_endpoint: Literal["general", "xdmod"],
+    session_id: str,
+    question_id: str,
+) -> dict[str, object]:
+    """Query UKY endpoint and return raw results (no span/state side-effects).
+
+    Used by _dual_rag_answer for parallel comparison queries.
+    """
+    client = get_uky_client()
+    if not client.is_configured:
+        return {"response": None, "duration_ms": None, "error": "not_configured"}
+
+    try:
+        uky_response = await client.ask(
+            query=search_query,
+            endpoint_type=rag_endpoint,
+            session_id=session_id,
+            question_id=question_id,
+        )
+        return {
+            "response": uky_response.response or None,
+            "duration_ms": uky_response.duration_ms,
+            "error": None,
+        }
+    except Exception as e:
+        return {"response": None, "duration_ms": None, "error": str(e)[:500]}
+
+
+async def _query_pgvector_raw(
+    search_query: str,
+    query_type: str,
+) -> dict[str, object]:
+    """Query pgvector and return raw results (no span/state side-effects).
+
+    Used by _dual_rag_answer for parallel comparison queries.
+    """
+    client = get_qa_client()
+    if not client.is_configured:
+        return {"matches": [], "duration_ms": None, "error": "not_configured"}
+
+    threshold = _get_threshold_for_query_type(query_type)
+
+    try:
+        start = time.monotonic()
+        matches = await client.search(
+            query=search_query,
+            limit=settings.RAG_TOP_K,
+            threshold=threshold,
+        )
+        duration_ms = (time.monotonic() - start) * 1000
+        return {
+            "matches": matches,
+            "duration_ms": duration_ms,
+            "error": None,
+        }
+    except Exception as e:
+        return {"matches": [], "duration_ms": None, "error": str(e)[:500]}
+
+
+async def _dual_rag_answer(
+    search_query: str,
+    query: str,
+    query_type: str,
+    rag_endpoint: Literal["general", "xdmod"],
+    session_id: str,
+    question_id: str,
+    span: Span,
+) -> dict[str, object]:
+    """Query both UKY and pgvector in parallel, log comparison, return state update.
+
+    Serves the user-facing answer with the same priority as the normal flow
+    (UKY primary, pgvector fallback) but always queries both and logs the
+    side-by-side results for A.3 evaluation.
+    """
+    # Run both queries concurrently
+    uky_raw, pg_raw = await asyncio.gather(
+        _query_uky_raw(search_query, rag_endpoint, session_id, question_id),
+        _query_pgvector_raw(search_query, query_type),
+    )
+
+    # Build pgvector RAGMatch objects (needed for state update and logging)
+    pg_matches_raw = pg_raw.get("matches", [])
+    pg_rag_matches = [
+        RAGMatch(
+            id=m.id,
+            question=m.question,
+            answer=m.answer,
+            domain=m.domain,
+            entity_id=m.entity_id,
+            similarity_score=m.similarity_score,
+            metadata=m.metadata,
+        )
+        for m in pg_matches_raw
+    ]
+
+    threshold = _get_threshold_for_query_type(query_type)
+
+    # Determine which backend to serve (same priority as normal flow)
+    served_by = "none"
+    state_update: dict[str, object]
+    uky_answer = uky_raw.get("response")
+
+    if uky_answer:
+        # UKY succeeded — serve its answer
+        served_by = f"uky_{rag_endpoint}"
+        span.set_attribute("rag.source", served_by)
+        span.set_attribute("rag.answer_length", len(uky_answer))
+        span.set_attribute("rag.dual_logging", True)
+
+        rag_match = RAGMatch(
+            id=f"uky-{rag_endpoint}",
+            question=search_query,
+            answer=uky_answer,
+            domain=f"uky-{rag_endpoint}",
+            entity_id=f"uky-{rag_endpoint}",
+            similarity_score=1.0,
+        )
+
+        if query_type == "static":
+            span.set_attribute("rag.result", "uky_direct_answer")
+            state_update = {
+                "final_answer": uky_answer,
+                "messages": [AIMessage(content=uky_answer)],
+                "tools_used": ["uky_rag_retrieval"],
+                "rag_matches": [rag_match],
+                "rag_used": True,
+            }
+        else:
+            span.set_attribute("rag.result", "uky_for_synthesis")
+            state_update = {
+                "rag_matches": [rag_match],
+                "rag_used": True,
+            }
+
+    elif pg_rag_matches:
+        # pgvector has matches — serve from pgvector
+        best_match = pg_rag_matches[0]
+        span.set_attribute("rag.source", "pgvector")
+        span.set_attribute("rag.matches_found", len(pg_rag_matches))
+        span.set_attribute("rag.best_score", best_match.similarity_score)
+        span.set_attribute("rag.dual_logging", True)
+
+        if query_type == "static" and best_match.similarity_score >= threshold:
+            served_by = "pgvector"
+            answer = process_citations(best_match.answer)
+            span.set_attribute("rag.result", "direct_answer")
+            span.set_attribute("rag.answer_length", len(answer))
+            state_update = {
+                "final_answer": answer,
+                "messages": [AIMessage(content=answer)],
+                "tools_used": ["rag_retrieval"],
+                "rag_matches": pg_rag_matches,
+                "rag_used": True,
+            }
+        elif query_type == "combined":
+            served_by = "pgvector"
+            span.set_attribute("rag.result", "matches_for_synthesis")
+            state_update = {
+                "rag_matches": pg_rag_matches,
+                "rag_used": True,
+            }
+        else:
+            span.set_attribute("rag.result", "below_threshold")
+            state_update = {
+                "rag_matches": pg_rag_matches,
+                "rag_used": len(pg_rag_matches) > 0,
+            }
+    else:
+        # Neither backend returned results
+        span.set_attribute("rag.result", "no_matches")
+        span.set_attribute("rag.dual_logging", True)
+        state_update = {"rag_matches": [], "rag_used": False}
+
+    # Determine served answer length
+    served_answer = state_update.get("final_answer")
+    served_answer_length = len(served_answer) if served_answer else None
+
+    # Log the comparison (fire-and-forget, never blocks response)
+    try:
+        comparison_logger = get_rag_comparison_logger()
+        comparison_logger.log_comparison(
+            query_text=query,
+            expanded_query=search_query,
+            session_id=session_id,
+            question_id=question_id,
+            query_type=query_type,
+            rag_endpoint=rag_endpoint,
+            uky_response=uky_answer,
+            uky_duration_ms=uky_raw.get("duration_ms"),
+            uky_error=uky_raw.get("error"),
+            pgvector_matches=[
+                {
+                    "id": m.id,
+                    "question": m.question,
+                    "answer": m.answer[:500],
+                    "similarity_score": m.similarity_score,
+                    "domain": m.domain,
+                    "entity_id": m.entity_id,
+                }
+                for m in pg_rag_matches
+            ] or None,
+            pgvector_best_score=pg_rag_matches[0].similarity_score if pg_rag_matches else None,
+            pgvector_match_count=len(pg_rag_matches),
+            pgvector_duration_ms=pg_raw.get("duration_ms"),
+            pgvector_error=pg_raw.get("error"),
+            served_by=served_by,
+            served_answer_length=served_answer_length,
+        )
+    except Exception as e:
+        logger.error(f"Failed to log RAG comparison: {e}")
+
+    return state_update
+
+
 async def rag_answer_node(state: AgentState) -> dict[str, object]:
     """Retrieve answer from UKY RAG endpoints or pgvector Q&A service.
 
@@ -295,7 +514,20 @@ async def rag_answer_node(state: AgentState) -> dict[str, object]:
             f"RAG lookup for {query_type} query (endpoint={rag_endpoint}): {search_query[:50]}..."
         )
 
-        # Try UKY endpoint first if configured
+        # Dual-RAG path: query both backends in parallel, log comparison
+        if settings.DUAL_RAG_LOGGING and rag_endpoint:
+            logger.info("Dual-RAG logging enabled — querying UKY and pgvector in parallel")
+            return await _dual_rag_answer(
+                search_query=search_query,
+                query=query,
+                query_type=query_type,
+                rag_endpoint=rag_endpoint,
+                session_id=state.get("session_id", ""),
+                question_id=state.get("question_id", ""),
+                span=span,
+            )
+
+        # Normal path: UKY first, pgvector fallback
         if rag_endpoint:
             result = await _ask_uky(
                 search_query=search_query,
