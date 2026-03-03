@@ -66,12 +66,14 @@ class Settings(BaseSettings):
     RAG_TOP_K: int = 3
 
     # Query-type-specific similarity thresholds
-    RAG_THRESHOLD_STATIC: float = 0.85  # High threshold for static queries (confident answers)
-    RAG_THRESHOLD_COMBINED: float = 0.75  # Moderate threshold for combined queries (augment tools)
-    RAG_THRESHOLD_FALLBACK: float = 0.65  # Lower threshold for fallback scenarios
+    # Lowered from 0.85/0.75/0.65 — best matches were scoring ~0.84 and
+    # getting filtered out (see DEV_JOURNAL.md 2026-03-02)
+    RAG_THRESHOLD_STATIC: float = 0.70
+    RAG_THRESHOLD_COMBINED: float = 0.60
+    RAG_THRESHOLD_FALLBACK: float = 0.50
 
     # Legacy compatibility (uses static threshold)
-    RAG_SIMILARITY_THRESHOLD: float = 0.85
+    RAG_SIMILARITY_THRESHOLD: float = 0.70
 
     # JWT Authentication (ES256 + JWKS)
     # Comma-separated list of "issuer=jwks_url" pairs.
