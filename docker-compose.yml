@@ -5,29 +5,14 @@ services:
     build: .
     ports:
       - "8000:8000"
+    env_file: .env
     environment:
-      - ENVIRONMENT=docker
-      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - STATIC_LLM_PROVIDER=${STATIC_LLM_PROVIDER:-}
-      - FIREWORKS_API_KEY=${FIREWORKS_API_KEY:-}
-      - FIREWORKS_MODEL=${FIREWORKS_MODEL:-}
+      # Override DATABASE_URL to use Docker service name
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/langgraph
-      - MCP_CATALOG_URL=http://n8n:5678/webhook/generate-mcp-catalog
-      - QA_SERVICE_URL=${QA_SERVICE_URL:-http://localhost:8001}
-      # JWT Authentication (ES256 + JWKS)
-      - TRUSTED_JWKS_URLS=${TRUSTED_JWKS_URLS:-}
-      - ALLOW_BODY_ACTING_USER=${ALLOW_BODY_ACTING_USER:-true}
-      # OpenTelemetry - Honeycomb
-      - OTEL_ENABLED=${OTEL_ENABLED:-true}
-      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-https://api.honeycomb.io}
-      - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
-      - HONEYCOMB_DATASET=${HONEYCOMB_DATASET:-access-ci}
     depends_on:
       - postgres
     networks:
       - agent-network
-      - mcp-network
 
   postgres:
     image: pgvector/pgvector:pg16
@@ -65,8 +50,6 @@ services:
 networks:
   agent-network:
     driver: bridge
-  mcp-network:
-    external: true  # Assumes MCP servers are on this network
 
 volumes:
   postgres_data:

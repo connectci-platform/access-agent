@@ -31,6 +31,7 @@ from opentelemetry.trace import Span
 from ...config import settings
 from ...rag_comparison_logger import get_rag_comparison_logger
 from ...services.qa_client import get_qa_client
+from .synthesize import _format_rag_matches, _synthesize_with_rag_only
 from ...services.uky_client import get_uky_client
 from ...telemetry import get_tracer
 from ..state import AgentState, RAGMatch
@@ -218,12 +219,9 @@ async def _search_pgvector(
             )
 
             if query_type == "static" and best_match.similarity_score >= threshold:
-                answer = process_citations(best_match.answer)
-                span.set_attribute("rag.result", "direct_answer")
-                span.set_attribute("rag.answer_length", len(answer))
+                span.set_attribute("rag.result", "direct_match_for_synthesis")
+                span.set_attribute("rag.answer_length", len(best_match.answer))
                 return {
-                    "final_answer": answer,
-                    "messages": [AIMessage(content=answer)],
                     "tools_used": ["rag_retrieval"],
                     "rag_matches": rag_matches,
                     "rag_used": True,
@@ -404,12 +402,9 @@ async def _dual_rag_answer(
 
         if query_type == "static" and best_match.similarity_score >= threshold:
             served_by = "pgvector"
-            answer = process_citations(best_match.answer)
-            span.set_attribute("rag.result", "direct_answer")
-            span.set_attribute("rag.answer_length", len(answer))
+            span.set_attribute("rag.result", "direct_match_for_synthesis")
+            span.set_attribute("rag.answer_length", len(best_match.answer))
             state_update = {
-                "final_answer": answer,
-                "messages": [AIMessage(content=answer)],
                 "tools_used": ["rag_retrieval"],
                 "rag_matches": pg_rag_matches,
                 "rag_used": True,
@@ -436,6 +431,16 @@ async def _dual_rag_answer(
     # Determine served answer length
     served_answer = state_update.get("final_answer")
     served_answer_length = len(served_answer) if served_answer else None
+
+    # Synthesize pgvector answer for fair comparison logging
+    pgvector_synthesized = None
+    if pg_rag_matches:
+        try:
+            rag_context = _format_rag_matches(pg_rag_matches)
+            synth_result = await _synthesize_with_rag_only(query, rag_context)
+            pgvector_synthesized = synth_result.get("final_answer")
+        except Exception as e:
+            logger.error(f"Failed to synthesize pgvector answer for comparison: {e}")
 
     # Log the comparison (fire-and-forget, never blocks response)
     try:
@@ -465,6 +470,7 @@ async def _dual_rag_answer(
             pgvector_match_count=len(pg_rag_matches),
             pgvector_duration_ms=pg_raw.get("duration_ms"),
             pgvector_error=pg_raw.get("error"),
+            pgvector_synthesized_answer=pgvector_synthesized,
             served_by=served_by,
             served_answer_length=served_answer_length,
         )
@@ -485,9 +491,10 @@ async def rag_answer_node(state: AgentState) -> dict[str, object]:
 
     Returns:
         State update with:
-        - For static with match: final_answer, messages, tools_used, rag_matches, rag_used
-        - For combined: rag_matches, rag_used (no final_answer - continues to tools)
-        - For no match: rag_matches, rag_used=False
+        - For static with UKY match: final_answer, messages, tools_used, rag_matches, rag_used → END
+        - For static with pgvector match: tools_used, rag_matches, rag_used (no final_answer) → synthesize
+        - For combined: rag_matches, rag_used (no final_answer) → plan → tools
+        - For no match: rag_matches, rag_used=False → plan (fallback to tools)
     """
     tracer = get_tracer("access-agent.nodes")
     query = state["query"]

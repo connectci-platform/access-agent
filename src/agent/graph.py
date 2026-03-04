@@ -114,11 +114,12 @@ def _rag_answer_is_weak(answer: str) -> bool:
     return any(phrase in lower for phrase in hedge_phrases)
 
 
-def route_after_rag(state: AgentState) -> Literal["end", "plan"]:
+def route_after_rag(state: AgentState) -> Literal["end", "plan", "synthesize"]:
     """Route after RAG answer attempt.
 
     For static queries:
-    - If RAG found a confident match → END
+    - If RAG found a confident match (final_answer set by UKY) → END
+    - If RAG found pgvector matches (no final_answer) → synthesize via LLM
     - If RAG hedged (weak answer) → fallback to plan (tools)
     - If no match → fallback to plan (tools)
 
@@ -130,7 +131,7 @@ def route_after_rag(state: AgentState) -> Literal["end", "plan"]:
         state: Current agent state.
 
     Returns:
-        Next node: "end" if static query answered, "plan" for combined or fallback.
+        Next node: "end", "synthesize", or "plan".
     """
     classification = state.get("query_classification")
     query_type = classification.query_type if classification else "static"
@@ -147,13 +148,21 @@ def route_after_rag(state: AgentState) -> Literal["end", "plan"]:
             logger.info("Combined query: No RAG matches, continuing to plan")
         return "plan"
 
-    # For static queries, end if RAG provided a confident answer
+    # For static queries, end if RAG provided a final answer (e.g., UKY)
     final_answer = state.get("final_answer")
     if final_answer:
         if _rag_answer_is_weak(final_answer):
             logger.info("Static query: RAG answer is weak/hedged, falling back to tools")
             return "plan"
         return "end"
+
+    # pgvector matches without final_answer → synthesize via LLM
+    rag_matches = state.get("rag_matches", [])
+    if rag_matches and state.get("rag_used"):
+        logger.info(
+            f"Static query: {len(rag_matches)} pgvector matches, routing to synthesize"
+        )
+        return "synthesize"
 
     # No RAG match for static query, fall back to tools
     logger.info("Static query: No RAG match, falling back to plan")
@@ -216,12 +225,13 @@ def _build_graph_structure(
     # Domain agent goes directly to END
     builder.add_edge("domain_agent", END)
 
-    # After RAG answer, either end or fallback to plan
+    # After RAG answer: end, synthesize pgvector matches, or fallback to plan
     builder.add_conditional_edges(
         "rag_answer",
         route_after_rag,
         {
             "end": END,
+            "synthesize": "synthesize",
             "plan": "plan",
         },
     )

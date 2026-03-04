@@ -51,6 +51,7 @@ class RAGComparisonLog(Base):  # type: ignore[valid-type,misc]
     pgvector_match_count = Column(Integer)
     pgvector_duration_ms = Column(Float)
     pgvector_error = Column(Text)
+    pgvector_synthesized_answer = Column(Text)  # LLM-synthesized answer from pgvector matches
 
     # Which backend served the user-facing answer
     served_by = Column(String(30), index=True)  # uky_general, uky_xdmod, pgvector, none
@@ -102,6 +103,7 @@ class RAGComparisonLogger:
         pgvector_match_count: int | None = None,
         pgvector_duration_ms: float | None = None,
         pgvector_error: str | None = None,
+        pgvector_synthesized_answer: str | None = None,
         served_by: str = "none",
         served_answer_length: int | None = None,
     ) -> None:
@@ -133,6 +135,7 @@ class RAGComparisonLogger:
                 pgvector_match_count=pgvector_match_count,
                 pgvector_duration_ms=pgvector_duration_ms,
                 pgvector_error=pgvector_error,
+                pgvector_synthesized_answer=pgvector_synthesized_answer,
                 served_by=served_by,
                 served_answer_length=served_answer_length,
             )
