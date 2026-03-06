@@ -78,66 +78,97 @@ def generate_report(
 
 
 def _render_ga4_summary(lines: list[str], ga4: GA4Report) -> None:
-    """Render GA4 summary bullet points."""
-    lines.append(f"- **Sessions:** {ga4.total_sessions:,}")
-    lines.append(f"- **Unique users:** {ga4.total_users:,}")
-
-    # Engagement
+    """Render GA4 overview and user funnel."""
     opens = ga4.event_counts.get("chatbot_open", 0)
     new_chats = ga4.event_counts.get("chatbot_new_chat", 0)
-    if opens or new_chats:
-        lines.append(f"- **Engagement:** {opens} opens | {new_chats} new chats")
-
-    # Login prompts
     login_prompts = ga4.event_counts.get("chatbot_login_prompt_shown", 0)
+
+    lines.append(f"- **Chatbot opened:** {opens} times by {ga4.total_users:,} users")
+    if new_chats:
+        lines.append(f"- **New conversations:** {new_chats}")
     if login_prompts:
-        lines.append(f"- **Login prompts shown:** {login_prompts}")
+        lines.append(f"- **Login prompts shown:** {login_prompts:,}")
 
-    # Tickets
-    started = ga4.event_counts.get("chatbot_ticket_started", 0)
-    submitted = ga4.ticket_submitted
-    errors = ga4.ticket_errors
-    completion = f"{submitted / started:.0%}" if started > 0 else "N/A"
-    lines.append(
-        f"- **Tickets:** {started} started → {submitted} submitted "
-        f"({completion} completion) | {errors} errors"
-    )
+    lines.append("\n### User Funnel\n")
 
-    # Security reports
-    security = ga4.event_counts.get("chatbot_security_started", 0)
-    security_sub = ga4.event_counts.get("chatbot_security_submitted", 0)
-    if security > 0:
-        lines.append(f"- **Security reports:** {security} started → {security_sub} submitted")
+    menu_total = sum(ga4.menu_selections.values()) if ga4.menu_selections else 0
+    if menu_total:
+        lines.append(f"**{menu_total} menu selections:**\n")
 
-    # AI questions (general Q&A)
+    _render_ga4_funnel(lines, ga4)
+
+
+def _render_ga4_funnel(lines: list[str], ga4: GA4Report) -> None:
+    """Render per-path funnels from menu selection through outcome."""
+    # Q&A funnel
+    qa_selected = ga4.menu_selections.get("Ask a question about ACCESS", 0)
     questions = ga4.event_counts.get("chatbot_question_sent", 0)
     answers = ga4.event_counts.get("chatbot_answer_received", 0)
     q_errors = ga4.event_counts.get("chatbot_answer_error", 0)
-    if questions:
-        lines.append(
-            f"- **AI questions (general):** {questions} asked → {answers} answered"
-            + (f" | {q_errors} errors" if q_errors else "")
-        )
-
-    # AI questions (XDMoD)
-    metrics_q = ga4.event_counts.get("chatbot_metrics_question_sent", 0)
-    if metrics_q > 0:
-        lines.append(f"- **AI questions (XDMoD):** {metrics_q}")
-
-    # Feedback ratings
     ratings = ga4.event_counts.get("chatbot_rating_sent", 0)
-    if ratings:
-        lines.append(f"- **Feedback ratings:** {ratings}")
+
+    if qa_selected or questions:
+        qa_line = f"- **Ask a question:** {qa_selected} selected"
+        if questions:
+            qa_line += f" → {questions} questions asked → {answers} answered"
+            if q_errors:
+                qa_line += f" | {q_errors} errors"
+        lines.append(qa_line)
+        if ratings:
+            lines.append(f"  - {ratings} feedback ratings submitted")
+
+    # Ticket funnel
+    ticket_selected = ga4.menu_selections.get("Open a Help Ticket", 0)
+    ticket_started = ga4.event_counts.get("chatbot_ticket_started", 0)
+    ticket_submitted = ga4.ticket_submitted
+    ticket_errors = ga4.ticket_errors
+    completion = f"{ticket_submitted / ticket_started:.0%}" if ticket_started > 0 else "N/A"
+
+    if ticket_selected or ticket_started:
+        ticket_line = f"- **Help tickets:** {ticket_selected} selected"
+        if ticket_started:
+            ticket_line += (
+                f" → {ticket_started} started → {ticket_submitted} submitted ({completion})"
+            )
+            if ticket_errors:
+                ticket_line += f" | {ticket_errors} errors"
+        lines.append(ticket_line)
+
+    # XDMoD funnel
+    xdmod_selected = ga4.menu_selections.get("Usage and performance of ACCESS resources (XDMoD)", 0)
+    xdmod_questions = ga4.event_counts.get("chatbot_metrics_question_sent", 0)
+
+    if xdmod_selected or xdmod_questions:
+        xdmod_line = f"- **XDMoD metrics:** {xdmod_selected} selected"
+        if xdmod_questions:
+            xdmod_line += f" → {xdmod_questions} questions asked"
+        lines.append(xdmod_line)
+
+    # Security funnel
+    security_selected = ga4.menu_selections.get("Report a security issue", 0)
+    security_started = ga4.event_counts.get("chatbot_security_started", 0)
+    security_submitted = ga4.event_counts.get("chatbot_security_submitted", 0)
+
+    if security_selected or security_started:
+        security_line = f"- **Security reports:** {security_selected} selected"
+        if security_started:
+            security_line += f" → {security_started} started → {security_submitted} submitted"
+        lines.append(security_line)
+
+    # Any other menu selections not covered above
+    known_selections = {
+        "Ask a question about ACCESS",
+        "Open a Help Ticket",
+        "Usage and performance of ACCESS resources (XDMoD)",
+        "Report a security issue",
+    }
+    other_selections = {k: v for k, v in ga4.menu_selections.items() if k not in known_selections}
+    for selection, count in sorted(other_selections.items(), key=lambda x: -x[1]):
+        lines.append(f"- **{selection}:** {count}")
 
 
 def _render_ga4_breakdowns(lines: list[str], ga4: GA4Report) -> None:
     """Render GA4 breakdown subsections."""
-    if ga4.menu_selections:
-        lines.append("\n### Menu Selections\n")
-        total_menu = sum(ga4.menu_selections.values())
-        for selection, count in sorted(ga4.menu_selections.items(), key=lambda x: -x[1]):
-            lines.append(f"- {selection}: {count} ({count / total_menu:.0%})")
-
     if ga4.ticket_types:
         lines.append("\n### Ticket Types\n")
         for ttype, count in sorted(ga4.ticket_types.items(), key=lambda x: -x[1]):
