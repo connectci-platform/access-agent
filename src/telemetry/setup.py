@@ -18,10 +18,14 @@ if _env_file.exists():
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.instrumentation.langchain import LangchainInstrumentor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+
+try:
+    from opentelemetry.instrumentation.langchain import LangchainInstrumentor
+except ImportError:
+    LangchainInstrumentor = None
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -107,8 +111,11 @@ def init_telemetry(
     # in telemetry/http.py, which is more reliable than HTTPXClientInstrumentor().instrument()
 
     # Auto-instrument LangChain (for LLM calls with token usage)
-    LangchainInstrumentor().instrument()
-    logger.info("LangChain auto-instrumentation enabled")
+    if LangchainInstrumentor is not None:
+        LangchainInstrumentor().instrument()
+        logger.info("LangChain auto-instrumentation enabled")
+    else:
+        logger.warning("LangChain instrumentation unavailable — skipping")
 
 
 def shutdown_telemetry() -> None:
