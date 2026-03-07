@@ -32,7 +32,9 @@ if settings.ENVIRONMENT == "production":
     else:
         allowed_origins = [
             "https://support.access-ci.org",
-            "https://qa.access-ci.org",
+            "https://allocations.access-ci.org",
+            "https://operations.access-ci.org",
+            "https://metrics.access-ci.org",
             "https://access-ci.org",
         ]
 elif settings.ALLOWED_ORIGINS:

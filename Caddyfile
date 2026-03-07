@@ -1,4 +1,4 @@
-access-agent.elytra.net {
+access-agent.elytra.net qa.access-ci.org {
     # Use internal TLS (Cloudflare handles public SSL)
     tls internal
 
