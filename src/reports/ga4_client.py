@@ -24,7 +24,9 @@ from google.analytics.data_v1beta.types import (
 
 logger = logging.getLogger(__name__)
 
-# Chatbot events tracked via GTM
+# Chatbot events tracked via GTM — only intentional user actions.
+# chatbot_login_prompt_shown is excluded because it fires passively
+# on every page load for unauthenticated visitors (inflates user/session counts).
 CHATBOT_EVENTS = [
     # Core chatbot events (qa-bot-core)
     "chatbot_open",
@@ -33,8 +35,9 @@ CHATBOT_EVENTS = [
     "chatbot_question_sent",
     "chatbot_answer_received",
     "chatbot_answer_error",
-    "chatbot_login_prompt_shown",
     "chatbot_rating_sent",
+    "chatbot_login_clicked",
+    "chatbot_link_clicked",
     # ACCESS agent layer events
     "chatbot_menu_selected",
     "chatbot_ticket_started",
@@ -94,6 +97,7 @@ class GA4Client:
 
         try:
             self._fetch_event_counts(report, start_date, end_date)
+            self._fetch_login_events(report, start_date, end_date)
             self._fetch_daily_breakdown(report, start_date, end_date)
             self._fetch_session_user_counts(report, start_date, end_date)
             self._fetch_menu_selections(report, start_date, end_date)
@@ -142,6 +146,37 @@ class GA4Client:
 
         report.ticket_submitted = report.event_counts.get("chatbot_ticket_submitted", 0)
         report.ticket_errors = report.event_counts.get("chatbot_ticket_error", 0)
+
+    def _fetch_login_events(self, report: GA4Report, start_date: str, end_date: str) -> None:
+        """Fetch login-related events separately.
+
+        chatbot_login_prompt_shown fires passively on page load for logged-out
+        users, so it's excluded from CHATBOT_EVENTS (which drives session/user
+        counts). We fetch it here to populate event_counts for the login barrier
+        funnel in the report.
+        """
+        login_events = ["chatbot_login_prompt_shown", "chatbot_login_clicked"]
+        try:
+            response = self._run_report(
+                RunReportRequest(
+                    property=self.property,
+                    dimensions=[Dimension(name="eventName")],
+                    metrics=[Metric(name="eventCount")],
+                    date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+                    dimension_filter=FilterExpression(
+                        filter=Filter(
+                            field_name="eventName",
+                            in_list_filter=Filter.InListFilter(values=login_events),
+                        )
+                    ),
+                )
+            )
+            for row in response.rows:
+                event_name = row.dimension_values[0].value
+                count = int(row.metric_values[0].value)
+                report.event_counts[event_name] = count
+        except Exception:
+            logger.debug("Failed to fetch login events from GA4")
 
     def _fetch_daily_breakdown(self, report: GA4Report, start_date: str, end_date: str) -> None:
         """Fetch daily event counts for trend analysis."""

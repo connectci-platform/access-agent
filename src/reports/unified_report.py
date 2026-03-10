@@ -32,6 +32,13 @@ def _pct_bar(value: int, total: int, width: int = 20) -> str:
     return f"{'█' * filled}{'░' * (width - filled)} {pct:.0%}"
 
 
+def _pct(numerator: int, denominator: int) -> str:
+    """Format a percentage, returning 'N/A' if denominator is zero."""
+    if denominator == 0:
+        return "N/A"
+    return f"{numerator / denominator:.0%}"
+
+
 def generate_report(
     ga4_client: GA4Client | None,
     db_reporter: DBReporter,
@@ -77,83 +84,157 @@ def generate_report(
     return _render_markdown(period_str, ga4_report, agent_report)
 
 
-def _render_ga4_summary(lines: list[str], ga4: GA4Report) -> None:
-    """Render GA4 overview and user funnel."""
-    opens = ga4.event_counts.get("chatbot_open", 0)
-    new_chats = ga4.event_counts.get("chatbot_new_chat", 0)
-    login_prompts = ga4.event_counts.get("chatbot_login_prompt_shown", 0)
+# ---------------------------------------------------------------------------
+# Engagement section
+# ---------------------------------------------------------------------------
 
-    lines.append(f"- **Chatbot opened:** {opens} times by {ga4.total_users:,} users")
+
+def _render_engagement(lines: list[str], ga4: GA4Report) -> None:
+    """Render engagement overview — who used the chatbot and how."""
+    lines.append("## Engagement\n")
+
+    opens = ga4.event_counts.get("chatbot_open", 0)
+    closes = ga4.event_counts.get("chatbot_close", 0)
+    new_chats = ga4.event_counts.get("chatbot_new_chat", 0)
+
+    lines.append(f"- **Users:** {ga4.total_users:,}")
+    lines.append(f"- **Sessions:** {ga4.total_sessions:,}")
+    lines.append(f"- **Chatbot opened:** {opens}")
     if new_chats:
         lines.append(f"- **New conversations:** {new_chats}")
+    if closes:
+        lines.append(f"- **Chatbot closed:** {closes}")
+
+    if ga4.embed_breakdown:
+        total_embed = sum(ga4.embed_breakdown.values())
+        parts = []
+        for label, count in sorted(ga4.embed_breakdown.items(), key=lambda x: -x[1]):
+            parts.append(f"{label} {count} ({_pct(count, total_embed)})")
+        lines.append(f"- **Mode:** {', '.join(parts)}")
+
+    lines.append("")
+
+
+# ---------------------------------------------------------------------------
+# Login barrier section
+# ---------------------------------------------------------------------------
+
+
+def _render_login_barrier(lines: list[str], ga4: GA4Report) -> None:
+    """Render login barrier funnel — how login gating affects usage."""
+    login_prompts = ga4.event_counts.get("chatbot_login_prompt_shown", 0)
+    login_clicks = ga4.event_counts.get("chatbot_login_clicked", 0)
+
+    # Only show if there's data
+    if not login_prompts and not login_clicks:
+        return
+
+    lines.append("## Login Barrier\n")
+
     if login_prompts:
         lines.append(f"- **Login prompts shown:** {login_prompts:,}")
+    if login_clicks:
+        lines.append(f"- **Login button clicked:** {login_clicks:,}")
+        if login_prompts:
+            lines.append(f"- **Click-through rate:** {_pct(login_clicks, login_prompts)}")
 
-    lines.append("\n### User Funnel\n")
+    # Estimate abandonment: people who saw the prompt but didn't click login
+    if login_prompts and login_clicks:
+        abandoned = login_prompts - login_clicks
+        if abandoned > 0:
+            lines.append(
+                f"- **Abandoned at login:** ~{abandoned:,} ({_pct(abandoned, login_prompts)})"
+            )
 
-    menu_total = sum(ga4.menu_selections.values()) if ga4.menu_selections else 0
-    if menu_total:
-        lines.append(f"**{menu_total} menu selections:**\n")
-
-    _render_ga4_funnel(lines, ga4)
+    lines.append("")
 
 
-def _render_ga4_funnel(lines: list[str], ga4: GA4Report) -> None:
-    """Render per-path funnels from menu selection through outcome."""
-    # Q&A funnel
+# ---------------------------------------------------------------------------
+# User funnel section
+# ---------------------------------------------------------------------------
+
+
+def _render_qa_funnel(lines: list[str], ga4: GA4Report) -> None:
+    """Render Q&A funnel subsection."""
     qa_selected = ga4.menu_selections.get("Ask a question about ACCESS", 0)
     questions = ga4.event_counts.get("chatbot_question_sent", 0)
-    answers = ga4.event_counts.get("chatbot_answer_received", 0)
-    q_errors = ga4.event_counts.get("chatbot_answer_error", 0)
+    if not qa_selected and not questions:
+        return
+
+    qa_line = f"- **Ask a question:** {qa_selected} selected"
+    if questions:
+        answers = ga4.event_counts.get("chatbot_answer_received", 0)
+        q_errors = ga4.event_counts.get("chatbot_answer_error", 0)
+        qa_line += f" → {questions} questions → {answers} answered"
+        if q_errors:
+            qa_line += f" | {q_errors} errors"
+    lines.append(qa_line)
+
     ratings = ga4.event_counts.get("chatbot_rating_sent", 0)
+    if ratings:
+        lines.append(f"  - {ratings} feedback ratings submitted")
+    link_clicks = ga4.event_counts.get("chatbot_link_clicked", 0)
+    if link_clicks:
+        lines.append(f"  - {link_clicks} links clicked in answers")
 
-    if qa_selected or questions:
-        qa_line = f"- **Ask a question:** {qa_selected} selected"
-        if questions:
-            qa_line += f" → {questions} questions asked → {answers} answered"
-            if q_errors:
-                qa_line += f" | {q_errors} errors"
-        lines.append(qa_line)
-        if ratings:
-            lines.append(f"  - {ratings} feedback ratings submitted")
 
-    # Ticket funnel
+def _render_ticket_funnel(lines: list[str], ga4: GA4Report) -> None:
+    """Render ticket funnel subsection."""
     ticket_selected = ga4.menu_selections.get("Open a Help Ticket", 0)
     ticket_started = ga4.event_counts.get("chatbot_ticket_started", 0)
-    ticket_submitted = ga4.ticket_submitted
-    ticket_errors = ga4.ticket_errors
-    completion = f"{ticket_submitted / ticket_started:.0%}" if ticket_started > 0 else "N/A"
+    if not ticket_selected and not ticket_started:
+        return
 
-    if ticket_selected or ticket_started:
-        ticket_line = f"- **Help tickets:** {ticket_selected} selected"
-        if ticket_started:
-            ticket_line += (
-                f" → {ticket_started} started → {ticket_submitted} submitted ({completion})"
-            )
-            if ticket_errors:
-                ticket_line += f" | {ticket_errors} errors"
-        lines.append(ticket_line)
+    ticket_line = f"- **Help tickets:** {ticket_selected} selected"
+    if ticket_started:
+        ticket_line += (
+            f" → {ticket_started} started → {ga4.ticket_submitted} submitted"
+            f" ({_pct(ga4.ticket_submitted, ticket_started)})"
+        )
+        if ga4.ticket_errors:
+            ticket_line += f" | {ga4.ticket_errors} errors"
+    lines.append(ticket_line)
 
-    # XDMoD funnel
+
+def _render_xdmod_funnel(lines: list[str], ga4: GA4Report) -> None:
+    """Render XDMoD funnel subsection."""
     xdmod_selected = ga4.menu_selections.get("Usage and performance of ACCESS resources (XDMoD)", 0)
     xdmod_questions = ga4.event_counts.get("chatbot_metrics_question_sent", 0)
+    if not xdmod_selected and not xdmod_questions:
+        return
 
-    if xdmod_selected or xdmod_questions:
-        xdmod_line = f"- **XDMoD metrics:** {xdmod_selected} selected"
-        if xdmod_questions:
-            xdmod_line += f" → {xdmod_questions} questions asked"
-        lines.append(xdmod_line)
+    xdmod_line = f"- **XDMoD metrics:** {xdmod_selected} selected"
+    if xdmod_questions:
+        xdmod_line += f" → {xdmod_questions} questions"
+    lines.append(xdmod_line)
 
-    # Security funnel
+
+def _render_security_funnel(lines: list[str], ga4: GA4Report) -> None:
+    """Render security funnel subsection."""
     security_selected = ga4.menu_selections.get("Report a security issue", 0)
     security_started = ga4.event_counts.get("chatbot_security_started", 0)
-    security_submitted = ga4.event_counts.get("chatbot_security_submitted", 0)
+    if not security_selected and not security_started:
+        return
 
-    if security_selected or security_started:
-        security_line = f"- **Security reports:** {security_selected} selected"
-        if security_started:
-            security_line += f" → {security_started} started → {security_submitted} submitted"
-        lines.append(security_line)
+    security_line = f"- **Security reports:** {security_selected} selected"
+    if security_started:
+        security_submitted = ga4.event_counts.get("chatbot_security_submitted", 0)
+        security_line += f" → {security_started} started → {security_submitted} submitted"
+    lines.append(security_line)
+
+
+def _render_funnel(lines: list[str], ga4: GA4Report) -> None:
+    """Render the user activity funnel — what people did after opening the chatbot."""
+    menu_total = sum(ga4.menu_selections.values()) if ga4.menu_selections else 0
+    if not menu_total:
+        return
+
+    lines.append(f"## What Users Did ({menu_total} menu selections)\n")
+
+    _render_qa_funnel(lines, ga4)
+    _render_ticket_funnel(lines, ga4)
+    _render_xdmod_funnel(lines, ga4)
+    _render_security_funnel(lines, ga4)
 
     # Any other menu selections not covered above
     known_selections = {
@@ -166,50 +247,49 @@ def _render_ga4_funnel(lines: list[str], ga4: GA4Report) -> None:
     for selection, count in sorted(other_selections.items(), key=lambda x: -x[1]):
         lines.append(f"- **{selection}:** {count}")
 
+    lines.append("")
+
+
+# ---------------------------------------------------------------------------
+# GA4 breakdowns section
+# ---------------------------------------------------------------------------
+
 
 def _render_ga4_breakdowns(lines: list[str], ga4: GA4Report) -> None:
-    """Render GA4 breakdown subsections."""
+    """Render GA4 breakdown subsections (ticket types, top pages)."""
     if ga4.ticket_types:
-        lines.append("\n### Ticket Types\n")
+        lines.append("### Ticket Types\n")
         for ttype, count in sorted(ga4.ticket_types.items(), key=lambda x: -x[1]):
             lines.append(f"- {ttype}: {count}")
+        lines.append("")
 
     if ga4.page_breakdown:
-        lines.append("\n### Top Pages\n")
+        lines.append("### Top Pages\n")
         total_pages = sum(ga4.page_breakdown.values())
         for page, count in list(ga4.page_breakdown.items())[:10]:
-            pct = f"{count / total_pages:.0%}" if total_pages else ""
-            lines.append(f"- `{page}`: {count} ({pct})")
-
-    if ga4.embed_breakdown:
-        lines.append("\n### Embedded vs Floating\n")
-        total_embed = sum(ga4.embed_breakdown.values())
-        for label, count in sorted(ga4.embed_breakdown.items(), key=lambda x: -x[1]):
-            pct = f"{count / total_embed:.0%}" if total_embed else ""
-            lines.append(f"- {label.title()}: {count} ({pct})")
-
-
-def _render_ga4_section(lines: list[str], ga4: GA4Report | None) -> None:
-    """Render the GA4 chatbot UI section."""
-    if ga4 and ga4.error_available:
-        lines.append("## Chatbot UI (GA4)\n")
-        _render_ga4_summary(lines, ga4)
-        _render_ga4_breakdowns(lines, ga4)
+            pct = f" ({_pct(count, total_pages)})" if total_pages else ""
+            lines.append(f"- `{page}`: {count}{pct}")
         lines.append("")
-    elif ga4 and not ga4.error_available:
-        lines.append("## Chatbot UI (GA4)\n")
-        lines.append("*GA4 data unavailable — check API credentials and permissions.*\n")
+
+
+# ---------------------------------------------------------------------------
+# Agent performance section
+# ---------------------------------------------------------------------------
 
 
 def _render_agent_section(lines: list[str], agent: AgentReport) -> None:
-    """Render the agent metrics section."""
+    """Render the AI agent backend metrics."""
     if not agent.error_available:
-        lines.append("## AI Agent (PostgreSQL)\n")
+        lines.append("## Agent Performance\n")
         lines.append("*Agent data unavailable — check DATABASE_URL.*\n")
         return
 
-    lines.append("## AI Agent (PostgreSQL)\n")
-    lines.append(f"- **Total queries:** {agent.total_queries:,}")
+    # Skip section entirely if no queries
+    if agent.total_queries == 0:
+        return
+
+    lines.append("## Agent Performance\n")
+    lines.append(f"- **Queries processed:** {agent.total_queries:,}")
     lines.append(f"- **Unique users:** {agent.unique_users:,}")
     lines.append(f"- **Success rate:** {agent.success_rate}%")
     lines.append(
@@ -244,17 +324,32 @@ def _render_agent_section(lines: list[str], agent: AgentReport) -> None:
 
     lines.append("")
 
-    if agent.content_gaps:
-        lines.append("## Content Gaps\n")
-        lines.append(
-            "*Queries with low confidence or failures — areas needing knowledge base improvement.*\n"
-        )
-        for gap in agent.content_gaps:
-            lines.append(f"### {gap['topic']} ({gap['count']} queries)\n")
-            samples = gap.get("samples", [])
-            for sample in samples if isinstance(samples, list) else []:
-                lines.append(f'- "{sample}"')
-            lines.append("")
+
+# ---------------------------------------------------------------------------
+# Content gaps section
+# ---------------------------------------------------------------------------
+
+
+def _render_content_gaps(lines: list[str], agent: AgentReport) -> None:
+    """Render content gaps — the most actionable part of the report."""
+    if not agent.error_available or not agent.content_gaps:
+        return
+
+    lines.append("## Content Gaps\n")
+    lines.append(
+        "*Queries with low confidence or failures — areas needing knowledge base improvement.*\n"
+    )
+    for gap in agent.content_gaps:
+        lines.append(f"### {gap['topic']} ({gap['count']} queries)\n")
+        samples = gap.get("samples", [])
+        for sample in samples if isinstance(samples, list) else []:
+            lines.append(f'- "{sample}"')
+        lines.append("")
+
+
+# ---------------------------------------------------------------------------
+# Main render
+# ---------------------------------------------------------------------------
 
 
 def _render_markdown(
@@ -267,8 +362,19 @@ def _render_markdown(
     lines.append("# ACCESS Support Bot — Weekly Report")
     lines.append(f"**{period}**\n")
 
-    _render_ga4_section(lines, ga4)
+    # GA4 sections
+    if ga4 and ga4.error_available:
+        _render_engagement(lines, ga4)
+        _render_login_barrier(lines, ga4)
+        _render_funnel(lines, ga4)
+        _render_ga4_breakdowns(lines, ga4)
+    elif ga4 and not ga4.error_available:
+        lines.append("## Chatbot UI (GA4)\n")
+        lines.append("*GA4 data unavailable — check API credentials and permissions.*\n")
+
+    # Agent sections
     _render_agent_section(lines, agent)
+    _render_content_gaps(lines, agent)
 
     lines.append("---")
     lines.append(
