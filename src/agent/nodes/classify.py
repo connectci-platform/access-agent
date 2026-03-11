@@ -231,4 +231,15 @@ async def classify_node(state: AgentState) -> dict[str, QueryClassification]:
         if classification.expanded_query != query:
             logger.info(f"Query expanded: '{query}' -> '{classification.expanded_query}'")
 
-        return {"query_classification": classification}
+        return {
+            "query_classification": classification,
+            "node_trace": [{
+                "node": "classify",
+                "query_type": classification.query_type,
+                "confidence": classification.confidence,
+                "domain": classification.domain,
+                "rag_endpoint": classification.rag_endpoint,
+                "reason": classification.reason[:200] if classification.reason else "",
+                "expanded": classification.expanded_query != query,
+            }],
+        }

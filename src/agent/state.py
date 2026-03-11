@@ -4,7 +4,8 @@ Defines the TypedDict that flows through the LangGraph nodes,
 containing all state needed for query processing.
 """
 
-from typing import Annotated, Literal, TypedDict
+import operator
+from typing import Annotated, Any, Literal, TypedDict
 
 from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.graph.message import add_messages
@@ -202,6 +203,9 @@ class AgentState(TypedDict):
     # Retry fields (for future error recovery)
     retry_context: Annotated[RetryContext | None, "Retry tracking context"]
 
+    # Tracing (accumulated by every node via operator.add reducer)
+    node_trace: Annotated[list[dict[str, Any]], operator.add]
+
     # Output fields (set by synthesize node)
     final_answer: Annotated[str | None, "Final answer to return to user"]
 
@@ -257,6 +261,8 @@ def create_initial_state(
         max_attempts=max_attempts,
         # Retry
         retry_context=RetryContext(start_time_ms=int(time.time() * 1000)),
+        # Tracing
+        node_trace=[],
         # Output
         final_answer=None,
     )

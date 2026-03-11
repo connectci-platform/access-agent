@@ -51,6 +51,7 @@ async def execute_node(state: AgentState) -> dict[str, Any]:
             return {
                 "tool_results": [],
                 "tools_used": [],
+                "node_trace": [{"node": "execute", "skipped": True, "reason": "no_tools_needed"}],
             }
 
         if not planned_tools:
@@ -60,6 +61,7 @@ async def execute_node(state: AgentState) -> dict[str, Any]:
             return {
                 "tool_results": [],
                 "tools_used": [],
+                "node_trace": [{"node": "execute", "skipped": True, "reason": "no_tools_planned"}],
             }
 
         strategy = state.get("execution_strategy", "parallel")
@@ -102,11 +104,18 @@ async def execute_node(state: AgentState) -> dict[str, Any]:
                 event_attrs["data_summary"] = data_summary
             add_span_event(f"tool_result.{result.tool_name}", event_attrs)
 
+        failed = [r.tool_name for r in results if not r.success]
         logger.info(f"Execution complete: {len(tools_used)}/{len(results)} tools succeeded")
 
         return {
             "tool_results": results,
             "tools_used": tools_used,
+            "node_trace": [{
+                "node": "execute",
+                "tools_called": [r.tool_name for r in results],
+                "succeeded": tools_used,
+                "failed": failed,
+            }],
         }
 
 
