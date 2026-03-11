@@ -77,6 +77,9 @@ async def evaluate_node(state: AgentState) -> dict[str, Any]:
     tool_results = state.get("tool_results", [])
     attempt_number = state.get("attempt_number", 0)
 
+    def _trace(is_helpful, reason):
+        return [{"node": "evaluate", "is_helpful": is_helpful, "attempt": attempt_number, "reason": reason[:100]}]
+
     # If no tools were needed, skip evaluation
     query_analysis = state.get("query_analysis")
     if query_analysis and not query_analysis.requires_tools:
@@ -87,6 +90,7 @@ async def evaluate_node(state: AgentState) -> dict[str, Any]:
                 reason="No tools needed for this query",
             ),
             "attempt_number": attempt_number,
+            "node_trace": _trace(True, "no_tools_needed"),
         }
 
     # Handle empty results
@@ -100,6 +104,7 @@ async def evaluate_node(state: AgentState) -> dict[str, Any]:
                 missing_information="Tool execution required",
             ),
             "attempt_number": attempt_number + 1,
+            "node_trace": _trace(False, "no_results"),
         }
 
     # Check if all tools failed
@@ -115,6 +120,7 @@ async def evaluate_node(state: AgentState) -> dict[str, Any]:
                 missing_information="Need successful tool execution",
             ),
             "attempt_number": attempt_number + 1,
+            "node_trace": _trace(False, "all_tools_failed"),
         }
 
     # Build summaries for LLM evaluation
@@ -149,11 +155,11 @@ async def evaluate_node(state: AgentState) -> dict[str, Any]:
         return {
             "quality_evaluation": evaluation,
             "attempt_number": attempt_number + 1 if not evaluation.is_helpful else attempt_number,
+            "node_trace": _trace(evaluation.is_helpful, evaluation.reason),
         }
 
     except Exception as e:
         logger.error(f"Evaluation failed: {e}")
-        # On error, assume helpful to avoid infinite loops
         return {
             "quality_evaluation": QualityEvaluation(
                 is_helpful=True,
@@ -161,6 +167,7 @@ async def evaluate_node(state: AgentState) -> dict[str, Any]:
                 reason=f"Evaluation error: {e}",
             ),
             "attempt_number": attempt_number,
+            "node_trace": _trace(True, f"error: {e}"),
         }
 
 

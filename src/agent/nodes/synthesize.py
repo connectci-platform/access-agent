@@ -233,92 +233,89 @@ async def synthesize_node(state: AgentState) -> dict[str, Any]:
             "agent.tool_results": len(tool_results) if tool_results else 0,
         },
     ) as span:
+        strategy = "unknown"
+        result: dict[str, Any] = {}
+
         # Handle no-tools-needed case
         if query_analysis and not query_analysis.requires_tools:
-            span.set_attribute("synthesis.strategy", "no_tools_needed")
-            return await _synthesize_without_tools(query, query_analysis)
+            strategy = "no_tools_needed"
+            span.set_attribute("synthesis.strategy", strategy)
+            result = await _synthesize_without_tools(query, query_analysis)
+        else:
+            # Determine what data we have
+            has_rag = bool(rag_matches)
+            has_tools = bool(tool_results)
+            tools_succeeded = has_tools and any(r.success for r in tool_results)
 
-        # Determine what data we have
-        has_rag = bool(rag_matches)
-        has_tools = bool(tool_results)
-        tools_succeeded = has_tools and any(r.success for r in tool_results)
+            span.set_attribute("synthesis.has_rag", has_rag)
+            span.set_attribute("synthesis.has_tools", has_tools)
+            span.set_attribute("synthesis.tools_succeeded", tools_succeeded)
 
-        span.set_attribute("synthesis.has_rag", has_rag)
-        span.set_attribute("synthesis.has_tools", has_tools)
-        span.set_attribute("synthesis.tools_succeeded", tools_succeeded)
+            logger.info(
+                f"Synthesis: has_rag={has_rag} ({len(rag_matches)} matches), "
+                f"has_tools={has_tools}, tools_succeeded={tools_succeeded}"
+            )
 
-        logger.info(
-            f"Synthesis: has_rag={has_rag} ({len(rag_matches)} matches), "
-            f"has_tools={has_tools}, tools_succeeded={tools_succeeded}"
-        )
+            if not has_rag and not has_tools:
+                strategy = "no_data"
+                logger.warning("No results to synthesize")
+                result = {
+                    "final_answer": (
+                        "I wasn't able to retrieve specific information for your question. "
+                        "Please try rephrasing your query or ask about a specific ACCESS resource."
+                    ),
+                }
+            else:
+                # Format available data
+                rag_context = _format_rag_matches(rag_matches) if has_rag else ""
+                results_text = _format_tool_results(tool_results) if has_tools else ""
+                results_text = await _maybe_condense_results(query, results_text, span)
 
-        # No data at all
-        if not has_rag and not has_tools:
-            logger.warning("No results to synthesize")
-            span.set_attribute("synthesis.strategy", "no_data")
-            return {
-                "final_answer": (
-                    "I wasn't able to retrieve specific information for your question. "
-                    "Please try rephrasing your query or ask about a specific ACCESS resource."
-                ),
-            }
+                if has_rag and has_tools and not tools_succeeded:
+                    strategy = "rag_only_tools_failed"
+                    logger.info("Tools failed but RAG has data - using RAG-only synthesis")
+                    result = await _synthesize_with_rag_only(query, rag_context)
+                elif has_tools and not tools_succeeded and not has_rag:
+                    strategy = "all_failed"
+                    logger.warning("All tools failed and no RAG data")
+                    failed_tools = ", ".join(r.tool_name for r in tool_results)
+                    result = {
+                        "final_answer": (
+                            "I encountered issues retrieving data for your question. "
+                            f"The following tools were attempted but failed: {failed_tools}. "
+                            "Please try again later or contact support if this persists."
+                        ),
+                    }
+                elif has_rag and tools_succeeded:
+                    strategy = "combined"
+                    result = await _synthesize_combined(query, rag_context, results_text)
+                elif tools_succeeded:
+                    strategy = "tools_only"
+                    result = await _synthesize_tools_only(query, results_text)
+                elif has_rag:
+                    strategy = "rag_only"
+                    result = await _synthesize_with_rag_only(query, rag_context)
+                else:
+                    strategy = "fallback"
+                    result = {
+                        "final_answer": (
+                            "I wasn't able to generate a complete answer. "
+                            "Please try rephrasing your question."
+                        ),
+                    }
 
-        # Format available data
-        rag_context = _format_rag_matches(rag_matches) if has_rag else ""
-        results_text = _format_tool_results(tool_results) if has_tools else ""
+            span.set_attribute("synthesis.strategy", strategy)
 
-        # Check token budget and condense if needed
-        results_text = await _maybe_condense_results(query, results_text, span)
+        answer_len = len(result.get("final_answer", "") or "")
+        if answer_len:
+            span.set_attribute("synthesis.answer_length", answer_len)
 
-        # All tools failed but we have RAG data - use RAG only
-        if has_rag and has_tools and not tools_succeeded:
-            logger.info("Tools failed but RAG has data - using RAG-only synthesis")
-            span.set_attribute("synthesis.strategy", "rag_only_tools_failed")
-            return await _synthesize_with_rag_only(query, rag_context)
-
-        # All tools failed and no RAG data
-        if has_tools and not tools_succeeded and not has_rag:
-            logger.warning("All tools failed and no RAG data")
-            failed_tools = ", ".join(r.tool_name for r in tool_results)
-            span.set_attribute("synthesis.strategy", "all_failed")
-            return {
-                "final_answer": (
-                    "I encountered issues retrieving data for your question. "
-                    f"The following tools were attempted but failed: {failed_tools}. "
-                    "Please try again later or contact support if this persists."
-                ),
-            }
-
-        # Choose synthesis strategy
-        if has_rag and tools_succeeded:
-            # Combined synthesis: RAG + tools
-            span.set_attribute("synthesis.strategy", "combined")
-            result = await _synthesize_combined(query, rag_context, results_text)
-            if "final_answer" in result:
-                span.set_attribute("synthesis.answer_length", len(result["final_answer"]))
-            return result
-        if tools_succeeded:
-            # Tools only
-            span.set_attribute("synthesis.strategy", "tools_only")
-            result = await _synthesize_tools_only(query, results_text)
-            if "final_answer" in result:
-                span.set_attribute("synthesis.answer_length", len(result["final_answer"]))
-            return result
-        if has_rag:
-            # RAG only (tools not attempted or empty)
-            span.set_attribute("synthesis.strategy", "rag_only")
-            result = await _synthesize_with_rag_only(query, rag_context)
-            if "final_answer" in result:
-                span.set_attribute("synthesis.answer_length", len(result["final_answer"]))
-            return result
-
-        # Fallback (shouldn't reach here)
-        span.set_attribute("synthesis.strategy", "fallback")
-        return {
-            "final_answer": (
-                "I wasn't able to generate a complete answer. Please try rephrasing your question."
-            ),
-        }
+        result["node_trace"] = [{
+            "node": "synthesize",
+            "strategy": strategy,
+            "answer_length": answer_len,
+        }]
+        return result
 
 
 async def _synthesize_without_tools(

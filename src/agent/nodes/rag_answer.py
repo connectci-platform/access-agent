@@ -305,10 +305,21 @@ async def rag_answer_node(state: AgentState) -> dict[str, object]:
                 question_id=state.get("question_id", ""),
                 span=span,
             )
-            if result is not None:
-                return result
-            # UKY failed or not configured — fall through to pgvector
-            logger.info("Falling back to pgvector after UKY failure")
+            if result is None:
+                logger.info("Falling back to pgvector after UKY failure")
+                result = await _search_pgvector(search_query, query_type, span)
+        else:
+            # pgvector primary (no rag_endpoint set)
+            result = await _search_pgvector(search_query, query_type, span)
 
-        # pgvector fallback (or primary if no rag_endpoint set)
-        return await _search_pgvector(search_query, query_type, span)
+        rag_matches = result.get("rag_matches", [])
+        best_score = rag_matches[0].similarity_score if rag_matches else None
+        result["node_trace"] = [{
+            "node": "rag_answer",
+            "source": "uky" if result.get("tools_used") == ["uky_rag_retrieval"] else "pgvector",
+            "match_count": len(rag_matches),
+            "best_score": best_score,
+            "rag_used": result.get("rag_used", False),
+            "has_final_answer": "final_answer" in result,
+        }]
+        return result

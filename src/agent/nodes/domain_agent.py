@@ -44,6 +44,7 @@ async def domain_agent_node(state: AgentState) -> dict[str, Any]:
         return {
             "final_answer": error_msg,
             "messages": [AIMessage(content=error_msg)],
+            "node_trace": [{"node": "domain_agent", "error": "no_domain"}],
         }
 
     with tracer.start_as_current_span(
@@ -63,6 +64,7 @@ async def domain_agent_node(state: AgentState) -> dict[str, Any]:
             return {
                 "final_answer": error_msg,
                 "messages": [AIMessage(content=error_msg)],
+                "node_trace": [{"node": "domain_agent", "domain": domain_name, "error": "unknown_domain"}],
             }
 
         # Create domain tools from catalog
@@ -79,6 +81,7 @@ async def domain_agent_node(state: AgentState) -> dict[str, Any]:
             return {
                 "final_answer": error_msg,
                 "messages": [AIMessage(content=error_msg)],
+                "node_trace": [{"node": "domain_agent", "domain": domain_name, "error": "no_tools"}],
             }
 
         span.set_attribute("agent.domain_tools", len(tools))
@@ -136,4 +139,5 @@ async def domain_agent_node(state: AgentState) -> dict[str, Any]:
             "final_answer": final_message,
             "messages": react_messages,
             "tools_used": [domain_name],
+            "node_trace": [{"node": "domain_agent", "domain": domain_name, "tool_count": len(tools)}],
         }
