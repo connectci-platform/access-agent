@@ -63,7 +63,7 @@ class Settings(BaseSettings):
 
     # RAG Settings - using access-qa-service for verified Q&A retrieval
     QA_SERVICE_URL: str = "http://localhost:8001"
-    RAG_TOP_K: int = 3
+    RAG_TOP_K: int = 5
 
     # Query-type-specific similarity thresholds
     # Lowered from 0.85/0.75/0.65 — best matches were scoring ~0.84 and
