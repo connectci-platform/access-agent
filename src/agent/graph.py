@@ -114,6 +114,14 @@ def _rag_answer_is_weak(answer: str) -> bool:
     return any(phrase in lower for phrase in hedge_phrases)
 
 
+def _route_after_domain_agent(state: AgentState) -> Literal["end", "rag_answer"]:
+    """Route after domain agent: end if it produced an answer, fall back to RAG if not."""
+    if state.get("final_answer") is None:
+        logger.info("Domain agent has no answer, falling back to rag_answer")
+        return "rag_answer"
+    return "end"
+
+
 def route_after_rag(state: AgentState) -> Literal["end", "plan", "synthesize"]:
     """Route after RAG answer attempt.
 
@@ -222,8 +230,15 @@ def _build_graph_structure(
         },
     )
 
-    # Domain agent goes directly to END
-    builder.add_edge("domain_agent", END)
+    # Domain agent: if it produced an answer go to END, otherwise fall back to rag_answer
+    builder.add_conditional_edges(
+        "domain_agent",
+        _route_after_domain_agent,
+        {
+            "end": END,
+            "rag_answer": "rag_answer",
+        },
+    )
 
     # After RAG answer: end, synthesize pgvector matches, or fallback to plan
     builder.add_conditional_edges(

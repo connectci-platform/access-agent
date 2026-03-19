@@ -64,7 +64,7 @@ Examples:
 
 Also detect if the query should be handled by a specialized domain agent. Set "domain" to:
 - "announcements" — when the user wants to CREATE, UPDATE, DELETE, or MANAGE announcements (not just search/read them)
-- "jsm" — when the user wants to CREATE a support ticket, REPORT an issue, or get help FILING a ticket
+- "jsm" — ONLY when the user explicitly wants to CREATE or FILE a support ticket (e.g. "open a ticket", "submit a ticket", "file a report", "I want to report this"). Do NOT use "jsm" for users who are just describing a problem, asking how to fix something, or expressing frustration — those are static questions for RAG.
 - null — for everything else (searches, informational queries, general questions, reading announcements)
 
 You will be given conversation history for context. Use it to rewrite the current query as a standalone question by resolving any pronouns or references (e.g., "it", "that", "this one") to their actual referents from the conversation. If the query is already standalone, use it as-is.

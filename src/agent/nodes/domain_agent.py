@@ -73,15 +73,29 @@ async def domain_agent_node(state: AgentState) -> dict[str, Any]:
         tools = create_domain_tools(config, tool_catalog, acting_user)
 
         if not tools:
-            logger.warning(f"No tools available for domain {domain_name}")
-            error_msg = (
-                "I'm sorry, the tools needed for this task are currently unavailable. "
-                "Please try again later."
+            logger.warning(
+                f"No tools available for domain {domain_name}, falling back to general pipeline"
+            )
+            # Signal the graph to fall back to rag_answer by returning final_answer=None.
+            # Also clear domain so the general pipeline routes correctly.
+            from ..state import QueryClassification
+            fallback_classification = QueryClassification(
+                query_type=classification.query_type if classification else "static",
+                reason=classification.reason if classification else "",
+                confidence=classification.confidence if classification else "medium",
+                expanded_query=classification.expanded_query if classification else state.get("query", ""),
+                domain=None,
+                rag_endpoint=classification.rag_endpoint or "general",
             )
             return {
-                "final_answer": error_msg,
-                "messages": [AIMessage(content=error_msg)],
-                "node_trace": [{"node": "domain_agent", "domain": domain_name, "error": "no_tools"}],
+                "query_classification": fallback_classification,
+                "final_answer": None,
+                "node_trace": [{
+                    "node": "domain_agent",
+                    "domain": domain_name,
+                    "error": "no_tools",
+                    "fallback": "general_pipeline",
+                }],
             }
 
         span.set_attribute("agent.domain_tools", len(tools))
