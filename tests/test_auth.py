@@ -19,7 +19,7 @@ from cryptography.hazmat.primitives.serialization import (
 )
 from jwt import algorithms as jwt_algorithms
 
-from src.auth import configure_trusted_issuers, get_acting_user_from_cookie
+from src.auth import _jwks_clients, configure_trusted_issuers, get_acting_user_from_cookie
 
 # Generate a test EC P-256 key pair.
 _ec_private_key = ec.generate_private_key(ec.SECP256R1())
@@ -344,3 +344,35 @@ def test_no_issuers_configured():
 
     assert user is None
     assert cookie_present is True
+
+
+# --- Environment parameter on configure_trusted_issuers ---
+
+
+def test_configure_trusted_issuers_docker_sets_ssl_context_without_hostname_check():
+    """When environment='docker', PyJWKClient gets an ssl_context with check_hostname=False."""
+    configure_trusted_issuers(
+        {ISSUER: "https://example.com/.well-known/jwks.json"},
+        environment="docker",
+    )
+
+    assert ISSUER in _jwks_clients
+    client = _jwks_clients[ISSUER]
+
+    ssl_ctx = getattr(client, "ssl_context", None)
+    assert ssl_ctx is not None, "Expected an ssl_context on the PyJWKClient for docker environment"
+    assert ssl_ctx.check_hostname is False
+
+
+def test_configure_trusted_issuers_production_has_no_custom_ssl_context():
+    """When environment='production' (default), PyJWKClient has no custom ssl_context."""
+    configure_trusted_issuers(
+        {ISSUER: "https://example.com/.well-known/jwks.json"},
+        environment="production",
+    )
+
+    assert ISSUER in _jwks_clients
+    client = _jwks_clients[ISSUER]
+
+    ssl_ctx = getattr(client, "ssl_context", None)
+    assert ssl_ctx is None, "Expected no custom ssl_context for production environment"
