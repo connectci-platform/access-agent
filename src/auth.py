@@ -18,6 +18,7 @@ See: access-qa-planning/08-qa-bot-authentication.md
 from __future__ import annotations
 
 import logging
+import ssl
 from typing import TYPE_CHECKING, Any
 
 import jwt
@@ -33,7 +34,11 @@ logger = logging.getLogger(__name__)
 _jwks_clients: dict[str, PyJWKClient] = {}
 
 
-def configure_trusted_issuers(trusted_jwks_urls: dict[str, str]) -> None:
+def configure_trusted_issuers(
+    trusted_jwks_urls: dict[str, str],
+    *,
+    environment: str = "production",
+) -> None:
     """Initialize JWKS clients for each trusted issuer.
 
     Call this once at application startup.
@@ -42,10 +47,26 @@ def configure_trusted_issuers(trusted_jwks_urls: dict[str, str]) -> None:
         trusted_jwks_urls: Mapping of issuer URL to JWKS endpoint URL.
             Example: ``{"https://support.access-ci.org":
             "https://support.access-ci.org/.well-known/jwks.json"}``
+        environment: Current environment. Non-production environments skip
+            TLS certificate verification for JWKS endpoints (needed for
+            DDEV self-signed certs). JWT signature verification is unaffected.
     """
     _jwks_clients.clear()
+
+    # In local/docker environments, allow self-signed certs for JWKS fetch.
+    ssl_context: ssl.SSLContext | None = None
+    if environment in ("local", "docker"):
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        logger.warning("JWKS SSL verification disabled (environment=%s)", environment)
+
     for issuer, jwks_url in trusted_jwks_urls.items():
-        _jwks_clients[issuer] = PyJWKClient(jwks_url, cache_keys=True)
+        _jwks_clients[issuer] = PyJWKClient(
+            jwks_url,
+            cache_keys=True,
+            ssl_context=ssl_context,
+        )
         logger.info("Registered trusted issuer: %s -> %s", issuer, jwks_url)
 
     if not _jwks_clients:

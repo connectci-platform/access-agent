@@ -108,7 +108,7 @@ async def startup_event() -> None:
                     jwks_url,
                 )
             trusted_issuers[issuer.strip()] = jwks_url
-    configure_trusted_issuers(trusted_issuers)
+    configure_trusted_issuers(trusted_issuers, environment=settings.ENVIRONMENT)
 
     # Log QA Service configuration (RAG retrieval happens via HTTP on-demand)
     logger.info(f"QA Service URL: {settings.QA_SERVICE_URL}")
