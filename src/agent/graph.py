@@ -72,7 +72,7 @@ def route_by_classification(state: AgentState) -> Literal["rag_answer"]:
     return "rag_answer"
 
 
-def _rag_answer_is_weak(answer: str) -> bool:
+def _rag_answer_is_deflection(answer: str) -> bool:
     """Detect when RAG returned a true deflection vs a hedge with good content.
 
     UKY often hedges in the first sentence ("The provided documents do not
@@ -177,8 +177,8 @@ def route_after_rag(state: AgentState) -> Literal["end", "plan", "domain_agent"]
     # For static queries, end if RAG provided a confident answer
     final_answer = state.get("final_answer")
     if final_answer:
-        if _rag_answer_is_weak(final_answer):
-            logger.info("Static query: RAG answer is hedged, falling back to tools")
+        if _rag_answer_is_deflection(final_answer):
+            logger.info("Static query: RAG answer is a true deflection, falling back to tools")
             return "plan"
         return "end"
 
