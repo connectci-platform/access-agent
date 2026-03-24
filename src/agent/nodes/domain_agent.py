@@ -73,15 +73,28 @@ async def domain_agent_node(state: AgentState) -> dict[str, Any]:
         tools = create_domain_tools(config, tool_catalog, acting_user)
 
         if not tools:
-            logger.warning(f"No tools available for domain {domain_name}")
+            logger.warning(f"No tools available for domain {domain_name}, using UKY context if available")
+            # Fall back to UKY content from rag_answer (which now always runs first)
+            rag_matches = state.get("rag_matches", [])
+            if rag_matches:
+                uky_answer = rag_matches[0].answer
+                logger.info(f"Domain agent falling back to UKY answer ({len(uky_answer)} chars)")
+                return {
+                    "final_answer": uky_answer,
+                    "messages": [AIMessage(content=uky_answer)],
+                    "tools_used": ["uky_rag_retrieval"],
+                    "node_trace": [{"node": "domain_agent", "domain": domain_name, "fallback": "uky_rag", "answer_length": len(uky_answer)}],
+                }
+            # No UKY content either — genuine dead end
             error_msg = (
-                "I'm sorry, the tools needed for this task are currently unavailable. "
-                "Please try again later."
+                "I'm sorry, I don't have enough information to help with that right now. "
+                "You can open a support ticket at https://support.access-ci.org/open-a-ticket "
+                "for direct assistance."
             )
             return {
                 "final_answer": error_msg,
                 "messages": [AIMessage(content=error_msg)],
-                "node_trace": [{"node": "domain_agent", "domain": domain_name, "error": "no_tools"}],
+                "node_trace": [{"node": "domain_agent", "domain": domain_name, "error": "no_tools_no_rag"}],
             }
 
         span.set_attribute("agent.domain_tools", len(tools))

@@ -48,38 +48,27 @@ from .state import AgentState
 logger = logging.getLogger(__name__)
 
 
-def route_by_classification(state: AgentState) -> Literal["domain_agent", "rag_answer", "plan"]:
-    """Route based on query classification.
+def route_by_classification(state: AgentState) -> Literal["rag_answer"]:
+    """Route after classification — always go to RAG first.
 
-    Domain-first routing:
-    - If domain is set: route to domain agent (announcements, jsm, etc.)
-
-    RAG-primary routing (general pipeline):
-    - static: Go to RAG for verified answer
-    - combined: Go to RAG first to gather context, then continue to tools
-    - dynamic: Skip RAG, go directly to tools
+    Every query consults UKY document RAG before anything else.
+    The classifier determines query_type (static/dynamic/combined) and
+    domain, which are used by route_after_rag to decide next steps.
+    But UKY is never skipped.
 
     Args:
         state: Current agent state with query_classification.
 
     Returns:
-        Next node name.
+        Always "rag_answer".
     """
     classification = state.get("query_classification")
-
-    # Domain agent takes priority when set
-    if classification and classification.domain:
-        logger.info(f"Routing to domain_agent ({classification.domain})")
-        return "domain_agent"
-
-    if classification and classification.query_type == "dynamic":
-        # Dynamic queries skip RAG - they only need real-time data
-        logger.info("Routing to plan (dynamic query, skipping RAG)")
-        return "plan"
-
-    # Both static and combined queries go through RAG first
     query_type = classification.query_type if classification else "unknown"
-    logger.info(f"Routing to rag_answer ({query_type} query)")
+    domain = classification.domain if classification else None
+    logger.info(
+        f"Routing to rag_answer (query_type={query_type}, domain={domain}) "
+        "— all queries consult UKY first"
+    )
     return "rag_answer"
 
 
@@ -114,49 +103,66 @@ def _rag_answer_is_weak(answer: str) -> bool:
     return any(phrase in lower for phrase in hedge_phrases)
 
 
-def route_after_rag(state: AgentState) -> Literal["end", "plan"]:
+def route_after_rag(state: AgentState) -> Literal["end", "plan", "domain_agent"]:
     """Route after RAG answer attempt.
+
+    Every query has now consulted UKY. Decide what to do next based on
+    classification and RAG result quality.
+
+    For domain queries (e.g., announcements, jsm):
+    - Continue to domain_agent, UKY content available in state as context
 
     For static queries:
     - If RAG found a confident match → END
     - If RAG hedged (weak answer) → fallback to plan (tools)
     - If no match → fallback to plan (tools)
 
-    For combined queries:
-    - Always continue to plan (tools) to get real-time data
+    For combined/dynamic queries:
+    - Always continue to plan (tools) for real-time/supplementary data
     - RAG results are preserved in state for synthesis
 
     Args:
         state: Current agent state.
 
     Returns:
-        Next node: "end" if static query answered, "plan" for combined or fallback.
+        Next node: "end", "plan", or "domain_agent".
     """
     classification = state.get("query_classification")
     query_type = classification.query_type if classification else "static"
+    domain = classification.domain if classification else None
 
-    # For combined queries, always continue to tools even if RAG found matches
-    if query_type == "combined":
+    # Domain queries continue to domain_agent (UKY content now in state)
+    if domain:
+        rag_matches = state.get("rag_matches", [])
+        logger.info(
+            f"Domain query ({domain}): UKY provided {len(rag_matches)} matches, "
+            "continuing to domain_agent"
+        )
+        return "domain_agent"
+
+    # For combined/dynamic queries, always continue to tools
+    # UKY content is preserved in state for synthesis
+    if query_type in ("combined", "dynamic"):
         rag_matches = state.get("rag_matches", [])
         if rag_matches:
             logger.info(
-                f"Combined query: RAG found {len(rag_matches)} matches, "
-                "continuing to plan for real-time data"
+                f"{query_type.title()} query: UKY provided {len(rag_matches)} matches, "
+                "continuing to plan for supplementary data"
             )
         else:
-            logger.info("Combined query: No RAG matches, continuing to plan")
+            logger.info(f"{query_type.title()} query: No UKY matches, continuing to plan")
         return "plan"
 
     # For static queries, end if RAG provided a confident answer
     final_answer = state.get("final_answer")
     if final_answer:
         if _rag_answer_is_weak(final_answer):
-            logger.info("Static query: RAG answer is weak/hedged, falling back to tools")
+            logger.info("Static query: RAG answer is hedged, falling back to tools")
             return "plan"
         return "end"
 
     # No RAG match for static query, fall back to tools
-    logger.info("Static query: No RAG match, falling back to plan")
+    logger.info("Static query: No UKY match, falling back to plan")
     return "plan"
 
 
@@ -165,22 +171,20 @@ def _build_graph_structure(
 ) -> "StateGraph[AgentState]":
     """Build the common graph structure with nodes and edges.
 
-    The graph implements a flow with query classification and routing:
+    The graph implements a UKY-first flow: every query consults UKY
+    document RAG before routing to tools or domain agents.
 
     1. Classify: Determine query type and domain
-    2a. Domain path: domain_agent (react loop with MCP tools) → END
-    2b. Static path: RAG lookup from Q&A service → END (or fallback to plan)
-    2c. Dynamic/Combined path:
-        - Plan: Analyze query and select tools
-        - Execute: Run MCP tools
-        - Recover: Handle failures (if any)
-        - Evaluate: Check if results answer the question
-        - Synthesize: Generate final answer
+    2. RAG answer: Always consult UKY document RAG
+    3a. Static + confident: Serve UKY answer directly → END
+    3b. Static + hedged/miss: Fall back to plan (tools)
+    3c. Dynamic/Combined: Continue to plan (UKY content preserved for synthesis)
+    3d. Domain: Continue to domain_agent (UKY content available as context)
+    4. Plan → Execute → Evaluate → Synthesize (tool path)
 
     With loops:
     - recover → execute (retry after recovery)
     - evaluate → plan (retry with different tools if unhelpful)
-    - rag_answer → plan (fallback if no RAG match)
 
     Args:
         builder: A StateGraph builder to configure.
@@ -202,29 +206,28 @@ def _build_graph_structure(
     # Start with classification
     builder.add_edge(START, "classify")
 
-    # After classification, route based on query type (or domain)
+    # After classification, always go to RAG first
     builder.add_conditional_edges(
         "classify",
         route_by_classification,
         {
-            "domain_agent": "domain_agent",
             "rag_answer": "rag_answer",
-            "plan": "plan",
         },
     )
 
-    # Domain agent goes directly to END
-    builder.add_edge("domain_agent", END)
-
-    # After RAG answer, either end or fallback to plan
+    # After RAG answer, route based on classification + RAG quality
     builder.add_conditional_edges(
         "rag_answer",
         route_after_rag,
         {
             "end": END,
             "plan": "plan",
+            "domain_agent": "domain_agent",
         },
     )
+
+    # Domain agent goes directly to END
+    builder.add_edge("domain_agent", END)
 
     # After planning, decide if tools are needed
     builder.add_conditional_edges(
