@@ -73,17 +73,18 @@ def route_by_classification(state: AgentState) -> Literal["rag_answer"]:
 
 
 def _rag_answer_is_weak(answer: str) -> bool:
-    """Detect when RAG returned a hedged or unhelpful answer.
+    """Detect when RAG returned a true deflection vs a hedge with good content.
 
-    The UKY RAG endpoint always returns *something* (it's an LLM), but when its
-    retrieval context doesn't cover the topic it produces hedging language.
-    These answers should fall through to MCP tools for better results.
+    UKY often hedges in the first sentence ("The provided documents do not
+    contain...") but then provides useful content — links, contacts, steps.
+    Only reject answers that are genuine deflections (short, no real content).
+    Keep answers where the hedge is just a preamble before substantive info.
 
     Args:
         answer: The RAG answer text.
 
     Returns:
-        True if the answer appears to be a hedge/deflection.
+        True only if the answer is a genuine deflection with no useful content.
     """
     lower = answer.lower()
     hedge_phrases = [
@@ -96,11 +97,31 @@ def _rag_answer_is_weak(answer: str) -> bool:
         "no specific information",
         "do not have specific information",
         "currently do not have",
-        "open a support ticket",
-        "open-a-ticket",
         "not available in the provided",
     ]
-    return any(phrase in lower for phrase in hedge_phrases)
+
+    has_hedge = any(phrase in lower for phrase in hedge_phrases)
+    if not has_hedge:
+        return False
+
+    # Hedge detected — but is there good content after it?
+    # Indicators of substantive content despite the hedge:
+    has_urls = "http" in lower
+    has_email = "@" in answer
+    is_long = len(answer) > 500
+
+    # If the answer has links, emails, or substantial length, it's a
+    # hedge-with-good-content — keep it (strip preamble at synthesis)
+    if has_urls or has_email or is_long:
+        logger.info(
+            f"Hedge detected but answer has substance "
+            f"(len={len(answer)}, urls={has_urls}, email={has_email}) — keeping"
+        )
+        return False
+
+    # Short answer with hedge and no links/contacts = true deflection
+    logger.info(f"Hedge detected, answer is a true deflection (len={len(answer)})")
+    return True
 
 
 def route_after_rag(state: AgentState) -> Literal["end", "plan", "domain_agent"]:

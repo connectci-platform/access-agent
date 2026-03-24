@@ -321,17 +321,23 @@ async def rag_answer_node(state: AgentState) -> dict[str, object]:
         rag_matches = result.get("rag_matches", [])
         best_score = rag_matches[0].similarity_score if rag_matches else None
         final_answer = result.get("final_answer", "")
-        # Check for hedge phrases (mirrors _rag_answer_is_weak in graph.py)
+        # Check for hedge phrases in the answer
         hedge_phrases = [
             "do not contain", "does not contain", "do not explicitly",
             "does not explicitly", "not provided in", "not mentioned in",
             "no specific information", "do not have specific information",
-            "currently do not have", "open a support ticket", "open-a-ticket",
-            "not available in the provided",
+            "currently do not have", "not available in the provided",
         ]
-        is_weak = bool(final_answer and any(
-            p in final_answer.lower() for p in hedge_phrases
+        lower = final_answer.lower() if final_answer else ""
+        hedge_detected = bool(final_answer and any(
+            p in lower for p in hedge_phrases
         ))
+        # Even if hedge detected, answer may have substance (urls, length)
+        has_substance = bool(
+            final_answer and (
+                "http" in lower or "@" in final_answer or len(final_answer) > 500
+            )
+        )
         result["node_trace"] = [{
             "node": "rag_answer",
             "source": "uky" if result.get("rag_used") else "none",
@@ -339,6 +345,7 @@ async def rag_answer_node(state: AgentState) -> dict[str, object]:
             "best_score": best_score,
             "rag_used": result.get("rag_used", False),
             "has_final_answer": bool(final_answer),
-            "weak_answer": is_weak,
+            "hedge_detected": hedge_detected,
+            "hedge_has_substance": has_substance if hedge_detected else None,
         }]
         return result
