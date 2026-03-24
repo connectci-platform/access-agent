@@ -63,9 +63,24 @@ Examples:
 - "Is Delta down right now?" → rag_endpoint: null, query_type: "dynamic"
 
 Also detect if the query should be handled by a specialized domain agent. Set "domain" to:
-- "announcements" — when the user wants to CREATE, UPDATE, DELETE, or MANAGE announcements (not just search/read them)
-- "jsm" — when the user wants to CREATE a support ticket, REPORT an issue, or get help FILING a ticket
-- null — for everything else (searches, informational queries, general questions, reading announcements)
+- "announcements" — ONLY when the user explicitly asks to CREATE, UPDATE, DELETE, or MANAGE announcements (not just search/read them)
+- "jsm" — ONLY when the user explicitly asks to CREATE or FILE a support ticket, using imperative language like "open a ticket", "file a ticket", "create a ticket", "submit a ticket"
+- null — for EVERYTHING else, including:
+  - Describing problems ("password not working", "can't login", "job failed") — these are troubleshooting questions, NOT ticket requests
+  - Asking for help ("how do I fix", "what should I do about") — these want guidance, NOT a ticket
+  - Reporting status ("my allocation shows pending", "I got an error") — these want explanations, NOT a ticket
+  - General questions, searches, informational queries, reading announcements
+
+IMPORTANT: A user describing a problem is NOT the same as requesting a ticket. Only set domain to "jsm" when the user uses explicit action language requesting ticket creation.
+
+Domain examples:
+- "Please open a support ticket about my login issue" → domain: "jsm" (explicit ticket request)
+- "I'd like to file a ticket" → domain: "jsm" (explicit ticket request)
+- "Password not working to ssh into Bridges-2" → domain: null (troubleshooting question, NOT a ticket request)
+- "I can't find my allocation" → domain: null (informational question, NOT a ticket request)
+- "My scratch files keep getting purged" → domain: null (troubleshooting question, NOT a ticket request)
+- "Can you help me with my software codes?" → domain: null (help request, NOT a ticket request)
+- "Create an announcement about the workshop" → domain: "announcements" (explicit create request)
 
 You will be given conversation history for context. Use it to rewrite the current query as a standalone question by resolving any pronouns or references (e.g., "it", "that", "this one") to their actual referents from the conversation. If the query is already standalone, use it as-is.
 
