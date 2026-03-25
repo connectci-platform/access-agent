@@ -25,23 +25,24 @@ CLASSIFICATION_SYSTEM_PROMPT = """You are a query classifier for the ACCESS-CI d
 
 Classify user queries into one of three categories:
 
-**static** - Questions about factual, stable information that a trained model would know:
-- Resource descriptions and capabilities (what a resource is, how to use it)
-- How-to guides and documentation
-- Software availability and versions
-- Policies and procedures
-- Comparisons between resources
+**static** - Questions about stable information found only in documentation:
+- How-to guides, tutorials, and procedures (how to log in, submit jobs, use Globus)
+- Policies and rules (allocation policies, password requirements, SU calculations)
+- General explanations (what is ACCESS, what is Kerberos, how do SUs work)
 - Follow-up questions asking for more details about previously discussed topics
 
-**dynamic** - Questions requiring live/real-time data from external systems:
-- Current system status or outages
+**dynamic** - Questions requiring ONLY live/real-time data:
+- Current system status or outages ("is Delta down right now?")
 - User-specific data (my allocations, my usage, my projects)
-- Upcoming events, workshops, or announcements
 - Current availability or queue status
 
-**combined** - Questions needing both static knowledge AND live data:
-- "Which resources with A100 GPUs are currently available?"
-- "What's the status of Delta and what are its specs?"
+**combined** - Questions where documentation AND live data together give the best answer. USE THIS LIBERALLY — when in doubt between static and combined, prefer combined:
+- Hardware specs (GPUs, CPUs, memory, storage) — docs may be stale, live data is current
+- Software availability and versions — changes frequently as modules are added/updated
+- Resource descriptions and capabilities — docs provide context, live data provides current specs
+- Comparisons between resources — need current data from multiple sources
+- Upcoming events, workshops, or announcements — need both descriptions and current schedules
+- Any question mentioning specific resource names (Delta, Bridges-2, Expanse, Anvil, etc.) paired with specs, hardware, software, or storage
 
 Also determine which RAG endpoint should answer the question. Set "rag_endpoint" to:
 - "general" — ACCESS documentation: allocations, resources, how-tos, policies, hardware specs
@@ -54,13 +55,17 @@ XDMoD routing guidance:
 - Only use query_type "dynamic" with rag_endpoint null for purely user-specific XDMoD queries like "my usage".
 
 Examples:
+- "How do I get an allocation?" → rag_endpoint: "general", query_type: "static" (procedure/how-to)
+- "What are the password requirements?" → rag_endpoint: "general", query_type: "static" (policy)
+- "How do I use Globus to transfer files?" → rag_endpoint: "general", query_type: "static" (how-to)
+- "What GPUs does Delta have?" → rag_endpoint: "general", query_type: "combined" (hardware specs change)
+- "What software is on Bridges-2?" → rag_endpoint: "general", query_type: "combined" (software changes)
+- "What storage options are on Anvil?" → rag_endpoint: "general", query_type: "combined" (specs + docs)
+- "Which resources support A100 GPUs?" → rag_endpoint: "general", query_type: "combined" (cross-resource comparison)
 - "Show me CPU hours on Delta last month" → rag_endpoint: "xdmod", query_type: "combined"
 - "How many active allocations are there?" → rag_endpoint: "xdmod", query_type: "combined"
-- "How many new projects were created?" → rag_endpoint: "xdmod", query_type: "combined"
-- "What's my usage on Expanse?" → rag_endpoint: null, query_type: "dynamic"
-- "How do I get an allocation?" → rag_endpoint: "general", query_type: "static"
-- "What GPUs does Delta have?" → rag_endpoint: "general", query_type: "static"
-- "Is Delta down right now?" → rag_endpoint: null, query_type: "dynamic"
+- "What's my usage on Expanse?" → rag_endpoint: null, query_type: "dynamic" (user-specific only)
+- "Is Delta down right now?" → rag_endpoint: null, query_type: "dynamic" (real-time status only)
 
 Also detect if the query should be handled by a specialized domain agent. Set "domain" to:
 - "announcements" — ONLY when the user explicitly asks to CREATE, UPDATE, DELETE, or MANAGE announcements (not just search/read them)
