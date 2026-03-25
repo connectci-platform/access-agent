@@ -243,9 +243,20 @@ async def synthesize_node(state: AgentState) -> dict[str, Any]:
 
         # Handle no-tools-needed case
         if query_analysis and not query_analysis.requires_tools:
-            strategy = "no_tools_needed"
-            span.set_attribute("synthesis.strategy", strategy)
-            result = await _synthesize_without_tools(query, query_analysis)
+            # If UKY provided content, use it instead of pure LLM generation
+            if rag_matches:
+                strategy = "rag_only_no_tools"
+                span.set_attribute("synthesis.strategy", strategy)
+                logger.info(
+                    f"No tools needed but UKY provided {len(rag_matches)} matches "
+                    "— using RAG-only synthesis to preserve UKY content"
+                )
+                rag_context = _format_rag_matches(rag_matches)
+                result = await _synthesize_with_rag_only(query, rag_context)
+            else:
+                strategy = "no_tools_needed"
+                span.set_attribute("synthesis.strategy", strategy)
+                result = await _synthesize_without_tools(query, query_analysis)
         else:
             # Determine what data we have
             has_rag = bool(rag_matches)
