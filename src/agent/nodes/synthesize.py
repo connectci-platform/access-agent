@@ -36,9 +36,13 @@ SYNTHESIS_SYSTEM_PROMPT = """You are an ACCESS-CI documentation assistant.
 - Use the tool results above to answer the user's question.
 - Be concise and direct — answer the question first, then provide details.
 - Format data clearly using bullet points, tables, or lists where appropriate.
-- IMPORTANT: If the tool results include URLs (especially to xdmod.access-ci.org or other ACCESS portals), include them in your answer so the user can explore further.
 - Do NOT add information from your own training data. Only use what is provided in the tool results above. If the results don't answer the question, say so honestly.
 - Do not mention "tool results" or system internals.
+
+URL PRESERVATION (MANDATORY):
+- You MUST include every URL that appears in the tool results. Do not summarize, omit, or replace any URL.
+- Before finalizing your answer, re-read the tool results and verify that every URL present appears in your answer.
+
 - For issues needing human help: https://support.access-ci.org/help-ticket"""
 
 # System prompt for combined synthesis (RAG + tools)
@@ -55,13 +59,19 @@ COMBINED_SYNTHESIS_PROMPT = """You are an ACCESS-CI documentation assistant.
 ## INSTRUCTIONS
 
 - Combine verified knowledge with real-time data to produce the best possible answer.
-- CRITICAL: The verified knowledge comes from human-curated ACCESS documentation. It contains authoritative links, contacts, procedures, and policy details. PRESERVE all URLs, email addresses, specific contacts, and step-by-step instructions from the verified knowledge. Never drop these in favor of generic advice.
+- CRITICAL: The verified knowledge comes from human-curated ACCESS documentation. It is the PRIMARY source. Start with the verified knowledge as your base answer, then enrich with real-time data where it adds value.
 - Prefer real-time data for hardware specs, software versions, system status, and availability — this data is more current than documentation.
 - Prefer verified knowledge for procedures, policies, how-to guides, troubleshooting steps, and contact information — documentation is more reliable for these.
 - If the verified knowledge starts with hedging language like "The provided documents do not contain..." — ignore that preamble and use the substantive content that follows.
 - Be concise and direct — answer the question first, then provide details.
 - Format data clearly using bullet points, tables, or lists where appropriate.
-- IMPORTANT: Include ALL URLs from both sources (especially to xdmod.access-ci.org, docs sites, or support portals).
+
+URL PRESERVATION (MANDATORY):
+- You MUST include every URL that appears in the verified knowledge. Do not summarize, omit, or replace any URL.
+- You MUST include every URL that appears in the real-time data.
+- Before finalizing your answer, re-read the verified knowledge and real-time data sections and verify that every URL present in either section appears in your answer. If any URL is missing, add it.
+- This includes support ticket links, documentation links, user guide links, and any other URLs.
+
 - Do NOT add information from your own training data. Only use what is provided in the verified knowledge and real-time data sections above.
 - Do not mention "verified knowledge", "tool results", or system internals.
 - For issues needing human help: https://support.access-ci.org/help-ticket"""
@@ -74,11 +84,14 @@ RAG_ONLY_SYNTHESIS_PROMPT = """You are an ACCESS-CI documentation assistant. You
 1. Be concise and direct — answer the question first, then provide details
 2. Use the verified knowledge provided to give accurate information
 3. This information comes from human-verified ACCESS documentation — it is authoritative
-4. PRESERVE all URLs, email addresses, specific contacts, and step-by-step instructions from the knowledge. These are the most valuable parts.
-5. Format data clearly — use bullet points, tables, or lists where appropriate
-6. Do NOT add information from your own training data. Only use what is provided below.
-7. If the knowledge starts with hedging language like "The provided documents do not contain..." — ignore that preamble and present the substantive content that follows
-8. If the knowledge doesn't fully answer the question, acknowledge what's missing and suggest the user visit access-ci.org or open a support ticket
+4. Format data clearly — use bullet points, tables, or lists where appropriate
+5. Do NOT add information from your own training data. Only use what is provided below.
+6. If the knowledge starts with hedging language like "The provided documents do not contain..." — ignore that preamble and present the substantive content that follows
+7. If the knowledge doesn't fully answer the question, acknowledge what's missing and suggest the user visit access-ci.org or open a support ticket
+
+URL PRESERVATION (MANDATORY):
+8. You MUST include every URL that appears in the verified knowledge below. Do not summarize, omit, or replace any URL.
+9. Before finalizing your answer, re-read the verified knowledge and verify that every URL present appears in your answer. If any URL is missing, add it.
 
 ## VERIFIED KNOWLEDGE (from ACCESS documentation)
 
@@ -106,6 +119,45 @@ Extract and summarize ONLY the information from the tool results that is relevan
 Do NOT answer the question yourself. Just extract and organize the relevant data.
 
 Output the relevant information in a clear, structured format."""
+
+
+def _strip_hedge_preamble(answer: str) -> str:
+    """Strip common UKY hedge preambles without LLM rewrite.
+
+    UKY often starts with "The provided documents do not contain..." then
+    gives useful content. This strips the hedge sentence(s) at the start,
+    preserving everything after. Uses simple sentence splitting — no LLM call.
+
+    Args:
+        answer: The raw UKY answer.
+
+    Returns:
+        The answer with hedge preamble removed, or unchanged if no hedge found.
+    """
+    hedge_starts = [
+        "the provided documents do not",
+        "the provided documents does not",
+        "the provided information does not",
+        "the documents do not",
+        "the information provided does not",
+    ]
+
+    lower = answer.lower()
+    if not any(lower.startswith(h) for h in hedge_starts):
+        return answer
+
+    # Find the end of the first sentence (period followed by space or newline)
+    # Strip the hedge sentence and any leading whitespace/newlines after it
+    for i, char in enumerate(answer):
+        if char == "." and i < len(answer) - 1 and answer[i + 1] in (" ", "\n"):
+            rest = answer[i + 2:].lstrip()
+            if rest:
+                # Capitalize first letter of remaining content
+                return rest[0].upper() + rest[1:] if rest else answer
+            break
+
+    # If we couldn't find a clean split point, return unchanged
+    return answer
 
 
 def _estimate_tokens(text: str) -> int:
@@ -243,16 +295,23 @@ async def synthesize_node(state: AgentState) -> dict[str, Any]:
 
         # Handle no-tools-needed case
         if query_analysis and not query_analysis.requires_tools:
-            # If UKY provided content, use it instead of pure LLM generation
+            # If UKY provided content, serve it directly — no LLM rewrite.
+            # This avoids synthesis dilution when tools have nothing to add.
             if rag_matches:
-                strategy = "rag_only_no_tools"
+                strategy = "uky_direct_no_tools"
                 span.set_attribute("synthesis.strategy", strategy)
+                raw_answer = rag_matches[0].answer
+                # Strip common hedge preambles without LLM rewrite
+                answer = _strip_hedge_preamble(raw_answer)
                 logger.info(
-                    f"No tools needed but UKY provided {len(rag_matches)} matches "
-                    "— using RAG-only synthesis to preserve UKY content"
+                    f"No tools needed, serving UKY answer directly "
+                    f"({len(answer)} chars, stripped={len(raw_answer) != len(answer)})"
                 )
-                rag_context = _format_rag_matches(rag_matches)
-                result = await _synthesize_with_rag_only(query, rag_context)
+                result = {
+                    "final_answer": answer,
+                    "messages": [AIMessage(content=answer)],
+                    "tools_used": ["uky_rag_retrieval"],
+                }
             else:
                 strategy = "no_tools_needed"
                 span.set_attribute("synthesis.strategy", strategy)
@@ -288,9 +347,15 @@ async def synthesize_node(state: AgentState) -> dict[str, Any]:
                 results_text = await _maybe_condense_results(query, results_text, span)
 
                 if has_rag and has_tools and not tools_succeeded:
-                    strategy = "rag_only_tools_failed"
-                    logger.info("Tools failed but RAG has data - using RAG-only synthesis")
-                    result = await _synthesize_with_rag_only(query, rag_context)
+                    strategy = "uky_direct_tools_failed"
+                    raw_answer = rag_matches[0].answer
+                    answer = _strip_hedge_preamble(raw_answer)
+                    logger.info(f"Tools failed, serving UKY answer directly ({len(answer)} chars)")
+                    result = {
+                        "final_answer": answer,
+                        "messages": [AIMessage(content=answer)],
+                        "tools_used": ["uky_rag_retrieval"],
+                    }
                 elif has_tools and not tools_succeeded and not has_rag:
                     strategy = "all_failed"
                     logger.warning("All tools failed and no RAG data")
@@ -309,8 +374,15 @@ async def synthesize_node(state: AgentState) -> dict[str, Any]:
                     strategy = "tools_only"
                     result = await _synthesize_tools_only(query, results_text)
                 elif has_rag:
-                    strategy = "rag_only"
-                    result = await _synthesize_with_rag_only(query, rag_context)
+                    strategy = "uky_direct_only"
+                    raw_answer = rag_matches[0].answer
+                    answer = _strip_hedge_preamble(raw_answer)
+                    logger.info(f"RAG only, serving UKY answer directly ({len(answer)} chars)")
+                    result = {
+                        "final_answer": answer,
+                        "messages": [AIMessage(content=answer)],
+                        "tools_used": ["uky_rag_retrieval"],
+                    }
                 else:
                     strategy = "fallback"
                     result = {
