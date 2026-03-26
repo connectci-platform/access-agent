@@ -76,6 +76,19 @@ class Settings(BaseSettings):
     TRUSTED_JWKS_URLS: str = ""
     ALLOW_BODY_ACTING_USER: bool = True  # Transition: accept acting_user from body
 
+    # Turnstile bot protection (Cloudflare)
+    # When TURNSTILE_SECRET_KEY is empty, Turnstile is disabled (current behavior).
+    TURNSTILE_SITE_KEY: str = ""
+    TURNSTILE_SECRET_KEY: str = ""
+    TURNSTILE_MODE: Literal["immediate", "deferred"] = "deferred"
+    TURNSTILE_FREE_QUERIES: int = 3  # Queries before challenge (deferred mode only)
+    TURNSTILE_SESSION_TTL: int = 3600  # Seconds a verified session lasts
+
+    @property
+    def turnstile_enabled(self) -> bool:
+        """Turnstile is active only when a secret key is configured."""
+        return bool(self.TURNSTILE_SECRET_KEY)
+
     # MCP Servers
     MCP_CATALOG_URL: str = "http://localhost:5678/webhook/generate-mcp-catalog"
     MCP_CATALOG_PATH: str | None = None
