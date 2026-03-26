@@ -287,10 +287,23 @@ def _build_tool_catalog_text(catalog: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+TOOL_CAVEATS: dict[str, str] = {
+    "search_projects": (
+        "NOTE: This is a PUBLIC catalog search across all ACCESS research projects. "
+        "It has no user/owner parameter and CANNOT look up a specific user's projects "
+        "or allocations. Do not use for 'my projects' or 'my allocations' queries."
+    ),
+}
+
+
 def _format_tool_line(tool: dict[str, Any], server_name: str) -> str:
     """Format a single tool for the catalog text."""
     name = tool.get("name", "")
     desc = tool.get("description", "")[:500]
+
+    caveat = TOOL_CAVEATS.get(name, "")
+    if caveat:
+        desc = f"{desc} {caveat}"
 
     # Build parameter string with descriptions, enum values, and defaults
     # Support both "parameters" (list format) and "inputSchema" (JSON Schema format)
