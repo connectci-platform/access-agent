@@ -6,8 +6,10 @@ This module defines the state graph that orchestrates query processing:
 Query classification routes:
   - domain_agent: domain-specific react agent (announcements, jsm) → END
   - static: RAG retrieval → END (or fallback to plan if no match)
-  - dynamic: plan → execute → evaluate → synthesize → END
-  - combined: RAG retrieval (for context) → plan → execute → evaluate → synthesize → END
+  - dynamic/combined: RAG + plan in parallel → execute → evaluate → synthesize → END
+
+For combined/dynamic queries, UKY RAG and tool planning run concurrently.
+UKY doesn't block the planner — both results are available for synthesis.
 
 Domain agents handle interactive management tasks (create/update/delete) using
 a react loop with direct MCP tool access. The general pipeline handles
@@ -39,6 +41,7 @@ from .nodes import (
     evaluate_node,
     execute_node,
     plan_node,
+    rag_and_plan_node,
     rag_answer_node,
     recover_node,
     synthesize_node,
@@ -48,28 +51,46 @@ from .state import AgentState
 logger = logging.getLogger(__name__)
 
 
-def route_by_classification(state: AgentState) -> Literal["rag_answer"]:
-    """Route after classification — always go to RAG first.
+def route_by_classification(
+    state: AgentState,
+) -> Literal["rag_answer", "rag_and_plan"]:
+    """Route after classification based on query type.
 
-    Every query consults UKY document RAG before anything else.
-    The classifier determines query_type (static/dynamic/combined) and
-    domain, which are used by route_after_rag to decide next steps.
-    But UKY is never skipped.
+    For static and domain queries, UKY RAG runs first (sequential).
+    Static queries may END after RAG if the answer is confident.
+    Domain queries continue to domain_agent after RAG.
+
+    For combined/dynamic queries, UKY RAG and tool planning run in
+    parallel — the planner doesn't need the RAG result, so there's
+    no reason to wait.
 
     Args:
         state: Current agent state with query_classification.
 
     Returns:
-        Always "rag_answer".
+        "rag_answer" for static/domain, "rag_and_plan" for combined/dynamic.
     """
     classification = state.get("query_classification")
     query_type = classification.query_type if classification else "unknown"
     domain = classification.domain if classification else None
+
+    # Static and domain queries go through sequential RAG-first path.
+    # Static needs RAG result to decide whether to END or fall back to tools.
+    # Domain needs RAG context before routing to domain_agent.
+    if query_type == "static" or domain:
+        logger.info(
+            f"Routing to rag_answer (query_type={query_type}, domain={domain}) "
+            "— sequential RAG-first path"
+        )
+        return "rag_answer"
+
+    # Combined/dynamic queries run RAG and plan concurrently.
+    # Both results merge in state for synthesis.
     logger.info(
-        f"Routing to rag_answer (query_type={query_type}, domain={domain}) "
-        "— all queries consult UKY first"
+        f"Routing to rag_and_plan (query_type={query_type}) "
+        "— parallel RAG + tool planning"
     )
-    return "rag_answer"
+    return "rag_and_plan"
 
 
 def _rag_answer_is_deflection(answer: str) -> bool:
@@ -192,16 +213,17 @@ def _build_graph_structure(
 ) -> "StateGraph[AgentState]":
     """Build the common graph structure with nodes and edges.
 
-    The graph implements a UKY-first flow: every query consults UKY
-    document RAG before routing to tools or domain agents.
+    The graph implements two paths after classification:
 
-    1. Classify: Determine query type and domain
-    2. RAG answer: Always consult UKY document RAG
-    3a. Static + confident: Serve UKY answer directly → END
-    3b. Static + hedged/miss: Fall back to plan (tools)
-    3c. Dynamic/Combined: Continue to plan (UKY content preserved for synthesis)
-    3d. Domain: Continue to domain_agent (UKY content available as context)
-    4. Plan → Execute → Evaluate → Synthesize (tool path)
+    Sequential path (static/domain queries):
+    1. Classify → RAG answer → route_after_rag
+    2a. Static + confident: Serve UKY answer directly → END
+    2b. Static + hedged/miss: Fall back to plan → execute → synthesize
+    2c. Domain: Continue to domain_agent → END
+
+    Parallel path (combined/dynamic queries):
+    1. Classify → rag_and_plan (RAG + plan run concurrently)
+    2. Execute tools → Evaluate → Synthesize (with both RAG + tool results)
 
     With loops:
     - recover → execute (retry after recovery)
@@ -217,6 +239,7 @@ def _build_graph_structure(
     builder.add_node("classify", classify_node)
     builder.add_node("domain_agent", domain_agent_node)
     builder.add_node("rag_answer", rag_answer_node)
+    builder.add_node("rag_and_plan", rag_and_plan_node)
     builder.add_node("plan", plan_node)
     builder.add_node("execute", execute_node)
     builder.add_node("recover", recover_node)
@@ -227,16 +250,19 @@ def _build_graph_structure(
     # Start with classification
     builder.add_edge(START, "classify")
 
-    # After classification, always go to RAG first
+    # After classification, route by query type:
+    # - static/domain → sequential RAG-first path
+    # - combined/dynamic → parallel RAG + plan path
     builder.add_conditional_edges(
         "classify",
         route_by_classification,
         {
             "rag_answer": "rag_answer",
+            "rag_and_plan": "rag_and_plan",
         },
     )
 
-    # After RAG answer, route based on classification + RAG quality
+    # Sequential path: after RAG answer, route based on classification + RAG quality
     builder.add_conditional_edges(
         "rag_answer",
         route_after_rag,
@@ -250,7 +276,17 @@ def _build_graph_structure(
     # Domain agent goes directly to END
     builder.add_edge("domain_agent", END)
 
-    # After planning, decide if tools are needed
+    # Parallel path: after rag_and_plan, planning is already done — go to execute
+    builder.add_conditional_edges(
+        "rag_and_plan",
+        should_execute_tools,
+        {
+            "execute": "execute",
+            "synthesize": "synthesize",
+        },
+    )
+
+    # Sequential path: after planning, decide if tools are needed
     builder.add_conditional_edges(
         "plan",
         should_execute_tools,
