@@ -6,12 +6,14 @@ import time
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from ..agent.graph import run_agent
 from ..auth import get_acting_user_from_cookie
 from ..config import settings
 from ..tools import ToolRegistry, get_catalog_aggregator
+from ..turnstile import get_turnstile_guard, verify_turnstile_token
 from ..usage_logger import get_usage_logger
 
 logger = logging.getLogger(__name__)
@@ -52,6 +54,7 @@ class QueryRequest(BaseModel):
     session_id: str | None = Field(None, description="Session ID for conversation tracking")
     question_id: str | None = Field(None, description="Unique question ID")
     acting_user: str | None = Field(None, description="Transition fallback: acting user from body")
+    turnstile_token: str | None = Field(None, description="Cloudflare Turnstile response token")
 
 
 class QueryResponse(BaseModel):
@@ -66,12 +69,43 @@ class QueryResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-@router.post("/query", response_model=QueryResponse)
+def _turnstile_challenge_response() -> JSONResponse:
+    """Build the JSON response that tells the frontend to show the Turnstile widget."""
+    return JSONResponse(
+        content={
+            "requires_turnstile": True,
+            "site_key": settings.TURNSTILE_SITE_KEY,
+        }
+    )
+
+
+async def _check_turnstile(
+    acting_user: str | None,
+    session_id: str,
+    token: str | None,
+) -> JSONResponse | None:
+    """Check Turnstile for anonymous sessions. Returns a challenge response or None to proceed."""
+    if acting_user:
+        return None
+
+    guard = get_turnstile_guard()
+    if not guard.requires_challenge(session_id):
+        return None
+
+    # Session needs verification — check if a token was provided
+    if token and await verify_turnstile_token(token):
+        guard.mark_verified(session_id)
+        return None
+
+    return _turnstile_challenge_response()
+
+
+@router.post("/query")
 async def query_agent(
     request: QueryRequest,
     raw_request: Request,
     include_trace: bool = Query(False, description="Include node_trace in response metadata"),
-) -> QueryResponse:
+) -> QueryResponse | JSONResponse:
     """Execute a query against the ACCESS Documentation Agent.
 
     User identity is resolved from the ``SESSaccess_auth`` JWT cookie set by
@@ -112,6 +146,12 @@ async def query_agent(
         f"Processing query: {request.query[:50]}... "
         f"(session={session_id}, acting_user={acting_user or 'anonymous'})"
     )
+
+    # Turnstile gate — anonymous users may need to verify they're human.
+    # Authenticated users (JWT cookie or body fallback) skip entirely.
+    turnstile_response = await _check_turnstile(acting_user, session_id, request.turnstile_token)
+    if turnstile_response is not None:
+        return turnstile_response
 
     start_time = time.time()
 
@@ -166,6 +206,10 @@ async def query_agent(
             )
         except Exception:
             logger.exception("Usage logging failed")
+
+        # Track query for Turnstile free-query counting
+        if not acting_user:
+            get_turnstile_guard().record_query(session_id)
 
         # Build classification summary for response
         classification_info = None
