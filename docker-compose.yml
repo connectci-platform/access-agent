@@ -22,6 +22,12 @@ services:
       # JWT Authentication (ES256 + JWKS)
       - TRUSTED_JWKS_URLS=${TRUSTED_JWKS_URLS:-}
       - ALLOW_BODY_ACTING_USER=${ALLOW_BODY_ACTING_USER:-true}
+      # Turnstile bot protection (Cloudflare)
+      - TURNSTILE_SITE_KEY=${TURNSTILE_SITE_KEY:-}
+      - TURNSTILE_SECRET_KEY=${TURNSTILE_SECRET_KEY:-}
+      - TURNSTILE_MODE=${TURNSTILE_MODE:-deferred}
+      - TURNSTILE_FREE_QUERIES=${TURNSTILE_FREE_QUERIES:-3}
+      - TURNSTILE_SESSION_TTL=${TURNSTILE_SESSION_TTL:-3600}
       # OpenTelemetry - Honeycomb
       - OTEL_ENABLED=${OTEL_ENABLED:-true}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-https://api.honeycomb.io}
