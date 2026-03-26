@@ -100,7 +100,7 @@ async def _check_turnstile(
     return _turnstile_challenge_response()
 
 
-@router.post("/query")
+@router.post("/query", response_model=None)
 async def query_agent(
     request: QueryRequest,
     raw_request: Request,
