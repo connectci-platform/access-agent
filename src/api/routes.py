@@ -1,5 +1,6 @@
 """FastAPI routes for the ACCESS Documentation Agent."""
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -144,20 +145,26 @@ async def query_agent(
         # Calculate duration
         duration_ms = (time.time() - start_time) * 1000
 
-        # Log usage for reporting (user ID is hashed, no PII stored)
+        # Log usage for reporting (user ID is hashed, no PII stored).
+        # Run in a thread to avoid blocking the async event loop with
+        # synchronous SQLAlchemy calls.
         usage_logger = get_usage_logger()
-        usage_logger.log_query(
-            query_text=request.query,
-            session_id=session_id,
-            question_id=question_id,
-            query_type=query_type,
-            confidence=confidence,
-            tools_used=tools_used,
-            duration_ms=duration_ms,
-            response_length=len(final_answer),
-            acting_user=acting_user,
-            success=True,
-        )
+        try:
+            await asyncio.to_thread(
+                usage_logger.log_query,
+                query_text=request.query,
+                session_id=session_id,
+                question_id=question_id,
+                query_type=query_type,
+                confidence=confidence,
+                tools_used=tools_used,
+                duration_ms=duration_ms,
+                response_length=len(final_answer),
+                acting_user=acting_user,
+                success=True,
+            )
+        except Exception:
+            logger.exception("Usage logging failed")
 
         return QueryResponse(
             success=True,
@@ -185,13 +192,32 @@ async def query_agent(
 
 @router.get("/health")
 async def health_check() -> dict[str, Any]:
-    """Health check endpoint."""
-    return {
+    """Health check endpoint with tool catalog status."""
+    result: dict[str, Any] = {
         "status": "healthy",
         "agent": "access-documentation-langgraph",
         "version": "0.1.0",
         "checkpointing_enabled": USE_CHECKPOINTING,
     }
+
+    # Include catalog status if available
+    aggregator = get_catalog_aggregator()
+    catalog = aggregator.catalog
+    if catalog:
+        total = catalog.get("total_servers", 0)
+        available = catalog.get("servers_available", 0)
+        result["tools"] = {
+            "total": catalog.get("total_tools", 0),
+            "servers_total": total,
+            "servers_available": available,
+        }
+        if available < total:
+            result["status"] = "degraded"
+            result["tools"]["unavailable_servers"] = [
+                s["name"] for s in catalog.get("servers", []) if s.get("status") != "available"
+            ]
+
+    return result
 
 
 @router.get("/tools")

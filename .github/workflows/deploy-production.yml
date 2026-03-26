@@ -113,3 +113,74 @@ jobs:
             echo ""
             echo "Image versions:"
             docker compose -f docker-compose.prod.yml images
+
+      - name: Smoke test agent
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.PRODUCTION_HOST }}
+          username: github
+          key: ${{ secrets.PRODUCTION_SSH_KEY }}
+          script_stop: true
+          script: |
+            echo "Waiting for agent to be ready..."
+            for i in $(seq 1 12); do
+              if curl -sf http://localhost:8000/api/v1/health > /dev/null 2>&1; then
+                break
+              fi
+              echo "  attempt $i/12..."
+              sleep 5
+            done
+
+            # 1. Health check — verify tool catalog is complete
+            echo "Checking agent health..."
+            HEALTH=$(curl -sf http://localhost:8000/api/v1/health)
+            if [ $? -ne 0 ]; then
+              echo "FAIL: Agent health endpoint not responding"
+              exit 1
+            fi
+
+            STATUS=$(echo "$HEALTH" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+            TOOLS=$(echo "$HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tools',{}).get('total',0))")
+            SERVERS=$(echo "$HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tools',{}).get('servers_available',0))")
+            TOTAL_SERVERS=$(echo "$HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tools',{}).get('servers_total',0))")
+
+            echo "  Status: $STATUS"
+            echo "  Tools: $TOOLS"
+            echo "  Servers: $SERVERS/$TOTAL_SERVERS"
+
+            if [ "$STATUS" != "healthy" ]; then
+              echo "FAIL: Agent status is $STATUS"
+              echo "$HEALTH"
+              exit 1
+            fi
+
+            # 2. Query + usage log check
+            echo "Sending smoke test query..."
+            SMOKE_ID="smoke-$(date +%s)"
+            RESPONSE=$(curl -sf -X POST http://localhost:8000/api/v1/query \
+              -H "Content-Type: application/json" \
+              -d "{\"query\": \"smoke test\", \"session_id\": \"${SMOKE_ID}\"}")
+
+            if [ $? -ne 0 ]; then
+              echo "FAIL: Smoke test query failed"
+              exit 1
+            fi
+
+            SUCCESS=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['success'])")
+            if [ "$SUCCESS" != "True" ]; then
+              echo "FAIL: Query returned success=false"
+              exit 1
+            fi
+
+            # Verify usage logging
+            sleep 3
+            CONTAINER=$(docker ps -q -f name=postgres -f ancestor=pgvector/pgvector:pg16)
+            COUNT=$(docker exec "$CONTAINER" psql -U postgres -d langgraph -tAc \
+              "SELECT COUNT(*) FROM usage_logs WHERE session_id='${SMOKE_ID}';")
+
+            if [ "$COUNT" -lt 1 ]; then
+              echo "FAIL: Usage logging not working (0 rows for smoke test)"
+              exit 1
+            fi
+
+            echo "OK: Agent healthy, query succeeded, usage logged"
