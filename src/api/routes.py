@@ -5,7 +5,7 @@ import logging
 import time
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from ..agent.graph import run_agent
@@ -70,6 +70,7 @@ class QueryResponse(BaseModel):
 async def query_agent(
     request: QueryRequest,
     raw_request: Request,
+    include_trace: bool = Query(False, description="Include node_trace in response metadata"),
 ) -> QueryResponse:
     """Execute a query against the ACCESS Documentation Agent.
 
@@ -166,6 +167,16 @@ async def query_agent(
         except Exception:
             logger.exception("Usage logging failed")
 
+        # Build classification summary for response
+        classification_info = None
+        if query_classification:
+            classification_info = {
+                "query_type": query_classification.query_type,
+                "confidence": query_classification.confidence,
+                "domain": query_classification.domain,
+                "reason": query_classification.reason[:200] if query_classification.reason else "",
+            }
+
         return QueryResponse(
             success=True,
             response=final_answer,
@@ -179,6 +190,8 @@ async def query_agent(
                 "execution_strategy": final_state.get("execution_strategy", "unknown"),
                 "checkpointing_enabled": USE_CHECKPOINTING,
                 "duration_ms": duration_ms,
+                "classification": classification_info,
+                **({"node_trace": final_state.get("node_trace", [])} if include_trace else {}),
             },
         )
 

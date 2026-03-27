@@ -92,12 +92,12 @@ async def recover_node(state: AgentState) -> dict[str, Any]:
 
     if not failed_results:
         logger.info("No failed tools to recover")
-        return {}
+        return {"node_trace": [{"node": "recover", "action": "nothing_to_recover"}]}
 
     # Check retry limits
     if retry_context and retry_context.current_total_retries >= retry_context.max_retries_total:
         logger.warning("Max total retries exceeded - giving up")
-        return {"planned_tools": []}  # Clear planned tools to skip execution
+        return {"planned_tools": [], "node_trace": [{"node": "recover", "action": "max_retries_exceeded"}]}
 
     # Analyze first failure (could extend to handle multiple)
     failed = failed_results[0]
@@ -108,7 +108,7 @@ async def recover_node(state: AgentState) -> dict[str, Any]:
     # Non-recoverable errors - fail fast
     if error_type in ("auth", "not_found"):
         logger.info(f"Non-recoverable error type: {error_type}")
-        return {"planned_tools": []}
+        return {"planned_tools": [], "node_trace": [{"node": "recover", "action": "non_recoverable", "error_type": error_type}]}
 
     # Build available tools list for alternatives
     available_tools = _get_available_tools(catalog, exclude=failed.tool_name)
@@ -141,7 +141,7 @@ async def recover_node(state: AgentState) -> dict[str, Any]:
         )
 
         if not result.get("recoverable", False):
-            return {"planned_tools": []}
+            return {"planned_tools": [], "node_trace": [{"node": "recover", "action": "llm_says_unrecoverable"}]}
 
         # Apply recovery strategy
         strategy = result.get("strategy", "fail")
@@ -202,12 +202,13 @@ async def recover_node(state: AgentState) -> dict[str, Any]:
         return {
             "planned_tools": new_planned_tools,
             "retry_context": new_retry_context,
-            "tool_results": [],  # Clear old results for retry
+            "tool_results": [],
+            "node_trace": [{"node": "recover", "action": strategy, "new_tools": [t.tool_name for t in new_planned_tools]}],
         }
 
     except Exception as e:
         logger.error(f"Recovery planning failed: {e}")
-        return {"planned_tools": []}
+        return {"planned_tools": [], "node_trace": [{"node": "recover", "action": "error", "error": str(e)[:100]}]}
 
 
 def _classify_error(error: str) -> str:

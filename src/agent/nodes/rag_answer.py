@@ -1,19 +1,19 @@
 """RAG answer node.
 
-Retrieves answers from UKY RAG endpoints or the pgvector Q&A service.
+Retrieves answers from UKY document RAG endpoints.
 
 Routing:
-- If classification.rag_endpoint is set and UKY is enabled, query the
-  appropriate UKY endpoint (general or xdmod).
-- Falls back to pgvector Q&A service if UKY fails or isn't configured.
+- If classification.rag_endpoint is set, query the appropriate UKY
+  endpoint (general or xdmod).
+- If UKY fails or isn't configured, return empty result (routes to plan).
 
 Flow for static queries:
-1. Query UKY endpoint (or pgvector fallback) for an answer
+1. Query UKY endpoint for an answer
 2. If answer found: return as final_answer → END
 3. If no answer: fall through to tools
 
 Flow for combined queries:
-1. Query UKY endpoint (or pgvector fallback)
+1. Query UKY endpoint
 2. Store answer as RAGMatch for synthesis with tool results
 3. Continue to tools for real-time data
 4. Synthesize combines RAG knowledge + tool results
@@ -100,7 +100,7 @@ async def _ask_uky(
     """
     client = get_uky_client()
     if not client.is_configured:
-        logger.info("UKY RAG not configured, falling back to pgvector")
+        logger.info("UKY RAG not configured, returning empty result")
         return None
 
     try:
@@ -141,8 +141,8 @@ async def _ask_uky(
                 "rag_used": True,
             }
 
-        # For combined queries, store the answer for synthesis with tool results
-        logger.info(f"Combined query: Storing UKY {rag_endpoint} answer for synthesis")
+        # For combined/dynamic queries, store the answer for synthesis with tool results
+        logger.info(f"{query_type.title()} query: Storing UKY {rag_endpoint} answer for synthesis")
         span.set_attribute("rag.result", "uky_for_synthesis")
         return {
             "rag_matches": [rag_match],
@@ -150,7 +150,7 @@ async def _ask_uky(
         }
 
     except Exception as e:
-        logger.warning(f"UKY RAG ({rag_endpoint}) failed, falling back to pgvector: {e}")
+        logger.warning(f"UKY RAG ({rag_endpoint}) failed: {e}")
         span.set_attribute("uky_rag.error", str(e)[:200])
         return None
 
@@ -256,10 +256,11 @@ async def _search_pgvector(
 
 
 async def rag_answer_node(state: AgentState) -> dict[str, object]:
-    """Retrieve answer from UKY RAG endpoints or pgvector Q&A service.
+    """Retrieve answer from UKY document RAG.
 
-    Routes to UKY endpoints when classification.rag_endpoint is set,
-    falling back to pgvector if UKY fails or isn't configured.
+    Always consults UKY regardless of query classification. Defaults to
+    the "general" endpoint when the classifier sets rag_endpoint=null
+    (e.g., dynamic queries).
 
     Args:
         state: Current agent state with query.
@@ -295,20 +296,56 @@ async def rag_answer_node(state: AgentState) -> dict[str, object]:
             f"RAG lookup for {query_type} query (endpoint={rag_endpoint}): {search_query[:50]}..."
         )
 
-        # Try UKY endpoint first if configured
-        if rag_endpoint:
-            result = await _ask_uky(
-                search_query=search_query,
-                query_type=query_type,
-                rag_endpoint=rag_endpoint,
-                session_id=state.get("session_id", ""),
-                question_id=state.get("question_id", ""),
-                span=span,
-            )
-            if result is not None:
-                return result
-            # UKY failed or not configured — fall through to pgvector
-            logger.info("Falling back to pgvector after UKY failure")
+        # Query UKY document RAG — always consult UKY regardless of classification.
+        # Default to "general" endpoint when classifier sets rag_endpoint=null
+        # (e.g., dynamic queries). UKY often has useful context even for
+        # questions the classifier thinks are purely dynamic.
+        #
+        # pgvector Q&A pair fallback disabled (2026-03-23) — pairs were too
+        # narrow/thin vs UKY docs, and 0.85 threshold never matched real-user
+        # input. To re-enable for slam-dunk scenarios: call _search_pgvector()
+        # when result is None. The function and qa_client.py are intact.
+        effective_endpoint = rag_endpoint or "general"
+        result = await _ask_uky(
+            search_query=search_query,
+            query_type=query_type,
+            rag_endpoint=effective_endpoint,
+            session_id=state.get("session_id", ""),
+            question_id=state.get("question_id", ""),
+            span=span,
+        )
+        if result is None:
+            logger.info("No UKY result — continuing with empty RAG context")
+            result = {"rag_matches": [], "rag_used": False}
 
-        # pgvector fallback (or primary if no rag_endpoint set)
-        return await _search_pgvector(search_query, query_type, span)
+        rag_matches = result.get("rag_matches", [])
+        best_score = rag_matches[0].similarity_score if rag_matches else None
+        final_answer = result.get("final_answer", "")
+        # Check for hedge phrases in the answer
+        hedge_phrases = [
+            "do not contain", "does not contain", "do not explicitly",
+            "does not explicitly", "not provided in", "not mentioned in",
+            "no specific information", "do not have specific information",
+            "currently do not have", "not available in the provided",
+        ]
+        lower = final_answer.lower() if final_answer else ""
+        hedge_detected = bool(final_answer and any(
+            p in lower for p in hedge_phrases
+        ))
+        # Even if hedge detected, answer may have substance (urls, length)
+        has_substance = bool(
+            final_answer and (
+                "http" in lower or "@" in final_answer or len(final_answer) > 500
+            )
+        )
+        result["node_trace"] = [{
+            "node": "rag_answer",
+            "source": "uky" if result.get("rag_used") else "none",
+            "match_count": len(rag_matches),
+            "best_score": best_score,
+            "rag_used": result.get("rag_used", False),
+            "has_final_answer": bool(final_answer),
+            "hedge_detected": hedge_detected,
+            "hedge_has_substance": has_substance if hedge_detected else None,
+        }]
+        return result

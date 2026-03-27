@@ -87,3 +87,6 @@ mghpcc-*.json
 *.tfstate
 *.tfstate.backup
 .terraform.lock.hcl
+
+# test run data
+a3_results/

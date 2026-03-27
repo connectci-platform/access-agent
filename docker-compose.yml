@@ -15,6 +15,8 @@ services:
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/langgraph
       - MCP_CATALOG_URL=http://n8n:5678/webhook/generate-mcp-catalog
       - QA_SERVICE_URL=${QA_SERVICE_URL:-http://localhost:8001}
+      # UKY document RAG
+      - ACCESS_AI_API_KEY=${ACCESS_AI_API_KEY:-}
       # MCP API key for servers requiring authentication (announcements, events, jsm)
       - MCP_API_KEY=${MCP_API_KEY:-}
       # JWT Authentication (ES256 + JWKS)

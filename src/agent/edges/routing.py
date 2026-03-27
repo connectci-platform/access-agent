@@ -119,6 +119,30 @@ def should_retry_quality(
         logger.warning(f"Quality check failed but max attempts ({max_attempts}) reached")
         return "synthesize"
 
+    # Check if retrying would be pointless — if all tools returned empty,
+    # failed, or error-shaped data, the planner will just pick the same
+    # tools again (it has no knowledge of previous failures). Skip to
+    # synthesize where UKY content is waiting.
+    tool_results = state.get("tool_results", [])
+    if tool_results and attempt_number > 0:
+
+        def _result_is_useless(r) -> bool:
+            if not r.success:
+                return True
+            if r.data is None or r.data == [] or r.data == {}:
+                return True
+            # MCP tools sometimes return success=True with error in body
+            if isinstance(r.data, dict) and "error" in r.data and len(r.data) == 1:
+                return True
+            return False
+
+        if all(_result_is_useless(r) for r in tool_results):
+            logger.info(
+                f"All tools returned empty/failed/error on attempt {attempt_number} "
+                "— skipping retry, routing to synthesize"
+            )
+            return "synthesize"
+
     # Unhelpful and have attempts left - retry planning
     logger.info(
         f"Quality check failed (attempt {attempt_number}/{max_attempts}): {quality_eval.reason}"

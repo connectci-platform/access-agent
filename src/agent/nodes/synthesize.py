@@ -36,29 +36,43 @@ SYNTHESIS_SYSTEM_PROMPT = """You are an ACCESS-CI documentation assistant.
 - Use the tool results above to answer the user's question.
 - Be concise and direct — answer the question first, then provide details.
 - Format data clearly using bullet points, tables, or lists where appropriate.
-- IMPORTANT: If the tool results include URLs (especially to xdmod.access-ci.org or other ACCESS portals), include them in your answer so the user can explore further.
-- If results are empty or failed, say so honestly.
+- Do NOT add information from your own training data. Only use what is provided in the tool results above. If the results don't answer the question, say so honestly.
 - Do not mention "tool results" or system internals.
+
+URL PRESERVATION (MANDATORY):
+- You MUST include every URL that appears in the tool results. Do not summarize, omit, or replace any URL.
+- Before finalizing your answer, re-read the tool results and verify that every URL present appears in your answer.
+
 - For issues needing human help: https://support.access-ci.org/help-ticket"""
 
 # System prompt for combined synthesis (RAG + tools)
 COMBINED_SYNTHESIS_PROMPT = """You are an ACCESS-CI documentation assistant.
 
-## VERIFIED KNOWLEDGE
+## VERIFIED KNOWLEDGE (from ACCESS documentation — authoritative)
 
 {rag_context}
 
-## REAL-TIME DATA
+## REAL-TIME DATA (from live ACCESS APIs — current)
 
 {tool_results}
 
 ## INSTRUCTIONS
 
-- Combine verified knowledge with real-time data to answer. Prefer real-time data for status/availability, verified knowledge for specs/capabilities.
+- Combine verified knowledge with real-time data to produce the best possible answer.
+- CRITICAL: The verified knowledge comes from human-curated ACCESS documentation. It is the PRIMARY source. Start with the verified knowledge as your base answer, then enrich with real-time data where it adds value.
+- Prefer real-time data for hardware specs, software versions, system status, and availability — this data is more current than documentation.
+- Prefer verified knowledge for procedures, policies, how-to guides, troubleshooting steps, and contact information — documentation is more reliable for these.
+- If the verified knowledge starts with hedging language like "The provided documents do not contain..." — ignore that preamble and use the substantive content that follows.
 - Be concise and direct — answer the question first, then provide details.
 - Format data clearly using bullet points, tables, or lists where appropriate.
-- IMPORTANT: If the verified knowledge or real-time data includes URLs (especially to xdmod.access-ci.org or other ACCESS portals), include them in your answer so the user can explore further.
-- If results are empty or failed, say so honestly.
+
+URL PRESERVATION (MANDATORY):
+- You MUST include every URL that appears in the verified knowledge. Do not summarize, omit, or replace any URL.
+- You MUST include every URL that appears in the real-time data.
+- Before finalizing your answer, re-read the verified knowledge and real-time data sections and verify that every URL present in either section appears in your answer. If any URL is missing, add it.
+- This includes support ticket links, documentation links, user guide links, and any other URLs.
+
+- Do NOT add information from your own training data. Only use what is provided in the verified knowledge and real-time data sections above.
 - Do not mention "verified knowledge", "tool results", or system internals.
 - For issues needing human help: https://support.access-ci.org/help-ticket"""
 
@@ -67,13 +81,17 @@ RAG_ONLY_SYNTHESIS_PROMPT = """You are an ACCESS-CI documentation assistant. You
 
 ## GUIDELINES
 
-1. Be concise and direct - answer the question first, then provide details
+1. Be concise and direct — answer the question first, then provide details
 2. Use the verified knowledge provided to give accurate information
-3. This information comes from human-verified ACCESS documentation
-4. Format data clearly - use bullet points, tables, or lists where appropriate
-5. Include relevant links when available
-6. Don't make up information not present in the verified knowledge
-7. If the knowledge doesn't fully answer the question, acknowledge what's missing
+3. This information comes from human-verified ACCESS documentation — it is authoritative
+4. Format data clearly — use bullet points, tables, or lists where appropriate
+5. Do NOT add information from your own training data. Only use what is provided below.
+6. If the knowledge starts with hedging language like "The provided documents do not contain..." — ignore that preamble and present the substantive content that follows
+7. If the knowledge doesn't fully answer the question, acknowledge what's missing and suggest the user visit access-ci.org or open a support ticket
+
+URL PRESERVATION (MANDATORY):
+8. You MUST include every URL that appears in the verified knowledge below. Do not summarize, omit, or replace any URL.
+9. Before finalizing your answer, re-read the verified knowledge and verify that every URL present appears in your answer. If any URL is missing, add it.
 
 ## VERIFIED KNOWLEDGE (from ACCESS documentation)
 
@@ -81,7 +99,7 @@ RAG_ONLY_SYNTHESIS_PROMPT = """You are an ACCESS-CI documentation assistant. You
 
 ## ANSWER FORMAT
 
-Respond naturally as a helpful documentation assistant. Do not mention "verified knowledge" or internal system details - just answer the question as if you know this information."""
+Respond naturally as a helpful documentation assistant. Do not mention "verified knowledge" or internal system details — just answer the question as if you know this information."""
 
 # System prompt for condensing large tool results
 CONDENSE_RESULTS_PROMPT = """You are a data extraction assistant. Your job is to extract information relevant to the user's question from large tool results.
@@ -101,6 +119,45 @@ Extract and summarize ONLY the information from the tool results that is relevan
 Do NOT answer the question yourself. Just extract and organize the relevant data.
 
 Output the relevant information in a clear, structured format."""
+
+
+def _strip_hedge_preamble(answer: str) -> str:
+    """Strip common UKY hedge preambles without LLM rewrite.
+
+    UKY often starts with "The provided documents do not contain..." then
+    gives useful content. This strips the hedge sentence(s) at the start,
+    preserving everything after. Uses simple sentence splitting — no LLM call.
+
+    Args:
+        answer: The raw UKY answer.
+
+    Returns:
+        The answer with hedge preamble removed, or unchanged if no hedge found.
+    """
+    hedge_starts = [
+        "the provided documents do not",
+        "the provided documents does not",
+        "the provided information does not",
+        "the documents do not",
+        "the information provided does not",
+    ]
+
+    lower = answer.lower()
+    if not any(lower.startswith(h) for h in hedge_starts):
+        return answer
+
+    # Find the end of the first sentence (period followed by space or newline)
+    # Strip the hedge sentence and any leading whitespace/newlines after it
+    for i, char in enumerate(answer):
+        if char == "." and i < len(answer) - 1 and answer[i + 1] in (" ", "\n"):
+            rest = answer[i + 2:].lstrip()
+            if rest:
+                # Capitalize first letter of remaining content
+                return rest[0].upper() + rest[1:] if rest else answer
+            break
+
+    # If we couldn't find a clean split point, return unchanged
+    return answer
 
 
 def _estimate_tokens(text: str) -> int:
@@ -233,92 +290,120 @@ async def synthesize_node(state: AgentState) -> dict[str, Any]:
             "agent.tool_results": len(tool_results) if tool_results else 0,
         },
     ) as span:
+        strategy = "unknown"
+        result: dict[str, Any] = {}
+
         # Handle no-tools-needed case
         if query_analysis and not query_analysis.requires_tools:
-            span.set_attribute("synthesis.strategy", "no_tools_needed")
-            return await _synthesize_without_tools(query, query_analysis)
+            # If UKY provided content, serve it directly — no LLM rewrite.
+            # This avoids synthesis dilution when tools have nothing to add.
+            if rag_matches:
+                strategy = "uky_direct_no_tools"
+                span.set_attribute("synthesis.strategy", strategy)
+                raw_answer = rag_matches[0].answer
+                # Strip common hedge preambles without LLM rewrite
+                answer = _strip_hedge_preamble(raw_answer)
+                logger.info(
+                    f"No tools needed, serving UKY answer directly "
+                    f"({len(answer)} chars, stripped={len(raw_answer) != len(answer)})"
+                )
+                result = {
+                    "final_answer": answer,
+                    "messages": [AIMessage(content=answer)],
+                    "tools_used": ["uky_rag_retrieval"],
+                }
+            else:
+                strategy = "no_tools_needed"
+                span.set_attribute("synthesis.strategy", strategy)
+                result = await _synthesize_without_tools(query, query_analysis)
+        else:
+            # Determine what data we have
+            has_rag = bool(rag_matches)
+            has_tools = bool(tool_results)
+            tools_succeeded = has_tools and any(r.success for r in tool_results)
 
-        # Determine what data we have
-        has_rag = bool(rag_matches)
-        has_tools = bool(tool_results)
-        tools_succeeded = has_tools and any(r.success for r in tool_results)
+            span.set_attribute("synthesis.has_rag", has_rag)
+            span.set_attribute("synthesis.has_tools", has_tools)
+            span.set_attribute("synthesis.tools_succeeded", tools_succeeded)
 
-        span.set_attribute("synthesis.has_rag", has_rag)
-        span.set_attribute("synthesis.has_tools", has_tools)
-        span.set_attribute("synthesis.tools_succeeded", tools_succeeded)
+            logger.info(
+                f"Synthesis: has_rag={has_rag} ({len(rag_matches)} matches), "
+                f"has_tools={has_tools}, tools_succeeded={tools_succeeded}"
+            )
 
-        logger.info(
-            f"Synthesis: has_rag={has_rag} ({len(rag_matches)} matches), "
-            f"has_tools={has_tools}, tools_succeeded={tools_succeeded}"
-        )
+            if not has_rag and not has_tools:
+                strategy = "no_data"
+                logger.warning("No results to synthesize")
+                result = {
+                    "final_answer": (
+                        "I wasn't able to retrieve specific information for your question. "
+                        "Please try rephrasing your query or ask about a specific ACCESS resource."
+                    ),
+                }
+            else:
+                # Format available data
+                rag_context = _format_rag_matches(rag_matches) if has_rag else ""
+                results_text = _format_tool_results(tool_results) if has_tools else ""
+                results_text = await _maybe_condense_results(query, results_text, span)
 
-        # No data at all
-        if not has_rag and not has_tools:
-            logger.warning("No results to synthesize")
-            span.set_attribute("synthesis.strategy", "no_data")
-            return {
-                "final_answer": (
-                    "I wasn't able to retrieve specific information for your question. "
-                    "Please try rephrasing your query or ask about a specific ACCESS resource."
-                ),
-            }
+                if has_rag and has_tools and not tools_succeeded:
+                    strategy = "uky_direct_tools_failed"
+                    raw_answer = rag_matches[0].answer
+                    answer = _strip_hedge_preamble(raw_answer)
+                    logger.info(f"Tools failed, serving UKY answer directly ({len(answer)} chars)")
+                    result = {
+                        "final_answer": answer,
+                        "messages": [AIMessage(content=answer)],
+                        "tools_used": ["uky_rag_retrieval"],
+                    }
+                elif has_tools and not tools_succeeded and not has_rag:
+                    strategy = "all_failed"
+                    logger.warning("All tools failed and no RAG data")
+                    failed_tools = ", ".join(r.tool_name for r in tool_results)
+                    result = {
+                        "final_answer": (
+                            "I encountered issues retrieving data for your question. "
+                            f"The following tools were attempted but failed: {failed_tools}. "
+                            "Please try again later or contact support if this persists."
+                        ),
+                    }
+                elif has_rag and tools_succeeded:
+                    strategy = "combined"
+                    result = await _synthesize_combined(query, rag_context, results_text)
+                elif tools_succeeded:
+                    strategy = "tools_only"
+                    result = await _synthesize_tools_only(query, results_text)
+                elif has_rag:
+                    strategy = "uky_direct_only"
+                    raw_answer = rag_matches[0].answer
+                    answer = _strip_hedge_preamble(raw_answer)
+                    logger.info(f"RAG only, serving UKY answer directly ({len(answer)} chars)")
+                    result = {
+                        "final_answer": answer,
+                        "messages": [AIMessage(content=answer)],
+                        "tools_used": ["uky_rag_retrieval"],
+                    }
+                else:
+                    strategy = "fallback"
+                    result = {
+                        "final_answer": (
+                            "I wasn't able to generate a complete answer. "
+                            "Please try rephrasing your question."
+                        ),
+                    }
 
-        # Format available data
-        rag_context = _format_rag_matches(rag_matches) if has_rag else ""
-        results_text = _format_tool_results(tool_results) if has_tools else ""
+            span.set_attribute("synthesis.strategy", strategy)
 
-        # Check token budget and condense if needed
-        results_text = await _maybe_condense_results(query, results_text, span)
+        answer_len = len(result.get("final_answer", "") or "")
+        if answer_len:
+            span.set_attribute("synthesis.answer_length", answer_len)
 
-        # All tools failed but we have RAG data - use RAG only
-        if has_rag and has_tools and not tools_succeeded:
-            logger.info("Tools failed but RAG has data - using RAG-only synthesis")
-            span.set_attribute("synthesis.strategy", "rag_only_tools_failed")
-            return await _synthesize_with_rag_only(query, rag_context)
-
-        # All tools failed and no RAG data
-        if has_tools and not tools_succeeded and not has_rag:
-            logger.warning("All tools failed and no RAG data")
-            failed_tools = ", ".join(r.tool_name for r in tool_results)
-            span.set_attribute("synthesis.strategy", "all_failed")
-            return {
-                "final_answer": (
-                    "I encountered issues retrieving data for your question. "
-                    f"The following tools were attempted but failed: {failed_tools}. "
-                    "Please try again later or contact support if this persists."
-                ),
-            }
-
-        # Choose synthesis strategy
-        if has_rag and tools_succeeded:
-            # Combined synthesis: RAG + tools
-            span.set_attribute("synthesis.strategy", "combined")
-            result = await _synthesize_combined(query, rag_context, results_text)
-            if "final_answer" in result:
-                span.set_attribute("synthesis.answer_length", len(result["final_answer"]))
-            return result
-        if tools_succeeded:
-            # Tools only
-            span.set_attribute("synthesis.strategy", "tools_only")
-            result = await _synthesize_tools_only(query, results_text)
-            if "final_answer" in result:
-                span.set_attribute("synthesis.answer_length", len(result["final_answer"]))
-            return result
-        if has_rag:
-            # RAG only (tools not attempted or empty)
-            span.set_attribute("synthesis.strategy", "rag_only")
-            result = await _synthesize_with_rag_only(query, rag_context)
-            if "final_answer" in result:
-                span.set_attribute("synthesis.answer_length", len(result["final_answer"]))
-            return result
-
-        # Fallback (shouldn't reach here)
-        span.set_attribute("synthesis.strategy", "fallback")
-        return {
-            "final_answer": (
-                "I wasn't able to generate a complete answer. Please try rephrasing your question."
-            ),
-        }
+        result["node_trace"] = [{
+            "node": "synthesize",
+            "strategy": strategy,
+            "answer_length": answer_len,
+        }]
+        return result
 
 
 async def _synthesize_without_tools(

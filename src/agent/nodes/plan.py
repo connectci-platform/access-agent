@@ -194,12 +194,18 @@ async def plan_node(state: AgentState) -> dict[str, Any]:
                 "query_analysis": query_analysis,
                 "planned_tools": planned_tools,
                 "execution_strategy": strategy,
+                "node_trace": [{
+                    "node": "plan",
+                    "requires_tools": query_analysis.requires_tools,
+                    "tool_count": len(planned_tools),
+                    "tools": [t.tool_name for t in planned_tools],
+                    "strategy": strategy,
+                }],
             }
 
         except Exception as e:
             span.record_exception(e)
             logger.error(f"Planning failed: {e}")
-            # Return empty plan on error - synthesize will handle
             return {
                 "query_analysis": QueryAnalysis(
                     user_intent="Error during planning",
@@ -208,6 +214,14 @@ async def plan_node(state: AgentState) -> dict[str, Any]:
                 ),
                 "planned_tools": [],
                 "execution_strategy": "sequential",
+                "node_trace": [{
+                    "node": "plan",
+                    "error": str(e)[:200],
+                    "requires_tools": False,
+                    "tool_count": 0,
+                    "tools": [],
+                    "strategy": "sequential",
+                }],
             }
 
 
@@ -273,10 +287,23 @@ def _build_tool_catalog_text(catalog: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+TOOL_CAVEATS: dict[str, str] = {
+    "search_projects": (
+        "NOTE: This is a PUBLIC catalog search across all ACCESS research projects. "
+        "It has no user/owner parameter and CANNOT look up a specific user's projects "
+        "or allocations. Do not use for 'my projects' or 'my allocations' queries."
+    ),
+}
+
+
 def _format_tool_line(tool: dict[str, Any], server_name: str) -> str:
     """Format a single tool for the catalog text."""
     name = tool.get("name", "")
     desc = tool.get("description", "")[:500]
+
+    caveat = TOOL_CAVEATS.get(name, "")
+    if caveat:
+        desc = f"{desc} {caveat}"
 
     # Build parameter string with descriptions, enum values, and defaults
     # Support both "parameters" (list format) and "inputSchema" (JSON Schema format)
