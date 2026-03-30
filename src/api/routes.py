@@ -313,6 +313,39 @@ async def get_capabilities(raw_request: Request) -> dict[str, Any]:
     }
 
 
+class RatingRequest(BaseModel):
+    """Request model for the rating endpoint."""
+
+    query_id: str = Field(..., description="The question_id from the original query")
+    rating: str = Field(..., description="'helpful' or 'not_helpful'")
+    feedback: str | None = Field(None, description="Optional free-text feedback")
+
+
+@router.post("/rating")
+async def submit_rating(request: RatingRequest) -> dict[str, Any]:
+    """Submit a rating for an agent response.
+
+    Attaches the rating to the existing usage log entry identified by
+    query_id. Anonymous ratings are accepted (support capabilities are
+    available to anonymous users) but the query_id must exist.
+    """
+    if request.rating not in ("helpful", "not_helpful"):
+        raise HTTPException(status_code=400, detail="rating must be 'helpful' or 'not_helpful'")
+
+    usage_logger = get_usage_logger()
+    found = await asyncio.to_thread(
+        usage_logger.log_rating,
+        question_id=request.query_id,
+        rating=request.rating,
+        feedback=request.feedback,
+    )
+
+    if not found:
+        raise HTTPException(status_code=404, detail="query_id not found")
+
+    return {"success": True}
+
+
 @router.get("/tools")
 async def list_tools() -> dict[str, Any]:
     """List available MCP tools."""
