@@ -21,6 +21,28 @@ from ..state import AgentState, RAGMatch, ToolResult
 
 logger = logging.getLogger(__name__)
 
+# Lazy-loaded capability summary for system prompts
+_capabilities_text: str | None = None
+
+
+def _get_capabilities_text() -> str:
+    """Get the capability summary for injection into synthesis prompts.
+
+    Built once on first call from the CapabilityRegistry. Uses the
+    authenticated view (superset) since the prompt is shared.
+    """
+    global _capabilities_text
+    if _capabilities_text is None:
+        try:
+            from ..domains.capabilities import get_capability_registry
+            registry = get_capability_registry()
+            _capabilities_text = registry.get_system_prompt_section(authenticated=True)
+        except Exception:
+            logger.warning("Could not load capability summary for synthesis prompt")
+            _capabilities_text = ""
+    return _capabilities_text
+
+
 # Rough estimate: 1 token ≈ 4 characters for English text
 CHARS_PER_TOKEN = 4
 
@@ -43,7 +65,9 @@ URL PRESERVATION (MANDATORY):
 - You MUST include every URL that appears in the tool results. Do not summarize, omit, or replace any URL.
 - Before finalizing your answer, re-read the tool results and verify that every URL present appears in your answer.
 
-- For issues needing human help: https://support.access-ci.org/help-ticket"""
+- For issues needing human help: https://support.access-ci.org/help-ticket
+
+{capabilities}"""
 
 # System prompt for combined synthesis (RAG + tools)
 COMBINED_SYNTHESIS_PROMPT = """You are an ACCESS-CI documentation assistant.
@@ -74,7 +98,9 @@ URL PRESERVATION (MANDATORY):
 
 - Do NOT add information from your own training data. Only use what is provided in the verified knowledge and real-time data sections above.
 - Do not mention "verified knowledge", "tool results", or system internals.
-- For issues needing human help: https://support.access-ci.org/help-ticket"""
+- For issues needing human help: https://support.access-ci.org/help-ticket
+
+{capabilities}"""
 
 # System prompt for RAG-only synthesis (when tools failed but RAG has data)
 RAG_ONLY_SYNTHESIS_PROMPT = """You are an ACCESS-CI documentation assistant. Your job is to answer user questions using verified documentation knowledge.
@@ -99,7 +125,9 @@ URL PRESERVATION (MANDATORY):
 
 ## ANSWER FORMAT
 
-Respond naturally as a helpful documentation assistant. Do not mention "verified knowledge" or internal system details — just answer the question as if you know this information."""
+Respond naturally as a helpful documentation assistant. Do not mention "verified knowledge" or internal system details — just answer the question as if you know this information.
+
+{capabilities}"""
 
 # System prompt for condensing large tool results
 CONDENSE_RESULTS_PROMPT = """You are a data extraction assistant. Your job is to extract information relevant to the user's question from large tool results.
@@ -488,6 +516,7 @@ async def _synthesize_combined(
                 rag_context=rag_context,
                 tool_results=tool_results,
                 query=query,
+                capabilities=_get_capabilities_text(),
             )
         )
         answer = response.content
@@ -534,6 +563,7 @@ async def _synthesize_tools_only(
             prompt.format_messages(
                 tool_results=tool_results,
                 query=query,
+                capabilities=_get_capabilities_text(),
             )
         )
         answer = response.content
@@ -580,6 +610,7 @@ async def _synthesize_with_rag_only(
             prompt.format_messages(
                 rag_context=rag_context,
                 query=query,
+                capabilities=_get_capabilities_text(),
             )
         )
         answer = response.content
