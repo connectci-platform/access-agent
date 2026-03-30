@@ -87,10 +87,27 @@ Domain examples:
 - "Can you help me with my software codes?" → domain: null (help request, NOT a ticket request)
 - "Create an announcement about the workshop" → domain: "announcements" (explicit create request)
 
+Also identify which capability the query best matches. Set "capability_id" to one of:
+- "ask_question" — general Q&A about ACCESS (default for most queries)
+- "check_allocations" — allocation lookups and status
+- "search_software" — software availability on resources
+- "check_system_status" — outages and resource status
+- "browse_events" — upcoming trainings, workshops, office hours
+- "browse_affinity_groups" — community affinity groups
+- "check_usage" — XDMoD usage and performance data
+- "search_nsf_awards" — NSF award lookups
+- "search_announcements" — reading/searching announcements
+- "manage_announcements" — creating, updating, or deleting announcements (domain: "announcements")
+- "open_ticket" — creating a support ticket (domain: "jsm")
+- "report_login_problem" — reporting login issues (domain: "jsm")
+- "report_security" — reporting security concerns (domain: "jsm")
+
+When domain is set, capability_id should match (e.g., domain "jsm" + ticket request → "open_ticket"). When domain is null, pick the best-fit capability from the general list. Default to "ask_question" if unclear.
+
 You will be given conversation history for context. Use it to rewrite the current query as a standalone question by resolving any pronouns or references (e.g., "it", "that", "this one") to their actual referents from the conversation. If the query is already standalone, use it as-is.
 
 Respond with ONLY a JSON object (no markdown):
-{"query_type": "static|dynamic|combined", "rag_endpoint": "general|xdmod|null", "reason": "brief explanation", "confidence": "high|medium|low", "expanded_query": "the query as a standalone question", "domain": "announcements|jsm|null"}"""
+{"query_type": "static|dynamic|combined", "rag_endpoint": "general|xdmod|null", "reason": "brief explanation", "confidence": "high|medium|low", "expanded_query": "the query as a standalone question", "domain": "announcements|jsm|null", "capability_id": "ask_question|check_allocations|..."}"""
 
 
 def _get_classifier_llm() -> ChatOpenAI:
@@ -182,6 +199,14 @@ async def classify_query_with_llm(
             else None
         )
 
+        # Parse capability_id — LLM may return null, "null", or missing
+        raw_capability = result.get("capability_id")
+        capability_id = (
+            raw_capability
+            if isinstance(raw_capability, str) and raw_capability != "null"
+            else None
+        )
+
         return QueryClassification(
             query_type=result.get("query_type", "combined"),
             reason=result.get("reason", ""),
@@ -189,6 +214,7 @@ async def classify_query_with_llm(
             expanded_query=result.get("expanded_query", query),
             domain=domain,
             rag_endpoint=rag_endpoint,
+            capability_id=capability_id,
         )
 
     except Exception as e:
@@ -241,11 +267,13 @@ async def classify_node(state: AgentState) -> dict[str, QueryClassification]:
             span.set_attribute("agent.domain", classification.domain)
         if classification.rag_endpoint:
             span.set_attribute("agent.rag_endpoint", classification.rag_endpoint)
+        if classification.capability_id:
+            span.set_attribute("agent.capability_id", classification.capability_id)
 
         logger.info(
             f"Query classified as {classification.query_type} "
             f"(confidence={classification.confidence}, domain={classification.domain}, "
-            f"rag_endpoint={classification.rag_endpoint}): "
+            f"rag_endpoint={classification.rag_endpoint}, capability={classification.capability_id}): "
             f"{classification.reason}"
         )
         if classification.expanded_query != query:
@@ -261,5 +289,6 @@ async def classify_node(state: AgentState) -> dict[str, QueryClassification]:
                 "rag_endpoint": classification.rag_endpoint,
                 "reason": classification.reason[:200] if classification.reason else "",
                 "expanded": classification.expanded_query != query,
+                "capability_id": classification.capability_id,
             }],
         }
