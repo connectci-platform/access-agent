@@ -186,6 +186,20 @@ async def query_agent(
         # Calculate duration
         duration_ms = (time.time() - start_time) * 1000
 
+        # Resolve capability_id — use classifier output, or infer from tools
+        from ..agent.domains.capabilities import get_capability_registry
+        cap_registry = get_capability_registry()
+        capability_id = None
+        cap_category = None
+        if query_classification and query_classification.capability_id:
+            capability_id = query_classification.capability_id
+        else:
+            domain = query_classification.domain if query_classification else None
+            capability_id = cap_registry.infer_capability_id(domain, tools_used)
+        cap = cap_registry.get_by_id(capability_id) if capability_id else None
+        if cap:
+            cap_category = cap.category
+
         # Log usage for reporting (user ID is hashed, no PII stored).
         # Run in a thread to avoid blocking the async event loop with
         # synchronous SQLAlchemy calls.
@@ -203,6 +217,8 @@ async def query_agent(
                 response_length=len(final_answer),
                 acting_user=acting_user,
                 success=True,
+                capability_id=capability_id,
+                category=cap_category,
             )
         except Exception:
             logger.exception("Usage logging failed")

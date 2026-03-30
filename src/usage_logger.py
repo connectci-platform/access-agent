@@ -11,7 +11,7 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Column, DateTime, Float, Integer, String, Text, create_engine
+from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text, create_engine, inspect, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
@@ -52,6 +52,15 @@ class UsageLog(Base):  # type: ignore[valid-type,misc]
     # Anonymous user tracking (hashed, not reversible)
     user_hash = Column(String(16), index=True)
 
+    # Capability tracking
+    capability_id = Column(String(64), index=True)
+    category = Column(String(32))
+    was_authenticated = Column(Boolean, default=False)
+
+    # Rating (populated by POST /api/v1/rating)
+    rating = Column(String(16))  # "helpful" or "not_helpful"
+    rating_feedback = Column(Text)  # optional free-text
+
     # Response
     response_length = Column(Integer)
     success = Column(String(10), default="true")
@@ -79,6 +88,7 @@ class UsageLogger:
             db_url = settings.DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
             self._engine = create_engine(db_url)
             Base.metadata.create_all(self._engine)
+            self._migrate_columns()
             self._session_factory = sessionmaker(bind=self._engine)
             self._initialized = True
             logger.info("Usage logging initialized")
@@ -86,6 +96,32 @@ class UsageLogger:
         except Exception as e:
             logger.error(f"Failed to initialize usage logging: {e}")
             return False
+
+    def _migrate_columns(self) -> None:
+        """Add new columns to usage_logs if they don't exist.
+
+        create_all() only creates tables, not columns. This handles
+        schema evolution for existing deployments.
+        """
+        if self._engine is None:
+            return
+
+        existing = {c["name"] for c in inspect(self._engine).get_columns("usage_logs")}
+        migrations = {
+            "capability_id": "VARCHAR(64)",
+            "category": "VARCHAR(32)",
+            "was_authenticated": "BOOLEAN DEFAULT FALSE",
+            "rating": "VARCHAR(16)",
+            "rating_feedback": "TEXT",
+        }
+
+        with self._engine.begin() as conn:
+            for col_name, col_type in migrations.items():
+                if col_name not in existing:
+                    conn.execute(text(
+                        f"ALTER TABLE usage_logs ADD COLUMN {col_name} {col_type}"
+                    ))
+                    logger.info("Added column usage_logs.%s", col_name)
 
     @staticmethod
     def _hash_user(user_id: str | None) -> str | None:
@@ -108,23 +144,10 @@ class UsageLogger:
         response_length: int | None = None,
         acting_user: str | None = None,
         success: bool = True,
+        capability_id: str | None = None,
+        category: str | None = None,
     ) -> None:
-        """Log a query for reporting. User IDs are hashed (no PII stored).
-
-        Args:
-            query_text: The user's question
-            session_id: Session identifier
-            question_id: Question identifier
-            query_type: Classification (static, dynamic, combined)
-            topic: Main topic from classification
-            subtopic: Subtopic from classification
-            confidence: Confidence level
-            tools_used: List of MCP tools called
-            duration_ms: Total execution time
-            response_length: Length of the response
-            acting_user: User ID (will be hashed, not stored directly)
-            success: Whether the query succeeded
-        """
+        """Log a query for reporting. User IDs are hashed (no PII stored)."""
         if not self._ensure_initialized():
             return
 
@@ -147,12 +170,47 @@ class UsageLogger:
                 user_hash=self._hash_user(acting_user),
                 response_length=response_length,
                 success="true" if success else "false",
+                capability_id=capability_id,
+                category=category,
+                was_authenticated=acting_user is not None,
             )
             session.add(log_entry)
             session.commit()
             session.close()
         except Exception as e:
             logger.error(f"Failed to log query usage: {e}")
+
+    def log_rating(
+        self,
+        question_id: str,
+        rating: str,
+        feedback: str | None = None,
+    ) -> bool:
+        """Attach a rating to an existing usage log entry.
+
+        Returns True if the entry was found and updated.
+        """
+        if not self._ensure_initialized():
+            return False
+
+        if self._session_factory is None:
+            return False
+
+        try:
+            session = self._session_factory()
+            entry = session.query(UsageLog).filter_by(question_id=question_id).first()
+            if not entry:
+                logger.warning("Rating for unknown question_id: %s", question_id)
+                session.close()
+                return False
+            entry.rating = rating
+            entry.rating_feedback = feedback
+            session.commit()
+            session.close()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to log rating: {e}")
+            return False
 
 
 # Global instance
