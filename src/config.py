@@ -89,6 +89,9 @@ class Settings(BaseSettings):
         """Turnstile is active only when a secret key is configured."""
         return bool(self.TURNSTILE_SECRET_KEY)
 
+    # Capability registry
+    DISABLED_CAPABILITIES: str = ""  # Comma-separated capability IDs to disable
+
     # MCP Servers
     MCP_CATALOG_URL: str = "http://localhost:5678/webhook/generate-mcp-catalog"
     MCP_CATALOG_PATH: str | None = None

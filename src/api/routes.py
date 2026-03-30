@@ -277,6 +277,26 @@ async def health_check() -> dict[str, Any]:
     return result
 
 
+@router.get("/capabilities")
+async def get_capabilities(raw_request: Request) -> dict[str, Any]:
+    """Return available capabilities grouped by category.
+
+    Fast, in-memory lookup — no external calls.  Anonymous users see all
+    capabilities but auth-required ones are marked ``locked: true``.
+    """
+    from ..agent.domains.capabilities import get_capability_registry
+
+    # Check auth to decide locked vs unlocked
+    user, _ = get_acting_user_from_cookie(raw_request)
+    authenticated = user is not None
+
+    registry = get_capability_registry()
+    return {
+        "categories": registry.get_by_category(authenticated),
+        "is_authenticated": authenticated,
+    }
+
+
 @router.get("/tools")
 async def list_tools() -> dict[str, Any]:
     """List available MCP tools."""

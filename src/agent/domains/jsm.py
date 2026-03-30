@@ -1,6 +1,6 @@
 """JSM (Jira Service Management) domain agent configuration."""
 
-from .config import DomainAgentConfig
+from .config import Capability, DomainAgentConfig
 
 JSM_SYSTEM_PROMPT = """You are an ACCESS-CI assistant that helps users submit support tickets. You are logged in as {acting_user}.
 
@@ -42,6 +42,29 @@ JSM_CONFIG = DomainAgentConfig(
     name="jsm",
     mcp_servers=["jsm"],
     system_prompt=JSM_SYSTEM_PROMPT,
+    capabilities=[
+        Capability(
+            id="open_ticket",
+            label="Open a help ticket",
+            description="Create a support ticket for technical issues",
+            category="support",
+            requires_auth=False,
+        ),
+        Capability(
+            id="report_login_problem",
+            label="Report a login problem",
+            description="Get help with ACCESS or resource login issues",
+            category="support",
+            requires_auth=False,
+        ),
+        Capability(
+            id="report_security",
+            label="Report a security issue",
+            description="Report a security concern to the ACCESS team",
+            category="support",
+            requires_auth=False,
+        ),
+    ],
     max_iterations=15,
     temperature=0.3,
 )
