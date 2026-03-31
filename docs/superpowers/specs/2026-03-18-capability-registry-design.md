@@ -3,6 +3,7 @@
 > **Status:** Draft
 > **Date:** 2026-03-18
 > **Repos affected:** access-agent, access-qa-bot, qa-bot-core, cyberteam_drupal (embedding only)
+> **See also:** [Resource-Scoped Capabilities](../../../access-qa-planning/resource-scoped-capabilities.md) — extends this spec with RP-specific chatbot embedding and context-aware capabilities
 
 ## Problem
 
@@ -30,7 +31,7 @@ Users have no way to discover what the chatbot can do. Capabilities are expandin
 ```python
 @dataclass
 class Capability:
-    id: str              # Opaque identifier: "search_announcements"
+    id: str              # Stable public identifier: "search_announcements"
     label: str           # User-facing: "Search announcements"
     description: str     # User-facing: "Find ACCESS news and announcements"
     category: str        # Groups into UI sections: "explore"
@@ -159,48 +160,9 @@ The agent reads this at startup and sets `enabled=False` on matching capabilitie
 
 **Purpose:** Fast, generic capability list for initial UI load.
 
-**Authentication:** Optional. If a valid JWT cookie is present, includes `requires_auth=True` capabilities. Otherwise, only public capabilities.
+**Authentication:** Optional. Response always includes all enabled capabilities, but auth-required capabilities are marked as `locked: true` for anonymous users. This encourages authentication by showing what's available.
 
-**Response:**
-
-```json
-{
-  "categories": [
-    {
-      "id": "general",
-      "label": "Ask a question",
-      "order": 0,
-      "capabilities": [
-        {
-          "id": "ask_question",
-          "label": "Ask a question",
-          "description": "Get answers about ACCESS resources, policies, and services"
-        }
-      ]
-    },
-    {
-      "id": "support",
-      "label": "Get help",
-      "order": 1,
-      "capabilities": [
-        {
-          "id": "open_ticket",
-          "label": "Open a help ticket",
-          "description": "Create a support ticket for technical issues"
-        },
-        {
-          "id": "report_security",
-          "label": "Report a security issue",
-          "description": "Report a security concern to the ACCESS team"
-        }
-      ]
-    }
-  ],
-  "is_authenticated": false
-}
-```
-
-**For anonymous users**, auth-required capabilities are included but marked as locked, along with a login URL. This encourages authentication by showing what's available:
+**Response (anonymous user):**
 
 ```json
 {
@@ -227,10 +189,12 @@ The agent reads this at startup and sets `enabled=False` on matching capabilitie
 
 The `locked` field is `true` for auth-required capabilities when the user is anonymous, and absent (or `false`) when authenticated. The `login_url` is included only for anonymous users. The UI can render locked capabilities with a lock icon and link to login.
 
+**Response (authenticated user):** Same structure, but `locked` is absent/false on all capabilities, and `is_authenticated` is `true`. No `login_url` included.
+
 **Security:**
 - No internal details (tool names, MCP servers, system architecture)
 - Only enabled capabilities included
-- Capability IDs are opaque (no implementation leakage)
+- Capability IDs are stable public labels (semantic names like `search_announcements`), not opaque tokens — but they do not reveal internal implementation details (tool names, MCP server names, endpoints)
 - Auth-required capabilities are visible to anonymous users (to encourage login) but not actionable
 
 **Performance:** No external calls. Built from in-memory registry. Should respond in <10ms.
@@ -280,13 +244,13 @@ The `locked` field is `true` for auth-required capabilities when the user is ano
 - Requires valid JWT cookie authentication
 - Response is scoped to the authenticated user only
 - User-specific data (allocations, groups) fetched server-side, never from client input
-- Rate limited: results cached in Redis per-user-hash with 5-minute TTL
+- Rate limited: results cached per-user-hash with 5-minute TTL (see caching policy in Security section)
 
 **Performance:** Makes external calls (MCP servers, Drupal). Target <2s response time. Called lazily, never blocks initial UI load. External calls are made in parallel where possible.
 
 **Error handling:** Each context source (coordinator status, allocations) is fetched independently. If one fails, the others still populate. The response includes whatever succeeded — a partial response is better than no response. If all calls fail, returns `{"highlighted_capabilities": [], "context": {}}` with a 200 (not a 500), so the UI degrades gracefully.
 
-**Caching:** Results are cached in-memory (`cachetools.TTLCache`) keyed by SHA-256 hash of the user's ACCESS ID, with a 5-minute TTL. Cache is checked before making external calls.
+**Caching:** v1 uses in-memory `cachetools.TTLCache` keyed by SHA-256 hash of the user's ACCESS ID, with a 5-minute TTL. Cache is checked before making external calls. See Security section item 6 for multi-instance migration path.
 
 ---
 
@@ -402,7 +366,7 @@ ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS rating VARCHAR(16);             
 ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS rating_feedback TEXT;           -- optional free-text feedback
 ```
 
-This runs as a startup migration check — if the columns don't exist, add them. Existing rows get NULL for the new columns, which is acceptable for historical data.
+**Migration strategy:** These `ALTER TABLE` statements run as an explicit migration step in the deploy pipeline (e.g., a migration script or CI job), not at app startup. The app assumes the schema is already correct. This avoids issues with restricted DB roles, concurrent deploys, and lock contention. The `IF NOT EXISTS` clause makes the migration idempotent and safe to re-run. Existing rows get NULL for the new columns, which is acceptable for historical data.
 
 ### Capability-Level Metrics
 
@@ -434,7 +398,7 @@ The agent's `/api/v1/query` response includes metadata that tells the UI how to 
     "capability_id": "ask_question",
     "is_final_response": true,
     "rating_target": "uky_rag",
-    "query_id": "uuid-here"
+    "question_id": "uuid-here"
   }
 }
 ```
@@ -479,7 +443,7 @@ The `rating_target` is determined by the query path:
 4. User clicks a rating → UI sends rating to the appropriate endpoint based on `rating_target`:
    - `"uky_rag"` → existing UKY rating endpoint (preserves current behavior)
    - `"agent"` → `POST /api/v1/rating` on the access-agent (new endpoint)
-5. Rating is stored with `query_id`, `capability_id`, `rating`, and optional `feedback` text
+5. Rating is stored with `question_id`, `capability_id`, `rating`, and optional `feedback` text
 
 ### Agent Rating Storage
 
@@ -487,13 +451,21 @@ New endpoint `POST /api/v1/rating`:
 
 ```json
 {
-  "query_id": "uuid",
+  "question_id": "uuid",
   "rating": "helpful" | "not_helpful",
   "feedback": "optional text"
 }
 ```
 
-Ratings are stored in the existing `usage_logs` table (new columns: `rating`, `rating_feedback`). The `query_id` is the existing `question_id` already generated client-side and sent with each query — no new ID needed. The rating endpoint validates that the `query_id` exists in `usage_logs` before accepting the rating. Anonymous ratings are accepted (since anonymous users can use support capabilities) but require a valid `query_id` to prevent spoofing.
+Ratings are stored in the existing `usage_logs` table (new columns: `rating`, `rating_feedback`). The `question_id` is the existing identifier already generated client-side and sent with each query — no new ID needed. The canonical name is `question_id` everywhere: client, API payloads, metadata, and storage.
+
+**Anti-spoofing constraints:**
+- The rating endpoint validates that `question_id` exists in `usage_logs` before accepting.
+- **One rating per query**: Enforced by `UPDATE ... WHERE rating IS NULL` semantics — each `usage_logs` row accepts at most one rating. Subsequent attempts return 409 Conflict. This is not a multi-rater model; if multi-rater support is needed later, ratings should move to a separate table.
+- **Ownership check**: For authenticated users, the endpoint verifies that the `user_hash` on the `usage_logs` row matches the authenticated user's hash. This prevents users from rating other users' queries.
+- **Anonymous ratings**: Accepted for support capabilities (tickets, security reports) since anonymous users can use them. Anonymous ratings are bound by `session_id` — the endpoint checks that the `session_id` in the request header matches the `session_id` on the `usage_logs` row.
+- **Time window**: Ratings are only accepted within 24 hours of the query timestamp. Stale `question_id` values cannot be used to submit ratings.
+- **No rating token required for v1**: The combination of `question_id` validation + ownership check + time window provides sufficient protection. A signed rating token can be added later if abuse is observed.
 
 ---
 
@@ -501,7 +473,7 @@ Ratings are stored in the existing `usage_logs` table (new columns: `rating`, `r
 
 1. **Server-side auth enforcement** — auth-required capabilities are visible to anonymous users (to encourage login) but marked as `locked`. The actual enforcement happens at the `/api/v1/query` endpoint — locked capabilities cannot be exercised without a valid JWT cookie.
 
-2. **No internal details exposed** — capability IDs are opaque labels. No tool names, MCP server names, endpoint URLs, or system architecture in any response.
+2. **No internal details exposed** — capability IDs are stable public labels (e.g., `search_announcements`). They are semantic for readability but do not reveal internal implementation details. No tool names, MCP server names, endpoint URLs, or system architecture in any response.
 
 3. **Existing internal endpoints must be restricted** — the current `GET /api/v1/tools` and `GET /api/v1/catalog` endpoints return MCP server names and tool details. These must be restricted to admin access (require an API key header) or removed. They are not needed by the chatbot UI and should never be publicly accessible.
 
@@ -509,7 +481,7 @@ Ratings are stored in the existing `usage_logs` table (new columns: `rating`, `r
 
 5. **User context is fetched server-side** — the personalized endpoint calls MCP servers and Drupal internally. The client never sends user context; it only receives it.
 
-6. **Rate limiting and caching** — the personalized endpoint caches results in-memory using a TTL cache (e.g., `cachetools.TTLCache`), keyed by user hash with a 5-minute TTL. This prevents abuse and reduces load on MCP servers/Drupal. Sufficient for single-instance deployment; can be migrated to Redis if scaling requires shared cache.
+6. **Rate limiting and caching** — the personalized endpoint caches results keyed by user hash with a 5-minute TTL. **v1 (single instance):** in-memory `cachetools.TTLCache`. **Multi-instance:** migrate to Redis for shared cache. The spec assumes single-instance for v1; the cache interface should be abstract enough to swap backends without changing callers.
 
 7. **Graceful degradation** — if the personalized endpoint's external calls fail (MCP server down, Drupal unreachable), return a partial response with whatever succeeded. Never block the UI. The `highlighted_capabilities` array is empty if context is unavailable.
 
@@ -547,7 +519,16 @@ The `access-qa-bot` main branch remains available for the upcoming UKY RAG endpo
 10. **Ratings include optional free-text feedback** — thumbs up/down plus an optional text field for details.
 11. **Anonymous users see the chatbot** — they can see all capabilities (locked ones with login prompt) and use the support capabilities (tickets, security reports).
 
+## Resource-Scoped Extension
+
+The capabilities endpoint accepts an optional `resource_context` query parameter for the embedded chatbot on RP documentation pages. When present, the response is filtered and augmented with RP-specific suggested questions based on cached section data from Drupal's `/api/resources` endpoint. Layout adapts from categories to flat based on capability count.
+
+See **[Resource-Scoped Capabilities](../../../access-qa-planning/resource-scoped-capabilities.md)** for the full design.
+
+---
+
 ## Open Questions
 
 1. **UKY PII policy** — Can the user's name be included in the system prompt sent to the LLM? Need to check with UKY. Fallback: use ACCESS ID username portion or no name at all.
 2. **Placeholder text mechanics** — How does the chatbot UI rotate placeholder text? Need to check react-chatbotify capabilities. May require a qa-bot-core change.
+3. **RP slug mapping** — CiDeR resource IDs may not match UKY's valid RP slugs. Need a mapping.
