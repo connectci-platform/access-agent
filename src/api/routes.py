@@ -259,6 +259,10 @@ async def query_agent(
                 "checkpointing_enabled": USE_CHECKPOINTING,
                 "duration_ms": duration_ms,
                 "classification": classification_info,
+                "capability_id": capability_id,
+                "is_final_response": True,
+                "rating_target": "uky_rag" if "uky_rag_retrieval" in tools_used else "agent",
+                "question_id": question_id,
                 **({"node_trace": final_state.get("node_trace", [])} if include_trace else {}),
             },
         )
