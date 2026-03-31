@@ -1,6 +1,6 @@
 """Announcements domain agent configuration."""
 
-from .config import DomainAgentConfig
+from .config import Capability, DomainAgentConfig
 
 ANNOUNCEMENTS_SYSTEM_PROMPT = """You are an ACCESS-CI assistant that helps users manage announcements. You are logged in as {acting_user}.
 
@@ -42,6 +42,22 @@ ANNOUNCEMENTS_CONFIG = DomainAgentConfig(
     name="announcements",
     mcp_servers=["announcements"],
     system_prompt=ANNOUNCEMENTS_SYSTEM_PROMPT,
+    capabilities=[
+        Capability(
+            id="search_announcements",
+            label="Search announcements",
+            description="Find ACCESS news and announcements",
+            category="explore",
+            requires_auth=False,
+        ),
+        Capability(
+            id="manage_announcements",
+            label="Manage your announcements",
+            description="Create, update, and delete announcements you've authored",
+            category="content",
+            requires_auth=True,
+        ),
+    ],
     max_iterations=15,
     temperature=0.3,
 )

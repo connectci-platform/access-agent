@@ -6,12 +6,14 @@ import time
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from ..agent.graph import run_agent
 from ..auth import get_acting_user_from_cookie
 from ..config import settings
 from ..tools import ToolRegistry, get_catalog_aggregator
+from ..turnstile import get_turnstile_guard, verify_turnstile_token
 from ..usage_logger import get_usage_logger
 
 logger = logging.getLogger(__name__)
@@ -52,6 +54,7 @@ class QueryRequest(BaseModel):
     session_id: str | None = Field(None, description="Session ID for conversation tracking")
     question_id: str | None = Field(None, description="Unique question ID")
     acting_user: str | None = Field(None, description="Transition fallback: acting user from body")
+    turnstile_token: str | None = Field(None, description="Cloudflare Turnstile response token")
 
 
 class QueryResponse(BaseModel):
@@ -66,12 +69,43 @@ class QueryResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-@router.post("/query", response_model=QueryResponse)
+def _turnstile_challenge_response() -> JSONResponse:
+    """Build the JSON response that tells the frontend to show the Turnstile widget."""
+    return JSONResponse(
+        content={
+            "requires_turnstile": True,
+            "site_key": settings.TURNSTILE_SITE_KEY,
+        }
+    )
+
+
+async def _check_turnstile(
+    acting_user: str | None,
+    session_id: str,
+    token: str | None,
+) -> JSONResponse | None:
+    """Check Turnstile for anonymous sessions. Returns a challenge response or None to proceed."""
+    if acting_user:
+        return None
+
+    guard = get_turnstile_guard()
+    if not guard.requires_challenge(session_id):
+        return None
+
+    # Session needs verification — check if a token was provided
+    if token and await verify_turnstile_token(token):
+        guard.mark_verified(session_id)
+        return None
+
+    return _turnstile_challenge_response()
+
+
+@router.post("/query", response_model=None)
 async def query_agent(
     request: QueryRequest,
     raw_request: Request,
     include_trace: bool = Query(False, description="Include node_trace in response metadata"),
-) -> QueryResponse:
+) -> QueryResponse | JSONResponse:
     """Execute a query against the ACCESS Documentation Agent.
 
     User identity is resolved from the ``SESSaccess_auth`` JWT cookie set by
@@ -103,8 +137,16 @@ async def query_agent(
         # No cookie sent; use body fallback during transition period.
         acting_user = request.acting_user.strip() or None
 
-    # Generate IDs if not provided
+    # Generate IDs if not provided.
+    # Anonymous users MUST provide session_id when Turnstile is enabled —
+    # otherwise each request gets a unique ID and the free-query counter
+    # never accumulates.
     timestamp = int(time.time() * 1000)
+    if not request.session_id and not acting_user and settings.turnstile_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="session_id is required for anonymous queries",
+        )
     session_id = request.session_id or f"sess_{timestamp}"
     question_id = request.question_id or f"q_{timestamp}"
 
@@ -112,6 +154,12 @@ async def query_agent(
         f"Processing query: {request.query[:50]}... "
         f"(session={session_id}, acting_user={acting_user or 'anonymous'})"
     )
+
+    # Turnstile gate — anonymous users may need to verify they're human.
+    # Authenticated users (JWT cookie or body fallback) skip entirely.
+    turnstile_response = await _check_turnstile(acting_user, session_id, request.turnstile_token)
+    if turnstile_response is not None:
+        return turnstile_response
 
     start_time = time.time()
 
@@ -146,6 +194,20 @@ async def query_agent(
         # Calculate duration
         duration_ms = (time.time() - start_time) * 1000
 
+        # Resolve capability_id — use classifier output, or infer from tools
+        from ..agent.domains.capabilities import get_capability_registry
+        cap_registry = get_capability_registry()
+        capability_id = None
+        cap_category = None
+        if query_classification and query_classification.capability_id:
+            capability_id = query_classification.capability_id
+        else:
+            domain = query_classification.domain if query_classification else None
+            capability_id = cap_registry.infer_capability_id(domain, tools_used)
+        cap = cap_registry.get_by_id(capability_id) if capability_id else None
+        if cap:
+            cap_category = cap.category
+
         # Log usage for reporting (user ID is hashed, no PII stored).
         # Run in a thread to avoid blocking the async event loop with
         # synchronous SQLAlchemy calls.
@@ -163,9 +225,15 @@ async def query_agent(
                 response_length=len(final_answer),
                 acting_user=acting_user,
                 success=True,
+                capability_id=capability_id,
+                category=cap_category,
             )
         except Exception:
             logger.exception("Usage logging failed")
+
+        # Track query for Turnstile free-query counting
+        if not acting_user:
+            get_turnstile_guard().record_query(session_id)
 
         # Build classification summary for response
         classification_info = None
@@ -227,10 +295,75 @@ async def health_check() -> dict[str, Any]:
         if available < total:
             result["status"] = "degraded"
             result["tools"]["unavailable_servers"] = [
-                s["name"] for s in catalog.get("servers", []) if s.get("status") != "available"
+                s.get("server", s.get("name", "unknown")) for s in catalog.get("servers", []) if s.get("status") != "available"
             ]
 
     return result
+
+
+@router.get("/capabilities")
+async def get_capabilities(raw_request: Request) -> dict[str, Any]:
+    """Return available capabilities grouped by category.
+
+    Fast, in-memory lookup — no external calls.  Anonymous users see all
+    capabilities but auth-required ones are marked ``locked: true``.
+    """
+    from ..agent.domains.capabilities import get_capability_registry
+
+    # Check auth to decide locked vs unlocked
+    user, _ = get_acting_user_from_cookie(raw_request)
+    authenticated = user is not None
+
+    registry = get_capability_registry()
+    return {
+        "categories": registry.get_by_category(authenticated),
+        "is_authenticated": authenticated,
+    }
+
+
+class RatingRequest(BaseModel):
+    """Request model for the rating endpoint."""
+
+    query_id: str = Field(..., description="The question_id from the original query")
+    rating: str = Field(..., description="'helpful' or 'not_helpful'")
+    feedback: str | None = Field(None, description="Optional free-text feedback")
+    session_id: str | None = Field(None, description="Session ID for anonymous ownership binding")
+
+
+@router.post("/rating")
+async def submit_rating(request: RatingRequest, raw_request: Request) -> dict[str, Any]:
+    """Submit a rating for an agent response.
+
+    Anti-spoofing: authenticated users must own the query (user_hash match);
+    anonymous users must match session_id. One rating per query. 24h window.
+    """
+    if request.rating not in ("helpful", "not_helpful"):
+        raise HTTPException(status_code=400, detail="rating must be 'helpful' or 'not_helpful'")
+
+    acting_user, _ = get_acting_user_from_cookie(raw_request)
+
+    usage_logger = get_usage_logger()
+    result = await asyncio.to_thread(
+        usage_logger.log_rating,
+        question_id=request.query_id,
+        rating=request.rating,
+        feedback=request.feedback,
+        acting_user=acting_user,
+        session_id=request.session_id,
+    )
+
+    if result == "ok":
+        return {"success": True}
+    elif result == "not_found":
+        raise HTTPException(status_code=404, detail="query_id not found")
+    elif result == "already_rated":
+        raise HTTPException(status_code=409, detail="query already rated")
+    elif result == "forbidden":
+        raise HTTPException(status_code=403, detail="not authorized to rate this query")
+    elif result == "expired":
+        raise HTTPException(status_code=410, detail="rating window expired (24h)")
+    else:
+        raise HTTPException(status_code=500, detail="rating failed")
 
 
 @router.get("/tools")

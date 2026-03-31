@@ -99,6 +99,10 @@ class QueryClassification(BaseModel):
         default=None,
         description="UKY RAG endpoint to use: 'general' for ACCESS docs, 'xdmod' for XDMoD Q&A, or None to skip",
     )
+    capability_id: str | None = Field(
+        default=None,
+        description="Primary capability exercised (e.g. 'open_ticket', 'check_allocations'). Set by classifier or inferred post-execution.",
+    )
 
 
 class QueryAnalysis(BaseModel):
