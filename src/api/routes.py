@@ -137,8 +137,16 @@ async def query_agent(
         # No cookie sent; use body fallback during transition period.
         acting_user = request.acting_user.strip() or None
 
-    # Generate IDs if not provided
+    # Generate IDs if not provided.
+    # Anonymous users MUST provide session_id when Turnstile is enabled —
+    # otherwise each request gets a unique ID and the free-query counter
+    # never accumulates.
     timestamp = int(time.time() * 1000)
+    if not request.session_id and not acting_user and settings.turnstile_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="session_id is required for anonymous queries",
+        )
     session_id = request.session_id or f"sess_{timestamp}"
     question_id = request.question_id or f"q_{timestamp}"
 
