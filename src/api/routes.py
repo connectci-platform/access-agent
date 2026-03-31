@@ -287,7 +287,7 @@ async def health_check() -> dict[str, Any]:
         if available < total:
             result["status"] = "degraded"
             result["tools"]["unavailable_servers"] = [
-                s["name"] for s in catalog.get("servers", []) if s.get("status") != "available"
+                s.get("server", s.get("name", "unknown")) for s in catalog.get("servers", []) if s.get("status") != "available"
             ]
 
     return result
@@ -319,31 +319,43 @@ class RatingRequest(BaseModel):
     query_id: str = Field(..., description="The question_id from the original query")
     rating: str = Field(..., description="'helpful' or 'not_helpful'")
     feedback: str | None = Field(None, description="Optional free-text feedback")
+    session_id: str | None = Field(None, description="Session ID for anonymous ownership binding")
 
 
 @router.post("/rating")
-async def submit_rating(request: RatingRequest) -> dict[str, Any]:
+async def submit_rating(request: RatingRequest, raw_request: Request) -> dict[str, Any]:
     """Submit a rating for an agent response.
 
-    Attaches the rating to the existing usage log entry identified by
-    query_id. Anonymous ratings are accepted (support capabilities are
-    available to anonymous users) but the query_id must exist.
+    Anti-spoofing: authenticated users must own the query (user_hash match);
+    anonymous users must match session_id. One rating per query. 24h window.
     """
     if request.rating not in ("helpful", "not_helpful"):
         raise HTTPException(status_code=400, detail="rating must be 'helpful' or 'not_helpful'")
 
+    acting_user, _ = get_acting_user_from_cookie(raw_request)
+
     usage_logger = get_usage_logger()
-    found = await asyncio.to_thread(
+    result = await asyncio.to_thread(
         usage_logger.log_rating,
         question_id=request.query_id,
         rating=request.rating,
         feedback=request.feedback,
+        acting_user=acting_user,
+        session_id=request.session_id,
     )
 
-    if not found:
+    if result == "ok":
+        return {"success": True}
+    elif result == "not_found":
         raise HTTPException(status_code=404, detail="query_id not found")
-
-    return {"success": True}
+    elif result == "already_rated":
+        raise HTTPException(status_code=409, detail="query already rated")
+    elif result == "forbidden":
+        raise HTTPException(status_code=403, detail="not authorized to rate this query")
+    elif result == "expired":
+        raise HTTPException(status_code=410, detail="rating window expired (24h)")
+    else:
+        raise HTTPException(status_code=500, detail="rating failed")
 
 
 @router.get("/tools")

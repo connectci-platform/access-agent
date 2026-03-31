@@ -27,12 +27,12 @@ CATEGORIES: list[Category] = [
 GENERAL_CAPABILITIES: list[Capability] = [
     Capability("ask_question", "Ask a question", "Get answers about ACCESS resources, policies, and services", "general", requires_auth=True),
     Capability("check_allocations", "Check allocations", "Look up allocation details and status", "explore", requires_auth=True),
-    Capability("search_software", "Search software", "Find software available on ACCESS resources", "explore", requires_auth=True),
-    Capability("check_system_status", "Check system status", "See current outages and resource status", "explore", requires_auth=True),
-    Capability("browse_events", "Browse events", "Find upcoming trainings, workshops, and office hours", "explore", requires_auth=True),
-    Capability("browse_affinity_groups", "Browse affinity groups", "Explore community affinity groups", "explore", requires_auth=True),
+    Capability("search_software", "Search software", "Find software available on ACCESS resources", "explore", requires_auth=False),
+    Capability("check_system_status", "Check system status", "See current outages and resource status", "explore", requires_auth=False),
+    Capability("browse_events", "Browse events", "Find upcoming trainings, workshops, and office hours", "explore", requires_auth=False),
+    Capability("browse_affinity_groups", "Browse affinity groups", "Explore community affinity groups", "explore", requires_auth=False),
     Capability("check_usage", "Check usage (XDMoD)", "View resource usage and performance data", "analytics", requires_auth=True),
-    Capability("search_nsf_awards", "Search NSF awards", "Look up NSF award information", "explore", requires_auth=True),
+    Capability("search_nsf_awards", "Search NSF awards", "Look up NSF award information", "explore", requires_auth=False),
 ]
 
 
@@ -76,16 +76,6 @@ class CapabilityRegistry:
     def get_by_id(self, capability_id: str) -> Capability | None:
         """Look up a single capability."""
         return self._capabilities.get(capability_id)
-
-    def get_for_auth(self, authenticated: bool) -> list[Capability]:
-        """Capabilities available to the current user.
-
-        Authenticated users get everything.  Anonymous users get all
-        capabilities but auth-required ones are marked as locked by the
-        API serializer (not filtered here — the UI shows them with a
-        lock icon to encourage login).
-        """
-        return list(self._capabilities.values())
 
     def get_categories(self) -> list[Category]:
         """Categories sorted by display order."""

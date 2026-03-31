@@ -8,7 +8,7 @@ No PII is stored - user IDs are hashed for anonymous tracking.
 
 import hashlib
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text, create_engine, inspect, text
@@ -154,8 +154,8 @@ class UsageLogger:
         if self._session_factory is None:
             return
 
+        session = self._session_factory()
         try:
-            session = self._session_factory()
             log_entry = UsageLog(
                 query_text=query_text,
                 session_id=session_id,
@@ -176,25 +176,35 @@ class UsageLogger:
             )
             session.add(log_entry)
             session.commit()
-            session.close()
         except Exception as e:
             logger.error(f"Failed to log query usage: {e}")
+        finally:
+            session.close()
 
     def log_rating(
         self,
         question_id: str,
         rating: str,
         feedback: str | None = None,
-    ) -> bool:
+        acting_user: str | None = None,
+        session_id: str | None = None,
+    ) -> str:
         """Attach a rating to an existing usage log entry.
 
-        Returns True if the entry was found and updated.
+        Anti-spoofing checks (per capability registry spec):
+        - question_id must exist in usage_logs
+        - One rating per query (409 if already rated)
+        - Ownership: authenticated users must match user_hash;
+          anonymous users must match session_id
+        - Time window: only within 24h of the original query
+
+        Returns: "ok", "not_found", "already_rated", "forbidden", "expired", or "error".
         """
         if not self._ensure_initialized():
-            return False
+            return "error"
 
         if self._session_factory is None:
-            return False
+            return "error"
 
         try:
             session = self._session_factory()
@@ -202,15 +212,45 @@ class UsageLogger:
             if not entry:
                 logger.warning("Rating for unknown question_id: %s", question_id)
                 session.close()
-                return False
+                return "not_found"
+
+            # Already rated — one rating per query
+            if entry.rating is not None:
+                logger.warning("Duplicate rating for question_id: %s", question_id)
+                session.close()
+                return "already_rated"
+
+            # Time window — 24h from original query
+            if entry.timestamp:
+                cutoff = datetime.utcnow() - timedelta(hours=24)
+                if entry.timestamp < cutoff:
+                    logger.warning("Expired rating for question_id: %s", question_id)
+                    session.close()
+                    return "expired"
+
+            # Ownership check
+            if acting_user:
+                # Authenticated: user_hash must match
+                caller_hash = self._hash_user(acting_user)
+                if entry.user_hash and entry.user_hash != caller_hash:
+                    logger.warning("Ownership mismatch for question_id: %s", question_id)
+                    session.close()
+                    return "forbidden"
+            else:
+                # Anonymous: session_id must match
+                if session_id and entry.session_id and entry.session_id != session_id:
+                    logger.warning("Session mismatch for question_id: %s", question_id)
+                    session.close()
+                    return "forbidden"
+
             entry.rating = rating
             entry.rating_feedback = feedback
             session.commit()
             session.close()
-            return True
+            return "ok"
         except Exception as e:
             logger.error(f"Failed to log rating: {e}")
-            return False
+            return "error"
 
 
 # Global instance

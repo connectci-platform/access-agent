@@ -117,7 +117,7 @@ def _get_classifier_llm() -> ChatOpenAI:
             model="gpt-4o-mini",
             api_key=SecretStr(settings.OPENAI_API_KEY),
             temperature=0,
-            max_completion_tokens=250,
+            max_completion_tokens=350,
         )
     raise ValueError("OPENAI_API_KEY required for query classification")
 

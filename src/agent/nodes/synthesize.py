@@ -21,26 +21,39 @@ from ..state import AgentState, RAGMatch, ToolResult
 
 logger = logging.getLogger(__name__)
 
-# Lazy-loaded capability summary for system prompts
-_capabilities_text: str | None = None
+# Lazy-loaded capability summaries for system prompts (auth vs anon)
+_capabilities_text_auth: str | None = None
+_capabilities_text_anon: str | None = None
 
 
-def _get_capabilities_text() -> str:
+def _get_capabilities_text(authenticated: bool = False) -> str:
     """Get the capability summary for injection into synthesis prompts.
 
-    Built once on first call from the CapabilityRegistry. Uses the
-    authenticated view (superset) since the prompt is shared.
+    Built once per auth level on first call from the CapabilityRegistry.
+    Authenticated users see all capabilities; anonymous users see only
+    public ones (matching the filtering in get_system_prompt_section).
     """
-    global _capabilities_text
-    if _capabilities_text is None:
-        try:
-            from ..domains.capabilities import get_capability_registry
-            registry = get_capability_registry()
-            _capabilities_text = registry.get_system_prompt_section(authenticated=True)
-        except Exception:
-            logger.warning("Could not load capability summary for synthesis prompt")
-            _capabilities_text = ""
-    return _capabilities_text
+    global _capabilities_text_auth, _capabilities_text_anon
+    if authenticated:
+        if _capabilities_text_auth is None:
+            try:
+                from ..domains.capabilities import get_capability_registry
+                registry = get_capability_registry()
+                _capabilities_text_auth = registry.get_system_prompt_section(authenticated=True)
+            except Exception:
+                logger.warning("Could not load capability summary for synthesis prompt")
+                _capabilities_text_auth = ""
+        return _capabilities_text_auth
+    else:
+        if _capabilities_text_anon is None:
+            try:
+                from ..domains.capabilities import get_capability_registry
+                registry = get_capability_registry()
+                _capabilities_text_anon = registry.get_system_prompt_section(authenticated=False)
+            except Exception:
+                logger.warning("Could not load capability summary for synthesis prompt")
+                _capabilities_text_anon = ""
+        return _capabilities_text_anon
 
 
 # Rough estimate: 1 token ≈ 4 characters for English text
@@ -308,6 +321,7 @@ async def synthesize_node(state: AgentState) -> dict[str, Any]:
     tool_results = state.get("tool_results", [])
     rag_matches = state.get("rag_matches", [])
     query_analysis = state.get("query_analysis")
+    authenticated = state.get("acting_user") is not None
 
     with tracer.start_as_current_span(
         "agent.synthesize",
@@ -397,10 +411,10 @@ async def synthesize_node(state: AgentState) -> dict[str, Any]:
                     }
                 elif has_rag and tools_succeeded:
                     strategy = "combined"
-                    result = await _synthesize_combined(query, rag_context, results_text)
+                    result = await _synthesize_combined(query, rag_context, results_text, authenticated=authenticated)
                 elif tools_succeeded:
                     strategy = "tools_only"
-                    result = await _synthesize_tools_only(query, results_text)
+                    result = await _synthesize_tools_only(query, results_text, authenticated=authenticated)
                 elif has_rag:
                     strategy = "uky_direct_only"
                     raw_answer = rag_matches[0].answer
@@ -490,6 +504,7 @@ async def _synthesize_combined(
     query: str,
     rag_context: str,
     tool_results: str,
+    authenticated: bool = False,
 ) -> dict[str, Any]:
     """Synthesize answer from both RAG matches and tool results.
 
@@ -516,7 +531,7 @@ async def _synthesize_combined(
                 rag_context=rag_context,
                 tool_results=tool_results,
                 query=query,
-                capabilities=_get_capabilities_text(),
+                capabilities=_get_capabilities_text(authenticated),
             )
         )
         answer = response.content
@@ -539,6 +554,7 @@ async def _synthesize_combined(
 async def _synthesize_tools_only(
     query: str,
     tool_results: str,
+    authenticated: bool = False,
 ) -> dict[str, Any]:
     """Synthesize answer from tool results only.
 
@@ -563,7 +579,7 @@ async def _synthesize_tools_only(
             prompt.format_messages(
                 tool_results=tool_results,
                 query=query,
-                capabilities=_get_capabilities_text(),
+                capabilities=_get_capabilities_text(authenticated),
             )
         )
         answer = response.content
@@ -586,6 +602,7 @@ async def _synthesize_tools_only(
 async def _synthesize_with_rag_only(
     query: str,
     rag_context: str,
+    authenticated: bool = False,
 ) -> dict[str, Any]:
     """Synthesize answer from RAG matches only (when tools failed).
 
@@ -610,7 +627,7 @@ async def _synthesize_with_rag_only(
             prompt.format_messages(
                 rag_context=rag_context,
                 query=query,
-                capabilities=_get_capabilities_text(),
+                capabilities=_get_capabilities_text(authenticated),
             )
         )
         answer = response.content
