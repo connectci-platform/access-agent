@@ -94,6 +94,70 @@ class TestTurnstileGuard:
         assert guard.requires_challenge("session-b") is True
 
 
+    def test_expired_verification_resets_query_count(self, guard, monkeypatch):
+        """When verification expires, query_count resets so user gets fresh free queries."""
+        monkeypatch.setattr(settings, "TURNSTILE_MODE", "deferred")
+        monkeypatch.setattr(settings, "TURNSTILE_FREE_QUERIES", 3)
+        monkeypatch.setattr(settings, "TURNSTILE_SESSION_TTL", 1)
+
+        session_id = "test-session-expire"
+
+        # Use up free queries and verify
+        for _ in range(3):
+            guard.record_query(session_id)
+        guard.mark_verified(session_id)
+        assert guard.requires_challenge(session_id) is False
+
+        # Expire the verification
+        guard._sessions[session_id].verified_at = time.time() - 2
+
+        # Should NOT immediately challenge — counter should reset
+        assert guard.requires_challenge(session_id) is False
+        # And we get 3 more free queries
+        for _ in range(3):
+            guard.record_query(session_id)
+        assert guard.requires_challenge(session_id) is True
+
+    def test_eviction_removes_expired_sessions(self, guard, monkeypatch):
+        """Expired sessions are cleaned up during eviction."""
+        monkeypatch.setattr(settings, "TURNSTILE_SESSION_TTL", 1)
+
+        # Create a session and verify it
+        guard.mark_verified("old-session")
+        guard._sessions["old-session"].verified_at = time.time() - 100
+
+        # Force eviction by setting last_eviction in the past
+        guard._last_eviction = time.time() - 600
+
+        # Creating a new session triggers eviction
+        guard._get_session("new-session")
+
+        assert "old-session" not in guard._sessions
+        assert "new-session" in guard._sessions
+
+    def test_eviction_respects_max_sessions(self, guard, monkeypatch):
+        """Eviction triggers when MAX_SESSIONS is exceeded."""
+        monkeypatch.setattr(settings, "TURNSTILE_SESSION_TTL", 1)
+
+        # Fill up with expired sessions
+        for i in range(50):
+            sid = f"bulk-{i}"
+            guard._sessions[sid] = guard._get_session(sid)
+            guard._sessions[sid].verified = True
+            guard._sessions[sid].verified_at = time.time() - 100
+
+        # Set last_eviction recent so only MAX_SESSIONS triggers it
+        guard._last_eviction = time.time()
+
+        from src.turnstile import MAX_SESSIONS
+        # Pretend we're over the limit
+        monkeypatch.setattr("src.turnstile.MAX_SESSIONS", 30)
+
+        # This should trigger eviction
+        guard._get_session("trigger-session")
+        assert len(guard._sessions) < 52  # Some should be evicted
+
+
 class TestVerifyTurnstileToken:
     """Tests for Cloudflare siteverify integration."""
 
