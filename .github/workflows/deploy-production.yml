@@ -121,20 +121,34 @@ jobs:
           username: github
           key: ${{ secrets.PRODUCTION_SSH_KEY }}
           script_stop: true
+          command_timeout: 10m
           script: |
+            AGENT_CONTAINER="access-agent-access-agent-1"
+
+            # Helper: run HTTP requests inside the agent container (port 8000
+            # is not published to the host — Caddy handles external traffic)
+            agent_request() {
+              docker exec "$AGENT_CONTAINER" python -c "$1"
+            }
+
             echo "Waiting for agent to be ready..."
-            for i in $(seq 1 12); do
-              if curl -sf http://localhost:8000/api/v1/health > /dev/null 2>&1; then
+            for i in $(seq 1 24); do
+              if agent_request "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')" > /dev/null 2>&1; then
                 break
               fi
-              echo "  attempt $i/12..."
+              echo "  attempt $i/24..."
               sleep 5
             done
 
             # 1. Health check — verify tool catalog is complete
             echo "Checking agent health..."
-            HEALTH=$(curl -sf http://localhost:8000/api/v1/health)
-            if [ $? -ne 0 ]; then
+            HEALTH=$(agent_request "
+            import urllib.request, json
+            r = urllib.request.urlopen('http://localhost:8000/api/v1/health')
+            print(r.read().decode())
+            ")
+
+            if [ -z "$HEALTH" ]; then
               echo "FAIL: Agent health endpoint not responding"
               exit 1
             fi
@@ -157,11 +171,19 @@ jobs:
             # 2. Query + usage log check
             echo "Sending smoke test query..."
             SMOKE_ID="smoke-$(date +%s)"
-            RESPONSE=$(curl -sf -X POST http://localhost:8000/api/v1/query \
-              -H "Content-Type: application/json" \
-              -d "{\"query\": \"smoke test\", \"session_id\": \"${SMOKE_ID}\"}")
+            RESPONSE=$(agent_request "
+            import urllib.request, json
+            req = urllib.request.Request(
+                'http://localhost:8000/api/v1/query',
+                data=json.dumps({'query': 'smoke test', 'session_id': '${SMOKE_ID}'}).encode(),
+                headers={'Content-Type': 'application/json'},
+                method='POST'
+            )
+            r = urllib.request.urlopen(req, timeout=120)
+            print(r.read().decode())
+            ")
 
-            if [ $? -ne 0 ]; then
+            if [ -z "$RESPONSE" ]; then
               echo "FAIL: Smoke test query failed"
               exit 1
             fi
@@ -169,6 +191,7 @@ jobs:
             SUCCESS=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['success'])")
             if [ "$SUCCESS" != "True" ]; then
               echo "FAIL: Query returned success=false"
+              echo "$RESPONSE"
               exit 1
             fi
 
