@@ -77,8 +77,15 @@ async def evaluate_node(state: AgentState) -> dict[str, Any]:
     tool_results = state.get("tool_results", [])
     attempt_number = state.get("attempt_number", 0)
 
-    def _trace(is_helpful, reason):
-        return [{"node": "evaluate", "is_helpful": is_helpful, "attempt": attempt_number, "reason": reason[:100]}]
+    def _trace(is_helpful: bool, reason: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "node": "evaluate",
+                "is_helpful": is_helpful,
+                "attempt": attempt_number,
+                "reason": reason[:100],
+            }
+        ]
 
     # If no tools were needed, skip evaluation
     query_analysis = state.get("query_analysis")

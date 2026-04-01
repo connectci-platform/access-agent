@@ -58,10 +58,7 @@ class TurnstileGuard:
         exhausted their free queries. Runs at most once per EVICTION_INTERVAL
         or when the session count exceeds MAX_SESSIONS."""
         now = time.time()
-        if (
-            now - self._last_eviction < EVICTION_INTERVAL
-            and len(self._sessions) < MAX_SESSIONS
-        ):
+        if now - self._last_eviction < EVICTION_INTERVAL and len(self._sessions) < MAX_SESSIONS:
             return
 
         ttl = settings.TURNSTILE_SESSION_TTL
@@ -69,13 +66,20 @@ class TurnstileGuard:
             sid
             for sid, s in self._sessions.items()
             if (s.verified and now - s.verified_at > ttl)
-            or (not s.verified and s.query_count >= settings.TURNSTILE_FREE_QUERIES
-                and now - s.verified_at > ttl)
+            or (
+                not s.verified
+                and s.query_count >= settings.TURNSTILE_FREE_QUERIES
+                and now - s.verified_at > ttl
+            )
         ]
         for sid in stale:
             del self._sessions[sid]
         if stale:
-            logger.info("Evicted %d expired Turnstile sessions (%d remaining)", len(stale), len(self._sessions))
+            logger.info(
+                "Evicted %d expired Turnstile sessions (%d remaining)",
+                len(stale),
+                len(self._sessions),
+            )
         self._last_eviction = now
 
     def requires_challenge(self, session_id: str) -> bool:
@@ -141,7 +145,7 @@ async def verify_turnstile_token(token: str) -> bool:
                 },
             )
             result = response.json()
-            success = result.get("success", False)
+            success = bool(result.get("success", False))
             if not success:
                 error_codes = result.get("error-codes", [])
                 logger.warning("Turnstile verification failed: %s", error_codes)

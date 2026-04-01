@@ -1,0 +1,197 @@
+"""Tests for eval report generation."""
+
+from datetime import UTC, datetime, timedelta
+
+from src.eval.db import EvalDB
+from src.eval.models import EvalRun
+from src.eval.report import (
+    generate_leadership_report,
+    generate_resource_report,
+    generate_team_report,
+)
+from src.eval.report_data import build_report_data
+
+
+class TestTeamReport:
+    def test_generates_markdown(self):
+        data = {
+            "period": "Since 2026-03-25",
+            "total_scored": 50,
+            "human_coverage": 0.20,
+            "composite_score": 4.12,
+            "per_dimension": {
+                "correctness": 4.35,
+                "completeness": 3.90,
+                "relevance": 4.50,
+                "citation_quality": 3.80,
+                "hedging": 4.10,
+            },
+            "worst_answers": [
+                {"question": "How much space on Anvil?", "composite": 2.5, "question_id": "q1"}
+            ],
+            "capability_gaps": [{"area": "storage", "avg_score": 2.8, "count": 5}],
+            "judge_human_agreement": 0.85,
+        }
+        report = generate_team_report(data)
+        assert "4.12" in report
+        assert "correctness" in report
+        assert "Anvil" in report
+
+    def test_handles_empty(self):
+        data = {
+            "period": "Since 2026-04-01",
+            "total_scored": 0,
+            "human_coverage": 0.0,
+            "composite_score": 0.0,
+            "per_dimension": {},
+            "worst_answers": [],
+            "capability_gaps": [],
+            "judge_human_agreement": None,
+        }
+        report = generate_team_report(data)
+        assert "No scores" in report or "0" in report
+
+
+class TestLeadershipReport:
+    def test_generates_summary(self):
+        data = {
+            "period": "March 2026",
+            "total_queries": 500,
+            "total_scored": 450,
+            "human_reviewed": 50,
+            "composite_score": 4.12,
+            "previous_composite": 3.95,
+            "capability_breakdown": [
+                {"area": "general", "score": 4.5, "count": 200},
+                {"area": "resources", "score": 3.8, "count": 100},
+            ],
+        }
+        report = generate_leadership_report(data)
+        assert "4.12" in report
+        assert "March 2026" in report
+
+
+class TestResourceReport:
+    def test_generates_for_resource(self):
+        data = {
+            "resource": "Delta",
+            "period": "Since 2026-04-01",
+            "total_scored": 30,
+            "composite_score": 4.2,
+            "per_dimension": {
+                "correctness": 4.5,
+                "completeness": 4.0,
+                "relevance": 4.3,
+                "citation_quality": 3.8,
+                "hedging": 4.0,
+            },
+            "worst_answers": [
+                {"question": "How to login delta?", "composite": 3.1, "question_id": "q5"}
+            ],
+        }
+        report = generate_resource_report(data)
+        assert "Delta" in report
+        assert "4.2" in report
+
+
+class TestReportDataDedup:
+    """Test that report data correctly deduplicates across runs."""
+
+    def setup_method(self) -> None:
+        self.db = EvalDB("sqlite:///:memory:")
+
+    def test_latest_run_wins_for_same_question(self) -> None:
+        """When two runs score the same question_id, the newer run's scores are used."""
+        now = datetime.now(UTC)
+
+        # Older run scores question q1 as 3.0
+        old_run = self.db.create_run(
+            run_type="pre_production",
+            agent_commit="aaa",
+            question_set="test",
+            question_count=1,
+        )
+        # Manually set created_at to be older
+        with self.db._session_factory() as session:
+            run = session.query(EvalRun).filter_by(id=old_run.id).first()
+            assert run is not None
+            run.created_at = now - timedelta(hours=2)
+            session.commit()
+
+        self.db.add_score(
+            run_id=old_run.id,
+            question_id="q1",
+            source="judge",
+            question_text="What is ACCESS?",
+            correctness=3,
+            completeness=3,
+            relevance=3,
+            citation_quality=3,
+            hedging=3,
+            composite_score=3.0,
+        )
+
+        # Newer run scores same question q1 as 5.0
+        new_run = self.db.create_run(
+            run_type="pre_production",
+            agent_commit="bbb",
+            question_set="test",
+            question_count=1,
+        )
+        self.db.add_score(
+            run_id=new_run.id,
+            question_id="q1",
+            source="judge",
+            question_text="What is ACCESS?",
+            correctness=5,
+            completeness=5,
+            relevance=5,
+            citation_quality=5,
+            hedging=5,
+            composite_score=5.0,
+        )
+
+        data = build_report_data(self.db, since="7d")
+        # Should use the newer run's score (5.0), not the older (3.0)
+        assert data["composite_score"] == 5.0
+        assert data["total_scored"] == 1  # not 2
+
+    def test_human_preferred_over_judge_within_same_run(self) -> None:
+        """When both human and judge scores exist for the same question in the same run."""
+        run = self.db.create_run(
+            run_type="pre_production",
+            agent_commit="ccc",
+            question_set="test",
+            question_count=1,
+        )
+        # Judge scores 5.0
+        self.db.add_score(
+            run_id=run.id,
+            question_id="q2",
+            source="judge",
+            question_text="How to login?",
+            correctness=5,
+            completeness=5,
+            relevance=5,
+            citation_quality=5,
+            hedging=5,
+            composite_score=5.0,
+        )
+        # Human scores 3.0
+        self.db.add_score(
+            run_id=run.id,
+            question_id="q2",
+            source="human",
+            reviewer_id="drew",
+            question_text="How to login?",
+            correctness=3,
+            completeness=3,
+            relevance=3,
+            citation_quality=3,
+            hedging=3,
+            composite_score=3.0,
+        )
+
+        data = build_report_data(self.db, since="7d")
+        # Should use human score (3.0), not judge (5.0)
+        assert data["composite_score"] == 3.0

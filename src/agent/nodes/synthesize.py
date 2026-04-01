@@ -38,22 +38,23 @@ def _get_capabilities_text(authenticated: bool = False) -> str:
         if _capabilities_text_auth is None:
             try:
                 from ..domains.capabilities import get_capability_registry
+
                 registry = get_capability_registry()
                 _capabilities_text_auth = registry.get_system_prompt_section(authenticated=True)
             except Exception:
                 logger.warning("Could not load capability summary for synthesis prompt")
                 _capabilities_text_auth = ""
         return _capabilities_text_auth
-    else:
-        if _capabilities_text_anon is None:
-            try:
-                from ..domains.capabilities import get_capability_registry
-                registry = get_capability_registry()
-                _capabilities_text_anon = registry.get_system_prompt_section(authenticated=False)
-            except Exception:
-                logger.warning("Could not load capability summary for synthesis prompt")
-                _capabilities_text_anon = ""
-        return _capabilities_text_anon
+    if _capabilities_text_anon is None:
+        try:
+            from ..domains.capabilities import get_capability_registry
+
+            registry = get_capability_registry()
+            _capabilities_text_anon = registry.get_system_prompt_section(authenticated=False)
+        except Exception:
+            logger.warning("Could not load capability summary for synthesis prompt")
+            _capabilities_text_anon = ""
+    return _capabilities_text_anon
 
 
 # Rough estimate: 1 token ≈ 4 characters for English text
@@ -191,7 +192,7 @@ def _strip_hedge_preamble(answer: str) -> str:
     # Strip the hedge sentence and any leading whitespace/newlines after it
     for i, char in enumerate(answer):
         if char == "." and i < len(answer) - 1 and answer[i + 1] in (" ", "\n"):
-            rest = answer[i + 2:].lstrip()
+            rest = answer[i + 2 :].lstrip()
             if rest:
                 # Capitalize first letter of remaining content
                 return rest[0].upper() + rest[1:] if rest else answer
@@ -298,7 +299,7 @@ async def _maybe_condense_results(
     return results_text
 
 
-async def synthesize_node(state: AgentState) -> dict[str, Any]:
+async def synthesize_node(state: AgentState) -> dict[str, Any]:  # noqa: PLR0912, PLR0915
     """Generate a natural language answer from tool results and/or RAG matches.
 
     This node:
@@ -411,10 +412,14 @@ async def synthesize_node(state: AgentState) -> dict[str, Any]:
                     }
                 elif has_rag and tools_succeeded:
                     strategy = "combined"
-                    result = await _synthesize_combined(query, rag_context, results_text, authenticated=authenticated)
+                    result = await _synthesize_combined(
+                        query, rag_context, results_text, authenticated=authenticated
+                    )
                 elif tools_succeeded:
                     strategy = "tools_only"
-                    result = await _synthesize_tools_only(query, results_text, authenticated=authenticated)
+                    result = await _synthesize_tools_only(
+                        query, results_text, authenticated=authenticated
+                    )
                 elif has_rag:
                     strategy = "uky_direct_only"
                     raw_answer = rag_matches[0].answer
@@ -440,11 +445,13 @@ async def synthesize_node(state: AgentState) -> dict[str, Any]:
         if answer_len:
             span.set_attribute("synthesis.answer_length", answer_len)
 
-        result["node_trace"] = [{
-            "node": "synthesize",
-            "strategy": strategy,
-            "answer_length": answer_len,
-        }]
+        result["node_trace"] = [
+            {
+                "node": "synthesize",
+                "strategy": strategy,
+                "answer_length": answer_len,
+            }
+        ]
         return result
 
 

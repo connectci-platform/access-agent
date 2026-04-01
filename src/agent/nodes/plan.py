@@ -194,13 +194,15 @@ async def plan_node(state: AgentState) -> dict[str, Any]:
                 "query_analysis": query_analysis,
                 "planned_tools": planned_tools,
                 "execution_strategy": strategy,
-                "node_trace": [{
-                    "node": "plan",
-                    "requires_tools": query_analysis.requires_tools,
-                    "tool_count": len(planned_tools),
-                    "tools": [t.tool_name for t in planned_tools],
-                    "strategy": strategy,
-                }],
+                "node_trace": [
+                    {
+                        "node": "plan",
+                        "requires_tools": query_analysis.requires_tools,
+                        "tool_count": len(planned_tools),
+                        "tools": [t.tool_name for t in planned_tools],
+                        "strategy": strategy,
+                    }
+                ],
             }
 
         except Exception as e:
@@ -214,14 +216,16 @@ async def plan_node(state: AgentState) -> dict[str, Any]:
                 ),
                 "planned_tools": [],
                 "execution_strategy": "sequential",
-                "node_trace": [{
-                    "node": "plan",
-                    "error": str(e)[:200],
-                    "requires_tools": False,
-                    "tool_count": 0,
-                    "tools": [],
-                    "strategy": "sequential",
-                }],
+                "node_trace": [
+                    {
+                        "node": "plan",
+                        "error": str(e)[:200],
+                        "requires_tools": False,
+                        "tool_count": 0,
+                        "tools": [],
+                        "strategy": "sequential",
+                    }
+                ],
             }
 
 

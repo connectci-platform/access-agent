@@ -110,12 +110,14 @@ async def execute_node(state: AgentState) -> dict[str, Any]:
         return {
             "tool_results": results,
             "tools_used": tools_used,
-            "node_trace": [{
-                "node": "execute",
-                "tools_called": [r.tool_name for r in results],
-                "succeeded": tools_used,
-                "failed": failed,
-            }],
+            "node_trace": [
+                {
+                    "node": "execute",
+                    "tools_called": [r.tool_name for r in results],
+                    "succeeded": tools_used,
+                    "failed": failed,
+                }
+            ],
         }
 
 

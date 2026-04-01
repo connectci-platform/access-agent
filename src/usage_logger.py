@@ -8,10 +8,21 @@ No PII is stored - user IDs are hashed for anonymous tracking.
 
 import hashlib
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text, create_engine, inspect, text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    Integer,
+    String,
+    Text,
+    create_engine,
+    inspect,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
@@ -118,9 +129,7 @@ class UsageLogger:
         with self._engine.begin() as conn:
             for col_name, col_type in migrations.items():
                 if col_name not in existing:
-                    conn.execute(text(
-                        f"ALTER TABLE usage_logs ADD COLUMN {col_name} {col_type}"
-                    ))
+                    conn.execute(text(f"ALTER TABLE usage_logs ADD COLUMN {col_name} {col_type}"))
                     logger.info("Added column usage_logs.%s", col_name)
 
     @staticmethod
@@ -222,7 +231,7 @@ class UsageLogger:
 
             # Time window — 24h from original query
             if entry.timestamp:
-                cutoff = datetime.utcnow() - timedelta(hours=24)
+                cutoff = datetime.now(tz=UTC) - timedelta(hours=24)
                 if entry.timestamp < cutoff:
                     logger.warning("Expired rating for question_id: %s", question_id)
                     session.close()
@@ -236,12 +245,11 @@ class UsageLogger:
                     logger.warning("Ownership mismatch for question_id: %s", question_id)
                     session.close()
                     return "forbidden"
-            else:
-                # Anonymous: session_id must match
-                if session_id and entry.session_id and entry.session_id != session_id:
-                    logger.warning("Session mismatch for question_id: %s", question_id)
-                    session.close()
-                    return "forbidden"
+            # Anonymous: session_id must match
+            elif session_id and entry.session_id and entry.session_id != session_id:
+                logger.warning("Session mismatch for question_id: %s", question_id)
+                session.close()
+                return "forbidden"
 
             entry.rating = rating
             entry.rating_feedback = feedback

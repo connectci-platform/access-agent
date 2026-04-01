@@ -1,7 +1,5 @@
 """Tests for capability registry and rating logic."""
 
-import time
-
 import pytest
 
 from src.agent.domains.capabilities import (
@@ -9,16 +7,34 @@ from src.agent.domains.capabilities import (
     GENERAL_CAPABILITIES,
     CapabilityRegistry,
 )
-from src.agent.domains.config import Capability, Category
+from src.agent.domains.config import Capability
 
 
 @pytest.fixture
 def registry():
     """Registry with general + a few domain capabilities."""
     domain_caps = [
-        Capability("open_ticket", "Open a help ticket", "Create a support ticket", "support", requires_auth=False),
-        Capability("search_announcements", "Search announcements", "Find ACCESS news", "explore", requires_auth=False),
-        Capability("manage_announcements", "Manage announcements", "Create and edit announcements", "content", requires_auth=True),
+        Capability(
+            "open_ticket",
+            "Open a help ticket",
+            "Create a support ticket",
+            "support",
+            requires_auth=False,
+        ),
+        Capability(
+            "search_announcements",
+            "Search announcements",
+            "Find ACCESS news",
+            "explore",
+            requires_auth=False,
+        ),
+        Capability(
+            "manage_announcements",
+            "Manage announcements",
+            "Create and edit announcements",
+            "content",
+            requires_auth=True,
+        ),
     ]
     return CapabilityRegistry(
         capabilities=list(GENERAL_CAPABILITIES) + domain_caps,
@@ -27,7 +43,6 @@ def registry():
 
 
 class TestCapabilityRegistry:
-
     def test_all_capabilities_loaded(self, registry):
         all_caps = registry.get_all()
         assert len(all_caps) == len(GENERAL_CAPABILITIES) + 3
@@ -65,7 +80,6 @@ class TestCapabilityRegistry:
 
 
 class TestCapabilityAuth:
-
     def test_anonymous_sees_locked_on_auth_required(self, registry):
         result = registry.get_by_category(authenticated=False)
         # Find ask_question (requires_auth=True)
@@ -105,13 +119,15 @@ class TestCapabilityAuth:
 
 
 class TestCapabilityInference:
-
     def test_infer_from_domain(self, registry):
         assert registry.infer_capability_id("jsm") == "open_ticket"
         assert registry.infer_capability_id("announcements") == "search_announcements"
 
     def test_infer_from_tools(self, registry):
-        assert registry.infer_capability_id(None, ["system-status__get_infrastructure_news"]) == "check_system_status"
+        assert (
+            registry.infer_capability_id(None, ["system-status__get_infrastructure_news"])
+            == "check_system_status"
+        )
         assert registry.infer_capability_id(None, ["events__search_events"]) == "browse_events"
 
     def test_infer_defaults_to_ask_question(self, registry):
