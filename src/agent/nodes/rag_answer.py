@@ -21,7 +21,7 @@ Flow for combined queries:
 
 import logging
 import re
-from typing import Literal
+from typing import Any, Literal
 
 from langchain_core.messages import AIMessage
 from opentelemetry.trace import Span
@@ -84,7 +84,7 @@ async def _ask_uky(
     session_id: str,
     question_id: str,
     span: Span,
-) -> dict[str, object] | None:
+) -> dict[str, Any] | None:
     """Query a UKY RAG endpoint and return a state update.
 
     Args:
@@ -323,29 +323,33 @@ async def rag_answer_node(state: AgentState) -> dict[str, object]:
         final_answer = result.get("final_answer", "")
         # Check for hedge phrases in the answer
         hedge_phrases = [
-            "do not contain", "does not contain", "do not explicitly",
-            "does not explicitly", "not provided in", "not mentioned in",
-            "no specific information", "do not have specific information",
-            "currently do not have", "not available in the provided",
+            "do not contain",
+            "does not contain",
+            "do not explicitly",
+            "does not explicitly",
+            "not provided in",
+            "not mentioned in",
+            "no specific information",
+            "do not have specific information",
+            "currently do not have",
+            "not available in the provided",
         ]
         lower = final_answer.lower() if final_answer else ""
-        hedge_detected = bool(final_answer and any(
-            p in lower for p in hedge_phrases
-        ))
+        hedge_detected = bool(final_answer and any(p in lower for p in hedge_phrases))
         # Even if hedge detected, answer may have substance (urls, length)
         has_substance = bool(
-            final_answer and (
-                "http" in lower or "@" in final_answer or len(final_answer) > 500
-            )
+            final_answer and ("http" in lower or "@" in final_answer or len(final_answer) > 500)
         )
-        result["node_trace"] = [{
-            "node": "rag_answer",
-            "source": "uky" if result.get("rag_used") else "none",
-            "match_count": len(rag_matches),
-            "best_score": best_score,
-            "rag_used": result.get("rag_used", False),
-            "has_final_answer": bool(final_answer),
-            "hedge_detected": hedge_detected,
-            "hedge_has_substance": has_substance if hedge_detected else None,
-        }]
+        result["node_trace"] = [
+            {
+                "node": "rag_answer",
+                "source": "uky" if result.get("rag_used") else "none",
+                "match_count": len(rag_matches),
+                "best_score": best_score,
+                "rag_used": result.get("rag_used", False),
+                "has_final_answer": bool(final_answer),
+                "hedge_detected": hedge_detected,
+                "hedge_has_substance": has_substance if hedge_detected else None,
+            }
+        ]
         return result

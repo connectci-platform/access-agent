@@ -9,7 +9,7 @@ Uses an LLM for robust natural language understanding.
 """
 
 import logging
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -216,9 +216,7 @@ async def classify_query_with_llm(
         # Parse capability_id — LLM may return null, "null", or missing
         raw_capability = result.get("capability_id")
         capability_id = (
-            raw_capability
-            if isinstance(raw_capability, str) and raw_capability != "null"
-            else None
+            raw_capability if isinstance(raw_capability, str) and raw_capability != "null" else None
         )
 
         return QueryClassification(
@@ -241,7 +239,7 @@ async def classify_query_with_llm(
         )
 
 
-async def classify_node(state: AgentState) -> dict[str, QueryClassification]:
+async def classify_node(state: AgentState) -> dict[str, Any]:
     """Classify the query to determine routing.
 
     Args:
@@ -295,14 +293,16 @@ async def classify_node(state: AgentState) -> dict[str, QueryClassification]:
 
         return {
             "query_classification": classification,
-            "node_trace": [{
-                "node": "classify",
-                "query_type": classification.query_type,
-                "confidence": classification.confidence,
-                "domain": classification.domain,
-                "rag_endpoint": classification.rag_endpoint,
-                "reason": classification.reason[:200] if classification.reason else "",
-                "expanded": classification.expanded_query != query,
-                "capability_id": classification.capability_id,
-            }],
+            "node_trace": [
+                {
+                    "node": "classify",
+                    "query_type": classification.query_type,
+                    "confidence": classification.confidence,
+                    "domain": classification.domain,
+                    "rag_endpoint": classification.rag_endpoint,
+                    "reason": classification.reason[:200] if classification.reason else "",
+                    "expanded": classification.expanded_query != query,
+                    "capability_id": classification.capability_id,
+                }
+            ],
         }

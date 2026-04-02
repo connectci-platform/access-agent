@@ -86,10 +86,7 @@ def route_by_classification(
 
     # Combined/dynamic queries run RAG and plan concurrently.
     # Both results merge in state for synthesis.
-    logger.info(
-        f"Routing to rag_and_plan (query_type={query_type}) "
-        "— parallel RAG + tool planning"
-    )
+    logger.info(f"Routing to rag_and_plan (query_type={query_type}) — parallel RAG + tool planning")
     return "rag_and_plan"
 
 

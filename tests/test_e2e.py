@@ -90,16 +90,16 @@ async def test_e2e_query(case, run_query):
 
     # Check expected tool was used
     if expected_tool:
-        assert (
-            expected_tool in tools_used
-        ), f"Expected tool '{expected_tool}' not used. Got: {tools_used}"
+        assert expected_tool in tools_used, (
+            f"Expected tool '{expected_tool}' not used. Got: {tools_used}"
+        )
 
     # Check must_contain words (pipe-separated)
     if must_contain:
         words = [w.strip().lower() for w in must_contain.split("|")]
-        assert any(
-            word in answer for word in words
-        ), f"Answer should contain one of {words}. Got: {answer[:200]}"
+        assert any(word in answer for word in words), (
+            f"Answer should contain one of {words}. Got: {answer[:200]}"
+        )
 
     # Check must_not_contain words (pipe-separated)
     if must_not_contain:

@@ -64,7 +64,9 @@ async def domain_agent_node(state: AgentState) -> dict[str, Any]:
             return {
                 "final_answer": error_msg,
                 "messages": [AIMessage(content=error_msg)],
-                "node_trace": [{"node": "domain_agent", "domain": domain_name, "error": "unknown_domain"}],
+                "node_trace": [
+                    {"node": "domain_agent", "domain": domain_name, "error": "unknown_domain"}
+                ],
             }
 
         # Create domain tools from catalog
@@ -73,7 +75,9 @@ async def domain_agent_node(state: AgentState) -> dict[str, Any]:
         tools = create_domain_tools(config, tool_catalog, acting_user)
 
         if not tools:
-            logger.warning(f"No tools available for domain {domain_name}, using UKY context if available")
+            logger.warning(
+                f"No tools available for domain {domain_name}, using UKY context if available"
+            )
             # Fall back to UKY content from rag_answer (which now always runs first)
             rag_matches = state.get("rag_matches", [])
             if rag_matches:
@@ -83,7 +87,14 @@ async def domain_agent_node(state: AgentState) -> dict[str, Any]:
                     "final_answer": uky_answer,
                     "messages": [AIMessage(content=uky_answer)],
                     "tools_used": ["uky_rag_retrieval"],
-                    "node_trace": [{"node": "domain_agent", "domain": domain_name, "fallback": "uky_rag", "answer_length": len(uky_answer)}],
+                    "node_trace": [
+                        {
+                            "node": "domain_agent",
+                            "domain": domain_name,
+                            "fallback": "uky_rag",
+                            "answer_length": len(uky_answer),
+                        }
+                    ],
                 }
             # No UKY content either — genuine dead end
             error_msg = (
@@ -94,7 +105,9 @@ async def domain_agent_node(state: AgentState) -> dict[str, Any]:
             return {
                 "final_answer": error_msg,
                 "messages": [AIMessage(content=error_msg)],
-                "node_trace": [{"node": "domain_agent", "domain": domain_name, "error": "no_tools_no_rag"}],
+                "node_trace": [
+                    {"node": "domain_agent", "domain": domain_name, "error": "no_tools_no_rag"}
+                ],
             }
 
         span.set_attribute("agent.domain_tools", len(tools))
@@ -152,5 +165,7 @@ async def domain_agent_node(state: AgentState) -> dict[str, Any]:
             "final_answer": final_message,
             "messages": react_messages,
             "tools_used": [domain_name],
-            "node_trace": [{"node": "domain_agent", "domain": domain_name, "tool_count": len(tools)}],
+            "node_trace": [
+                {"node": "domain_agent", "domain": domain_name, "tool_count": len(tools)}
+            ],
         }

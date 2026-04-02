@@ -4,7 +4,7 @@ These functions determine which node to transition to based on state.
 """
 
 import logging
-from typing import Literal
+from typing import Any, Literal
 
 from ...config import settings
 from ..state import AgentState
@@ -126,15 +126,13 @@ def should_retry_quality(
     tool_results = state.get("tool_results", [])
     if tool_results and attempt_number > 0:
 
-        def _result_is_useless(r) -> bool:
+        def _result_is_useless(r: Any) -> bool:
             if not r.success:
                 return True
-            if r.data is None or r.data == [] or r.data == {}:
+            if r.data is None or r.data in ([], {}):
                 return True
             # MCP tools sometimes return success=True with error in body
-            if isinstance(r.data, dict) and "error" in r.data and len(r.data) == 1:
-                return True
-            return False
+            return isinstance(r.data, dict) and "error" in r.data and len(r.data) == 1
 
         if all(_result_is_useless(r) for r in tool_results):
             logger.info(

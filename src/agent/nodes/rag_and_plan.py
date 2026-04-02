@@ -45,27 +45,35 @@ async def rag_and_plan_node(state: AgentState) -> dict[str, Any]:
         },
     ) as span:
         # Run both concurrently
-        rag_result, plan_result = await asyncio.gather(
+        gather_results = await asyncio.gather(
             rag_answer_node(state),
             plan_node(state),
             return_exceptions=True,
         )
+        _rag_raw = gather_results[0]
+        _plan_raw = gather_results[1]
 
         # Handle exceptions — degrade gracefully
-        if isinstance(rag_result, BaseException):
-            logger.error(f"RAG failed in parallel execution: {rag_result}")
-            span.set_attribute("rag_and_plan.rag_error", str(rag_result)[:200])
+        rag_result: dict[str, Any]
+        if isinstance(_rag_raw, BaseException):
+            logger.error(f"RAG failed in parallel execution: {_rag_raw}")
+            span.set_attribute("rag_and_plan.rag_error", str(_rag_raw)[:200])
             rag_result = {"rag_matches": [], "rag_used": False, "node_trace": []}
+        else:
+            rag_result = _rag_raw
 
-        if isinstance(plan_result, BaseException):
-            logger.error(f"Plan failed in parallel execution: {plan_result}")
-            span.set_attribute("rag_and_plan.plan_error", str(plan_result)[:200])
+        plan_result: dict[str, Any]
+        if isinstance(_plan_raw, BaseException):
+            logger.error(f"Plan failed in parallel execution: {_plan_raw}")
+            span.set_attribute("rag_and_plan.plan_error", str(_plan_raw)[:200])
             plan_result = {
                 "query_analysis": None,
                 "planned_tools": [],
                 "execution_strategy": "sequential",
                 "node_trace": [],
             }
+        else:
+            plan_result = _plan_raw
 
         span.set_attribute("rag_and_plan.rag_used", bool(rag_result.get("rag_used")))
         span.set_attribute(

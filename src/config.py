@@ -129,6 +129,16 @@ class Settings(BaseSettings):
     REPORT_EMAIL_TO: str = ""
     REPORT_SLACK_WEBHOOK_URL: str = ""
 
+    # Eval pipeline
+    EVAL_JUDGE_BASE_URL: str = ""  # Empty = use default OpenAI. Set for on-premise LLM.
+    EVAL_JUDGE_API_KEY: str = ""  # Falls back to OPENAI_API_KEY if empty
+    EVAL_JUDGE_MODEL: str = "gpt-4o-mini"
+
+    # Argilla (human review)
+    ARGILLA_URL: str = "http://localhost:6900"
+    ARGILLA_API_KEY: str = ""
+    ARGILLA_EVAL_DATASET: str = "eval-production"
+
     # MCP Server port mappings
     @property
     def mcp_server_urls(self) -> dict[str, str]:
@@ -185,7 +195,10 @@ class Settings(BaseSettings):
         """Servers that perform write operations and require API key auth."""
         return {"jsm", "announcements", "events"}
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    # extra=ignore: .env is shared with docker-compose and may contain vars for
+    # other services (e.g., XDMOD_API_TOKEN for mcp-xdmod-data). Rejecting unknown
+    # vars would break when the .env has entries not declared in this Settings class.
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
 settings = Settings()

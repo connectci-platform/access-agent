@@ -6,7 +6,7 @@ aggregated here so consumers have one place to query.
 """
 
 import logging
-from dataclasses import dataclass, field
+from typing import Any
 
 from .config import Capability, Category
 
@@ -25,18 +25,67 @@ CATEGORIES: list[Category] = [
 # ── General capabilities (non-domain pipeline) ───────────────────────────
 
 GENERAL_CAPABILITIES: list[Capability] = [
-    Capability("ask_question", "Ask a question", "Get answers about ACCESS resources, policies, and services", "general", requires_auth=True),
-    Capability("check_allocations", "Check allocations", "Look up allocation details and status", "explore", requires_auth=True),
-    Capability("search_software", "Search software", "Find software available on ACCESS resources", "explore", requires_auth=False),
-    Capability("check_system_status", "Check system status", "See current outages and resource status", "explore", requires_auth=False),
-    Capability("browse_events", "Browse events", "Find upcoming trainings, workshops, and office hours", "explore", requires_auth=False),
-    Capability("browse_affinity_groups", "Browse affinity groups", "Explore community affinity groups", "explore", requires_auth=False),
-    Capability("check_usage", "Check usage (XDMoD)", "View resource usage and performance data", "analytics", requires_auth=True),
-    Capability("search_nsf_awards", "Search NSF awards", "Look up NSF award information", "explore", requires_auth=False),
+    Capability(
+        "ask_question",
+        "Ask a question",
+        "Get answers about ACCESS resources, policies, and services",
+        "general",
+        requires_auth=True,
+    ),
+    Capability(
+        "check_allocations",
+        "Check allocations",
+        "Look up allocation details and status",
+        "explore",
+        requires_auth=True,
+    ),
+    Capability(
+        "search_software",
+        "Search software",
+        "Find software available on ACCESS resources",
+        "explore",
+        requires_auth=False,
+    ),
+    Capability(
+        "check_system_status",
+        "Check system status",
+        "See current outages and resource status",
+        "explore",
+        requires_auth=False,
+    ),
+    Capability(
+        "browse_events",
+        "Browse events",
+        "Find upcoming trainings, workshops, and office hours",
+        "explore",
+        requires_auth=False,
+    ),
+    Capability(
+        "browse_affinity_groups",
+        "Browse affinity groups",
+        "Explore community affinity groups",
+        "explore",
+        requires_auth=False,
+    ),
+    Capability(
+        "check_usage",
+        "Check usage (XDMoD)",
+        "View resource usage and performance data",
+        "analytics",
+        requires_auth=True,
+    ),
+    Capability(
+        "search_nsf_awards",
+        "Search NSF awards",
+        "Look up NSF award information",
+        "explore",
+        requires_auth=False,
+    ),
 ]
 
 
 # ── Registry ──────────────────────────────────────────────────────────────
+
 
 class CapabilityRegistry:
     """Aggregates capabilities from domain configs and general pipeline.
@@ -54,9 +103,7 @@ class CapabilityRegistry:
         disabled = disabled_ids or set()
 
         # Filter out disabled, then index by id
-        self._capabilities = {
-            c.id: c for c in capabilities if c.id not in disabled and c.enabled
-        }
+        self._capabilities = {c.id: c for c in capabilities if c.id not in disabled and c.enabled}
         self._categories = {c.id: c for c in categories}
 
         if disabled:
@@ -86,7 +133,7 @@ class CapabilityRegistry:
             key=lambda c: c.order,
         )
 
-    def get_by_category(self, authenticated: bool) -> list[dict]:
+    def get_by_category(self, authenticated: bool) -> list[dict[str, Any]]:
         """Capabilities grouped by category, ready for API serialization.
 
         Returns a list of category dicts, each with a 'capabilities' list.
@@ -103,21 +150,26 @@ class CapabilityRegistry:
             cat_caps = caps_by_cat.get(cat.id, [])
             if not cat_caps:
                 continue
-            result.append({
-                "id": cat.id,
-                "label": cat.label,
-                "order": cat.order,
-                "capabilities": [
-                    {
-                        "id": c.id,
-                        "label": c.label,
-                        "description": c.description,
-                        **({"requires_auth": True, "locked": True}
-                           if c.requires_auth and not authenticated else {}),
-                    }
-                    for c in cat_caps
-                ],
-            })
+            result.append(
+                {
+                    "id": cat.id,
+                    "label": cat.label,
+                    "order": cat.order,
+                    "capabilities": [
+                        {
+                            "id": c.id,
+                            "label": c.label,
+                            "description": c.description,
+                            **(
+                                {"requires_auth": True, "locked": True}
+                                if c.requires_auth and not authenticated
+                                else {}
+                            ),
+                        }
+                        for c in cat_caps
+                    ],
+                }
+            )
         return result
 
     # ── Agent self-knowledge ──────────────────────────────────────────
@@ -132,7 +184,11 @@ class CapabilityRegistry:
                 continue
             caps_by_cat.setdefault(cap.category, []).append(cap)
 
-        lines = ["## What You Can Do", "You have the following capabilities. When relevant, mention these to help users discover features.", ""]
+        lines = [
+            "## What You Can Do",
+            "You have the following capabilities. When relevant, mention these to help users discover features.",
+            "",
+        ]
         for cat in categories:
             cat_caps = caps_by_cat.get(cat.id, [])
             if not cat_caps:
@@ -147,9 +203,7 @@ class CapabilityRegistry:
 
     # ── Capability-to-query mapping ───────────────────────────────────
 
-    def infer_capability_id(
-        self, domain: str | None, tools_used: list[str] | None = None
-    ) -> str:
+    def infer_capability_id(self, domain: str | None, tools_used: list[str] | None = None) -> str:
         """Infer the primary capability ID from classification results.
 
         Used by the usage logger to tag queries with the capability they exercised.
