@@ -101,7 +101,7 @@ async def _check_turnstile(
 
 
 @router.post("/query", response_model=None)
-async def query_agent(
+async def query_agent(  # noqa: PLR0912, PLR0915
     request: QueryRequest,
     raw_request: Request,
     include_trace: bool = Query(False, description="Include node_trace in response metadata"),
@@ -196,6 +196,7 @@ async def query_agent(
 
         # Resolve capability_id — use classifier output, or infer from tools
         from ..agent.domains.capabilities import get_capability_registry
+
         cap_registry = get_capability_registry()
         capability_id = None
         cap_category = None
@@ -299,7 +300,9 @@ async def health_check() -> dict[str, Any]:
         if available < total:
             result["status"] = "degraded"
             result["tools"]["unavailable_servers"] = [
-                s.get("server", s.get("name", "unknown")) for s in catalog.get("servers", []) if s.get("status") != "available"
+                s.get("server", s.get("name", "unknown"))
+                for s in catalog.get("servers", [])
+                if s.get("status") != "available"
             ]
 
     return result
@@ -358,16 +361,15 @@ async def submit_rating(request: RatingRequest, raw_request: Request) -> dict[st
 
     if result == "ok":
         return {"success": True}
-    elif result == "not_found":
+    if result == "not_found":
         raise HTTPException(status_code=404, detail="query_id not found")
-    elif result == "already_rated":
+    if result == "already_rated":
         raise HTTPException(status_code=409, detail="query already rated")
-    elif result == "forbidden":
+    if result == "forbidden":
         raise HTTPException(status_code=403, detail="not authorized to rate this query")
-    elif result == "expired":
+    if result == "expired":
         raise HTTPException(status_code=410, detail="rating window expired (24h)")
-    else:
-        raise HTTPException(status_code=500, detail="rating failed")
+    raise HTTPException(status_code=500, detail="rating failed")
 
 
 @router.get("/tools")

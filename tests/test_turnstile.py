@@ -93,7 +93,6 @@ class TestTurnstileGuard:
         assert guard.requires_challenge("session-a") is False
         assert guard.requires_challenge("session-b") is True
 
-
     def test_expired_verification_resets_query_count(self, guard, monkeypatch):
         """When verification expires, query_count resets so user gets fresh free queries."""
         monkeypatch.setattr(settings, "TURNSTILE_MODE", "deferred")
@@ -149,7 +148,6 @@ class TestTurnstileGuard:
         # Set last_eviction recent so only MAX_SESSIONS triggers it
         guard._last_eviction = time.time()
 
-        from src.turnstile import MAX_SESSIONS
         # Pretend we're over the limit
         monkeypatch.setattr("src.turnstile.MAX_SESSIONS", 30)
 

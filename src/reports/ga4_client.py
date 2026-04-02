@@ -82,7 +82,8 @@ class GA4Client:
 
     def _run_report(self, request: RunReportRequest) -> RunReportResponse:
         """Execute a GA4 report request."""
-        return self.client.run_report(request)
+        result: RunReportResponse = self.client.run_report(request)
+        return result
 
     def get_chatbot_overview(
         self, start_date: str = "7daysAgo", end_date: str = "yesterday"
