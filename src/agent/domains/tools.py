@@ -62,7 +62,7 @@ def _build_args_schema(
     return create_model(model_name, **fields)
 
 
-class MCPToolWrapper(BaseTool):  # type: ignore[misc]
+class MCPToolWrapper(BaseTool):
     """Wraps an MCP tool as a LangChain BaseTool for use with react agents."""
 
     tool_server: str

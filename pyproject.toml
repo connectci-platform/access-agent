@@ -147,6 +147,7 @@ ignore_missing_imports = true
 module = "tests.*"
 disallow_untyped_defs = false
 
+
 [tool.coverage.run]
 source = ["src"]
 branch = true

@@ -25,7 +25,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExport
 try:
     from opentelemetry.instrumentation.langchain import LangchainInstrumentor
 except ImportError:
-    LangchainInstrumentor = None
+    LangchainInstrumentor = None  # type: ignore[misc, assignment]
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
