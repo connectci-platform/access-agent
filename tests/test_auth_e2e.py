@@ -155,7 +155,7 @@ async def test_valid_cookie_sets_acting_user(client, mock_agent, mock_registry):
     response = await client.post(
         "/api/v1/query",
         json={"query": "What GPU resources are available?"},
-        cookies={"SESSaccess_auth": token},
+        headers={"cookie": f"SESSaccess_auth={token}"},
     )
 
     assert response.status_code == 200
@@ -196,7 +196,7 @@ async def test_expired_cookie_anonymous(client, mock_agent, mock_registry):
             "query": "What GPU resources are available?",
             "acting_user": "body-user@access-ci.org",
         },
-        cookies={"SESSaccess_auth": token},
+        headers={"cookie": f"SESSaccess_auth={token}"},
     )
 
     assert response.status_code == 200
@@ -214,7 +214,7 @@ async def test_invalid_cookie_anonymous(client, mock_agent, mock_registry):
     response = await client.post(
         "/api/v1/query",
         json={"query": "What GPU resources are available?"},
-        cookies={"SESSaccess_auth": "this-is-not-a-jwt"},
+        headers={"cookie": "SESSaccess_auth=this-is-not-a-jwt"},
     )
 
     assert response.status_code == 200
@@ -242,7 +242,7 @@ async def test_wrong_key_anonymous(client, mock_agent, mock_registry):
     response = await client.post(
         "/api/v1/query",
         json={"query": "What GPU resources are available?"},
-        cookies={"SESSaccess_auth": token},
+        headers={"cookie": f"SESSaccess_auth={token}"},
     )
 
     assert response.status_code == 200
@@ -285,7 +285,7 @@ async def test_cookie_overrides_body(client, mock_agent, mock_registry):
             "query": "What GPU resources are available?",
             "acting_user": "body-user@access-ci.org",
         },
-        cookies={"SESSaccess_auth": token},
+        headers={"cookie": f"SESSaccess_auth={token}"},
     )
 
     assert response.status_code == 200
@@ -309,7 +309,7 @@ async def test_response_format(client, mock_agent, mock_registry):
             "session_id": "test-sess",
             "question_id": "test-q",
         },
-        cookies={"SESSaccess_auth": token},
+        headers={"cookie": f"SESSaccess_auth={token}"},
     )
 
     assert response.status_code == 200
