@@ -100,18 +100,18 @@ async def _check_turnstile(
     return _turnstile_challenge_response()
 
 
-def _response_is_question(text: str) -> bool:
-    """Heuristic: does this response look like a clarifying question?
+def _domain_is_final(result: Any) -> bool:
+    """Check whether a domain agent response is final or mid-conversation.
 
-    Used to detect mid-conversation domain agent turns (e.g., "Could you
-    provide more details about your issue?") so we can suppress ratings
-    and follow-up prompts.
+    Uses the domain_completed flag from the domain agent node, which checks
+    whether any MCP tools were called during the ReAct loop. If tools were
+    called, the agent took action (created a ticket, posted an announcement)
+    and the response is final. If no tools were called, the agent is still
+    gathering info (asking for email, clarifying the issue).
 
-    Checks whether any sentence in the response contains a question mark.
-    Domain agents that have completed a task (created a ticket, posted an
-    announcement) produce declarative confirmation text without questions.
+    Falls back to True if domain_completed is not set (e.g., non-domain responses).
     """
-    return "?" in text
+    return result.get("domain_completed") is not False
 
 
 def _check_capability_discovery(
@@ -133,14 +133,15 @@ def _check_capability_discovery(
     normalized = query.strip().removeprefix("🔒").strip().lower()
 
     # Build lookup: category label → category object
-    cat_by_label: dict[str, dict] = {}
-    for cat in registry.get_by_category(authenticated):
+    categories = registry.get_by_category(authenticated)
+    cat_by_label: dict[str, dict[str, Any]] = {}
+    for cat in categories:
         cat_by_label[cat["label"].lower()] = cat
 
     # "Show my options" → list all categories
     if normalized in ("show my options", "what can you do", "what can you help with"):
         lines = ["Here's what I can help you with:\n"]
-        for cat in registry.get_by_category(authenticated):
+        for cat in categories:
             lines.append(f"**{cat['label']}**")
             for cap in cat["capabilities"]:
                 locked = " 🔒 (login required)" if cap.get("locked") else ""
@@ -179,7 +180,9 @@ def _check_capability_discovery(
                     f"{cap['description']}. Please log in to use this feature."
                 )
             else:
-                answer = f"I can help you with that! {cap['description']}. What would you like to know?"
+                answer = (
+                    f"I can help you with that! {cap['description']}. What would you like to know?"
+                )
         else:
             lines = [f"Here's what I can help with for **{cat['label']}**:\n"]
             for cap in caps:
@@ -271,8 +274,13 @@ async def query_agent(  # noqa: PLR0912, PLR0915
     # ── Capability discovery short-circuit ────────────────────────────
     # Category labels and "Show my options" come from the dynamic buttons.
     # Answer them directly from the registry — no LLM/RAG call needed.
+    # Deliberately bypasses usage logging and Turnstile free-query counting
+    # since discovery is navigation with no LLM/MCP cost.
     discovery_response = _check_capability_discovery(
-        request.query, acting_user is not None, session_id, question_id,
+        request.query,
+        acting_user is not None,
+        session_id,
+        question_id,
     )
     if discovery_response is not None:
         return discovery_response
@@ -363,13 +371,11 @@ async def query_agent(  # noqa: PLR0912, PLR0915
             }
 
         # Determine if this is a final response or a mid-conversation turn.
-        # Domain agent clarifying questions (asking for details, confirming
-        # actions) are not final — ratings and "ask another question" prompts
-        # should not appear.  The synthesis node (general pipeline) is always
-        # final.  For domain agents, check if the response is asking the user
-        # for input.
-        is_domain = bool(query_classification and query_classification.domain)
-        is_final = not is_domain or not _response_is_question(final_answer)
+        # Domain agent responses are final only when the agent called a tool
+        # (created a ticket, posted an announcement). If the agent just produced
+        # text without calling tools, it's still gathering info from the user.
+        # The synthesis node (general pipeline) is always final.
+        is_final = _domain_is_final(final_state)
 
         rating_target: str | None
         if not is_final:

@@ -30,14 +30,14 @@ GENERAL_CAPABILITIES: list[Capability] = [
         "Ask a question",
         "Get answers about ACCESS resources, policies, and services",
         "general",
-        requires_auth=True,
+        requires_auth=False,
     ),
     Capability(
         "check_allocations",
         "Check allocations",
         "Look up allocation details and status",
         "explore",
-        requires_auth=True,
+        requires_auth=False,
     ),
     Capability(
         "search_software",
@@ -72,7 +72,7 @@ GENERAL_CAPABILITIES: list[Capability] = [
         "Check usage (XDMoD)",
         "View resource usage and performance data",
         "analytics",
-        requires_auth=True,
+        requires_auth=False,
     ),
     Capability(
         "search_nsf_awards",
