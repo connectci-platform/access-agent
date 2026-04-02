@@ -129,7 +129,8 @@ def _check_capability_discovery(
     from ..agent.domains.capabilities import get_capability_registry
 
     registry = get_capability_registry()
-    normalized = query.strip().lower()
+    # Strip lock emoji prefix that the frontend adds to auth-required buttons
+    normalized = query.strip().removeprefix("🔒").strip().lower()
 
     # Build lookup: category label → category object
     cat_by_label: dict[str, dict] = {}
