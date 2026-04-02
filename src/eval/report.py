@@ -36,7 +36,7 @@ def print_comparison(run_a: dict[str, Any], run_b: dict[str, Any]) -> None:
     print("  Eval Run Comparison")
     print("=" * 70)
     print(f"  {'':20s} {'Run A':>10s}  {'Run B':>10s}  {'Delta':>10s}")
-    print(f"  {'':20s} {'─'*10:>10s}  {'─'*10:>10s}  {'─'*10:>10s}")
+    print(f"  {'':20s} {'─' * 10:>10s}  {'─' * 10:>10s}  {'─' * 10:>10s}")
     a_dims = run_a.get("per_dimension", {})
     b_dims = run_b.get("per_dimension", {})
     for name in DIMENSION_NAMES:
@@ -49,7 +49,7 @@ def print_comparison(run_a: dict[str, Any], run_b: dict[str, Any]) -> None:
     b_comp = run_b.get("composite_score", 0.0)
     delta = b_comp - a_comp
     sign = "+" if delta > 0 else ""
-    print(f"  {'─'*50}")
+    print(f"  {'─' * 50}")
     print(f"  {'COMPOSITE':20s} {a_comp:10.2f}  {b_comp:10.2f}  {sign}{delta:9.2f}")
     print()
     print(f"  Run A: {run_a.get('run_id', '?')} ({run_a.get('agent_branch', '?')})")

@@ -40,7 +40,11 @@ if settings.ENVIRONMENT == "production":
 elif settings.ALLOWED_ORIGINS:
     allowed_origins = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",")]
 else:
-    allowed_origins = ["https://accessmatch.ddev.site", "http://localhost:5173", "http://localhost:3000"]
+    allowed_origins = [
+        "https://accessmatch.ddev.site",
+        "http://localhost:5173",
+        "http://localhost:3000",
+    ]
 
 app.add_middleware(
     CORSMiddleware,

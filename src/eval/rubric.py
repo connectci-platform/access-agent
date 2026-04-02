@@ -77,8 +77,7 @@ def build_judge_prompt(
 ) -> str:
     """Build the LLM judge prompt with the rubric and context."""
     rubric_text = "\n".join(
-        f"- **{d.name}** (1-5): {d.description}\n" f"  1 = {d.low}\n" f"  5 = {d.high}"
-        for d in DIMENSIONS
+        f"- **{d.name}** (1-5): {d.description}\n  1 = {d.low}\n  5 = {d.high}" for d in DIMENSIONS
     )
 
     context_sections = []
