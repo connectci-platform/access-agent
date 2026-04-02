@@ -160,7 +160,7 @@ def _check_capability_discovery(
             metadata={
                 "agent": "capability-discovery",
                 "capability_id": "ask_question",
-                "is_final_response": False,
+                "is_final_response": True,
                 "rating_target": None,
                 "question_id": question_id,
             },
@@ -198,7 +198,7 @@ def _check_capability_discovery(
             metadata={
                 "agent": "capability-discovery",
                 "capability_id": "ask_question",
-                "is_final_response": False,
+                "is_final_response": True,
                 "rating_target": None,
                 "question_id": question_id,
             },
