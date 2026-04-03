@@ -54,18 +54,32 @@ XDMoD routing guidance:
 - Most XDMoD questions benefit from BOTH the RAG answer AND MCP tool data, so prefer query_type "combined".
 - Only use query_type "dynamic" with rag_endpoint null for purely user-specific XDMoD queries like "my usage".
 
+**MCP-backed capabilities** — the following topics have live data available via MCP tools and should NEVER be classified as "static". Use "dynamic" (rag_endpoint: null) when only live data is needed, or "combined" when documentation context also helps:
+- NSF awards — searchable via MCP tool. Always dynamic (rag_endpoint: null). No documentation covers specific awards.
+- Affinity groups — browsable via MCP tool. Always dynamic (rag_endpoint: null).
+- Events, workshops, office hours — fetched live via MCP tool. Always dynamic (rag_endpoint: null) for "what events are coming up", combined if asking about event policies or how to register.
+- Announcements (reading/searching) — fetched live via MCP tool. Always dynamic (rag_endpoint: null).
+- System status and outages — fetched live via MCP tool. Always dynamic (rag_endpoint: null).
+- Software availability — fetched live via MCP tool. Use combined (rag_endpoint: "general") since docs add context.
+- Allocation lookups — fetched live via MCP tool. Use dynamic (rag_endpoint: null) for "show my allocations", combined for "how do allocations work on Delta".
+
 Examples:
-- "How do I get an allocation?" → rag_endpoint: "general", query_type: "static" (procedure/how-to)
-- "What are the password requirements?" → rag_endpoint: "general", query_type: "static" (policy)
-- "How do I use Globus to transfer files?" → rag_endpoint: "general", query_type: "static" (how-to)
-- "What GPUs does Delta have?" → rag_endpoint: "general", query_type: "combined" (hardware specs change)
-- "What software is on Bridges-2?" → rag_endpoint: "general", query_type: "combined" (software changes)
-- "What storage options are on Anvil?" → rag_endpoint: "general", query_type: "combined" (specs + docs)
-- "Which resources support A100 GPUs?" → rag_endpoint: "general", query_type: "combined" (cross-resource comparison)
-- "Show me CPU hours on Delta last month" → rag_endpoint: "xdmod", query_type: "combined"
-- "How many active allocations are there?" → rag_endpoint: "xdmod", query_type: "combined"
-- "What's my usage on Expanse?" → rag_endpoint: null, query_type: "dynamic" (user-specific only)
-- "Is Delta down right now?" → rag_endpoint: null, query_type: "dynamic" (real-time status only)
+- "How do I get an allocation?" → rag_endpoint: "general", query_type: "static", capability_id: "ask_question"
+- "What are the password requirements?" → rag_endpoint: "general", query_type: "static", capability_id: "ask_question"
+- "How do I use Globus to transfer files?" → rag_endpoint: "general", query_type: "static", capability_id: "ask_question"
+- "What GPUs does Delta have?" → rag_endpoint: "general", query_type: "combined", capability_id: "ask_question"
+- "What software is on Bridges-2?" → rag_endpoint: "general", query_type: "combined", capability_id: "search_software"
+- "What storage options are on Anvil?" → rag_endpoint: "general", query_type: "combined", capability_id: "ask_question"
+- "Which resources support A100 GPUs?" → rag_endpoint: "general", query_type: "combined", capability_id: "ask_question"
+- "Show me CPU hours on Delta last month" → rag_endpoint: "xdmod", query_type: "combined", capability_id: "check_usage"
+- "How many active allocations are there?" → rag_endpoint: "xdmod", query_type: "combined", capability_id: "check_usage"
+- "What's my usage on Expanse?" → rag_endpoint: null, query_type: "dynamic", capability_id: "check_usage"
+- "Is Delta down right now?" → rag_endpoint: null, query_type: "dynamic", capability_id: "check_system_status"
+- "Search NSF awards" → rag_endpoint: null, query_type: "dynamic", capability_id: "search_nsf_awards"
+- "Browse affinity groups" → rag_endpoint: null, query_type: "dynamic", capability_id: "browse_affinity_groups"
+- "What events are coming up?" → rag_endpoint: null, query_type: "dynamic", capability_id: "browse_events"
+- "Show recent announcements" → rag_endpoint: null, query_type: "dynamic", capability_id: "search_announcements"
+- "What affinity groups are there?" → rag_endpoint: null, query_type: "dynamic", capability_id: "browse_affinity_groups"
 
 Also detect if the query should be handled by a specialized domain agent. Set "domain" to:
 - "announcements" — ONLY when the user explicitly asks to CREATE, UPDATE, DELETE, or MANAGE announcements (not just search/read them)

@@ -7,7 +7,7 @@ that has direct access to that domain's MCP tools and a domain-specific prompt.
 import logging
 from typing import Any
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
 
 from ...llm import get_llm
@@ -153,19 +153,34 @@ async def domain_agent_node(state: AgentState) -> dict[str, Any]:
             if hasattr(last_msg, "content"):
                 final_message = last_msg.content
 
+        # Detect whether the domain agent completed an action (called a tool)
+        # or is still gathering info (only produced text, no tool calls).
+        # If tools were called in this turn, the agent took action — the response
+        # is final. If no tools were called, the agent is asking a clarifying
+        # question — the response is not final.
+        tool_was_called = any(isinstance(m, ToolMessage) for m in react_messages)
+
         span.set_attribute("agent.answer_length", len(final_message))
         span.set_attribute("agent.react_messages", len(react_messages))
+        span.set_attribute("agent.domain_completed", tool_was_called)
 
         logger.info(
             f"Domain agent '{domain_name}' complete: "
-            f"{len(react_messages)} messages, answer={len(final_message)} chars"
+            f"{len(react_messages)} messages, answer={len(final_message)} chars, "
+            f"tool_called={tool_was_called}"
         )
 
         return {
             "final_answer": final_message,
             "messages": react_messages,
             "tools_used": [domain_name],
+            "domain_completed": tool_was_called,
             "node_trace": [
-                {"node": "domain_agent", "domain": domain_name, "tool_count": len(tools)}
+                {
+                    "node": "domain_agent",
+                    "domain": domain_name,
+                    "tool_count": len(tools),
+                    "domain_completed": tool_was_called,
+                }
             ],
         }

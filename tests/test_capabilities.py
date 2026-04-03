@@ -82,13 +82,13 @@ class TestCapabilityRegistry:
 class TestCapabilityAuth:
     def test_anonymous_sees_locked_on_auth_required(self, registry):
         result = registry.get_by_category(authenticated=False)
-        # Find ask_question (requires_auth=True)
+        # Find manage_announcements (requires_auth=True — the only locked capability)
         for cat in result:
             for cap in cat["capabilities"]:
-                if cap["id"] == "ask_question":
+                if cap["id"] == "manage_announcements":
                     assert cap.get("locked") is True
                     return
-        pytest.fail("ask_question not found")
+        pytest.fail("manage_announcements not found")
 
     def test_anonymous_sees_unlocked_on_public(self, registry):
         result = registry.get_by_category(authenticated=False)
@@ -109,8 +109,9 @@ class TestCapabilityAuth:
         prompt = registry.get_system_prompt_section(authenticated=False)
         assert "Check system status" in prompt
         assert "Browse events" in prompt
+        assert "Check usage" in prompt  # XDMoD is public
         # Auth-required caps should not appear
-        assert "Check usage" not in prompt
+        assert "Manage your announcements" not in prompt
 
     def test_system_prompt_includes_all_for_auth(self, registry):
         prompt = registry.get_system_prompt_section(authenticated=True)

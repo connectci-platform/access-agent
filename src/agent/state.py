@@ -210,6 +210,12 @@ class AgentState(TypedDict):
     # Tracing (accumulated by every node via operator.add reducer)
     node_trace: Annotated[list[dict[str, Any]], operator.add]
 
+    # Domain agent fields (set by domain_agent node)
+    domain_completed: Annotated[
+        bool | None,
+        "Whether the domain agent called a tool (True) or is still gathering info (False)",
+    ]
+
     # Output fields (set by synthesize node)
     final_answer: Annotated[str | None, "Final answer to return to user"]
 
@@ -265,6 +271,8 @@ def create_initial_state(
         max_attempts=max_attempts,
         # Retry
         retry_context=RetryContext(start_time_ms=int(time.time() * 1000)),
+        # Domain agent
+        domain_completed=None,
         # Tracing
         node_trace=[],
         # Output

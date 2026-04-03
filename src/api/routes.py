@@ -100,6 +100,116 @@ async def _check_turnstile(
     return _turnstile_challenge_response()
 
 
+def _domain_is_final(result: Any) -> bool:
+    """Check whether a domain agent response is final or mid-conversation.
+
+    Uses the domain_completed flag from the domain agent node, which checks
+    whether any MCP tools were called during the ReAct loop. If tools were
+    called, the agent took action (created a ticket, posted an announcement)
+    and the response is final. If no tools were called, the agent is still
+    gathering info (asking for email, clarifying the issue).
+
+    Falls back to True if domain_completed is not set (e.g., non-domain responses).
+    """
+    return result.get("domain_completed") is not False
+
+
+def _check_capability_discovery(
+    query: str,
+    authenticated: bool,
+    session_id: str,
+    question_id: str,
+) -> QueryResponse | None:
+    """Return a direct response for capability discovery queries.
+
+    The frontend sends category labels ("Get help", "Explore resources") and
+    "Show my options" as messages.  These are answered from the capability
+    registry — no LLM or RAG call needed.
+    """
+    from ..agent.domains.capabilities import get_capability_registry
+
+    registry = get_capability_registry()
+    # Strip lock emoji prefix that the frontend adds to auth-required buttons
+    normalized = query.strip().removeprefix("🔒").strip().lower()
+
+    # Build lookup: category label → category object
+    categories = registry.get_by_category(authenticated)
+    cat_by_label: dict[str, dict[str, Any]] = {}
+    for cat in categories:
+        cat_by_label[cat["label"].lower()] = cat
+
+    # "Show my options" → list all categories
+    if normalized in ("show my options", "what can you do", "what can you help with"):
+        lines = ["Here's what I can help you with:\n"]
+        for cat in categories:
+            lines.append(f"**{cat['label']}**")
+            for cap in cat["capabilities"]:
+                locked = " 🔒 (login required)" if cap.get("locked") else ""
+                lines.append(f"- {cap['label']}: {cap['description']}{locked}")
+            lines.append("")
+        if not authenticated:
+            lines.append("*Some features require logging in. Log in to unlock all capabilities.*")
+        lines.append("Click a button above or just type your question!")
+        answer = "\n".join(lines)
+        return QueryResponse(
+            success=True,
+            response=answer,
+            session_id=session_id,
+            question_id=question_id,
+            tools_used=[],
+            confidence="high",
+            metadata={
+                "agent": "capability-discovery",
+                "capability_id": "ask_question",
+                "is_final_response": True,
+                "rating_target": None,
+                "question_id": question_id,
+            },
+        )
+
+    # Category label match → list capabilities in that category
+    if normalized in cat_by_label:
+        cat = cat_by_label[normalized]
+        caps = cat["capabilities"]
+
+        if len(caps) == 1:
+            cap = caps[0]
+            if cap.get("locked"):
+                answer = (
+                    f"**{cap['label']}** requires logging in. "
+                    f"{cap['description']}. Please log in to use this feature."
+                )
+            else:
+                answer = (
+                    f"I can help you with that! {cap['description']}. What would you like to know?"
+                )
+        else:
+            lines = [f"Here's what I can help with for **{cat['label']}**:\n"]
+            for cap in caps:
+                locked = " 🔒 (login required)" if cap.get("locked") else ""
+                lines.append(f"- **{cap['label']}**: {cap['description']}{locked}")
+            lines.append("\nJust tell me what you need, or type your question!")
+            answer = "\n".join(lines)
+
+        return QueryResponse(
+            success=True,
+            response=answer,
+            session_id=session_id,
+            question_id=question_id,
+            tools_used=[],
+            confidence="high",
+            metadata={
+                "agent": "capability-discovery",
+                "capability_id": "ask_question",
+                "is_final_response": True,
+                "rating_target": None,
+                "question_id": question_id,
+            },
+        )
+
+    return None
+
+
 @router.post("/query", response_model=None)
 async def query_agent(  # noqa: PLR0912, PLR0915
     request: QueryRequest,
@@ -160,6 +270,20 @@ async def query_agent(  # noqa: PLR0912, PLR0915
     turnstile_response = await _check_turnstile(acting_user, session_id, request.turnstile_token)
     if turnstile_response is not None:
         return turnstile_response
+
+    # ── Capability discovery short-circuit ────────────────────────────
+    # Category labels and "Show my options" come from the dynamic buttons.
+    # Answer them directly from the registry — no LLM/RAG call needed.
+    # Deliberately bypasses usage logging and Turnstile free-query counting
+    # since discovery is navigation with no LLM/MCP cost.
+    discovery_response = _check_capability_discovery(
+        request.query,
+        acting_user is not None,
+        session_id,
+        question_id,
+    )
+    if discovery_response is not None:
+        return discovery_response
 
     start_time = time.time()
 
@@ -246,6 +370,21 @@ async def query_agent(  # noqa: PLR0912, PLR0915
                 "reason": query_classification.reason[:200] if query_classification.reason else "",
             }
 
+        # Determine if this is a final response or a mid-conversation turn.
+        # Domain agent responses are final only when the agent called a tool
+        # (created a ticket, posted an announcement). If the agent just produced
+        # text without calling tools, it's still gathering info from the user.
+        # The synthesis node (general pipeline) is always final.
+        is_final = _domain_is_final(final_state)
+
+        rating_target: str | None
+        if not is_final:
+            rating_target = None
+        elif "uky_rag_retrieval" in tools_used:
+            rating_target = "uky_rag"
+        else:
+            rating_target = "agent"
+
         return QueryResponse(
             success=True,
             response=final_answer,
@@ -261,8 +400,8 @@ async def query_agent(  # noqa: PLR0912, PLR0915
                 "duration_ms": duration_ms,
                 "classification": classification_info,
                 "capability_id": capability_id,
-                "is_final_response": True,
-                "rating_target": "uky_rag" if "uky_rag_retrieval" in tools_used else "agent",
+                "is_final_response": is_final,
+                "rating_target": rating_target,
                 "question_id": question_id,
                 **({"node_trace": final_state.get("node_trace", [])} if include_trace else {}),
             },
