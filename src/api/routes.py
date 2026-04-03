@@ -261,14 +261,13 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                 ):
                     yield _format_sse_event("token", {"content": msg.content})
 
-            elif stream_type == "updates":
+            elif stream_type == "updates" and isinstance(chunk, dict):
                 # State updates after each node — collect for final metadata
-                if isinstance(chunk, dict):
-                    for node_output in chunk.values():
-                        if isinstance(node_output, dict):
-                            final_state.update(node_output)
+                for node_output in chunk.values():
+                    if isinstance(node_output, dict):
+                        final_state.update(node_output)
 
-        # Build metadata from final state (same logic as non-streaming path)
+        # Build metadata from final state (mirrors non-streaming QueryResponse fields)
         final_answer = final_state.get("final_answer") or "No answer generated"
         tools_used = final_state.get("tools_used", [])
         duration_ms = (time.time() - start_time) * 1000
@@ -304,14 +303,30 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
         else:
             rating_target = "agent"
 
+        # Build classification info
+        classification_info: dict[str, Any] | None = None
+        if query_classification:
+            classification_info = {
+                "query_type": query_classification.query_type,
+                "confidence": query_classification.confidence,
+                "domain": query_classification.domain,
+                "reason": query_classification.reason[:200] if query_classification.reason else "",
+            }
+
         done_data: dict[str, Any] = {
             "success": True,
             "response": final_answer,
+            "session_id": session_id,
+            "question_id": question_id,
+            "confidence": confidence,
             "metadata": {
                 "agent": "access-documentation-langgraph",
                 "tool_count": len(tools_used),
                 "tools_used": tools_used,
+                "execution_strategy": final_state.get("execution_strategy", "parallel"),
+                "checkpointing_enabled": USE_CHECKPOINTING,
                 "duration_ms": duration_ms,
+                "classification": classification_info,
                 "capability_id": capability_id,
                 "is_final_response": is_final,
                 "rating_target": rating_target,
@@ -348,11 +363,15 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
 
     except Exception as e:
         logger.exception(f"Stream failed: {e}")
-        yield _format_sse_event("error", {"message": "Failed to process query", "code": "agent_error"})
+        yield _format_sse_event(
+            "error", {"message": "Failed to process query", "code": "agent_error"}
+        )
+        # Always yield done so clients can finalize the stream
+        yield _format_sse_event("done", {"success": False, "error": str(e)})
 
 
 @router.post("/query", response_model=None)
-async def query_agent(  # noqa: PLR0912, PLR0915
+async def query_agent(
     request: QueryRequest,
     raw_request: Request,
     include_trace: bool = Query(False, description="Include node_trace in response metadata"),
@@ -368,10 +387,8 @@ async def query_agent(  # noqa: PLR0912, PLR0915
         raw_request: The raw FastAPI request (for cookie access).
 
     Returns:
-        QueryResponse with answer and metadata.
-
-    Raises:
-        HTTPException: If query execution fails.
+        For capability discovery: QueryResponse (JSON) with instant answer.
+        For agent queries: StreamingResponse (SSE) with status, token, and done events.
     """
     # Resolve acting user from JWT cookie (preferred) or body fallback.
     # Body fallback uses the already-parsed QueryRequest to avoid

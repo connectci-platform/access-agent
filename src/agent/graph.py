@@ -509,36 +509,50 @@ async def stream_agent(
     """
     from .state import create_initial_state
 
-    initial_state = create_initial_state(
-        query=query,
-        session_id=session_id,
-        question_id=question_id,
-        tool_catalog=tool_catalog,
-        acting_user=acting_user,
-    )
+    tracer = get_tracer("access-agent")
 
-    stream_mode = ["custom", "messages", "updates"]
+    with tracer.start_as_current_span(
+        "agent.stream",
+        attributes={
+            "agent.query": query[:200],
+            "agent.session_id": session_id,
+            "agent.question_id": question_id,
+            "agent.user": acting_user or "anonymous",
+        },
+    ):
+        initial_state = create_initial_state(
+            query=query,
+            session_id=session_id,
+            question_id=question_id,
+            tool_catalog=tool_catalog,
+            acting_user=acting_user,
+        )
 
-    if use_checkpointing and db_uri:
-        from langchain_core.messages import HumanMessage
+        stream_mode = ["custom", "messages", "updates"]
 
-        async with create_async_checkpointer(db_uri) as checkpointer:
-            await checkpointer.setup()
-            graph = create_checkpointed_graph(checkpointer)
-            config = {"configurable": {"thread_id": session_id}}
+        if use_checkpointing and db_uri:
+            from langchain_core.messages import HumanMessage
 
-            previous_state = await graph.aget_state(config)
-            if previous_state.values:
-                existing_messages = previous_state.values.get("messages", [])
-                initial_state["messages"] = [*existing_messages, HumanMessage(content=query)]
+            async with create_async_checkpointer(db_uri) as checkpointer:
+                await checkpointer.setup()
+                graph = create_checkpointed_graph(checkpointer)
+                config = {"configurable": {"thread_id": session_id}}
 
+                previous_state = await graph.aget_state(config)
+                if previous_state.values:
+                    existing_messages = previous_state.values.get("messages", [])
+                    initial_state["messages"] = [*existing_messages, HumanMessage(content=query)]
+                    logger.info(
+                        f"Resuming conversation with {len(existing_messages)} previous messages"
+                    )
+
+                async for stream_type, chunk in graph.astream(
+                    initial_state, config, stream_mode=stream_mode
+                ):
+                    yield stream_type, chunk
+        else:
+            graph = create_agent_graph()
             async for stream_type, chunk in graph.astream(
-                initial_state, config, stream_mode=stream_mode
+                initial_state, {}, stream_mode=stream_mode
             ):
                 yield stream_type, chunk
-    else:
-        graph = create_agent_graph()
-        async for stream_type, chunk in graph.astream(
-            initial_state, {}, stream_mode=stream_mode
-        ):
-            yield stream_type, chunk

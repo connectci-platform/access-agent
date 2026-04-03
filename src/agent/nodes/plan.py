@@ -81,7 +81,7 @@ You MUST respond with valid JSON only, no markdown or explanation:
 """
 
 
-async def plan_node(state: AgentState) -> dict[str, Any]:
+async def plan_node(state: AgentState) -> dict[str, Any]:  # noqa: PLR0915
     """Analyze query and select tools to execute.
 
     This node:
@@ -105,10 +105,14 @@ async def plan_node(state: AgentState) -> dict[str, Any]:
         query = state["query"]
         catalog = state["tool_catalog"]
         messages = state.get("messages", [])
+        attempt_number = state.get("attempt_number", 0)
+        previous_results = state.get("tool_results", [])
+        quality_eval = state.get("quality_evaluation")
 
         # Add query to span
         span.set_attribute("agent.query", query[:500] if query else "")
         span.set_attribute("agent.node", "plan")
+        span.set_attribute("agent.attempt_number", attempt_number)
 
         # Build compact tool catalog for prompt
         tool_catalog_text = _build_tool_catalog_text(catalog)
@@ -116,11 +120,31 @@ async def plan_node(state: AgentState) -> dict[str, Any]:
         # Build conversation history (exclude current query which is the last message)
         conversation_history = _build_conversation_history(messages[:-1] if messages else [])
 
+        # On retry, include what was already tried so the planner can adjust
+        retry_context = ""
+        if attempt_number > 0 and previous_results:
+            failed_tools = []
+            for r in previous_results:
+                tool_name = r.tool_name if hasattr(r, "tool_name") else str(r)
+                data = r.data if hasattr(r, "data") else str(r)
+                data_preview = str(data)[:200]
+                failed_tools.append(f"- {tool_name}: {data_preview}")
+            eval_reason = quality_eval.reason if quality_eval else "Results were not helpful"
+            retry_context = (
+                f"\n\n## PREVIOUS ATTEMPT (attempt {attempt_number})\n"
+                f"The following tools were already tried but the results were not helpful:\n"
+                + "\n".join(failed_tools)
+                + f"\n\nEvaluation: {eval_reason}\n"
+                f"\nPlease try a DIFFERENT approach — broaden the query, use different "
+                f"parameters, try a different tool, or determine that tools cannot help "
+                f"and set requires_tools to false."
+            )
+
         # Create the prompt
         prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", PLANNING_SYSTEM_PROMPT),
-                ("human", "{query}"),
+                ("human", "{query}{retry_context}"),
             ]
         )
 
@@ -134,6 +158,7 @@ async def plan_node(state: AgentState) -> dict[str, Any]:
                     "tool_catalog": tool_catalog_text,
                     "conversation_history": conversation_history,
                     "query": query,
+                    "retry_context": retry_context,
                 }
             )
 

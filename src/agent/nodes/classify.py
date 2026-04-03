@@ -258,6 +258,8 @@ async def classify_node(state: AgentState) -> dict[str, Any]:
     previous_messages = messages[:-1] if len(messages) > 1 else []
     conversation_history = _format_conversation_history(previous_messages)
 
+    # get_stream_writer() returns a no-op writer when called outside a streaming
+    # context (e.g., via run_agent/ainvoke). Safe to call unconditionally.
     writer = get_stream_writer()
     writer({"type": "status", "message": "Classifying query..."})
 
