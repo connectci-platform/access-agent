@@ -90,3 +90,4 @@ mghpcc-*.json
 
 # test run data
 a3_results/
+chatbot_log_*.csv

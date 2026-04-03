@@ -231,13 +231,16 @@ The `locked` field is `true` for auth-required capabilities when the user is ano
 }
 ```
 
-**What populates the context (today):**
+**Opt-in requirement:** Personalization requires the user to opt in via `field_ai_profile_enabled` on their Drupal profile. If not opted in (default), this endpoint returns empty context. See the Researcher Profiles doc in access-qa-planning (`active/09-researcher-profiles.md`) for the full personalization design.
+
+**What populates the context (when opted in):**
 - `is_coordinator` + `coordinated_groups`: From the `mcp_my_affinity_groups` Drupal view via jsonapi_views
 - `active_allocations`: From the user's `field_cider_resources` entity reference field in Drupal, fetched via JSON:API on the user entity
+- Skills, interests, institution, HPC experience: From existing Community Persona fields
 
 **Extension points (future):**
 - `conversation_summary`: Summary of prior conversations
-- `researcher_profile`: Interests, skills from Drupal profile
+- `researcher_profile`: Research domain, expertise level, preferences (new Drupal fields)
 - `recent_tickets`: Open tickets from JSM
 
 **Security:**
