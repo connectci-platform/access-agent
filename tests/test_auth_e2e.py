@@ -120,9 +120,16 @@ def _jwks_server():
 
 @pytest.fixture
 def mock_agent():
-    """Mock run_agent to avoid needing LLM/MCP infrastructure."""
-    with patch("src.api.routes.run_agent", new_callable=AsyncMock) as mock:
-        mock.return_value = FAKE_AGENT_RESULT
+    """Mock stream_agent to avoid needing LLM/MCP infrastructure.
+
+    stream_agent is an async generator that yields (stream_type, chunk) tuples.
+    We mock it to yield a single 'updates' chunk containing FAKE_AGENT_RESULT,
+    which is enough for the SSE endpoint to build a done event.
+    """
+    async def fake_stream(**kwargs):
+        yield "updates", {"__end__": FAKE_AGENT_RESULT}
+
+    with patch("src.api.routes.stream_agent", side_effect=fake_stream) as mock:
         yield mock
 
 
@@ -299,7 +306,7 @@ async def test_cookie_overrides_body(client, mock_agent, mock_registry):
 
 
 async def test_response_format(client, mock_agent, mock_registry):
-    """Verify the response body contains expected fields."""
+    """Verify the SSE stream contains a done event with expected fields."""
     token = _make_jwt("jsmith@access-ci.org")
 
     response = await client.post(
@@ -313,12 +320,22 @@ async def test_response_format(client, mock_agent, mock_registry):
     )
 
     assert response.status_code == 200
-    body = response.json()
-    assert body["success"] is True
-    assert body["response"] == "Test response"
-    assert body["session_id"] == "test-sess"
-    assert body["question_id"] == "test-q"
-    assert isinstance(body["tools_used"], list)
+    assert "text/event-stream" in response.headers.get("content-type", "")
+
+    # Parse SSE events from response text
+    done_event = None
+    for block in response.text.split("\n\n"):
+        if block.startswith("event: done"):
+            for line in block.split("\n"):
+                if line.startswith("data: "):
+                    done_event = json.loads(line[6:])
+                    break
+
+    assert done_event is not None, "No 'done' SSE event found"
+    assert done_event["success"] is True
+    assert done_event["response"] == "Test response"
+    assert done_event["metadata"]["question_id"] == "test-q"
+    assert isinstance(done_event["metadata"]["tools_used"], list)
 
 
 # ---------------------------------------------------------------------------

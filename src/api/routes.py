@@ -306,6 +306,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
 
         done_data: dict[str, Any] = {
             "success": True,
+            "response": final_answer,
             "metadata": {
                 "agent": "access-documentation-langgraph",
                 "tool_count": len(tools_used),
