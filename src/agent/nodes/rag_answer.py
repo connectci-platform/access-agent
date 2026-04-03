@@ -24,6 +24,7 @@ import re
 from typing import Any, Literal
 
 from langchain_core.messages import AIMessage
+from langgraph.config import get_stream_writer
 from opentelemetry.trace import Span
 
 from ...config import settings
@@ -271,6 +272,9 @@ async def rag_answer_node(state: AgentState) -> dict[str, object]:
         - For combined: rag_matches, rag_used (no final_answer - continues to tools)
         - For no match: rag_matches, rag_used=False
     """
+    writer = get_stream_writer()
+    writer({"type": "status", "message": "Searching ACCESS documentation..."})
+
     tracer = get_tracer("access-agent.nodes")
     query = state["query"]
     classification = state["query_classification"]

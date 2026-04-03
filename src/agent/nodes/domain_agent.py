@@ -8,6 +8,7 @@ import logging
 from typing import Any
 
 from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.config import get_stream_writer
 from langgraph.prebuilt import create_react_agent
 
 from ...llm import get_llm
@@ -37,6 +38,10 @@ async def domain_agent_node(state: AgentState) -> dict[str, Any]:
     tracer = get_tracer("access-agent.nodes")
     classification = state.get("query_classification")
     domain_name = classification.domain if classification else None
+
+    writer = get_stream_writer()
+    if domain_name:
+        writer({"type": "status", "message": f"Starting {domain_name} workflow..."})
 
     if not domain_name:
         logger.error("domain_agent_node called without domain in classification")

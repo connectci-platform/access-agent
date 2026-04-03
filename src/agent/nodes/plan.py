@@ -10,6 +10,7 @@ from typing import Any
 
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
+from langgraph.config import get_stream_writer
 
 from ...llm import get_llm
 from ...telemetry import get_tracer
@@ -95,6 +96,9 @@ async def plan_node(state: AgentState) -> dict[str, Any]:
     Returns:
         Dict with query_analysis, planned_tools, and execution_strategy.
     """
+    writer = get_stream_writer()
+    writer({"type": "status", "message": "Planning tool calls..."})
+
     tracer = get_tracer("access-agent.nodes")
 
     with tracer.start_as_current_span("agent.plan") as span:
