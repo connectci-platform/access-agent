@@ -11,6 +11,8 @@ import re
 import time
 from typing import Any
 
+from langgraph.config import get_stream_writer
+
 from ...telemetry import get_tracer
 from ...telemetry.spans import add_span_event
 from ...tools import MCPClient
@@ -67,6 +69,14 @@ async def execute_node(state: AgentState) -> dict[str, Any]:
         strategy = state.get("execution_strategy", "parallel")
         acting_user = state.get("acting_user")
         span.set_attribute("agent.strategy", strategy)
+
+        # Emit per-tool status messages
+        writer = get_stream_writer()
+        tool_names = [t.tool_name for t in planned_tools]
+        if len(tool_names) == 1:
+            writer({"type": "status", "message": f"Querying {tool_names[0]}..."})
+        else:
+            writer({"type": "status", "message": f"Querying {len(tool_names)} tools..."})
 
         logger.info(f"Executing {len(planned_tools)} tools with strategy: {strategy}")
 

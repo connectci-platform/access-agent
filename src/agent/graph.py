@@ -21,6 +21,7 @@ With recovery and quality loops:
 """
 
 import logging
+from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
@@ -476,3 +477,82 @@ async def run_agent(
         # Cast from Any (LangGraph's dynamic return) to AgentState
         result: AgentState = final_state
         return result
+
+
+async def stream_agent(
+    query: str,
+    session_id: str,
+    question_id: str,
+    tool_catalog: "ToolCatalog",
+    acting_user: str | None = None,
+    use_checkpointing: bool = False,
+    db_uri: str | None = None,
+) -> AsyncGenerator[tuple[str, Any], None]:
+    """Stream agent execution, yielding events as they occur.
+
+    Yields (stream_type, data) tuples where stream_type is one of:
+    - "custom": Status messages from nodes via get_stream_writer()
+    - "messages": LLM token chunks (with metadata including langgraph_node)
+    - "updates": State updates after each node completes
+
+    Args:
+        query: The user's question.
+        session_id: Session identifier.
+        question_id: Question identifier.
+        tool_catalog: MCP tool catalog.
+        acting_user: ACCESS ID of user performing action.
+        use_checkpointing: Whether to use PostgreSQL checkpointing.
+        db_uri: Database URI for checkpointing.
+
+    Yields:
+        Tuples of (stream_type, chunk_data) from the LangGraph stream.
+    """
+    from .state import create_initial_state
+
+    tracer = get_tracer("access-agent")
+
+    with tracer.start_as_current_span(
+        "agent.stream",
+        attributes={
+            "agent.query": query[:200],
+            "agent.session_id": session_id,
+            "agent.question_id": question_id,
+            "agent.user": acting_user or "anonymous",
+        },
+    ):
+        initial_state = create_initial_state(
+            query=query,
+            session_id=session_id,
+            question_id=question_id,
+            tool_catalog=tool_catalog,
+            acting_user=acting_user,
+        )
+
+        stream_mode = ["custom", "messages", "updates"]
+
+        if use_checkpointing and db_uri:
+            from langchain_core.messages import HumanMessage
+
+            async with create_async_checkpointer(db_uri) as checkpointer:
+                await checkpointer.setup()
+                graph = create_checkpointed_graph(checkpointer)
+                config = {"configurable": {"thread_id": session_id}}
+
+                previous_state = await graph.aget_state(config)
+                if previous_state.values:
+                    existing_messages = previous_state.values.get("messages", [])
+                    initial_state["messages"] = [*existing_messages, HumanMessage(content=query)]
+                    logger.info(
+                        f"Resuming conversation with {len(existing_messages)} previous messages"
+                    )
+
+                async for stream_type, chunk in graph.astream(
+                    initial_state, config, stream_mode=stream_mode
+                ):
+                    yield stream_type, chunk
+        else:
+            graph = create_agent_graph()
+            async for stream_type, chunk in graph.astream(
+                initial_state, {}, stream_mode=stream_mode
+            ):
+                yield stream_type, chunk

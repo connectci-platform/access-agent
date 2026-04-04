@@ -1,15 +1,18 @@
 """FastAPI routes for the ACCESS Documentation Agent."""
 
 import asyncio
+import json
 import logging
 import time
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from starlette.responses import StreamingResponse
 
-from ..agent.graph import run_agent
+from ..agent.graph import stream_agent
 from ..auth import get_acting_user_from_cookie
 from ..config import settings
 from ..tools import ToolRegistry, get_catalog_aggregator
@@ -210,12 +213,169 @@ def _check_capability_discovery(
     return None
 
 
+def _format_sse_event(event: str, data: Any) -> str:
+    """Format a Server-Sent Event string."""
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+async def _stream_events(  # noqa: PLR0912, PLR0915
+    request: QueryRequest,
+    acting_user: str | None,
+    session_id: str,
+    question_id: str,
+    include_trace: bool,
+) -> AsyncGenerator[str, None]:
+    """Translate LangGraph stream chunks into SSE events.
+
+    Yields SSE-formatted strings for status updates, LLM tokens,
+    and a final done event with response metadata.
+    """
+    start_time = time.time()
+    final_state: dict[str, Any] = {}
+
+    try:
+        registry = await get_registry()
+
+        async for stream_type, chunk in stream_agent(
+            query=request.query,
+            session_id=session_id,
+            question_id=question_id,
+            tool_catalog=registry.catalog,
+            acting_user=acting_user,
+            use_checkpointing=USE_CHECKPOINTING,
+            db_uri=settings.DATABASE_URL if USE_CHECKPOINTING else None,
+        ):
+            if stream_type == "custom":
+                # Status messages from nodes via get_stream_writer()
+                if isinstance(chunk, dict) and chunk.get("type") == "status":
+                    yield _format_sse_event("status", {"message": chunk["message"]})
+
+            elif stream_type == "messages":
+                # LLM token chunks — tuple of (message, metadata)
+                msg, metadata = chunk
+                # Only stream tokens from the synthesize node
+                if (
+                    metadata.get("langgraph_node") == "synthesize"
+                    and hasattr(msg, "content")
+                    and msg.content
+                ):
+                    yield _format_sse_event("token", {"content": msg.content})
+
+            elif stream_type == "updates" and isinstance(chunk, dict):
+                # State updates after each node — collect for final metadata
+                for node_output in chunk.values():
+                    if isinstance(node_output, dict):
+                        final_state.update(node_output)
+
+        # Build metadata from final state (mirrors non-streaming QueryResponse fields)
+        final_answer = final_state.get("final_answer") or "No answer generated"
+        tools_used = final_state.get("tools_used", [])
+        duration_ms = (time.time() - start_time) * 1000
+
+        query_classification = final_state.get("query_classification")
+        query_type = query_classification.query_type if query_classification else None
+        confidence = None
+        query_analysis = final_state.get("query_analysis")
+        if query_analysis:
+            confidence = query_analysis.confidence
+
+        # Resolve capability_id
+        from ..agent.domains.capabilities import get_capability_registry
+
+        cap_registry = get_capability_registry()
+        capability_id = None
+        cap_category = None
+        if query_classification and query_classification.capability_id:
+            capability_id = query_classification.capability_id
+        else:
+            domain = query_classification.domain if query_classification else None
+            capability_id = cap_registry.infer_capability_id(domain, tools_used)
+        cap = cap_registry.get_by_id(capability_id) if capability_id else None
+        if cap:
+            cap_category = cap.category
+
+        is_final = _domain_is_final(final_state)
+        rating_target: str | None
+        if not is_final:
+            rating_target = None
+        elif "uky_rag_retrieval" in tools_used:
+            rating_target = "uky_rag"
+        else:
+            rating_target = "agent"
+
+        # Build classification info
+        classification_info: dict[str, Any] | None = None
+        if query_classification:
+            classification_info = {
+                "query_type": query_classification.query_type,
+                "confidence": query_classification.confidence,
+                "domain": query_classification.domain,
+                "reason": query_classification.reason[:200] if query_classification.reason else "",
+            }
+
+        done_data: dict[str, Any] = {
+            "success": True,
+            "response": final_answer,
+            "session_id": session_id,
+            "question_id": question_id,
+            "confidence": confidence,
+            "metadata": {
+                "agent": "access-documentation-langgraph",
+                "tool_count": len(tools_used),
+                "tools_used": tools_used,
+                "execution_strategy": final_state.get("execution_strategy", "parallel"),
+                "checkpointing_enabled": USE_CHECKPOINTING,
+                "duration_ms": duration_ms,
+                "classification": classification_info,
+                "capability_id": capability_id,
+                "is_final_response": is_final,
+                "rating_target": rating_target,
+                "question_id": question_id,
+                **({"node_trace": final_state.get("node_trace", [])} if include_trace else {}),
+            },
+        }
+        yield _format_sse_event("done", done_data)
+
+        # Log usage asynchronously (same as non-streaming path)
+        usage_logger = get_usage_logger()
+        try:
+            await asyncio.to_thread(
+                usage_logger.log_query,
+                query_text=request.query,
+                session_id=session_id,
+                question_id=question_id,
+                query_type=query_type,
+                confidence=confidence,
+                tools_used=tools_used,
+                duration_ms=duration_ms,
+                response_length=len(final_answer),
+                acting_user=acting_user,
+                success=True,
+                capability_id=capability_id,
+                category=cap_category,
+            )
+        except Exception:
+            logger.exception("Usage logging failed")
+
+        # Track query for Turnstile free-query counting
+        if not acting_user:
+            get_turnstile_guard().record_query(session_id)
+
+    except Exception as e:
+        logger.exception(f"Stream failed: {e}")
+        yield _format_sse_event(
+            "error", {"message": "Failed to process query", "code": "agent_error"}
+        )
+        # Always yield done so clients can finalize the stream
+        yield _format_sse_event("done", {"success": False, "error": str(e)})
+
+
 @router.post("/query", response_model=None)
-async def query_agent(  # noqa: PLR0912, PLR0915
+async def query_agent(
     request: QueryRequest,
     raw_request: Request,
     include_trace: bool = Query(False, description="Include node_trace in response metadata"),
-) -> QueryResponse | JSONResponse:
+) -> QueryResponse | JSONResponse | StreamingResponse:
     """Execute a query against the ACCESS Documentation Agent.
 
     User identity is resolved from the ``SESSaccess_auth`` JWT cookie set by
@@ -227,10 +387,8 @@ async def query_agent(  # noqa: PLR0912, PLR0915
         raw_request: The raw FastAPI request (for cookie access).
 
     Returns:
-        QueryResponse with answer and metadata.
-
-    Raises:
-        HTTPException: If query execution fails.
+        For capability discovery: QueryResponse (JSON) with instant answer.
+        For agent queries: StreamingResponse (SSE) with status, token, and done events.
     """
     # Resolve acting user from JWT cookie (preferred) or body fallback.
     # Body fallback uses the already-parsed QueryRequest to avoid
@@ -285,134 +443,15 @@ async def query_agent(  # noqa: PLR0912, PLR0915
     if discovery_response is not None:
         return discovery_response
 
-    start_time = time.time()
-
-    try:
-        # Get tool catalog
-        registry = await get_registry()
-
-        # Run the agent (with checkpointing if DATABASE_URL is set)
-        final_state = await run_agent(
-            query=request.query,
-            session_id=session_id,
-            question_id=question_id,
-            tool_catalog=registry.catalog,
-            acting_user=acting_user,
-            use_checkpointing=USE_CHECKPOINTING,
-            db_uri=settings.DATABASE_URL if USE_CHECKPOINTING else None,
-        )
-
-        # Extract results
-        final_answer = final_state.get("final_answer") or "No answer generated"
-        tools_used = final_state.get("tools_used", [])
-        query_analysis = final_state.get("query_analysis")
-
-        confidence = None
-        query_type = None
-        if query_analysis:
-            confidence = query_analysis.confidence
-        query_classification = final_state.get("query_classification")
-        if query_classification:
-            query_type = query_classification.query_type
-
-        # Calculate duration
-        duration_ms = (time.time() - start_time) * 1000
-
-        # Resolve capability_id — use classifier output, or infer from tools
-        from ..agent.domains.capabilities import get_capability_registry
-
-        cap_registry = get_capability_registry()
-        capability_id = None
-        cap_category = None
-        if query_classification and query_classification.capability_id:
-            capability_id = query_classification.capability_id
-        else:
-            domain = query_classification.domain if query_classification else None
-            capability_id = cap_registry.infer_capability_id(domain, tools_used)
-        cap = cap_registry.get_by_id(capability_id) if capability_id else None
-        if cap:
-            cap_category = cap.category
-
-        # Log usage for reporting (user ID is hashed, no PII stored).
-        # Run in a thread to avoid blocking the async event loop with
-        # synchronous SQLAlchemy calls.
-        usage_logger = get_usage_logger()
-        try:
-            await asyncio.to_thread(
-                usage_logger.log_query,
-                query_text=request.query,
-                session_id=session_id,
-                question_id=question_id,
-                query_type=query_type,
-                confidence=confidence,
-                tools_used=tools_used,
-                duration_ms=duration_ms,
-                response_length=len(final_answer),
-                acting_user=acting_user,
-                success=True,
-                capability_id=capability_id,
-                category=cap_category,
-            )
-        except Exception:
-            logger.exception("Usage logging failed")
-
-        # Track query for Turnstile free-query counting
-        if not acting_user:
-            get_turnstile_guard().record_query(session_id)
-
-        # Build classification summary for response
-        classification_info = None
-        if query_classification:
-            classification_info = {
-                "query_type": query_classification.query_type,
-                "confidence": query_classification.confidence,
-                "domain": query_classification.domain,
-                "reason": query_classification.reason[:200] if query_classification.reason else "",
-            }
-
-        # Determine if this is a final response or a mid-conversation turn.
-        # Domain agent responses are final only when the agent called a tool
-        # (created a ticket, posted an announcement). If the agent just produced
-        # text without calling tools, it's still gathering info from the user.
-        # The synthesis node (general pipeline) is always final.
-        is_final = _domain_is_final(final_state)
-
-        rating_target: str | None
-        if not is_final:
-            rating_target = None
-        elif "uky_rag_retrieval" in tools_used:
-            rating_target = "uky_rag"
-        else:
-            rating_target = "agent"
-
-        return QueryResponse(
-            success=True,
-            response=final_answer,
-            session_id=session_id,
-            question_id=question_id,
-            tools_used=tools_used,
-            confidence=confidence,
-            metadata={
-                "agent": "access-documentation-langgraph",
-                "tool_count": len(tools_used),
-                "execution_strategy": final_state.get("execution_strategy", "unknown"),
-                "checkpointing_enabled": USE_CHECKPOINTING,
-                "duration_ms": duration_ms,
-                "classification": classification_info,
-                "capability_id": capability_id,
-                "is_final_response": is_final,
-                "rating_target": rating_target,
-                "question_id": question_id,
-                **({"node_trace": final_state.get("node_trace", [])} if include_trace else {}),
-            },
-        )
-
-    except Exception as e:
-        logger.exception(f"Query failed: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Query execution failed: {e!s}",
-        ) from e
+    # Agent queries stream via SSE
+    return StreamingResponse(
+        _stream_events(request, acting_user, session_id, question_id, include_trace),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/health")

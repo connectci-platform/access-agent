@@ -13,6 +13,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate
+from langgraph.config import get_stream_writer
 
 from ...config import settings
 from ...llm import get_llm
@@ -317,6 +318,9 @@ async def synthesize_node(state: AgentState) -> dict[str, Any]:  # noqa: PLR0912
     Returns:
         Dict with final_answer and messages.
     """
+    writer = get_stream_writer()
+    writer({"type": "status", "message": "Generating answer..."})
+
     tracer = get_tracer("access-agent.nodes")
     query = state["query"]
     tool_results = state.get("tool_results", [])

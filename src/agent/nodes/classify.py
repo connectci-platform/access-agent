@@ -13,6 +13,7 @@ from typing import Any, Literal, cast
 
 from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
+from langgraph.config import get_stream_writer
 from pydantic import SecretStr
 
 from ...config import settings
@@ -256,6 +257,11 @@ async def classify_node(state: AgentState) -> dict[str, Any]:
     # The current query is the last message, so we take all but the last
     previous_messages = messages[:-1] if len(messages) > 1 else []
     conversation_history = _format_conversation_history(previous_messages)
+
+    # get_stream_writer() returns a no-op writer when called outside a streaming
+    # context (e.g., via run_agent/ainvoke). Safe to call unconditionally.
+    writer = get_stream_writer()
+    writer({"type": "status", "message": "Classifying query..."})
 
     with tracer.start_as_current_span(
         "agent.classify",

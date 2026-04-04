@@ -12,6 +12,8 @@ import asyncio
 import logging
 from typing import Any
 
+from langgraph.config import get_stream_writer
+
 from ...telemetry import get_tracer
 from ..state import AgentState
 from .plan import plan_node
@@ -36,6 +38,9 @@ async def rag_and_plan_node(state: AgentState) -> dict[str, Any]:
     Returns:
         Merged state update from both nodes.
     """
+    writer = get_stream_writer()
+    writer({"type": "status", "message": "Searching documentation and planning..."})
+
     tracer = get_tracer("access-agent.nodes")
 
     with tracer.start_as_current_span(
