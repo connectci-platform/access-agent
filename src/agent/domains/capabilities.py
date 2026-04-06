@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 CATEGORIES: list[Category] = [
     Category("general", "Ask a question", 0),
-    Category("support", "Get help", 1),
+    Category("support", "Create a ticket", 1),
     Category("content", "Manage content", 2),
     Category("explore", "Explore resources", 3),
     Category("analytics", "Check usage", 4),

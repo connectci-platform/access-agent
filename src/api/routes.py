@@ -142,18 +142,37 @@ def _check_capability_discovery(
     for cat in categories:
         cat_by_label[cat["label"].lower()] = cat
 
-    # "Show my options" → list all categories
+    # "Show my options" → list capabilities with example queries
+    EXAMPLE_QUERIES: dict[str, str] = {
+        "check_allocations": "What allocations are available for new researchers?",
+        "search_software": "Is Python available on Delta?",
+        "check_system_status": "Are there any system outages right now?",
+        "browse_events": "Find upcoming workshops and training events",
+        "browse_affinity_groups": "Show me affinity groups for machine learning",
+        "check_usage": "Show my resource usage on Delta last month",
+        "search_nsf_awards": "NSF awards for computational biology",
+        "search_announcements": "Recent announcements about Expanse",
+        "open_ticket": "I want to create a support ticket",
+        "report_login_problem": "I need help logging in to Anvil",
+        "report_security": "I need to report a security issue",
+        "manage_announcements": "Show my draft announcements",
+    }
+
     if normalized in ("show my options", "what can you do", "what can you help with"):
-        lines = ["Here's what I can help you with:\n"]
+        lines = ["Here are some things you can try:\n"]
         for cat in categories:
+            # Skip "general" — typing is the default
+            if cat["id"] == "general":
+                continue
             lines.append(f"**{cat['label']}**")
             for cap in cat["capabilities"]:
+                example = EXAMPLE_QUERIES.get(cap["id"], cap["description"])
                 locked = " 🔒 (login required)" if cap.get("locked") else ""
-                lines.append(f"- {cap['label']}: {cap['description']}{locked}")
+                lines.append(f'- *"{example}"*{locked}')
             lines.append("")
         if not authenticated:
             lines.append("*Some features require logging in. Log in to unlock all capabilities.*")
-        lines.append("Click a button above or just type your question!")
+        lines.append("Just type a question like one of these, or ask anything else!")
         answer = "\n".join(lines)
         return QueryResponse(
             success=True,
@@ -192,7 +211,19 @@ def _check_capability_discovery(
             for cap in caps:
                 locked = " 🔒 (login required)" if cap.get("locked") else ""
                 lines.append(f"- **{cap['label']}**: {cap['description']}{locked}")
-            lines.append("\nJust tell me what you need, or type your question!")
+
+            # Per-category example prompts
+            examples = {
+                "explore": (
+                    '\nTry asking something like *"Are there any outages right now?"* '
+                    'or *"What software is on Delta?"*'
+                ),
+                "support": (
+                    '\nTry something like *"I need help logging in"* '
+                    'or *"I want to report a security issue"*'
+                ),
+            }
+            lines.append(examples.get(cat["id"], "\nJust type your question!"))
             answer = "\n".join(lines)
 
         return QueryResponse(
@@ -205,6 +236,40 @@ def _check_capability_discovery(
             metadata={
                 "agent": "capability-discovery",
                 "capability_id": "ask_question",
+                "is_final_response": True,
+                "rating_target": None,
+                "question_id": question_id,
+            },
+        )
+
+    # Capability label match → direct prompt for that capability
+    cap_by_label: dict[str, dict[str, Any]] = {}
+    for cat in categories:
+        for cap in cat["capabilities"]:
+            cap_by_label[cap["label"].lower()] = cap
+
+    if normalized in cap_by_label:
+        cap = cap_by_label[normalized]
+        if cap.get("locked"):
+            answer = (
+                f"**{cap['label']}** requires logging in. "
+                f"{cap['description']}. Please log in to use this feature."
+            )
+        else:
+            answer = (
+                f"I can help you with that! {cap['description']}. "
+                f"What would you like to know?"
+            )
+        return QueryResponse(
+            success=True,
+            response=answer,
+            session_id=session_id,
+            question_id=question_id,
+            tools_used=[],
+            confidence="high",
+            metadata={
+                "agent": "capability-discovery",
+                "capability_id": cap["id"],
                 "is_final_response": True,
                 "rating_target": None,
                 "question_id": question_id,
