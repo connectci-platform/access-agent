@@ -142,21 +142,37 @@ def _check_capability_discovery(
     for cat in categories:
         cat_by_label[cat["label"].lower()] = cat
 
-    # "Show my options" → list all categories
+    # "Show my options" → list capabilities with example queries
+    EXAMPLE_QUERIES: dict[str, str] = {
+        "check_allocations": "What allocations are available for new researchers?",
+        "search_software": "Is Python available on Delta?",
+        "check_system_status": "Are there any system outages right now?",
+        "browse_events": "Find upcoming workshops and training events",
+        "browse_affinity_groups": "Show me affinity groups for machine learning",
+        "check_usage": "Show my resource usage on Delta last month",
+        "search_nsf_awards": "NSF awards for computational biology",
+        "search_announcements": "Recent announcements about Expanse",
+        "open_ticket": "I want to create a support ticket",
+        "report_login_problem": "I need help logging in to Anvil",
+        "report_security": "I need to report a security issue",
+        "manage_announcements": "Show my draft announcements",
+    }
+
     if normalized in ("show my options", "what can you do", "what can you help with"):
-        lines = ["Here's what I can help you with:\n"]
+        lines = ["Here are some things you can try:\n"]
         for cat in categories:
+            # Skip "general" — typing is the default
+            if cat["id"] == "general":
+                continue
             lines.append(f"**{cat['label']}**")
             for cap in cat["capabilities"]:
+                example = EXAMPLE_QUERIES.get(cap["id"], cap["description"])
                 locked = " 🔒 (login required)" if cap.get("locked") else ""
-                lines.append(f"- {cap['label']}: {cap['description']}{locked}")
+                lines.append(f'- *"{example}"*{locked}')
             lines.append("")
         if not authenticated:
             lines.append("*Some features require logging in. Log in to unlock all capabilities.*")
-        lines.append(
-            'You can also just type a question — try including keywords like '
-            '"system status", "events", "software", or "allocations".'
-        )
+        lines.append("Just type a question like one of these, or ask anything else!")
         answer = "\n".join(lines)
         return QueryResponse(
             success=True,
