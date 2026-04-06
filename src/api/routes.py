@@ -232,6 +232,23 @@ def _check_capability_discovery(
         for cap in cat["capabilities"]:
             cap_by_label[cap["label"].lower()] = cap
 
+    # Example queries for each capability — shown in the shortcircuit response
+    # to teach users how to phrase their questions.
+    SAMPLE_QUERIES: dict[str, str] = {
+        "check_allocations": "check allocations for project TG-CIS123456",
+        "search_software": "is Python available on Anvil?",
+        "check_system_status": "is Delta down right now?",
+        "browse_events": "upcoming workshops this month",
+        "browse_affinity_groups": "affinity groups related to machine learning",
+        "check_usage": "show my usage on Delta last month",
+        "search_nsf_awards": "NSF awards for computational biology",
+        "search_announcements": "recent announcements about Expanse",
+        "open_ticket": "I need help with my allocation request",
+        "report_login_problem": "I can't log in to Anvil",
+        "report_security": "I found a vulnerability on the support portal",
+        "manage_announcements": "show my draft announcements",
+    }
+
     if normalized in cap_by_label:
         cap = cap_by_label[normalized]
         if cap.get("locked"):
@@ -240,9 +257,10 @@ def _check_capability_discovery(
                 f"{cap['description']}. Please log in to use this feature."
             )
         else:
+            sample = SAMPLE_QUERIES.get(cap["id"])
+            hint = f'\n\nTry typing something like *"{sample}"*' if sample else ""
             answer = (
-                f"I can help you with that! {cap['description']}. "
-                f"What would you like to know?"
+                f"I can help with that! {cap['description']}.{hint}"
             )
         return QueryResponse(
             success=True,
