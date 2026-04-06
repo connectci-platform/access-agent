@@ -136,65 +136,25 @@ def _check_capability_discovery(
     # Strip lock emoji prefix that the frontend adds to auth-required buttons
     normalized = query.strip().removeprefix("🔒").strip().lower()
 
-    # Build lookup: category label → category object
     categories = registry.get_by_category(authenticated)
-    cat_by_label: dict[str, dict[str, Any]] = {}
-    for cat in categories:
-        cat_by_label[cat["label"].lower()] = cat
 
-    # "Show my options" → list all categories
+    # "Show my options" → list capabilities with example queries from descriptions
     if normalized in ("show my options", "what can you do", "what can you help with"):
-        lines = ["Here's what I can help you with:\n"]
+        lines = ["Here are some things you can try:\n"]
         for cat in categories:
+            # Skip "general" — typing is the default
+            if cat["id"] == "general":
+                continue
             lines.append(f"**{cat['label']}**")
             for cap in cat["capabilities"]:
+                example = cap.get("example_query") or cap["description"]
                 locked = " 🔒 (login required)" if cap.get("locked") else ""
-                lines.append(f"- {cap['label']}: {cap['description']}{locked}")
+                lines.append(f'- *"{example}"*{locked}')
             lines.append("")
         if not authenticated:
             lines.append("*Some features require logging in. Log in to unlock all capabilities.*")
-        lines.append("Click a button above or just type your question!")
+        lines.append("Just type a question like one of these, or ask anything else!")
         answer = "\n".join(lines)
-        return QueryResponse(
-            success=True,
-            response=answer,
-            session_id=session_id,
-            question_id=question_id,
-            tools_used=[],
-            confidence="high",
-            metadata={
-                "agent": "capability-discovery",
-                "capability_id": "ask_question",
-                "is_final_response": True,
-                "rating_target": None,
-                "question_id": question_id,
-            },
-        )
-
-    # Category label match → list capabilities in that category
-    if normalized in cat_by_label:
-        cat = cat_by_label[normalized]
-        caps = cat["capabilities"]
-
-        if len(caps) == 1:
-            cap = caps[0]
-            if cap.get("locked"):
-                answer = (
-                    f"**{cap['label']}** requires logging in. "
-                    f"{cap['description']}. Please log in to use this feature."
-                )
-            else:
-                answer = (
-                    f"I can help you with that! {cap['description']}. What would you like to know?"
-                )
-        else:
-            lines = [f"Here's what I can help with for **{cat['label']}**:\n"]
-            for cap in caps:
-                locked = " 🔒 (login required)" if cap.get("locked") else ""
-                lines.append(f"- **{cap['label']}**: {cap['description']}{locked}")
-            lines.append("\nJust tell me what you need, or type your question!")
-            answer = "\n".join(lines)
-
         return QueryResponse(
             success=True,
             response=answer,

@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 CATEGORIES: list[Category] = [
     Category("general", "Ask a question", 0),
-    Category("support", "Get help", 1),
+    Category("support", "Create a ticket", 1),
     Category("content", "Manage content", 2),
     Category("explore", "Explore resources", 3),
     Category("analytics", "Check usage", 4),
@@ -38,6 +38,7 @@ GENERAL_CAPABILITIES: list[Capability] = [
         "Look up allocation details and status",
         "explore",
         requires_auth=False,
+        example_query="What allocations are available for new researchers?",
     ),
     Capability(
         "search_software",
@@ -45,6 +46,7 @@ GENERAL_CAPABILITIES: list[Capability] = [
         "Find software available on ACCESS resources",
         "explore",
         requires_auth=False,
+        example_query="Is Python available on Delta?",
     ),
     Capability(
         "check_system_status",
@@ -52,6 +54,7 @@ GENERAL_CAPABILITIES: list[Capability] = [
         "See current outages and resource status",
         "explore",
         requires_auth=False,
+        example_query="Are there any system outages right now?",
     ),
     Capability(
         "browse_events",
@@ -59,6 +62,7 @@ GENERAL_CAPABILITIES: list[Capability] = [
         "Find upcoming trainings, workshops, and office hours",
         "explore",
         requires_auth=False,
+        example_query="Find upcoming workshops and training events",
     ),
     Capability(
         "browse_affinity_groups",
@@ -66,6 +70,7 @@ GENERAL_CAPABILITIES: list[Capability] = [
         "Explore community affinity groups",
         "explore",
         requires_auth=False,
+        example_query="Show me affinity groups for machine learning",
     ),
     Capability(
         "check_usage",
@@ -73,6 +78,7 @@ GENERAL_CAPABILITIES: list[Capability] = [
         "View resource usage and performance data",
         "analytics",
         requires_auth=False,
+        example_query="Show my resource usage on Delta last month",
     ),
     Capability(
         "search_nsf_awards",
@@ -80,6 +86,7 @@ GENERAL_CAPABILITIES: list[Capability] = [
         "Look up NSF award information",
         "explore",
         requires_auth=False,
+        example_query="NSF awards for computational biology",
     ),
 ]
 
@@ -163,6 +170,11 @@ class CapabilityRegistry:
                             **(
                                 {"requires_auth": True, "locked": True}
                                 if c.requires_auth and not authenticated
+                                else {}
+                            ),
+                            **(
+                                {"example_query": c.example_query}
+                                if c.example_query
                                 else {}
                             ),
                         }
