@@ -46,14 +46,14 @@ ANNOUNCEMENTS_CONFIG = DomainAgentConfig(
         Capability(
             id="search_announcements",
             label="Search announcements",
-            description="Find ACCESS news and announcements",
+            description="Recent announcements about Expanse",
             category="explore",
             requires_auth=False,
         ),
         Capability(
             id="manage_announcements",
             label="Manage your announcements",
-            description="Create, update, and delete announcements you've authored",
+            description="Show my draft announcements",
             category="content",
             requires_auth=True,
         ),

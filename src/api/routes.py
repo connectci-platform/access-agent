@@ -138,22 +138,7 @@ def _check_capability_discovery(
 
     categories = registry.get_by_category(authenticated)
 
-    # "Show my options" → list capabilities with example queries
-    EXAMPLE_QUERIES: dict[str, str] = {
-        "check_allocations": "What allocations are available for new researchers?",
-        "search_software": "Is Python available on Delta?",
-        "check_system_status": "Are there any system outages right now?",
-        "browse_events": "Find upcoming workshops and training events",
-        "browse_affinity_groups": "Show me affinity groups for machine learning",
-        "check_usage": "Show my resource usage on Delta last month",
-        "search_nsf_awards": "NSF awards for computational biology",
-        "search_announcements": "Recent announcements about Expanse",
-        "open_ticket": "I want to create a support ticket",
-        "report_login_problem": "I need help logging in to Anvil",
-        "report_security": "I need to report a security issue",
-        "manage_announcements": "Show my draft announcements",
-    }
-
+    # "Show my options" → list capabilities with example queries from descriptions
     if normalized in ("show my options", "what can you do", "what can you help with"):
         lines = ["Here are some things you can try:\n"]
         for cat in categories:
@@ -162,9 +147,8 @@ def _check_capability_discovery(
                 continue
             lines.append(f"**{cat['label']}**")
             for cap in cat["capabilities"]:
-                example = EXAMPLE_QUERIES.get(cap["id"], cap["description"])
                 locked = " 🔒 (login required)" if cap.get("locked") else ""
-                lines.append(f'- *"{example}"*{locked}')
+                lines.append(f'- *"{cap["description"]}"*{locked}')
             lines.append("")
         if not authenticated:
             lines.append("*Some features require logging in. Log in to unlock all capabilities.*")
