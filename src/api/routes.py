@@ -147,8 +147,9 @@ def _check_capability_discovery(
                 continue
             lines.append(f"**{cat['label']}**")
             for cap in cat["capabilities"]:
+                example = cap.get("example_query") or cap["description"]
                 locked = " 🔒 (login required)" if cap.get("locked") else ""
-                lines.append(f'- *"{cap["description"]}"*{locked}')
+                lines.append(f'- *"{example}"*{locked}')
             lines.append("")
         if not authenticated:
             lines.append("*Some features require logging in. Log in to unlock all capabilities.*")

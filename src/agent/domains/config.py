@@ -30,6 +30,9 @@ class Capability:
     enabled: bool = True
     """Toggle without redeploy (overridden by DISABLED_CAPABILITIES env var)."""
 
+    example_query: str = ""
+    """Example query shown in discovery responses, e.g. 'Is Python available on Delta?'"""
+
 
 @dataclass
 class Category:

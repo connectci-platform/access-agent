@@ -35,51 +35,58 @@ GENERAL_CAPABILITIES: list[Capability] = [
     Capability(
         "check_allocations",
         "Check allocations",
-        "What allocations are available for new researchers?",
+        "Look up allocation details and status",
         "explore",
         requires_auth=False,
+        example_query="What allocations are available for new researchers?",
     ),
     Capability(
         "search_software",
         "Search software",
-        "Is Python available on Delta?",
+        "Find software available on ACCESS resources",
         "explore",
         requires_auth=False,
+        example_query="Is Python available on Delta?",
     ),
     Capability(
         "check_system_status",
         "Check system status",
-        "Are there any system outages right now?",
+        "See current outages and resource status",
         "explore",
         requires_auth=False,
+        example_query="Are there any system outages right now?",
     ),
     Capability(
         "browse_events",
         "Browse events",
-        "Find upcoming workshops and training events",
+        "Find upcoming trainings, workshops, and office hours",
         "explore",
         requires_auth=False,
+        example_query="Find upcoming workshops and training events",
     ),
     Capability(
         "browse_affinity_groups",
         "Browse affinity groups",
-        "Show me affinity groups for machine learning",
+        "Explore community affinity groups",
         "explore",
         requires_auth=False,
+        example_query="Show me affinity groups for machine learning",
     ),
     Capability(
         "check_usage",
         "Check usage (XDMoD)",
-        "Show my resource usage on Delta last month",
+        "View resource usage and performance data",
         "analytics",
         requires_auth=False,
+        example_query="Show my resource usage on Delta last month",
     ),
     Capability(
         "search_nsf_awards",
         "Search NSF awards",
-        "NSF awards for computational biology",
+        "Look up NSF award information",
         "explore",
         requires_auth=False,
+        example_query="NSF awards for computational biology",
     ),
 ]
 
@@ -163,6 +170,11 @@ class CapabilityRegistry:
                             **(
                                 {"requires_auth": True, "locked": True}
                                 if c.requires_auth and not authenticated
+                                else {}
+                            ),
+                            **(
+                                {"example_query": c.example_query}
+                                if c.example_query
                                 else {}
                             ),
                         }
