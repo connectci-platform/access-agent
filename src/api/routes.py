@@ -153,7 +153,10 @@ def _check_capability_discovery(
             lines.append("")
         if not authenticated:
             lines.append("*Some features require logging in. Log in to unlock all capabilities.*")
-        lines.append("Click a button above or just type your question!")
+        lines.append(
+            'You can also just type a question — try including keywords like '
+            '"system status", "events", "software", or "allocations".'
+        )
         answer = "\n".join(lines)
         return QueryResponse(
             success=True,
@@ -192,7 +195,19 @@ def _check_capability_discovery(
             for cap in caps:
                 locked = " 🔒 (login required)" if cap.get("locked") else ""
                 lines.append(f"- **{cap['label']}**: {cap['description']}{locked}")
-            lines.append("\nJust tell me what you need, or type your question!")
+
+            # Per-category example prompts
+            examples = {
+                "explore": (
+                    '\nTry asking something like *"Are there any outages right now?"* '
+                    'or *"What software is on Delta?"*'
+                ),
+                "support": (
+                    '\nTry something like *"I need help logging in"* '
+                    'or *"I want to report a security issue"*'
+                ),
+            }
+            lines.append(examples.get(cat["id"], "\nJust type your question!"))
             answer = "\n".join(lines)
 
         return QueryResponse(
