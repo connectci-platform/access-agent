@@ -211,6 +211,40 @@ def _check_capability_discovery(
             },
         )
 
+    # Capability label match → direct prompt for that capability
+    cap_by_label: dict[str, dict[str, Any]] = {}
+    for cat in categories:
+        for cap in cat["capabilities"]:
+            cap_by_label[cap["label"].lower()] = cap
+
+    if normalized in cap_by_label:
+        cap = cap_by_label[normalized]
+        if cap.get("locked"):
+            answer = (
+                f"**{cap['label']}** requires logging in. "
+                f"{cap['description']}. Please log in to use this feature."
+            )
+        else:
+            answer = (
+                f"I can help you with that! {cap['description']}. "
+                f"What would you like to know?"
+            )
+        return QueryResponse(
+            success=True,
+            response=answer,
+            session_id=session_id,
+            question_id=question_id,
+            tools_used=[],
+            confidence="high",
+            metadata={
+                "agent": "capability-discovery",
+                "capability_id": cap["id"],
+                "is_final_response": True,
+                "rating_target": None,
+                "question_id": question_id,
+            },
+        )
+
     return None
 
 
