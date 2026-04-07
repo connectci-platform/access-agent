@@ -106,6 +106,8 @@ def _rag_response_out_of_scope(result: dict[str, Any]) -> bool:
         "not related to",
         "i can only answer questions about",
         "i can only help with",
+        "no documents are currently available",
+        "documents may not have been embedded",
     ]
     return any(phrase in lower for phrase in out_of_scope_phrases)
 
