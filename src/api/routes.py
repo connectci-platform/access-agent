@@ -119,7 +119,7 @@ def _domain_is_final(result: Any) -> bool:
     return result.get("domain_completed") is not False
 
 
-def _check_capability_discovery(
+async def _check_capability_discovery(
     query: str,
     authenticated: bool,
     session_id: str,
@@ -142,7 +142,7 @@ def _check_capability_discovery(
 
     # Get categories — scoped or general
     if resource_context:
-        scoped = registry.get_by_category_scoped(resource_context, authenticated)
+        scoped = await registry.get_by_category_scoped(resource_context, authenticated)
         categories = scoped["categories"] if scoped else registry.get_by_category(authenticated)
     else:
         categories = registry.get_by_category(authenticated)
@@ -408,7 +408,7 @@ async def query_agent(
     # Answer them directly from the registry — no LLM/RAG call needed.
     # Deliberately bypasses usage logging and Turnstile free-query counting
     # since discovery is navigation with no LLM/MCP cost.
-    discovery_response = _check_capability_discovery(
+    discovery_response = await _check_capability_discovery(
         request.query,
         acting_user is not None,
         session_id,
@@ -484,7 +484,7 @@ async def get_capabilities(
 
     # RP-scoped response
     if resource_context:
-        scoped = registry.get_by_category_scoped(resource_context, authenticated)
+        scoped = await registry.get_by_category_scoped(resource_context, authenticated)
         if scoped is not None:
             return scoped
         # Unknown slug — fall through to standard response

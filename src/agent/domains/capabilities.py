@@ -224,7 +224,7 @@ class CapabilityRegistry:
 
     # ── Resource-scoped capabilities ─────────────────────────────────
 
-    def get_by_category_scoped(
+    async def get_by_category_scoped(
         self, slug: str, authenticated: bool
     ) -> dict[str, Any] | None:
         """Build RP-scoped capabilities response.
@@ -235,6 +235,7 @@ class CapabilityRegistry:
         from ...services.rp_cache import get_rp_cache
 
         cache = get_rp_cache()
+        await cache.ensure_loaded()
         rp_info = cache.get(slug)
         if rp_info is None:
             return None
