@@ -59,6 +59,7 @@ class QueryRequest(BaseModel):
     question_id: str | None = Field(None, description="Unique question ID")
     acting_user: str | None = Field(None, description="Transition fallback: acting user from body")
     turnstile_token: str | None = Field(None, description="Cloudflare Turnstile response token")
+    resource_context: str | None = Field(None, description="RP slug for resource-scoped queries (e.g. 'delta')")
 
 
 class QueryResponse(BaseModel):
@@ -123,12 +124,15 @@ def _check_capability_discovery(
     authenticated: bool,
     session_id: str,
     question_id: str,
+    resource_context: str | None = None,
 ) -> QueryResponse | None:
     """Return a direct response for capability discovery queries.
 
     The frontend sends category labels ("Get help", "Explore resources") and
     "Show my options" as messages.  These are answered from the capability
     registry — no LLM or RAG call needed.
+
+    When ``resource_context`` is set, uses RP-scoped capabilities.
     """
     from ..agent.domains.capabilities import get_capability_registry
 
@@ -136,7 +140,12 @@ def _check_capability_discovery(
     # Strip lock emoji prefix that the frontend adds to auth-required buttons
     normalized = query.strip().removeprefix("🔒").strip().lower()
 
-    categories = registry.get_by_category(authenticated)
+    # Get categories — scoped or general
+    if resource_context:
+        scoped = registry.get_by_category_scoped(resource_context, authenticated)
+        categories = scoped["categories"] if scoped else registry.get_by_category(authenticated)
+    else:
+        categories = registry.get_by_category(authenticated)
 
     # "Show my options" → list capabilities with example queries from descriptions
     if normalized in ("show my options", "what can you do", "what can you help with"):
@@ -203,6 +212,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
             question_id=question_id,
             tool_catalog=registry.catalog,
             acting_user=acting_user,
+            resource_context=request.resource_context,
             use_checkpointing=USE_CHECKPOINTING,
             db_uri=settings.DATABASE_URL if USE_CHECKPOINTING else None,
         ):
@@ -403,6 +413,7 @@ async def query_agent(
         acting_user is not None,
         session_id,
         question_id,
+        resource_context=request.resource_context,
     )
     if discovery_response is not None:
         return discovery_response
@@ -451,11 +462,17 @@ async def health_check() -> dict[str, Any]:
 
 
 @router.get("/capabilities")
-async def get_capabilities(raw_request: Request) -> dict[str, Any]:
+async def get_capabilities(
+    raw_request: Request,
+    resource_context: str | None = Query(None, description="RP slug for resource-scoped capabilities"),
+) -> dict[str, Any]:
     """Return available capabilities grouped by category.
 
     Fast, in-memory lookup — no external calls.  Anonymous users see all
     capabilities but auth-required ones are marked ``locked: true``.
+
+    When ``resource_context`` is provided, returns RP-scoped capabilities
+    with suggested questions for that resource's documented sections.
     """
     from ..agent.domains.capabilities import get_capability_registry
 
@@ -464,6 +481,14 @@ async def get_capabilities(raw_request: Request) -> dict[str, Any]:
     authenticated = user is not None
 
     registry = get_capability_registry()
+
+    # RP-scoped response
+    if resource_context:
+        scoped = registry.get_by_category_scoped(resource_context, authenticated)
+        if scoped is not None:
+            return scoped
+        # Unknown slug — fall through to standard response
+
     return {
         "categories": registry.get_by_category(authenticated),
         "is_authenticated": authenticated,
