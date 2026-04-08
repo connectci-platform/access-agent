@@ -136,9 +136,10 @@ class UKYClient:
                 if rp_name:
                     span.set_attribute("uky_rag.rp_name", rp_name)
 
+                rp_suffix = f" (rp={rp_name}, in_scope={in_scope})" if rp_name else ""
                 logger.info(
-                    f"UKY RAG ({endpoint_type}): got {len(answer)} char response in {duration_ms}ms"
-                    + (f" (rp={rp_name}, in_scope={in_scope})" if rp_name else "")
+                    f"UKY RAG ({endpoint_type}): got {len(answer)} char response "
+                    f"in {duration_ms}ms{rp_suffix}"
                 )
 
                 return UKYResponse(

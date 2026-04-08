@@ -210,11 +210,7 @@ class CapabilityRegistry:
                                 if c.requires_auth and not authenticated
                                 else {}
                             ),
-                            **(
-                                {"example_query": c.example_query}
-                                if c.example_query
-                                else {}
-                            ),
+                            **({"example_query": c.example_query} if c.example_query else {}),
                         }
                         for c in cat_caps
                     ],
@@ -224,9 +220,52 @@ class CapabilityRegistry:
 
     # ── Resource-scoped capabilities ─────────────────────────────────
 
-    async def get_by_category_scoped(
-        self, slug: str, authenticated: bool
+    def _build_scoped_cap_dict(
+        self,
+        capability_id: str,
+        example_query: str,
+        authenticated: bool,
     ) -> dict[str, Any] | None:
+        """Build a single capability dict for an RP-scoped category.
+
+        Returns None if the capability isn't in the registry.
+        """
+        cap = self._capabilities.get(capability_id)
+        if not cap:
+            return None
+        cap_dict: dict[str, Any] = {
+            "id": cap.id,
+            "label": cap.label,
+            "description": cap.description,
+            "example_query": example_query,
+        }
+        if cap.requires_auth and not authenticated:
+            cap_dict["requires_auth"] = True
+            cap_dict["locked"] = True
+        return cap_dict
+
+    def _build_scoped_welcome(self, title: str, populated_sections: list[str]) -> str:
+        """Build a contextual welcome message from a resource group's sections."""
+        section_labels = [
+            SECTION_QUESTION_MAP[s]["label"].lower()
+            for s in populated_sections
+            if s in SECTION_QUESTION_MAP
+        ]
+        if not section_labels:
+            return f"Hi! Ask me anything about {title} or ACCESS."
+
+        if len(section_labels) == 1:
+            topics = section_labels[0]
+        elif len(section_labels) == 2:
+            topics = f"{section_labels[0]} and {section_labels[1]}"
+        else:
+            topics = ", ".join(section_labels[:-1]) + f", and {section_labels[-1]}"
+        return (
+            f"Hi! I can help with questions about {topics} on {title} "
+            f"— or ask me anything about ACCESS."
+        )
+
+    async def get_by_category_scoped(self, slug: str, authenticated: bool) -> dict[str, Any] | None:
         """Build RP-scoped capabilities response.
 
         Returns a dict with ``resource_context``, ``categories``, and
@@ -248,84 +287,61 @@ class CapabilityRegistry:
             mapping = SECTION_QUESTION_MAP.get(section)
             if not mapping:
                 continue
-            resource_caps.append({
-                "id": "ask_about_resource",
-                "label": mapping["label"],
-                "description": mapping["description"].format(title=title),
-                "example_query": mapping["example_query"].format(title=title),
-                "section": section,
-            })
+            resource_caps.append(
+                {
+                    "id": "ask_about_resource",
+                    "label": mapping["label"],
+                    "description": mapping["description"].format(title=title),
+                    "example_query": mapping["example_query"].format(title=title),
+                    "section": section,
+                }
+            )
 
         categories: list[dict[str, Any]] = []
 
         if resource_caps:
-            categories.append({
-                "id": "resource_docs",
-                "label": f"About {title}",
-                "order": 0,
-                "capabilities": resource_caps,
-            })
+            categories.append(
+                {
+                    "id": "resource_docs",
+                    "label": f"About {title}",
+                    "order": 0,
+                    "capabilities": resource_caps,
+                }
+            )
 
         # Always-present: support
-        support_cap = self._capabilities.get("open_ticket")
+        support_cap = self._build_scoped_cap_dict(
+            "open_ticket", f"Get help with a {title} issue", authenticated
+        )
         if support_cap:
-            cap_dict: dict[str, Any] = {
-                "id": support_cap.id,
-                "label": support_cap.label,
-                "description": support_cap.description,
-                "example_query": f"Get help with a {title} issue",
-            }
-            if support_cap.requires_auth and not authenticated:
-                cap_dict["requires_auth"] = True
-                cap_dict["locked"] = True
-            categories.append({
-                "id": "support",
-                "label": "Create a ticket",
-                "order": 1,
-                "capabilities": [cap_dict],
-            })
+            categories.append(
+                {
+                    "id": "support",
+                    "label": "Create a ticket",
+                    "order": 1,
+                    "capabilities": [support_cap],
+                }
+            )
 
         # Always-present: analytics
-        usage_cap = self._capabilities.get("check_usage")
+        usage_cap = self._build_scoped_cap_dict(
+            "check_usage", f"Check my usage on {title}", authenticated
+        )
         if usage_cap:
-            cap_dict = {
-                "id": usage_cap.id,
-                "label": usage_cap.label,
-                "description": usage_cap.description,
-                "example_query": f"Check my usage on {title}",
-            }
-            if usage_cap.requires_auth and not authenticated:
-                cap_dict["requires_auth"] = True
-                cap_dict["locked"] = True
-            categories.append({
-                "id": "analytics",
-                "label": "Check usage",
-                "order": 2,
-                "capabilities": [cap_dict],
-            })
-
-        # Build a contextual welcome message from populated sections
-        section_labels = [
-            SECTION_QUESTION_MAP[s]["label"].lower()
-            for s in rp_info.populated_sections
-            if s in SECTION_QUESTION_MAP
-        ]
-        if section_labels:
-            if len(section_labels) == 1:
-                topics = section_labels[0]
-            elif len(section_labels) == 2:
-                topics = f"{section_labels[0]} and {section_labels[1]}"
-            else:
-                topics = ", ".join(section_labels[:-1]) + f", and {section_labels[-1]}"
-            welcome_message = f"Hi! I can help with {topics} on {title} — or ask me anything about ACCESS."
-        else:
-            welcome_message = f"Hi! Ask me anything about {title} or ACCESS."
+            categories.append(
+                {
+                    "id": "analytics",
+                    "label": "Check usage",
+                    "order": 2,
+                    "capabilities": [usage_cap],
+                }
+            )
 
         return {
             "resource_context": {"slug": slug, "title": title},
             "categories": categories,
             "is_authenticated": authenticated,
-            "welcome_message": welcome_message,
+            "welcome_message": self._build_scoped_welcome(title, rp_info.populated_sections),
         }
 
     # ── Agent self-knowledge ──────────────────────────────────────────

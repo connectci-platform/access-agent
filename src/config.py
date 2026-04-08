@@ -57,7 +57,7 @@ class Settings(BaseSettings):
 
     # Resource Provider section cache
     RP_CACHE_TTL_SECONDS: int = 1800  # 30 minutes
-    DRUPAL_RESOURCES_URL: str = "https://support.access-ci.org/api/resources"
+    DRUPAL_RESOURCE_GROUPS_URL: str = "https://support.access-ci.org/api/resource-groups"
 
     # Database (checkpointing)
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/langgraph"

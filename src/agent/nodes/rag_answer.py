@@ -79,20 +79,26 @@ def _get_threshold_for_query_type(query_type: str) -> float:
 
 
 def _rag_response_out_of_scope(result: dict[str, Any]) -> bool:
-    """Heuristic: check if a scoped RAG response indicates out-of-scope.
+    """Check if a scoped RAG response indicates out-of-scope.
 
-    Uses the UKY `in_scope` field when available; otherwise falls back to
-    text patterns in the response. Will be simplified once UKY ships the
-    `in_scope` boolean.
+    Prefers UKY's `in_scope` boolean when present, falling back to text
+    pattern matching for older UKY deployments that don't return the field.
+
+    TODO: drop the text-pattern fallback once UKY deployments reliably
+    return `in_scope` on all responses.
     """
-    # Check in_scope from UKYResponse stored as RAGMatch
-    rag_matches = result.get("rag_matches", [])
-    # in_scope is not on RAGMatch — check the final_answer text instead
+    # Authoritative signal from UKY when available
+    in_scope = result.get("uky_in_scope")
+    if in_scope is not None:
+        return in_scope is False
+
+    # Fallback: text pattern matching on the response
     answer = result.get("final_answer", "")
     if not answer:
-        # No final answer (combined query) — check the RAG match answer
-        if rag_matches:
-            answer = rag_matches[0].answer if hasattr(rag_matches[0], "answer") else ""
+        # No final answer (combined query) — fall back to the first RAG match
+        rag_matches = result.get("rag_matches", [])
+        if rag_matches and hasattr(rag_matches[0], "answer"):
+            answer = rag_matches[0].answer
 
     if not answer:
         return False
@@ -177,6 +183,7 @@ async def _ask_uky(
                 "tools_used": ["uky_rag_retrieval"],
                 "rag_matches": [rag_match],
                 "rag_used": True,
+                "uky_in_scope": uky_response.in_scope,
             }
 
         # For combined/dynamic queries, store the answer for synthesis with tool results
@@ -185,6 +192,7 @@ async def _ask_uky(
         return {
             "rag_matches": [rag_match],
             "rag_used": True,
+            "uky_in_scope": uky_response.in_scope,
         }
 
     except Exception as e:
@@ -360,9 +368,7 @@ async def rag_answer_node(state: AgentState) -> dict[str, object]:
 
         # Scoped-RAG fallback: if response looks out-of-scope, retry general
         if result is not None and resource_context and _rag_response_out_of_scope(result):
-            logger.info(
-                f"Scoped RAG for '{resource_context}' looks out-of-scope, retrying general"
-            )
+            logger.info(f"Scoped RAG for '{resource_context}' looks out-of-scope, retrying general")
             span.set_attribute("rag.scoped_fallback", True)
             result = await _ask_uky(
                 search_query=search_query,

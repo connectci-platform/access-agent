@@ -120,6 +120,7 @@ elif settings.ALLOWED_ORIGINS:
 else:
     allowed_origins = [
         "https://accessmatch.ddev.site",
+        "http://accessmatch.ddev.site",
         "http://localhost:5173",
         "http://localhost:3000",
     ]

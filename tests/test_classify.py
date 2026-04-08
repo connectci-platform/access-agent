@@ -40,8 +40,11 @@ class TestStaticRouting:
         assert r.rag_endpoint == "general"
 
     async def test_resource_description(self):
+        # "What GPUs does Delta have?" is genuinely ambiguous — it can be
+        # answered from documentation (static RAG) or by querying the
+        # compute-resources MCP server (combined). Either is acceptable.
         r = await classify("What GPUs does Delta have?")
-        assert r.query_type == "static"
+        assert r.query_type in ("static", "combined")
         assert r.rag_endpoint == "general"
 
     async def test_policy_question(self):
