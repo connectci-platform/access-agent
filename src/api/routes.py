@@ -461,6 +461,37 @@ async def health_check() -> dict[str, Any]:
     return result
 
 
+@router.get("/capabilities/personalized")
+async def get_personalized_capabilities(raw_request: Request) -> dict[str, Any]:
+    """Return user-specific context and highlighted capabilities.
+
+    Requires authentication (JWT cookie).  Fetches existing user data
+    from Drupal JSON:API: allocations, affinity groups, coordinator
+    status, institution, HPC experience.
+
+    Results are cached per-user with a 5-minute TTL.
+    """
+    user, cookie_present = get_acting_user_from_cookie(raw_request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    jwt_cookie = raw_request.cookies.get("SESSaccess_auth", "")
+
+    from ..services.drupal_profile import get_profile_fetcher
+
+    fetcher = get_profile_fetcher()
+    profile = await fetcher.get_profile(user, jwt_cookie)
+
+    return {
+        "user": {
+            "name": profile.name,
+            "access_id": profile.access_id,
+        },
+        "highlighted_capabilities": profile.highlighted_capabilities(),
+        "context": profile.to_context_dict(),
+    }
+
+
 @router.get("/capabilities")
 async def get_capabilities(
     raw_request: Request,
