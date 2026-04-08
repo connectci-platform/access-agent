@@ -3,6 +3,9 @@
 Categories define UI grouping.  General capabilities cover the RAG+tools pipeline.
 Domain capabilities come from DomainAgentConfig.capabilities.  Everything is
 aggregated here so consumers have one place to query.
+
+For resource-scoped responses, the registry builds RP-specific capabilities
+from the section-to-question mapping and the RPSectionCache.
 """
 
 import logging
@@ -11,6 +14,41 @@ from typing import Any
 from .config import Capability, Category
 
 logger = logging.getLogger(__name__)
+
+# ── Section-to-question mapping for RP-scoped capabilities ──────────────
+
+SECTION_QUESTION_MAP: dict[str, dict[str, str]] = {
+    "login": {
+        "label": "Login",
+        "description": "Get help logging in to {title}",
+        "example_query": "How do I log in to {title}?",
+    },
+    "file_transfer": {
+        "label": "File transfer",
+        "description": "Learn about file transfer options on {title}",
+        "example_query": "How do I transfer files to {title}?",
+    },
+    "storage": {
+        "label": "Storage",
+        "description": "Explore storage options and quotas on {title}",
+        "example_query": "What storage is available on {title}?",
+    },
+    "queue_specs": {
+        "label": "Job submission",
+        "description": "Learn about queues and job submission on {title}",
+        "example_query": "How do I submit a job on {title}?",
+    },
+    "top_software": {
+        "label": "Software",
+        "description": "See frequently used software on {title}",
+        "example_query": "What software is available on {title}?",
+    },
+    "datasets": {
+        "label": "Datasets",
+        "description": "Browse datasets available on {title}",
+        "example_query": "What datasets are available on {title}?",
+    },
+}
 
 # ── Categories ────────────────────────────────────────────────────────────
 
@@ -172,17 +210,139 @@ class CapabilityRegistry:
                                 if c.requires_auth and not authenticated
                                 else {}
                             ),
-                            **(
-                                {"example_query": c.example_query}
-                                if c.example_query
-                                else {}
-                            ),
+                            **({"example_query": c.example_query} if c.example_query else {}),
                         }
                         for c in cat_caps
                     ],
                 }
             )
         return result
+
+    # ── Resource-scoped capabilities ─────────────────────────────────
+
+    def _build_scoped_cap_dict(
+        self,
+        capability_id: str,
+        example_query: str,
+        authenticated: bool,
+    ) -> dict[str, Any] | None:
+        """Build a single capability dict for an RP-scoped category.
+
+        Returns None if the capability isn't in the registry.
+        """
+        cap = self._capabilities.get(capability_id)
+        if not cap:
+            return None
+        cap_dict: dict[str, Any] = {
+            "id": cap.id,
+            "label": cap.label,
+            "description": cap.description,
+            "example_query": example_query,
+        }
+        if cap.requires_auth and not authenticated:
+            cap_dict["requires_auth"] = True
+            cap_dict["locked"] = True
+        return cap_dict
+
+    def _build_scoped_welcome(self, title: str, populated_sections: list[str]) -> str:
+        """Build a contextual welcome message from a resource group's sections."""
+        section_labels = [
+            SECTION_QUESTION_MAP[s]["label"].lower()
+            for s in populated_sections
+            if s in SECTION_QUESTION_MAP
+        ]
+        if not section_labels:
+            return f"Hi! Ask me anything about {title} or ACCESS."
+
+        if len(section_labels) == 1:
+            topics = section_labels[0]
+        elif len(section_labels) == 2:
+            topics = f"{section_labels[0]} and {section_labels[1]}"
+        else:
+            topics = ", ".join(section_labels[:-1]) + f", and {section_labels[-1]}"
+        return (
+            f"Hi! I can help with questions about {topics} on {title} "
+            f"— or ask me anything about ACCESS."
+        )
+
+    async def get_by_category_scoped(self, slug: str, authenticated: bool) -> dict[str, Any] | None:
+        """Build RP-scoped capabilities response.
+
+        Returns a dict with ``resource_context``, ``categories``, and
+        ``is_authenticated`` — or None if the slug isn't in the cache.
+        """
+        from ...services.rp_cache import get_rp_cache
+
+        cache = get_rp_cache()
+        await cache.ensure_loaded()
+        rp_info = cache.get(slug)
+        if rp_info is None:
+            return None
+
+        title = rp_info.title
+
+        # Build resource_docs category from populated sections
+        resource_caps = []
+        for section in rp_info.populated_sections:
+            mapping = SECTION_QUESTION_MAP.get(section)
+            if not mapping:
+                continue
+            resource_caps.append(
+                {
+                    "id": "ask_about_resource",
+                    "label": mapping["label"],
+                    "description": mapping["description"].format(title=title),
+                    "example_query": mapping["example_query"].format(title=title),
+                    "section": section,
+                }
+            )
+
+        categories: list[dict[str, Any]] = []
+
+        if resource_caps:
+            categories.append(
+                {
+                    "id": "resource_docs",
+                    "label": f"About {title}",
+                    "order": 0,
+                    "capabilities": resource_caps,
+                }
+            )
+
+        # Always-present: support
+        support_cap = self._build_scoped_cap_dict(
+            "open_ticket", f"Get help with a {title} issue", authenticated
+        )
+        if support_cap:
+            categories.append(
+                {
+                    "id": "support",
+                    "label": "Create a ticket",
+                    "order": 1,
+                    "capabilities": [support_cap],
+                }
+            )
+
+        # Always-present: analytics
+        usage_cap = self._build_scoped_cap_dict(
+            "check_usage", f"Check my usage on {title}", authenticated
+        )
+        if usage_cap:
+            categories.append(
+                {
+                    "id": "analytics",
+                    "label": "Check usage",
+                    "order": 2,
+                    "capabilities": [usage_cap],
+                }
+            )
+
+        return {
+            "resource_context": {"slug": slug, "title": title},
+            "categories": categories,
+            "is_authenticated": authenticated,
+            "welcome_message": self._build_scoped_welcome(title, rp_info.populated_sections),
+        }
 
     # ── Agent self-knowledge ──────────────────────────────────────────
 

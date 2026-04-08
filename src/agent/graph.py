@@ -389,6 +389,7 @@ async def run_agent(
     question_id: str,
     tool_catalog: "ToolCatalog",
     acting_user: str | None = None,
+    resource_context: str | None = None,
     use_checkpointing: bool = False,
     db_uri: str | None = None,
 ) -> AgentState:
@@ -402,6 +403,7 @@ async def run_agent(
         question_id: Question identifier.
         tool_catalog: MCP tool catalog.
         acting_user: ACCESS ID of user performing action (e.g., jsmith@access-ci.org).
+        resource_context: RP slug for resource-scoped queries (e.g. 'delta').
         use_checkpointing: Whether to use PostgreSQL checkpointing.
         db_uri: Database URI for checkpointing.
 
@@ -429,6 +431,7 @@ async def run_agent(
             question_id=question_id,
             tool_catalog=tool_catalog,
             acting_user=acting_user,
+            resource_context=resource_context,
         )
 
         # Run the graph
@@ -485,6 +488,7 @@ async def stream_agent(
     question_id: str,
     tool_catalog: "ToolCatalog",
     acting_user: str | None = None,
+    resource_context: str | None = None,
     use_checkpointing: bool = False,
     db_uri: str | None = None,
 ) -> AsyncGenerator[tuple[str, Any], None]:
@@ -501,6 +505,7 @@ async def stream_agent(
         question_id: Question identifier.
         tool_catalog: MCP tool catalog.
         acting_user: ACCESS ID of user performing action.
+        resource_context: RP slug for resource-scoped queries (e.g. 'delta').
         use_checkpointing: Whether to use PostgreSQL checkpointing.
         db_uri: Database URI for checkpointing.
 
@@ -526,6 +531,7 @@ async def stream_agent(
             question_id=question_id,
             tool_catalog=tool_catalog,
             acting_user=acting_user,
+            resource_context=resource_context,
         )
 
         stream_mode = ["custom", "messages", "updates"]

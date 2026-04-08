@@ -26,6 +26,7 @@ class UKYResponse(BaseModel):
     response: str
     endpoint_type: Literal["general", "xdmod"]
     duration_ms: int = 0
+    in_scope: bool | None = None
 
 
 class UKYClient:
@@ -67,6 +68,7 @@ class UKYClient:
         endpoint_type: Literal["general", "xdmod"],
         session_id: str = "",
         question_id: str = "",
+        rp_name: str | None = None,
     ) -> UKYResponse:
         """Send a query to a UKY RAG endpoint.
 
@@ -75,6 +77,8 @@ class UKYClient:
             endpoint_type: Which endpoint to use ("general" or "xdmod").
             session_id: Session identifier for tracking.
             question_id: Question identifier for tracking.
+            rp_name: RP slug for resource-scoped queries (e.g. 'delta').
+                     Routes to that RP's vector database when set.
 
         Returns:
             UKYResponse with the answer text.
@@ -89,7 +93,7 @@ class UKYClient:
 
         headers = {
             "X-API-KEY": self._api_key,
-            "X-Origin": "access-agent",
+            "X-Origin": rp_name or "access-agent",
             "Content-Type": "application/json",
         }
         if session_id:
@@ -97,19 +101,24 @@ class UKYClient:
         if question_id:
             headers["X-Query-ID"] = question_id
 
+        body: dict[str, str] = {"query": query}
+        if rp_name:
+            body["rp_name"] = rp_name
+
         with tracer.start_as_current_span(
             "uky_rag.ask",
             attributes={
                 "uky_rag.endpoint_type": endpoint_type,
                 "uky_rag.url": url,
                 "uky_rag.query_length": len(query),
+                **({"uky_rag.rp_name": rp_name} if rp_name else {}),
             },
         ) as span:
             start_time = time.time()
             try:
                 response = await client.post(
                     url,
-                    json={"query": query},
+                    json=body,
                     headers=headers,
                 )
                 duration_ms = int((time.time() - start_time) * 1000)
@@ -120,16 +129,24 @@ class UKYClient:
                 data = response.json()
 
                 answer = data.get("response", "")
+                in_scope = data.get("in_scope")  # None until UKY implements it
                 span.set_attribute("uky_rag.answer_length", len(answer))
+                if in_scope is not None:
+                    span.set_attribute("uky_rag.in_scope", in_scope)
+                if rp_name:
+                    span.set_attribute("uky_rag.rp_name", rp_name)
 
+                rp_suffix = f" (rp={rp_name}, in_scope={in_scope})" if rp_name else ""
                 logger.info(
-                    f"UKY RAG ({endpoint_type}): got {len(answer)} char response in {duration_ms}ms"
+                    f"UKY RAG ({endpoint_type}): got {len(answer)} char response "
+                    f"in {duration_ms}ms{rp_suffix}"
                 )
 
                 return UKYResponse(
                     response=answer,
                     endpoint_type=endpoint_type,
                     duration_ms=duration_ms,
+                    in_scope=in_scope,
                 )
 
             except httpx.HTTPStatusError as e:

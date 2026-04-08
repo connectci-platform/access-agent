@@ -78,6 +78,46 @@ def _get_threshold_for_query_type(query_type: str) -> float:
     return settings.RAG_THRESHOLD_FALLBACK
 
 
+def _rag_response_out_of_scope(result: dict[str, Any]) -> bool:
+    """Check if a scoped RAG response indicates out-of-scope.
+
+    Prefers UKY's `in_scope` boolean when present, falling back to text
+    pattern matching for older UKY deployments that don't return the field.
+
+    TODO: drop the text-pattern fallback once UKY deployments reliably
+    return `in_scope` on all responses.
+    """
+    # Authoritative signal from UKY when available
+    in_scope = result.get("uky_in_scope")
+    if in_scope is not None:
+        return in_scope is False
+
+    # Fallback: text pattern matching on the response
+    answer = result.get("final_answer", "")
+    if not answer:
+        # No final answer (combined query) — fall back to the first RAG match
+        rag_matches = result.get("rag_matches", [])
+        if rag_matches and hasattr(rag_matches[0], "answer"):
+            answer = rag_matches[0].answer
+
+    if not answer:
+        return False
+
+    lower = answer.lower()
+    out_of_scope_phrases = [
+        "outside the scope",
+        "outside of the scope",
+        "don't have information about that",
+        "do not have information about that",
+        "not related to",
+        "i can only answer questions about",
+        "i can only help with",
+        "no documents are currently available",
+        "documents may not have been embedded",
+    ]
+    return any(phrase in lower for phrase in out_of_scope_phrases)
+
+
 async def _ask_uky(
     search_query: str,
     query_type: str,
@@ -85,6 +125,7 @@ async def _ask_uky(
     session_id: str,
     question_id: str,
     span: Span,
+    rp_name: str | None = None,
 ) -> dict[str, Any] | None:
     """Query a UKY RAG endpoint and return a state update.
 
@@ -95,6 +136,7 @@ async def _ask_uky(
         session_id: Session identifier.
         question_id: Question identifier.
         span: Active OpenTelemetry span.
+        rp_name: RP slug for resource-scoped queries (e.g. 'delta').
 
     Returns:
         State update dict, or None if UKY should be skipped/failed.
@@ -110,6 +152,7 @@ async def _ask_uky(
             endpoint_type=rag_endpoint,
             session_id=session_id,
             question_id=question_id,
+            rp_name=rp_name,
         )
 
         if not uky_response.response:
@@ -140,6 +183,7 @@ async def _ask_uky(
                 "tools_used": ["uky_rag_retrieval"],
                 "rag_matches": [rag_match],
                 "rag_used": True,
+                "uky_in_scope": uky_response.in_scope,
             }
 
         # For combined/dynamic queries, store the answer for synthesis with tool results
@@ -148,6 +192,7 @@ async def _ask_uky(
         return {
             "rag_matches": [rag_match],
             "rag_used": True,
+            "uky_in_scope": uky_response.in_scope,
         }
 
     except Exception as e:
@@ -310,6 +355,7 @@ async def rag_answer_node(state: AgentState) -> dict[str, object]:
         # input. To re-enable for slam-dunk scenarios: call _search_pgvector()
         # when result is None. The function and qa_client.py are intact.
         effective_endpoint = rag_endpoint or "general"
+        resource_context = state.get("resource_context")
         result = await _ask_uky(
             search_query=search_query,
             query_type=query_type,
@@ -317,7 +363,23 @@ async def rag_answer_node(state: AgentState) -> dict[str, object]:
             session_id=state.get("session_id", ""),
             question_id=state.get("question_id", ""),
             span=span,
+            rp_name=resource_context,
         )
+
+        # Scoped-RAG fallback: if response looks out-of-scope, retry general
+        if result is not None and resource_context and _rag_response_out_of_scope(result):
+            logger.info(f"Scoped RAG for '{resource_context}' looks out-of-scope, retrying general")
+            span.set_attribute("rag.scoped_fallback", True)
+            result = await _ask_uky(
+                search_query=search_query,
+                query_type=query_type,
+                rag_endpoint=effective_endpoint,
+                session_id=state.get("session_id", ""),
+                question_id=state.get("question_id", ""),
+                span=span,
+                rp_name=None,
+            )
+
         if result is None:
             logger.info("No UKY result — continuing with empty RAG context")
             result = {"rag_matches": [], "rag_used": False}

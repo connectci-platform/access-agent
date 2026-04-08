@@ -55,6 +55,10 @@ class Settings(BaseSettings):
         """Resolve UKY RAG API key, falling back to ACCESS_AI_API_KEY."""
         return self.UKY_RAG_API_KEY or self.ACCESS_AI_API_KEY
 
+    # Resource Provider section cache
+    RP_CACHE_TTL_SECONDS: int = 1800  # 30 minutes
+    DRUPAL_RESOURCE_GROUPS_URL: str = "https://support.access-ci.org/api/resource-groups"
+
     # Database (checkpointing)
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/langgraph"
 
