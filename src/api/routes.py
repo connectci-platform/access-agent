@@ -194,6 +194,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
     session_id: str,
     question_id: str,
     include_trace: bool,
+    personalization_context: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Translate LangGraph stream chunks into SSE events.
 
@@ -213,6 +214,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
             tool_catalog=registry.catalog,
             acting_user=acting_user,
             resource_context=request.resource_context,
+            personalization_context=personalization_context,
             use_checkpointing=USE_CHECKPOINTING,
             db_uri=settings.DATABASE_URL if USE_CHECKPOINTING else None,
         ):
@@ -418,9 +420,26 @@ async def query_agent(
     if discovery_response is not None:
         return discovery_response
 
+    # Fetch personalization context for authenticated users
+    personalization_context: str | None = None
+    if acting_user:
+        jwt_cookie = raw_request.cookies.get("SESSaccess_auth", "")
+        if jwt_cookie:
+            try:
+                from ..services.drupal_profile import get_profile_fetcher
+
+                fetcher = get_profile_fetcher()
+                profile = await fetcher.get_profile(acting_user, jwt_cookie)
+                personalization_context = profile.to_system_prompt_section() or None
+            except Exception:
+                logger.warning("Failed to fetch personalization context", exc_info=True)
+
     # Agent queries stream via SSE
     return StreamingResponse(
-        _stream_events(request, acting_user, session_id, question_id, include_trace),
+        _stream_events(
+            request, acting_user, session_id, question_id, include_trace,
+            personalization_context=personalization_context,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

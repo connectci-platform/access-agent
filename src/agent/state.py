@@ -183,6 +183,9 @@ class AgentState(TypedDict):
         str | None, "ACCESS ID of user performing action (e.g., jsmith@access-ci.org)"
     ]
     resource_context: Annotated[str | None, "RP slug for resource-scoped queries (e.g. 'delta')"]
+    personalization_context: Annotated[
+        str | None, "Pre-formatted user profile text for system prompt injection"
+    ]
 
     # Classification fields (set by classify node)
     query_classification: Annotated[QueryClassification | None, "Query type classification"]
@@ -228,6 +231,7 @@ def create_initial_state(
     tool_catalog: ToolCatalog,
     acting_user: str | None = None,
     resource_context: str | None = None,
+    personalization_context: str | None = None,
     max_attempts: int = 3,
 ) -> AgentState:
     """Create the initial state for a new query.
@@ -239,6 +243,7 @@ def create_initial_state(
         tool_catalog: The MCP tool catalog.
         acting_user: ACCESS ID of user performing action (e.g., jsmith@access-ci.org).
         resource_context: RP slug for resource-scoped queries (e.g. 'delta').
+        personalization_context: Pre-formatted user profile text for prompt injection.
         max_attempts: Maximum quality loop attempts.
 
     Returns:
@@ -257,6 +262,7 @@ def create_initial_state(
         tool_catalog=tool_catalog,
         acting_user=acting_user,
         resource_context=resource_context,
+        personalization_context=personalization_context,
         # Classification
         query_classification=None,
         # RAG

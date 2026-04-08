@@ -75,6 +75,27 @@ class TestUserProfile:
         profile = UserProfile(access_id="test@access-ci.org")
         assert profile.highlighted_capabilities() == []
 
+    def test_system_prompt_section_full(self):
+        profile = UserProfile(
+            access_id="test@access-ci.org",
+            name="Jane Doe",
+            institution="MIT",
+            hpc_experience="Advanced",
+            skills=["python"],
+            affinity_groups=[{"name": "AI Institute", "is_coordinator": True}],
+            active_allocations=[{"resource": "Delta", "project": "TG-123"}],
+        )
+        section = profile.to_system_prompt_section()
+        assert section.startswith("## USER CONTEXT")
+        assert "Jane Doe" in section
+        assert "MIT" in section
+        assert "AI Institute (coordinator)" in section
+        assert "Delta (TG-123)" in section
+
+    def test_system_prompt_section_empty(self):
+        profile = UserProfile(access_id="test@access-ci.org")
+        assert profile.to_system_prompt_section() == ""
+
     def test_highlighted_capabilities_many_allocations(self):
         """More than 3 allocations shows '... and N more'."""
         profile = UserProfile(

@@ -83,6 +83,45 @@ class UserProfile:
 
         return highlights
 
+    def to_system_prompt_section(self) -> str:
+        """Format profile as a text block for injection into agent system prompts.
+
+        Returns an empty string if the profile has no meaningful context.
+        """
+        lines: list[str] = []
+
+        if self.name:
+            lines.append(f"- Name: {self.name}")
+        if self.institution:
+            lines.append(f"- Institution: {self.institution}")
+        if self.hpc_experience:
+            lines.append(f"- HPC Experience: {self.hpc_experience}")
+        if self.skills:
+            lines.append(f"- Skills: {', '.join(self.skills)}")
+        if self.interests:
+            lines.append(f"- Interests: {', '.join(self.interests)}")
+        if self.affinity_groups:
+            group_strs = []
+            for g in self.affinity_groups:
+                label = g["name"]
+                if g.get("is_coordinator"):
+                    label += " (coordinator)"
+                group_strs.append(label)
+            lines.append(f"- Affinity Groups: {', '.join(group_strs)}")
+        if self.active_allocations:
+            alloc_strs = []
+            for a in self.active_allocations:
+                s = a.get("resource", "")
+                if a.get("project"):
+                    s += f" ({a['project']})"
+                alloc_strs.append(s)
+            lines.append(f"- Active Allocations: {', '.join(alloc_strs)}")
+
+        if not lines:
+            return ""
+
+        return "## USER CONTEXT (from profile)\n\n" + "\n".join(lines)
+
 
 @dataclass
 class _CacheEntry:

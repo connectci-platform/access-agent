@@ -82,7 +82,9 @@ URL PRESERVATION (MANDATORY):
 
 - For issues needing human help: https://support.access-ci.org/help-ticket
 
-{capabilities}"""
+{capabilities}
+
+{personalization}"""
 
 # System prompt for combined synthesis (RAG + tools)
 COMBINED_SYNTHESIS_PROMPT = """You are an ACCESS-CI documentation assistant.
@@ -115,7 +117,9 @@ URL PRESERVATION (MANDATORY):
 - Do not mention "verified knowledge", "tool results", or system internals.
 - For issues needing human help: https://support.access-ci.org/help-ticket
 
-{capabilities}"""
+{capabilities}
+
+{personalization}"""
 
 # System prompt for RAG-only synthesis (when tools failed but RAG has data)
 RAG_ONLY_SYNTHESIS_PROMPT = """You are an ACCESS-CI documentation assistant. Your job is to answer user questions using verified documentation knowledge.
@@ -142,7 +146,9 @@ URL PRESERVATION (MANDATORY):
 
 Respond naturally as a helpful documentation assistant. Do not mention "verified knowledge" or internal system details — just answer the question as if you know this information.
 
-{capabilities}"""
+{capabilities}
+
+{personalization}"""
 
 # System prompt for condensing large tool results
 CONDENSE_RESULTS_PROMPT = """You are a data extraction assistant. Your job is to extract information relevant to the user's question from large tool results.
@@ -327,6 +333,7 @@ async def synthesize_node(state: AgentState) -> dict[str, Any]:  # noqa: PLR0912
     rag_matches = state.get("rag_matches", [])
     query_analysis = state.get("query_analysis")
     authenticated = state.get("acting_user") is not None
+    personalization = state.get("personalization_context") or ""
 
     with tracer.start_as_current_span(
         "agent.synthesize",
@@ -417,12 +424,14 @@ async def synthesize_node(state: AgentState) -> dict[str, Any]:  # noqa: PLR0912
                 elif has_rag and tools_succeeded:
                     strategy = "combined"
                     result = await _synthesize_combined(
-                        query, rag_context, results_text, authenticated=authenticated
+                        query, rag_context, results_text,
+                        authenticated=authenticated, personalization=personalization,
                     )
                 elif tools_succeeded:
                     strategy = "tools_only"
                     result = await _synthesize_tools_only(
-                        query, results_text, authenticated=authenticated
+                        query, results_text,
+                        authenticated=authenticated, personalization=personalization,
                     )
                 elif has_rag:
                     strategy = "uky_direct_only"
@@ -516,6 +525,7 @@ async def _synthesize_combined(
     rag_context: str,
     tool_results: str,
     authenticated: bool = False,
+    personalization: str = "",
 ) -> dict[str, Any]:
     """Synthesize answer from both RAG matches and tool results.
 
@@ -523,6 +533,8 @@ async def _synthesize_combined(
         query: The user's query.
         rag_context: Formatted RAG matches.
         tool_results: Formatted tool results.
+        authenticated: Whether the user is authenticated.
+        personalization: Pre-formatted user context for prompt injection.
 
     Returns:
         Dict with final_answer and messages.
@@ -543,6 +555,7 @@ async def _synthesize_combined(
                 tool_results=tool_results,
                 query=query,
                 capabilities=_get_capabilities_text(authenticated),
+                personalization=personalization,
             )
         )
         answer = response.content
@@ -566,12 +579,15 @@ async def _synthesize_tools_only(
     query: str,
     tool_results: str,
     authenticated: bool = False,
+    personalization: str = "",
 ) -> dict[str, Any]:
     """Synthesize answer from tool results only.
 
     Args:
         query: The user's query.
         tool_results: Formatted tool results.
+        authenticated: Whether the user is authenticated.
+        personalization: Pre-formatted user context for prompt injection.
 
     Returns:
         Dict with final_answer and messages.
@@ -591,6 +607,7 @@ async def _synthesize_tools_only(
                 tool_results=tool_results,
                 query=query,
                 capabilities=_get_capabilities_text(authenticated),
+                personalization=personalization,
             )
         )
         answer = response.content
@@ -614,12 +631,15 @@ async def _synthesize_with_rag_only(
     query: str,
     rag_context: str,
     authenticated: bool = False,
+    personalization: str = "",
 ) -> dict[str, Any]:
     """Synthesize answer from RAG matches only (when tools failed).
 
     Args:
         query: The user's query.
         rag_context: Formatted RAG matches.
+        authenticated: Whether the user is authenticated.
+        personalization: Pre-formatted user context for prompt injection.
 
     Returns:
         Dict with final_answer and messages.
@@ -639,6 +659,7 @@ async def _synthesize_with_rag_only(
                 rag_context=rag_context,
                 query=query,
                 capabilities=_get_capabilities_text(authenticated),
+                personalization=personalization,
             )
         )
         answer = response.content
