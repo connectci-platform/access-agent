@@ -304,10 +304,28 @@ class CapabilityRegistry:
                 "capabilities": [cap_dict],
             })
 
+        # Build a contextual welcome message from populated sections
+        section_labels = [
+            SECTION_QUESTION_MAP[s]["label"].lower()
+            for s in rp_info.populated_sections
+            if s in SECTION_QUESTION_MAP
+        ]
+        if section_labels:
+            if len(section_labels) == 1:
+                topics = section_labels[0]
+            elif len(section_labels) == 2:
+                topics = f"{section_labels[0]} and {section_labels[1]}"
+            else:
+                topics = ", ".join(section_labels[:-1]) + f", and {section_labels[-1]}"
+            welcome_message = f"Hi! I can help with {topics} on {title} — or ask me anything about ACCESS."
+        else:
+            welcome_message = f"Hi! Ask me anything about {title} or ACCESS."
+
         return {
             "resource_context": {"slug": slug, "title": title},
             "categories": categories,
             "is_authenticated": authenticated,
+            "welcome_message": welcome_message,
         }
 
     # ── Agent self-knowledge ──────────────────────────────────────────

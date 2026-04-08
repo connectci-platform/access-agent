@@ -37,7 +37,6 @@ DRUPAL_FIELD_TO_SECTION = {
 ALL_SECTIONS = list(DRUPAL_FIELD_TO_SECTION.values())
 
 
-
 @dataclass
 class RPInfo:
     """Cached info about a resource provider."""
