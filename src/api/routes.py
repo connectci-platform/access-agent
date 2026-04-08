@@ -125,6 +125,7 @@ async def _check_capability_discovery(
     session_id: str,
     question_id: str,
     resource_context: str | None = None,
+    highlighted_capabilities: list[dict[str, str]] | None = None,
 ) -> QueryResponse | None:
     """Return a direct response for capability discovery queries.
 
@@ -133,6 +134,8 @@ async def _check_capability_discovery(
     registry — no LLM or RAG call needed.
 
     When ``resource_context`` is set, uses RP-scoped capabilities.
+    When ``highlighted_capabilities`` is provided, includes personalized
+    suggestions at the top of the response.
     """
     from ..agent.domains.capabilities import get_capability_registry
 
@@ -149,7 +152,16 @@ async def _check_capability_discovery(
 
     # "Show my options" → list capabilities with example queries from descriptions
     if normalized in ("show my options", "what can you do", "what can you help with"):
-        lines = ["Here are some things you can try:\n"]
+        lines: list[str] = []
+
+        # Personalized highlights first
+        if highlighted_capabilities:
+            lines.append("Based on your profile, you might be interested in:\n")
+            for highlight in highlighted_capabilities:
+                lines.append(f"- **{highlight['label']}** — {highlight['reason']}")
+            lines.append("")
+
+        lines.append("Here are some things you can try:\n")
         for cat in categories:
             # Skip "general" — typing is the default
             if cat["id"] == "general":
@@ -405,6 +417,26 @@ async def query_agent(
     if turnstile_response is not None:
         return turnstile_response
 
+    # Fetch personalization context for authenticated users.
+    # Done before capability discovery so "Show my options" can include highlights.
+    # Profile is cached per-user (5-min TTL), so this is cheap on repeat calls.
+    personalization_context: str | None = None
+    highlighted_capabilities: list[dict[str, str]] | None = None
+    if acting_user:
+        jwt_cookie = raw_request.cookies.get("SESSaccess_auth", "")
+        if jwt_cookie:
+            try:
+                from ..services.drupal_profile import get_profile_fetcher
+
+                fetcher = get_profile_fetcher()
+                profile = await fetcher.get_profile(acting_user, jwt_cookie)
+                personalization_context = profile.to_system_prompt_section() or None
+                highlights = profile.highlighted_capabilities()
+                if highlights:
+                    highlighted_capabilities = highlights
+            except Exception:
+                logger.warning("Failed to fetch personalization context", exc_info=True)
+
     # ── Capability discovery short-circuit ────────────────────────────
     # Category labels and "Show my options" come from the dynamic buttons.
     # Answer them directly from the registry — no LLM/RAG call needed.
@@ -416,23 +448,10 @@ async def query_agent(
         session_id,
         question_id,
         resource_context=request.resource_context,
+        highlighted_capabilities=highlighted_capabilities,
     )
     if discovery_response is not None:
         return discovery_response
-
-    # Fetch personalization context for authenticated users
-    personalization_context: str | None = None
-    if acting_user:
-        jwt_cookie = raw_request.cookies.get("SESSaccess_auth", "")
-        if jwt_cookie:
-            try:
-                from ..services.drupal_profile import get_profile_fetcher
-
-                fetcher = get_profile_fetcher()
-                profile = await fetcher.get_profile(acting_user, jwt_cookie)
-                personalization_context = profile.to_system_prompt_section() or None
-            except Exception:
-                logger.warning("Failed to fetch personalization context", exc_info=True)
 
     # Agent queries stream via SSE
     return StreamingResponse(
