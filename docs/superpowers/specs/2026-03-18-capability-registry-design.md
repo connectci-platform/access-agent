@@ -121,7 +121,7 @@ GENERAL_CAPABILITIES = [
 ]
 ```
 
-> **Note:** Most capabilities require auth because the primary RAG pipeline (UKY) requires authenticated access. If anonymous RAG access becomes available in the future, these flags can be flipped without code changes. Only the support capabilities (tickets, security reports) are available to anonymous users.
+> **Note (updated April 2026):** Most capabilities are now anonymous. The RAG pipeline accepts unauthenticated queries, gated by Cloudflare Turnstile bot protection (authenticated users bypass the challenge). Only capabilities that act on a user's personal data or authored content — currently `manage_announcements` — require authentication. See the planning doc [Turnstile Bot Protection](../../../../access-qa-planning/active/turnstile-bot-protection-spec.md) for the full design.
 
 All capabilities are aggregated into a single `CapabilityRegistry` class at startup, providing one place to query the full list. Domain configs and `GENERAL_CAPABILITIES` feed into it; consumers only interact with the registry.
 
@@ -510,8 +510,8 @@ The `access-qa-bot` main branch remains available for the upcoming UKY RAG endpo
 1. **"Ask a question" does not need a button** — typing is the natural default. The text input is enabled from the start (changing current behavior where typing is disabled until a button is clicked).
 2. **Category buttons send the label as a message** — the agent responds conversationally with sub-capabilities rather than the UI expanding to show nested buttons. Simpler, more flexible.
 3. **Welcome message includes the AI disclaimer** — combined into one message shown on load, rather than a separate transition step.
-4. **Most capabilities require auth** — the UKY RAG pipeline requires login, so all RAG-dependent capabilities are `requires_auth=True`. Only support capabilities (tickets, security reports) are available anonymously. The `requires_auth` flag can be flipped if anonymous RAG access becomes available.
-5. **Ratings are contextual** — shown only on final responses, routed to the appropriate backend based on the response source (UKY RAG vs. agent).
+4. **Most capabilities are anonymous (updated April 2026)** — the RAG pipeline accepts unauthenticated queries gated by Cloudflare Turnstile bot protection, so most capabilities are `requires_auth=False`. Only capabilities that act on a user's personal data or authored content (currently `manage_announcements`) require login. Authenticated users bypass the Turnstile challenge entirely. See [Turnstile Bot Protection](../../../../access-qa-planning/active/turnstile-bot-protection-spec.md) for the design.
+5. **Ratings are contextual** — shown only on final responses, routed to the appropriate backend based on the response source (RAG vs. agent).
 
 ## Additional Resolved Decisions
 

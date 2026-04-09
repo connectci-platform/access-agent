@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+#
+# eval-prod — run `python -m src.eval` against production infrastructure.
+#
+# Loads .env.eval.prod (which must be filled in from .env.eval.prod.example),
+# asserts the loaded environment is actually configured for production, and
+# then execs the eval CLI with the given arguments.
+#
+# Prod Postgres lives in a Docker container on mcp.access-ci.org. Open an
+# SSH tunnel first with ./scripts/eval-tunnel-open before running this.
+#
+# Usage:
+#   scripts/eval-prod run --questions eval/questions/friendly_battery.json
+#   scripts/eval-prod run --questions eval/questions/mcp_coverage_battery.json --push-argilla
+#   scripts/eval-prod --rag-only run --questions eval/questions/friendly_battery.json
+#   scripts/eval-prod compare --run-a <id> --run-b <id>
+#
+# The --rag-only flag (must appear before the eval subcommand) sets
+# ENABLED_CAPABILITIES to only the RAG capabilities for the
+# agent-RAG-only baseline run in decision 007.
+#
+# Note: `ask` is a query tool against the eval database, not a single-
+# question smoke test. There is no built-in way to run one question
+# through the agent end-to-end without writing to Postgres; use a
+# small custom battery file if you need a smoke test.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ENV_FILE="${REPO_ROOT}/.env.eval.prod"
+
+if [[ ! -f "${ENV_FILE}" ]]; then
+  cat >&2 <<ERR
+error: ${ENV_FILE} does not exist.
+
+Copy the template and fill in real production values:
+  cp .env.eval.prod.example .env.eval.prod
+  \$EDITOR .env.eval.prod
+
+The file is gitignored — do not commit it.
+ERR
+  exit 1
+fi
+
+# Parse --rag-only flag (must come before any eval subcommand args)
+RAG_ONLY=0
+if [[ "${1:-}" == "--rag-only" ]]; then
+  RAG_ONLY=1
+  shift
+fi
+
+# Load the prod eval env. `set -a` exports every variable sourced.
+set -a
+# shellcheck disable=SC1090
+source "${ENV_FILE}"
+set +a
+
+# Safety checks — refuse to run if the file didn't actually set prod values.
+if [[ "${ENVIRONMENT:-}" != "production" ]]; then
+  echo "error: ENVIRONMENT is '${ENVIRONMENT:-unset}', expected 'production'." >&2
+  echo "       Check ${ENV_FILE} — it may be missing values." >&2
+  exit 1
+fi
+
+if [[ -z "${DATABASE_URL:-}" ]] || [[ "${DATABASE_URL}" == *"USER:PASS"* ]]; then
+  echo "error: DATABASE_URL is not set or still has placeholder values." >&2
+  echo "       Edit ${ENV_FILE} to set real prod Postgres credentials." >&2
+  echo "       Reminder: open an SSH tunnel first with scripts/eval-tunnel-open." >&2
+  exit 1
+fi
+
+if [[ -z "${ARGILLA_EVAL_DATASET:-}" ]]; then
+  echo "error: ARGILLA_EVAL_DATASET must be set (expected: eval-baseline-comparison)." >&2
+  exit 1
+fi
+
+# Apply the --rag-only flag by setting ENABLED_CAPABILITIES.
+if [[ "${RAG_ONLY}" -eq 1 ]]; then
+  export ENABLED_CAPABILITIES="ask_question,ask_xdmod_question,ask_about_resource"
+  MODE="RAG-only (ENABLED_CAPABILITIES=${ENABLED_CAPABILITIES})"
+else
+  MODE="full capabilities"
+fi
+
+# Redact credentials from the DATABASE_URL before printing.
+# Turns postgresql://user:pass@host:5432/db into postgresql://***@host:5432/db.
+# If the URL has no credential segment, it's printed unchanged.
+DB_REDACTED="$(printf '%s' "${DATABASE_URL}" | sed -E 's|(://)[^@/]*@|\1***@|')"
+
+# Banner so you can see what's about to happen.
+cat >&2 <<BANNER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ eval-prod | mode: ${MODE}
+ argilla dataset: ${ARGILLA_EVAL_DATASET}
+ database: ${DB_REDACTED}
+ mcp catalog: ${MCP_CATALOG_URL:-${MCP_CATALOG_PATH:-UNSET}}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BANNER
+
+cd "${REPO_ROOT}"
+exec uv run python -m src.eval "$@"

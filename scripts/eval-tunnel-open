@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+#
+# eval-tunnel-open — open an SSH tunnel to prod Postgres.
+#
+# Prod Postgres runs inside a Docker container on mcp.access-ci.org and
+# is not directly reachable from a workstation. This script opens an
+# SSH tunnel so DATABASE_URL in .env.eval.prod can point at
+# localhost:5432 transparently.
+#
+# Run this in one terminal, leave it running, then use scripts/eval-prod
+# from another terminal. Ctrl-C here to close the tunnel.
+#
+# Customize SSH_HOST, REMOTE_PORT, and LOCAL_PORT below if your setup
+# differs from the defaults.
+
+set -euo pipefail
+
+SSH_HOST="${EVAL_PROD_SSH_HOST:-mcp.access-ci.org}"
+REMOTE_PORT="${EVAL_PROD_DB_REMOTE_PORT:-5432}"
+LOCAL_PORT="${EVAL_PROD_DB_LOCAL_PORT:-5432}"
+
+echo "Opening SSH tunnel: localhost:${LOCAL_PORT} → ${SSH_HOST}:${REMOTE_PORT}"
+echo "Leave this running. Ctrl-C to close."
+echo
+
+# -N: do not execute a remote command (just forward)
+# -L: forward local port to remote port on loopback
+# -o ExitOnForwardFailure=yes: fail loudly if the tunnel can't be established
+exec ssh \
+  -N \
+  -L "${LOCAL_PORT}:localhost:${REMOTE_PORT}" \
+  -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=60 \
+  "${SSH_HOST}"

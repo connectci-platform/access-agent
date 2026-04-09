@@ -1,6 +1,6 @@
 """Announcements domain agent configuration."""
 
-from .config import Capability, DomainAgentConfig
+from .config import Capability, DomainAgentConfig, McpBackend
 
 ANNOUNCEMENTS_SYSTEM_PROMPT = """You are an ACCESS-CI assistant that helps users manage announcements. You are logged in as {acting_user}.
 
@@ -49,6 +49,7 @@ ANNOUNCEMENTS_CONFIG = DomainAgentConfig(
             description="Find ACCESS news and announcements",
             example_query="Recent announcements about Expanse",
             category="explore",
+            backend=McpBackend(servers=("announcements",)),
             requires_auth=False,
         ),
         Capability(
@@ -57,6 +58,7 @@ ANNOUNCEMENTS_CONFIG = DomainAgentConfig(
             description="Create, update, and delete announcements you've authored",
             example_query="Show my draft announcements",
             category="content",
+            backend=McpBackend(servers=("announcements",)),
             requires_auth=True,
         ),
     ],

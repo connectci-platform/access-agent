@@ -171,8 +171,16 @@ def route_after_rag(state: AgentState) -> Literal["end", "plan", "domain_agent"]
     query_type = classification.query_type if classification else "static"
     domain = classification.domain if classification else None
 
-    # Domain queries continue to domain_agent (UKY content now in state)
+    # Domain queries continue to domain_agent (UKY content now in state),
+    # but only if that domain has at least one enabled capability.
     if domain:
+        from .domains.capabilities import get_capability_registry
+
+        if not get_capability_registry().is_domain_enabled(domain):
+            logger.info(
+                f"Domain '{domain}' disabled by capability registry, falling through to plan"
+            )
+            return "plan"
         rag_matches = state.get("rag_matches", [])
         logger.info(
             f"Domain query ({domain}): UKY provided {len(rag_matches)} matches, "

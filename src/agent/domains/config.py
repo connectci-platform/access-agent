@@ -1,6 +1,36 @@
 """Domain agent configuration and capability data models."""
 
 from dataclasses import dataclass, field
+from typing import Literal
+
+
+@dataclass(frozen=True)
+class McpBackend:
+    """A capability backed by one or more MCP servers.
+
+    All tools from the listed servers are considered part of this
+    capability.  When the capability is disabled, those servers' tools
+    are filtered from the tool catalog so the planner never sees them.
+    """
+
+    servers: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RagBackend:
+    """A capability backed by a RAG endpoint.
+
+    ``endpoint`` selects which RAG service to consult ('general' for
+    ACCESS docs, 'xdmod' for usage metrics).  ``scoped=True`` means the
+    RAG call is resource-scoped to a specific RP via the user's
+    resource_context.
+    """
+
+    endpoint: Literal["general", "xdmod"]
+    scoped: bool = False
+
+
+Backend = McpBackend | RagBackend
 
 
 @dataclass
@@ -9,11 +39,21 @@ class Capability:
 
     Capabilities are the user-facing unit of functionality.  They drive
     the UI buttons, the agent's self-knowledge, and per-query analytics.
-    IDs are opaque strings — no internal details leak to the client.
+    IDs are stable semantic names (e.g. ``search_announcements``) used
+    in operator env vars, usage logs, and the capabilities API — but do
+    NOT reveal internal implementation details like MCP tool names or
+    server hostnames.
+
+    The ``backend`` field declares what system actually serves the
+    capability.  The capability registry aggregates backends across
+    enabled capabilities and uses them to gate runtime behavior: the MCP
+    tool catalog, RAG routing, domain agent routing, and usage
+    attribution.  A capability with ``backend=None`` is pure prompt
+    behavior with no external call (reserved for future use).
     """
 
     id: str
-    """Opaque identifier, e.g. 'search_announcements'."""
+    """Stable semantic identifier, e.g. 'search_announcements'."""
 
     label: str
     """User-facing short label, e.g. 'Search announcements'."""
@@ -23,6 +63,9 @@ class Capability:
 
     category: str
     """Category ID for UI grouping, e.g. 'explore'."""
+
+    backend: Backend | None = None
+    """What system serves this capability.  None = pure prompt behavior."""
 
     requires_auth: bool = False
     """Whether this capability requires an authenticated user."""
