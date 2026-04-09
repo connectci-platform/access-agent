@@ -18,9 +18,9 @@ class Dimension:
 DIMENSIONS = [
     Dimension(
         name="correctness",
-        description="Does the answer accurately represent its sources (RAG docs + tool results)?",
-        low="Contradicts sources or hallucinates facts",
-        high="Faithfully represents all source material",
+        description="Does the answer accurately represent its sources? Tool results (live API data) take precedence over RAG docs when they conflict.",
+        low="Contradicts tool results or hallucinates facts not in any source",
+        high="Faithfully represents tool results and relevant RAG content",
     ),
     Dimension(
         name="completeness",
@@ -103,6 +103,8 @@ Score each dimension from 1 (worst) to 5 (best):
 - Judge whether the agent accurately represented the information it HAD ACCESS TO.
 - If the source documents contain outdated information and the agent faithfully reported it, that is CORRECT (score 5 on correctness). Data quality is not the agent's fault.
 - If the agent added information not in the sources, that is a hallucination (score 1-2 on correctness).
+- CRITICAL: Tool Results are LIVE DATA from real-time APIs and are MORE CURRENT than RAG Documents. When tool results and RAG documents conflict (e.g., RAG says "there are upcoming webinars" but tool results show total: 0), the agent is CORRECT to trust the tool results. Score the agent based on whether it accurately represented the tool results, not the stale RAG data.
+- If tool results show 0 items/no results for something the user asked about, and the agent correctly reports that nothing was found, that is CORRECT — even if RAG documents suggest otherwise.
 
 ## User Question
 
