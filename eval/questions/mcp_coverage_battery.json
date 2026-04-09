@@ -1,0 +1,29 @@
+[
+  {"id": "mcp-cov-001", "question": "Is Delta down right now?", "capability_area": "system_status", "battery": "mcp_coverage"},
+  {"id": "mcp-cov-002", "question": "Are there any planned outages on Expanse this week?", "capability_area": "system_status", "battery": "mcp_coverage"},
+  {"id": "mcp-cov-003", "question": "What's the current status of Anvil?", "capability_area": "system_status", "battery": "mcp_coverage"},
+  {"id": "mcp-cov-004", "question": "Show me recent infrastructure news for ACCESS resources", "capability_area": "system_status", "battery": "mcp_coverage"},
+  {"id": "mcp-cov-005", "question": "Any scheduled maintenance coming up on Bridges-2?", "capability_area": "system_status", "battery": "mcp_coverage"},
+
+  {"id": "mcp-cov-006", "question": "Are there any affinity groups for machine learning?", "capability_area": "affinity_groups", "battery": "mcp_coverage"},
+  {"id": "mcp-cov-007", "question": "What communities does ACCESS support for bioinformatics researchers?", "capability_area": "affinity_groups", "battery": "mcp_coverage"},
+  {"id": "mcp-cov-008", "question": "Show me affinity groups related to climate and environmental research", "capability_area": "affinity_groups", "battery": "mcp_coverage"},
+
+  {"id": "mcp-cov-009", "question": "What training events are happening this month?", "capability_area": "events", "battery": "mcp_coverage"},
+  {"id": "mcp-cov-010", "question": "Are there any ACCESS webinars coming up?", "capability_area": "events", "battery": "mcp_coverage"},
+  {"id": "mcp-cov-011", "question": "Show me upcoming GPU training workshops", "capability_area": "events", "battery": "mcp_coverage"},
+
+  {"id": "mcp-cov-012", "question": "How do I check my XDMoD usage for last quarter?", "capability_area": "xdmod_tools", "battery": "mcp_coverage"},
+  {"id": "mcp-cov-013", "question": "What XDMoD metrics are available for Delta?", "capability_area": "xdmod_tools", "battery": "mcp_coverage"},
+  {"id": "mcp-cov-014", "question": "Show me NSF-reported usage summaries for the last year", "capability_area": "xdmod_tools", "battery": "mcp_coverage"},
+
+  {"id": "mcp-cov-015", "question": "What's the difference between node-hours and SU-hours in XDMoD?", "capability_area": "xdmod_docs", "battery": "mcp_coverage"},
+  {"id": "mcp-cov-016", "question": "How do I export chart data from the XDMoD portal?", "capability_area": "xdmod_docs", "battery": "mcp_coverage"},
+
+  {"id": "mcp-cov-017", "question": "What NSF awards are funding computational biology research?", "capability_area": "nsf_awards", "battery": "mcp_coverage"},
+  {"id": "mcp-cov-018", "question": "Show me recent NSF awards for quantum computing", "capability_area": "nsf_awards", "battery": "mcp_coverage"},
+  {"id": "mcp-cov-019", "question": "Which institutions have the most NSF cyberinfrastructure funding?", "capability_area": "nsf_awards", "battery": "mcp_coverage"},
+
+  {"id": "mcp-cov-020", "question": "Which ACCESS resources have TensorFlow available?", "capability_area": "software_discovery", "battery": "mcp_coverage"},
+  {"id": "mcp-cov-021", "question": "Is LAMMPS installed on Stampede3 and Anvil?", "capability_area": "software_discovery", "battery": "mcp_coverage"}
+]

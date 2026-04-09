@@ -23,6 +23,90 @@ uv run python -m src.eval compare --run-a <run-id> --run-b <run-id>
 - MCP servers accessible (for tool-calling questions)
 - PostgreSQL running (for storing results)
 
+## Running Against Production
+
+For the two-way baseline comparison described in
+[Decision 007](https://github.com/necyberteam/access-qa-planning/blob/main/decisions/007-production-baseline-comparison.md),
+the eval runs against **production infrastructure** (prod Postgres, prod MCP
+servers, prod Argilla) from a workstation. The setup is deliberately separated
+from `.env` so prod eval runs cannot accidentally use local values.
+
+### One-time setup
+
+Copy the template and fill in real production values:
+
+```bash
+cp .env.eval.prod.example .env.eval.prod
+$EDITOR .env.eval.prod
+```
+
+`.env.eval.prod` is gitignored. Ask the team for the real values — do not
+commit them.
+
+### Running an eval
+
+Prod Postgres lives in a Docker container on `mcp.access-ci.org` and is not
+directly reachable from a workstation, so open an SSH tunnel first:
+
+```bash
+# Terminal 1: open the tunnel, leave it running
+./scripts/eval-tunnel-open
+```
+
+The tunnel forwards local `5432` → `mcp.access-ci.org:5432`. If you already
+run a local Postgres on 5432, set a different local port:
+
+```bash
+EVAL_PROD_DB_LOCAL_PORT=5433 ./scripts/eval-tunnel-open
+```
+
+and update `DATABASE_URL` in `.env.eval.prod` to match (`...@localhost:5433/...`).
+
+The tunnel assumes the prod container publishes Postgres on the SSH host's
+loopback (i.e. `localhost:5432` on `mcp.access-ci.org`). If that ever
+changes — for example, if Postgres moves onto a Docker-internal network
+only — the tunnel target in `scripts/eval-tunnel-open` will need updating.
+
+Then from another terminal:
+
+```bash
+# Full-capabilities run (what we want to ship)
+./scripts/eval-prod run \
+  --questions eval/questions/friendly_battery.json \
+  --push-argilla
+
+# RAG-only baseline run (same agent, MCP capabilities disabled)
+./scripts/eval-prod --rag-only run \
+  --questions eval/questions/friendly_battery.json \
+  --push-argilla
+
+# Compare the two runs
+./scripts/eval-prod compare --run-a <rag_only_id> --run-b <full_caps_id>
+```
+
+The `--rag-only` flag (which must appear **before** the eval subcommand)
+sets `ENABLED_CAPABILITIES=ask_question,ask_xdmod_question,ask_about_resource`
+so the agent runs with RAG backends only and no MCP tools. Both runs
+otherwise use the same agent binary, classifier, and synthesis layer — the
+only variable being tested is the value added by MCP tools.
+
+Results land in the prod Argilla dataset `eval-baseline-comparison`, which
+is kept separate from `eval-production` (the rolling production scoring
+dataset) so the one-time baseline evidence doesn't mix with ongoing
+quality tracking.
+
+### Safety checks
+
+The `eval-prod` wrapper refuses to run if:
+
+- `.env.eval.prod` does not exist
+- `ENVIRONMENT` is not `production` after loading the env file
+- `DATABASE_URL` is unset or still contains the `USER:PASS` placeholder
+- `ARGILLA_EVAL_DATASET` is unset
+
+These catch the common mistake of running the wrapper before filling in
+the env file.
+
 ## Question Sets
 
 Eval questions live in `eval/questions/` as JSON files:
@@ -31,6 +115,7 @@ Eval questions live in `eval/questions/` as JSON files:
 |------|-----------|-------------|
 | `friendly_battery.json` | 50 | Clean, well-phrased questions covering all capability areas |
 | `real_user_battery.json` | 50 | Real user queries with typos, vague phrasing, pasted errors |
+| `mcp_coverage_battery.json` | 21 | Targeted questions for MCP capabilities under-represented in the other batteries — system status, affinity groups, events, XDMoD, NSF awards, software discovery. Used alongside the other two for the decision 007 baseline comparison. |
 
 ### Format
 
