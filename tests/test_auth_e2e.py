@@ -126,6 +126,7 @@ def mock_agent():
     We mock it to yield a single 'updates' chunk containing FAKE_AGENT_RESULT,
     which is enough for the SSE endpoint to build a done event.
     """
+
     async def fake_stream(**kwargs):
         yield "updates", {"__end__": FAKE_AGENT_RESULT}
 

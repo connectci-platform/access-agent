@@ -59,7 +59,9 @@ class QueryRequest(BaseModel):
     question_id: str | None = Field(None, description="Unique question ID")
     acting_user: str | None = Field(None, description="Transition fallback: acting user from body")
     turnstile_token: str | None = Field(None, description="Cloudflare Turnstile response token")
-    resource_context: str | None = Field(None, description="RP slug for resource-scoped queries (e.g. 'delta')")
+    resource_context: str | None = Field(
+        None, description="RP slug for resource-scoped queries (e.g. 'delta')"
+    )
 
 
 class QueryResponse(BaseModel):
@@ -464,7 +466,9 @@ async def health_check() -> dict[str, Any]:
 @router.get("/capabilities")
 async def get_capabilities(
     raw_request: Request,
-    resource_context: str | None = Query(None, description="RP slug for resource-scoped capabilities"),
+    resource_context: str | None = Query(
+        None, description="RP slug for resource-scoped capabilities"
+    ),
 ) -> dict[str, Any]:
     """Return available capabilities grouped by category.
 
