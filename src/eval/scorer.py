@@ -4,7 +4,7 @@ import logging
 from typing import Any
 
 from src.config import settings
-from src.tools import ToolRegistry
+from src.tools import ToolRegistry, get_catalog_aggregator
 
 from .db import EvalDB
 from .judge import Judge
@@ -32,8 +32,9 @@ async def run_eval(  # noqa: PLR0915
     logger.info(f"Loaded {len(questions)} questions from {question_set_path}")
 
     logger.info("Loading tool catalog...")
-    registry = ToolRegistry()
-    await registry.load()
+    aggregator = get_catalog_aggregator()
+    catalog = await aggregator.fetch_catalog()
+    registry = ToolRegistry(catalog=catalog)
     logger.info(f"Loaded {registry.tool_count} tools")
 
     git_info = get_git_info()

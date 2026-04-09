@@ -98,9 +98,10 @@ COMBINED_SYNTHESIS_PROMPT = """You are an ACCESS-CI documentation assistant.
 ## INSTRUCTIONS
 
 - Combine verified knowledge with real-time data to produce the best possible answer.
-- CRITICAL: The verified knowledge comes from human-curated ACCESS documentation. It is the PRIMARY source. Start with the verified knowledge as your base answer, then enrich with real-time data where it adds value.
-- Prefer real-time data for hardware specs, software versions, system status, and availability — this data is more current than documentation.
-- Prefer verified knowledge for procedures, policies, how-to guides, troubleshooting steps, and contact information — documentation is more reliable for these.
+- CRITICAL: Combine both sources intelligently. Neither is always right:
+  - Prefer REAL-TIME DATA for: hardware specs, software versions, system status, availability, current events, affinity group listings, NSF award data, usage metrics, and any enumerated/listed items — this data is live and more current than documentation.
+  - Prefer VERIFIED KNOWLEDGE for: procedures, policies, how-to guides, troubleshooting steps, and contact information — documentation is more reliable for these.
+  - When real-time data CONTRADICTS verified knowledge (e.g., verified knowledge says "no information available" but real-time data has specific results), TRUST THE REAL-TIME DATA — it means the documentation was incomplete or out of date.
 - If the verified knowledge starts with hedging language like "The provided documents do not contain..." — ignore that preamble and use the substantive content that follows.
 - Be concise and direct — answer the question first, then provide details.
 - Format data clearly using bullet points, tables, or lists where appropriate.
@@ -362,7 +363,7 @@ async def synthesize_node(state: AgentState) -> dict[str, Any]:  # noqa: PLR0912
             else:
                 strategy = "no_tools_needed"
                 span.set_attribute("synthesis.strategy", strategy)
-                result = await _synthesize_without_tools(query, query_analysis)
+                result = await _synthesize_without_tools(query, query_analysis, rag_matches)
         else:
             # Determine what data we have
             has_rag = bool(rag_matches)
@@ -405,13 +406,14 @@ async def synthesize_node(state: AgentState) -> dict[str, Any]:  # noqa: PLR0912
                     }
                 elif has_tools and not tools_succeeded and not has_rag:
                     strategy = "all_failed"
-                    logger.warning("All tools failed and no RAG data")
                     failed_tools = ", ".join(r.tool_name for r in tool_results)
+                    logger.warning(f"All tools failed and no RAG data: {failed_tools}")
                     result = {
                         "final_answer": (
-                            "I encountered issues retrieving data for your question. "
-                            f"The following tools were attempted but failed: {failed_tools}. "
-                            "Please try again later or contact support if this persists."
+                            "I wasn't able to retrieve specific information for your question. "
+                            "Would you like me to help you open a support ticket? "
+                            "You can also open one directly at "
+                            "https://support.access-ci.org/help-ticket."
                         ),
                     }
                 elif has_rag and tools_succeeded:
@@ -462,12 +464,14 @@ async def synthesize_node(state: AgentState) -> dict[str, Any]:  # noqa: PLR0912
 async def _synthesize_without_tools(
     query: str,
     query_analysis: Any,
+    rag_matches: list[RAGMatch] | None = None,
 ) -> dict[str, Any]:
     """Generate an answer for queries that don't need tools.
 
     Args:
         query: The user's query.
         query_analysis: The analysis from the plan node.
+        rag_matches: Optional RAG matches to fall back to if the LLM call fails.
 
     Returns:
         Dict with final_answer.
@@ -501,9 +505,19 @@ suggest the user check the official ACCESS documentation at access-ci.org.""",
 
     except Exception as e:
         logger.error(f"No-tools synthesis failed: {e}")
+        # Fall back to RAG content if available, rather than a generic deflection
+        if rag_matches:
+            answer = _strip_hedge_preamble(rag_matches[0].answer)
+            logger.info(f"No-tools synthesis failed, falling back to RAG ({len(answer)} chars)")
+            return {
+                "final_answer": answer,
+                "messages": [AIMessage(content=answer)],
+                "tools_used": ["uky_rag_retrieval"],
+            }
         error_answer = (
-            "I can help with that question. Please check the ACCESS documentation "
-            "at https://access-ci.org for the most up-to-date information."
+            "I wasn't able to find specific information for your question. "
+            "Would you like me to help you open a support ticket? "
+            "You can also open one directly at https://support.access-ci.org/open-a-ticket."
         )
         return {
             "final_answer": error_answer,

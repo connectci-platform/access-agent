@@ -48,12 +48,13 @@ services:
     image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: langgraph
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      # Loopback only — never expose Postgres to the public internet
+      - "127.0.0.1:5432:5432"
     networks:
       - agent-network
     healthcheck:

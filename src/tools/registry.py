@@ -146,6 +146,25 @@ class ToolRegistry:
         self._quick_lookup = {
             name: info for name, info in self._quick_lookup.items() if name in filtered
         }
+        # Filter the raw catalog dict too — this is what gets passed to the
+        # agent graph as tool_catalog state, and the planner reads it
+        # directly. Without this, disabled tools leak into the agent.
+        if "servers" in self._catalog:
+            self._catalog["servers"] = [
+                {
+                    **s,
+                    "tools": [t for t in s.get("tools", []) if t.get("name", "") in filtered],
+                }
+                for s in self._catalog.get("servers", [])
+                if s.get("server", "") in allowed
+            ]
+        if "tools" in self._catalog:
+            self._catalog["tools"] = [
+                t for t in self._catalog["tools"] if t.get("name", "") in filtered
+            ]
+        if "quick_lookup" in self._catalog:
+            self._catalog["quick_lookup"] = self._quick_lookup
+
         after = len(self._tools)
         logger.info(
             "Tool catalog filtered by capabilities: %d → %d tools (%d MCP servers allowed)",
