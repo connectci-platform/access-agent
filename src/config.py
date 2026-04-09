@@ -94,7 +94,16 @@ class Settings(BaseSettings):
         return bool(self.TURNSTILE_SECRET_KEY)
 
     # Capability registry
-    DISABLED_CAPABILITIES: str = ""  # Comma-separated capability IDs to disable
+    # ENABLED_CAPABILITIES: comma-separated capability IDs to enable.
+    # If empty, all capabilities are candidates. If set, only listed IDs
+    # are candidates; everything else is filtered out. DISABLED_CAPABILITIES
+    # is then applied on top (deny wins).
+    ENABLED_CAPABILITIES: str = ""
+    # DISABLED_CAPABILITIES: comma-separated capability IDs to disable.
+    # Always wins over ENABLED_CAPABILITIES. Disabled capabilities are
+    # removed from UI discovery, system prompt, MCP tool catalog, RAG
+    # routing, domain agent routing, and usage attribution.
+    DISABLED_CAPABILITIES: str = ""
 
     # MCP Servers
     MCP_CATALOG_URL: str = "http://localhost:5678/webhook/generate-mcp-catalog"

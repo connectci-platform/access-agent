@@ -63,6 +63,7 @@ class ToolRegistry:
         if catalog:
             self._catalog = catalog
             self._build_registry()
+            self._apply_capability_filter()
 
     async def load(self) -> None:
         """Load the tool catalog from file or URL.
@@ -81,6 +82,7 @@ class ToolRegistry:
             raise ValueError("Must provide either catalog_path or catalog_url")
 
         self._build_registry()
+        self._apply_capability_filter()
 
     def _load_from_file(self, path: str) -> dict[str, Any]:
         """Load catalog from a local JSON file."""
@@ -117,6 +119,40 @@ class ToolRegistry:
                 # Look up server from quick_lookup
                 server_name = self._quick_lookup.get(tool["name"], {}).get("server", "")
                 self._add_tool(tool, server_name)
+
+    def _apply_capability_filter(self) -> None:
+        """Drop tools from MCP servers whose owning capability is disabled.
+
+        The capability registry is the single source of truth for what the
+        agent can do; this method enforces that at the tool catalog layer
+        so the planner never sees tools from disabled capabilities.
+        """
+        # Local import to avoid a circular dependency at module load.
+        from ..agent.domains.capabilities import get_capability_registry
+
+        try:
+            allowed = get_capability_registry().enabled_mcp_servers()
+        except Exception as exc:
+            # Belt-and-suspenders: if the registry fails to build, don't
+            # silently drop every tool. Log and skip the filter.
+            logger.warning("Capability registry unavailable, skipping tool filter: %s", exc)
+            return
+
+        before = len(self._tools)
+        filtered = {name: tool for name, tool in self._tools.items() if tool.server in allowed}
+        self._tools = filtered
+        # Also strip filtered tools from quick_lookup so get_server_for_tool
+        # can't resurrect them via the fallback path.
+        self._quick_lookup = {
+            name: info for name, info in self._quick_lookup.items() if name in filtered
+        }
+        after = len(self._tools)
+        logger.info(
+            "Tool catalog filtered by capabilities: %d → %d tools (%d MCP servers allowed)",
+            before,
+            after,
+            len(allowed),
+        )
 
     def _add_tool(self, tool_data: dict[str, Any], server_name: str) -> None:
         """Add a tool to the registry."""

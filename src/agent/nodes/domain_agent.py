@@ -59,6 +59,35 @@ async def domain_agent_node(state: AgentState) -> dict[str, Any]:
             "agent.domain": domain_name,
         },
     ) as span:
+        # Defense-in-depth: route_after_rag should already have filtered
+        # disabled domains. If routing is bypassed somehow, fail closed
+        # with a user-visible message rather than an empty response so
+        # the user gets something actionable.
+        from ..domains.capabilities import get_capability_registry
+
+        if not get_capability_registry().is_domain_enabled(domain_name):
+            logger.warning(
+                "domain_agent_node invoked for disabled domain '%s' "
+                "(router should have prevented this)",
+                domain_name,
+            )
+            user_msg = (
+                "That workflow isn't available right now. "
+                "You can open a support ticket at https://support.access-ci.org/open-a-ticket "
+                "for direct assistance."
+            )
+            return {
+                "final_answer": user_msg,
+                "messages": [AIMessage(content=user_msg)],
+                "node_trace": [
+                    {
+                        "node": "domain_agent",
+                        "domain": domain_name,
+                        "error": "domain_disabled",
+                    }
+                ],
+            }
+
         # Look up domain config
         registry = get_domain_registry()
         config = registry.get(domain_name)

@@ -356,15 +356,37 @@ async def rag_answer_node(state: AgentState) -> dict[str, object]:
         # when result is None. The function and qa_client.py are intact.
         effective_endpoint = rag_endpoint or "general"
         resource_context = state.get("resource_context")
-        result = await _ask_uky(
-            search_query=search_query,
-            query_type=query_type,
-            rag_endpoint=effective_endpoint,
-            session_id=state.get("session_id", ""),
-            question_id=state.get("question_id", ""),
-            span=span,
-            rp_name=resource_context,
-        )
+
+        # Capability registry gate: skip RAG calls for endpoints whose
+        # owning capability is disabled. Scoped RAG also requires the
+        # scoped capability to be enabled.
+        from ..domains.capabilities import get_capability_registry
+
+        cap_registry = get_capability_registry()
+        enabled_endpoints = cap_registry.enabled_rag_endpoints()
+        result: dict[str, Any] | None
+        if effective_endpoint not in enabled_endpoints:
+            logger.info(
+                "RAG endpoint '%s' disabled by capability registry, skipping",
+                effective_endpoint,
+            )
+            span.set_attribute("rag.skipped_by_registry", True)
+            result = None
+        else:
+            if resource_context and not cap_registry.scoped_rag_enabled():
+                logger.info("Scoped RAG disabled by capability registry, falling back to unscoped")
+                span.set_attribute("rag.scoped_disabled", True)
+                resource_context = None
+
+            result = await _ask_uky(
+                search_query=search_query,
+                query_type=query_type,
+                rag_endpoint=effective_endpoint,
+                session_id=state.get("session_id", ""),
+                question_id=state.get("question_id", ""),
+                span=span,
+                rp_name=resource_context,
+            )
 
         # Scoped-RAG fallback: if response looks out-of-scope, retry general
         if result is not None and resource_context and _rag_response_out_of_scope(result):
