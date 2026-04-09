@@ -1,0 +1,37 @@
+[
+  {"id": "comb-001", "question": "Search for ACCESS projects related to climate modeling", "capability_area": "allocations_mcp", "battery": "combined", "expected_type": "dynamic", "expected_tools": ["search_projects"]},
+  {"id": "comb-002", "question": "How many active allocation projects use GPU resources?", "capability_area": "allocations_mcp", "battery": "combined", "expected_type": "dynamic", "expected_tools": ["get_allocation_statistics"]},
+  {"id": "comb-003", "question": "What are the largest ACCESS allocations currently active?", "capability_area": "allocations_mcp", "battery": "combined", "expected_type": "dynamic", "expected_tools": ["search_projects"]},
+  {"id": "comb-004", "question": "Show me allocation statistics for the last quarter", "capability_area": "allocations_mcp", "battery": "combined", "expected_type": "dynamic", "expected_tools": ["get_allocation_statistics"]},
+  {"id": "comb-005", "question": "Which institutions have the most ACCESS allocations?", "capability_area": "allocations_mcp", "battery": "combined", "expected_type": "dynamic", "expected_tools": ["get_allocation_statistics"]},
+
+  {"id": "comb-006", "question": "Which ACCESS resources have A100 GPUs?", "capability_area": "compute_resources", "battery": "combined", "expected_type": "dynamic", "expected_tools": ["search_resources"]},
+  {"id": "comb-007", "question": "Compare the GPU hardware available on Delta and Bridges-2", "capability_area": "compute_resources", "battery": "combined", "expected_type": "combined", "expected_tools": ["get_resource_hardware"]},
+  {"id": "comb-008", "question": "What resources have the most CPU cores per node?", "capability_area": "compute_resources", "battery": "combined", "expected_type": "dynamic", "expected_tools": ["search_resources"]},
+
+  {"id": "comb-009", "question": "Which resources have both TensorFlow and CUDA available?", "capability_area": "software_cross_resource", "battery": "combined", "expected_type": "dynamic", "expected_tools": ["compare_software_availability"]},
+  {"id": "comb-010", "question": "Where can I run GROMACS with GPU support across ACCESS?", "capability_area": "software_cross_resource", "battery": "combined", "expected_type": "combined", "expected_tools": ["search_software"]},
+  {"id": "comb-011", "question": "Compare Python availability across Expanse, Delta, and Anvil", "capability_area": "software_cross_resource", "battery": "combined", "expected_type": "dynamic", "expected_tools": ["compare_software_availability"]},
+
+  {"id": "comb-012", "question": "I want to run a large machine learning job. Which resource should I use and how do I get started?", "capability_area": "combined_rag_tools", "battery": "combined", "expected_type": "combined", "expected_tools": ["search_resources", "search_software"]},
+  {"id": "comb-013", "question": "Is there any maintenance planned for Delta, and if not, how do I submit a GPU job there?", "capability_area": "combined_rag_tools", "battery": "combined", "expected_type": "combined", "expected_tools": ["get_infrastructure_news"]},
+  {"id": "comb-014", "question": "What affinity groups should I join if I'm doing bioinformatics, and how do I get an allocation?", "capability_area": "combined_rag_tools", "battery": "combined", "expected_type": "combined", "expected_tools": ["search_affinity_groups"]},
+  {"id": "comb-015", "question": "Show me NSF awards for quantum computing and which ACCESS resources would be good for that work", "capability_area": "combined_rag_tools", "battery": "combined", "expected_type": "combined", "expected_tools": ["search_nsf_awards", "search_resources"]},
+  {"id": "comb-016", "question": "I'm new to ACCESS. What events are coming up that could help me get started?", "capability_area": "combined_rag_tools", "battery": "combined", "expected_type": "combined", "expected_tools": ["search_events"]},
+
+  {"id": "comb-017", "question": "Can you help me debug my Python code?", "capability_area": "edge_case", "battery": "combined", "expected_type": "static", "expected_tools": []},
+  {"id": "comb-018", "question": "What's the weather in San Diego?", "capability_area": "edge_case", "battery": "combined", "expected_type": "static", "expected_tools": []},
+  {"id": "comb-019", "question": "How do I use it?", "capability_area": "edge_case", "battery": "combined", "expected_type": "static", "expected_tools": []},
+  {"id": "comb-020", "question": "Tell me about Delta and also check if Expanse has LAMMPS and find any upcoming workshops", "capability_area": "edge_case", "battery": "combined", "expected_type": "combined", "expected_tools": ["search_software", "search_events"]},
+  {"id": "comb-021", "question": "I heard ACCESS is shutting down, is that true?", "capability_area": "edge_case", "battery": "combined", "expected_type": "static", "expected_tools": []},
+
+  {"id": "comb-022", "question": "my job keeps failing on anvil, are there any outages? also what gpu types do they have", "capability_area": "messy_combined", "battery": "combined", "expected_type": "combined", "expected_tools": ["get_infrastructure_news", "get_resource_hardware"]},
+  {"id": "comb-023", "question": "i need tensorflow on something with a100 gpus whats available", "capability_area": "messy_combined", "battery": "combined", "expected_type": "dynamic", "expected_tools": ["search_software", "search_resources"]},
+  {"id": "comb-024", "question": "how do i check my usage on xdmod and is there a workshop about it", "capability_area": "messy_combined", "battery": "combined", "expected_type": "combined", "expected_tools": ["search_events"]},
+  {"id": "comb-025", "question": "looking for nsf funding for my climate research, any awards and also affinity groups?", "capability_area": "messy_combined", "battery": "combined", "expected_type": "combined", "expected_tools": ["search_nsf_awards", "search_affinity_groups"]},
+  {"id": "comb-026", "question": "whats the status of bridges and also is there conda on it", "capability_area": "messy_combined", "battery": "combined", "expected_type": "combined", "expected_tools": ["get_infrastructure_news", "search_software"]},
+  {"id": "comb-027", "question": "I got an allocation approved but dont know how to log in or what software is there", "capability_area": "messy_combined", "battery": "combined", "expected_type": "combined", "expected_tools": ["search_software"]},
+  {"id": "comb-028", "question": "are there any groups for people doing AI research and when is the next training", "capability_area": "messy_combined", "battery": "combined", "expected_type": "combined", "expected_tools": ["search_affinity_groups", "search_events"]},
+  {"id": "comb-029", "question": "show me everything about expanse - hardware specs, software, any outages, upcoming events", "capability_area": "messy_combined", "battery": "combined", "expected_type": "combined", "expected_tools": ["get_resource_hardware", "search_software", "get_infrastructure_news", "search_events"]},
+  {"id": "comb-030", "question": "i have 100000 access credits and want to do deep learning, where should i go", "capability_area": "messy_combined", "battery": "combined", "expected_type": "combined", "expected_tools": ["search_resources", "search_software"]}
+]

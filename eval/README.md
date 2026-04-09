@@ -115,7 +115,10 @@ Eval questions live in `eval/questions/` as JSON files:
 |------|-----------|-------------|
 | `friendly_battery.json` | 50 | Clean, well-phrased questions covering all capability areas |
 | `real_user_battery.json` | 50 | Real user queries with typos, vague phrasing, pasted errors |
-| `mcp_coverage_battery.json` | 21 | Targeted questions for MCP capabilities under-represented in the other batteries — system status, affinity groups, events, XDMoD, NSF awards, software discovery. Used alongside the other two for the decision 007 baseline comparison. |
+| `mcp_coverage_battery.json` | 21 | Targeted questions for MCP capabilities under-represented in the other batteries — system status, affinity groups, events, XDMoD, NSF awards, software discovery |
+| `combined_battery.json` | 30 | Allocations MCP, compute-resources MCP, cross-resource software comparison, combined RAG+tools questions, edge cases, and messy multi-part questions |
+
+**Total: 151 questions** across four batteries.
 
 ### Format
 
@@ -130,6 +133,22 @@ Eval questions live in `eval/questions/` as JSON files:
 ]
 ```
 
+Optional fields (used in `combined_battery.json`):
+
+```json
+{
+  "id": "comb-022",
+  "question": "my job keeps failing on anvil, are there any outages?",
+  "capability_area": "messy_combined",
+  "battery": "combined",
+  "expected_type": "combined",
+  "expected_tools": ["get_infrastructure_news", "get_resource_hardware"]
+}
+```
+
+- `expected_type`: the expected classifier output (`static`, `dynamic`, `combined`). Used for post-hoc analysis of classifier accuracy, not at runtime.
+- `expected_tools`: the MCP tools the question should trigger. Used for post-hoc analysis of planner accuracy.
+
 ### Adding Questions
 
 Add questions to an existing JSON file or create a new one. Each question needs an `id`, `question`, and `capability_area`. Run against a subset with `--questions your_file.json`.
@@ -140,7 +159,7 @@ Five dimensions, each scored 1-5:
 
 | Dimension | Weight | What it measures |
 |-----------|--------|------------------|
-| Correctness | 30% | Does the answer match its sources? |
+| Correctness | 30% | Does the answer match its sources? Tool results take precedence over RAG when they conflict. |
 | Completeness | 25% | Does it address all parts of the question? |
 | Relevance | 20% | Does it stay on topic? |
 | Citation quality | 15% | Are URLs present and from sources? |
