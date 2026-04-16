@@ -24,6 +24,7 @@ def _handle_run(args: argparse.Namespace) -> None:
     summary = asyncio.run(
         run_eval(
             question_set_path=args.questions,
+            system=args.system,
             judge_model=args.judge_model,
             push_argilla=args.push_argilla,
         )
@@ -147,6 +148,12 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     run_parser = subparsers.add_parser("run", help="Run pre-production eval")
+    run_parser.add_argument(
+        "--system",
+        choices=["agent_full", "agent_rag_only", "raw_rag"],
+        default="agent_full",
+        help="System to evaluate: agent_full (default), agent_rag_only, or raw_rag",
+    )
     run_parser.add_argument(
         "--questions",
         default="eval/questions/friendly_battery.json",

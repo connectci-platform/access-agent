@@ -10,13 +10,14 @@ from .db import EvalDB
 from .judge import Judge
 from .questions import load_questions
 from .rubric import DIMENSION_NAMES, compute_composite
-from .runner import get_git_info, run_question
+from .runner import SystemMode, get_git_info, run_question
 
 logger = logging.getLogger(__name__)
 
 
 async def run_eval(  # noqa: PLR0915
     question_set_path: str,
+    system: SystemMode = "agent_full",
     database_url: str | None = None,
     judge_base_url: str | None = None,
     judge_api_key: str | None = None,
@@ -55,14 +56,19 @@ async def run_eval(  # noqa: PLR0915
         judge_model=j_model,
         question_set=question_set_path,
         question_count=len(questions),
+        metadata_={"system": system},
     )
-    logger.info(f"Eval run {run.id} started ({len(questions)} questions)")
+    logger.info(f"Eval run {run.id} started ({len(questions)} questions, system={system})")
 
     all_scores: list[dict[str, int]] = []
     for i, q in enumerate(questions, 1):
         logger.info(f"[{i}/{len(questions)}] {q.question[:60]}...")
 
-        result = await run_question(q.id, q.question, registry.catalog)
+        result = await run_question(
+            q.id, q.question, registry.catalog,
+            system=system,
+            resource_context=q.metadata.get("resource"),
+        )
 
         if not result.success:
             db.add_score(
@@ -71,6 +77,7 @@ async def run_eval(  # noqa: PLR0915
                 source="skipped",
                 question_text=q.question,
                 answer_text=result.error or "Agent failed",
+                duration_ms=result.duration_ms,
                 justifications={"error": result.error},
             )
             continue
@@ -90,6 +97,7 @@ async def run_eval(  # noqa: PLR0915
                 source="judge_error",
                 question_text=q.question,
                 answer_text=result.answer,
+                duration_ms=result.duration_ms,
                 context={
                     "rag_context": result.rag_context,
                     "tool_results": result.tool_results,
@@ -116,6 +124,7 @@ async def run_eval(  # noqa: PLR0915
             citation_quality=judge_result.scores["citation_quality"],
             hedging=judge_result.scores["hedging"],
             composite_score=judge_result.composite,
+            duration_ms=result.duration_ms,
             justifications=judge_result.justifications,
         )
         all_scores.append(judge_result.scores)
@@ -166,7 +175,9 @@ async def run_eval(  # noqa: PLR0915
                     node_trace=score_context.get("node_trace"),
                     run_id=str(run.id),
                     agent_branch=git_info.get("branch"),
+                    agent_commit=git_info.get("commit"),
                     judge_model=j_model,
+                    duration_ms=float(score.duration_ms) if score.duration_ms else None,
                 )
             )
 
@@ -181,6 +192,7 @@ async def run_eval(  # noqa: PLR0915
 
     summary = {
         "run_id": run.id,
+        "system": system,
         "questions": len(questions),
         "scored": len(all_scores),
         "skipped": len(questions) - len(all_scores),

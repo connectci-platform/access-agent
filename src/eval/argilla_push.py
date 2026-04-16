@@ -31,7 +31,9 @@ def build_argilla_record(
     node_trace: str | None = None,
     run_id: str | None = None,
     agent_branch: str | None = None,
+    agent_commit: str | None = None,
     judge_model: str | None = None,
+    duration_ms: float | None = None,
 ) -> dict[str, Any]:
     """Build a record dict for Argilla."""
     return {
@@ -48,7 +50,9 @@ def build_argilla_record(
             "composite_score": str(round(composite_score, 2)),
             "run_id": run_id or "",
             "agent_branch": agent_branch or "",
+            "agent_commit": agent_commit or "",
             "judge_model": judge_model or "",
+            "duration_ms": str(round(duration_ms, 1)) if duration_ms else "",
         },
         "suggestions": {
             **judge_scores,
@@ -169,7 +173,9 @@ def create_eval_dataset(argilla_url: str, argilla_api_key: str, dataset_name: st
             rg.TermsMetadataProperty(name="composite_score", title="Composite Score"),
             rg.TermsMetadataProperty(name="run_id", title="Eval Run ID"),
             rg.TermsMetadataProperty(name="agent_branch", title="Agent Branch"),
+            rg.TermsMetadataProperty(name="agent_commit", title="Agent Commit"),
             rg.TermsMetadataProperty(name="judge_model", title="Judge Model"),
+            rg.TermsMetadataProperty(name="duration_ms", title="Duration (ms)"),
         ],
     )
 

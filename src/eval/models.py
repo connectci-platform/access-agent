@@ -73,6 +73,7 @@ class EvalScore(EvalBase):  # type: ignore[valid-type,misc]
     citation_quality = Column(Integer)
     hedging = Column(Integer)
     composite_score = Column(Float)
+    duration_ms = Column(Float)
     justifications = Column(JSONB)
     feedback = Column(Text)
 
