@@ -1,5 +1,7 @@
 """Print eval run reports to the terminal."""
 
+import json
+from datetime import datetime
 from typing import Any
 
 from .rubric import DIMENSION_NAMES
@@ -149,3 +151,228 @@ def generate_resource_report(data: dict[str, Any]) -> str:
         for w in worst[:5]:
             lines.append(f"- **{w['composite']:.1f}** — {w['question']}")
     return "\n".join(lines)
+
+
+def generate_comparison_report(  # noqa: PLR0912, PLR0915
+    run_pairs: list[dict[str, Any]],
+    title: str = "Production Baseline Comparison",
+) -> str:
+    """Generate A/B comparison report as markdown.
+
+    Args:
+        run_pairs: List of dicts, each with keys:
+            battery: str (e.g. "friendly_battery")
+            baseline: dict with run_id, system, composite, scores_summary, scores (list)
+            candidate: dict with same shape
+        title: Report title.
+
+    Returns:
+        Markdown string.
+    """
+    now = datetime.now().strftime("%Y-%m-%d")
+    lines = [
+        f"# {title}",
+        "",
+        f"**Date:** {now}",
+        "",
+    ]
+
+    # Collect all scores for overall stats
+    all_baseline_composites = []
+    all_candidate_composites = []
+
+    for pair in run_pairs:
+        for s in pair["baseline"]["scores"]:
+            if s["composite_score"] is not None:
+                all_baseline_composites.append(s["composite_score"])
+        for s in pair["candidate"]["scores"]:
+            if s["composite_score"] is not None:
+                all_candidate_composites.append(s["composite_score"])
+
+    baseline_avg = (
+        sum(all_baseline_composites) / len(all_baseline_composites)
+        if all_baseline_composites
+        else 0
+    )
+    candidate_avg = (
+        sum(all_candidate_composites) / len(all_candidate_composites)
+        if all_candidate_composites
+        else 0
+    )
+    delta = candidate_avg - baseline_avg
+    sign = "+" if delta > 0 else ""
+    total_q = len(all_baseline_composites)
+
+    b_sys = run_pairs[0]["baseline"]["system"] if run_pairs else "baseline"
+    c_sys = run_pairs[0]["candidate"]["system"] if run_pairs else "candidate"
+
+    lines.extend([
+        "## Overall",
+        "",
+        f"| Metric | {b_sys} | {c_sys} | Delta |",
+        "|--------|---------|---------|-------|",
+        f"| **Composite** | **{baseline_avg:.2f}** | **{candidate_avg:.2f}** | **{sign}{delta:.2f}** |",
+        f"| Questions scored | {total_q} | {total_q} | |",
+        "",
+    ])
+
+    # Per-battery summary
+    lines.extend([
+        "## Per Battery",
+        "",
+        f"| Battery | {b_sys} | {c_sys} | Delta | Questions |",
+        f"|---------|---------|---------|-------|-----------|",
+    ])
+    for pair in run_pairs:
+        b = pair["baseline"]
+        c = pair["candidate"]
+        d = (c["composite"] or 0) - (b["composite"] or 0)
+        s = "+" if d > 0 else ""
+        battery_name = pair["battery"].replace("_battery", "").replace("_", " ")
+        lines.append(
+            f"| {battery_name} | {b['composite']:.2f} | {c['composite']:.2f} "
+            f"| {s}{d:.2f} | {len(b['scores'])} |"
+        )
+    lines.append("")
+
+    # Per-dimension comparison (aggregated)
+    lines.extend([
+        "## Per Dimension",
+        "",
+        f"| Dimension | {b_sys} | {c_sys} | Delta |",
+        "|-----------|---------|---------|-------|",
+    ])
+    for dim in DIMENSION_NAMES:
+        b_vals = [
+            s[dim] for pair in run_pairs for s in pair["baseline"]["scores"]
+            if s.get(dim) is not None
+        ]
+        c_vals = [
+            s[dim] for pair in run_pairs for s in pair["candidate"]["scores"]
+            if s.get(dim) is not None
+        ]
+        b_avg = sum(b_vals) / len(b_vals) if b_vals else 0
+        c_avg = sum(c_vals) / len(c_vals) if c_vals else 0
+        d = c_avg - b_avg
+        s = "+" if d > 0 else ""
+        lines.append(f"| {dim} | {b_avg:.2f} | {c_avg:.2f} | {s}{d:.2f} |")
+    lines.append("")
+
+    # Per-battery detail with question-level results
+    for pair in run_pairs:
+        battery_name = pair["battery"].replace("_battery", "").replace("_", " ")
+        lines.extend([
+            f"## {battery_name.title()} Battery — Question Detail",
+            "",
+        ])
+
+        # Build lookup by question_id
+        b_by_q = {s["question_id"]: s for s in pair["baseline"]["scores"]}
+        c_by_q = {s["question_id"]: s for s in pair["candidate"]["scores"]}
+        all_qids = list(dict.fromkeys(
+            [s["question_id"] for s in pair["candidate"]["scores"]]
+            + [s["question_id"] for s in pair["baseline"]["scores"]]
+        ))
+
+        # Find questions where agent used tools
+        tool_questions = []
+        tie_questions = []
+        agent_wins = []
+        agent_losses = []
+
+        for qid in all_qids:
+            b_score = b_by_q.get(qid, {})
+            c_score = c_by_q.get(qid, {})
+            bc = b_score.get("composite_score", 0) or 0
+            cc = c_score.get("composite_score", 0) or 0
+            d = cc - bc
+            tools = _extract_tools(c_score)
+
+            entry = {
+                "qid": qid,
+                "question": (c_score.get("question_text") or b_score.get("question_text", ""))[:100],
+                "baseline_comp": bc,
+                "candidate_comp": cc,
+                "delta": d,
+                "tools": tools,
+            }
+
+            if tools:
+                tool_questions.append(entry)
+            if abs(d) < 0.1:
+                tie_questions.append(entry)
+            elif d > 0:
+                agent_wins.append(entry)
+            else:
+                agent_losses.append(entry)
+
+        # Tool usage summary
+        if tool_questions:
+            lines.extend([
+                f"### Tool Usage ({len(tool_questions)}/{len(all_qids)} questions)",
+                "",
+                f"| Question | {b_sys} | {c_sys} | Delta | Tools |",
+                "|----------|---------|---------|-------|-------|",
+            ])
+            for e in sorted(tool_questions, key=lambda x: -x["delta"]):
+                s = "+" if e["delta"] > 0 else ""
+                tools_str = ", ".join(e["tools"][:3])
+                if len(e["tools"]) > 3:
+                    tools_str += f" +{len(e['tools']) - 3}"
+                lines.append(
+                    f"| {e['qid']}: {e['question'][:60]} "
+                    f"| {e['baseline_comp']:.1f} | {e['candidate_comp']:.1f} "
+                    f"| {s}{e['delta']:.1f} | {tools_str} |"
+                )
+            lines.append("")
+
+        # Agent wins
+        if agent_wins:
+            lines.extend([
+                f"### Agent Wins ({len(agent_wins)} questions)",
+                "",
+                f"| Question | {b_sys} | {c_sys} | Delta |",
+                "|----------|---------|---------|-------|",
+            ])
+            for e in sorted(agent_wins, key=lambda x: -x["delta"]):
+                lines.append(
+                    f"| {e['qid']}: {e['question'][:70]} "
+                    f"| {e['baseline_comp']:.1f} | {e['candidate_comp']:.1f} "
+                    f"| +{e['delta']:.1f} |"
+                )
+            lines.append("")
+
+        # Agent losses
+        if agent_losses:
+            lines.extend([
+                f"### Agent Losses ({len(agent_losses)} questions)",
+                "",
+                f"| Question | {b_sys} | {c_sys} | Delta |",
+                "|----------|---------|---------|-------|",
+            ])
+            for e in sorted(agent_losses, key=lambda x: x["delta"]):
+                lines.append(
+                    f"| {e['qid']}: {e['question'][:70]} "
+                    f"| {e['baseline_comp']:.1f} | {e['candidate_comp']:.1f} "
+                    f"| {e['delta']:.1f} |"
+                )
+            lines.append("")
+
+    return "\n".join(lines)
+
+
+def _extract_tools(score: dict[str, Any]) -> list[str]:
+    """Extract tool names from a score's node_trace context."""
+    ctx = score.get("context") or {}
+    trace_str = ctx.get("node_trace")
+    if not trace_str:
+        return []
+    try:
+        trace = json.loads(trace_str) if isinstance(trace_str, str) else trace_str
+    except (json.JSONDecodeError, TypeError):
+        return []
+    tools = []
+    for t in trace or []:
+        if t.get("tools_called"):
+            tools.extend(t["tools_called"])
+    return tools

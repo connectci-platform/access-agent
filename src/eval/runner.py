@@ -117,14 +117,17 @@ async def _run_raw_rag(
     question_text: str,
     resource_context: str | None = None,
 ) -> RunResult:
-    """Call UKY RAG directly — no agent graph. Simulates current production."""
+    """Call UKY RAG directly — no agent graph. Simulates current production.
+
+    Intentionally ignores resource_context: current prod does not do
+    resource-scoped RAG, so the baseline shouldn't either.
+    """
     client = get_uky_client()
     uky_response = await client.ask(
         query=question_text,
         endpoint_type="general",
         session_id=f"eval_{question_id}",
         question_id=question_id,
-        rp_name=resource_context,
     )
     return RunResult(
         question_id=question_id,

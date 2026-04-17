@@ -128,6 +128,145 @@ def _handle_ask(args: argparse.Namespace) -> None:
     print(result)
 
 
+def _handle_comparison(args: argparse.Namespace) -> None:
+    from src.config import settings
+
+    from .db import EvalDB
+    from .report import generate_comparison_report
+
+    db = EvalDB(settings.DATABASE_URL)
+
+    # Parse run ID pairs: "baseline_id:candidate_id,baseline_id:candidate_id,..."
+    run_pairs = []
+    for pair_str in args.pairs:
+        parts = pair_str.split(":")
+        if len(parts) != 2:
+            print(f"Error: invalid pair '{pair_str}', expected 'baseline_id:candidate_id'")
+            sys.exit(1)
+        b_run = db.get_run(parts[0])
+        c_run = db.get_run(parts[1])
+        if not b_run or not c_run:
+            print(f"Error: run not found in pair '{pair_str}'")
+            sys.exit(1)
+
+        b_meta: dict[str, Any] = b_run.metadata_ or {}  # type: ignore[assignment]
+        c_meta: dict[str, Any] = c_run.metadata_ or {}  # type: ignore[assignment]
+
+        b_scores = db.get_scores_for_run(parts[0])
+        c_scores = db.get_scores_for_run(parts[1])
+
+        def score_to_dict(s: Any) -> dict[str, Any]:
+            return {
+                "question_id": s.question_id,
+                "question_text": s.question_text,
+                "answer_text": s.answer_text,
+                "composite_score": s.composite_score,
+                "correctness": s.correctness,
+                "completeness": s.completeness,
+                "relevance": s.relevance,
+                "citation_quality": s.citation_quality,
+                "hedging": s.hedging,
+                "duration_ms": s.duration_ms,
+                "context": s.context,
+                "source": s.source,
+            }
+
+        battery = (c_run.question_set or b_run.question_set or "unknown").split("/")[-1].replace(".json", "")
+        run_pairs.append({
+            "battery": battery,
+            "baseline": {
+                "run_id": parts[0],
+                "system": b_meta.get("system", "baseline"),
+                "composite": b_run.composite_score or 0,
+                "scores_summary": b_run.scores_summary or {},
+                "scores": [score_to_dict(s) for s in b_scores],
+            },
+            "candidate": {
+                "run_id": parts[1],
+                "system": c_meta.get("system", "candidate"),
+                "composite": c_run.composite_score or 0,
+                "scores_summary": c_run.scores_summary or {},
+                "scores": [score_to_dict(s) for s in c_scores],
+            },
+        })
+
+    report = generate_comparison_report(run_pairs, title=args.title)
+
+    if args.output:
+        with open(args.output, "w") as f:
+            f.write(report)
+        print(f"Report written to {args.output}")
+    else:
+        print(report)
+
+
+def _handle_argilla_push(args: argparse.Namespace) -> None:
+    from src.config import settings
+
+    from .argilla_push import (
+        build_argilla_record,
+        dataset_name_for_branch,
+        push_scores_to_argilla,
+    )
+    from .db import EvalDB
+
+    argilla_url = args.argilla_url or settings.ARGILLA_URL
+    argilla_key = args.argilla_key or settings.ARGILLA_API_KEY
+
+    if not argilla_url or not argilla_key:
+        print("Error: ARGILLA_URL and ARGILLA_API_KEY required (via args or env)")
+        sys.exit(1)
+
+    db = EvalDB(settings.DATABASE_URL)
+    run = db.get_run(args.run_id)
+    if not run:
+        print(f"Error: Run {args.run_id} not found")
+        sys.exit(1)
+
+    meta: dict[str, Any] = run.metadata_ or {}  # type: ignore[assignment]
+    ds_name = args.dataset or dataset_name_for_branch(run.agent_branch)
+
+    scores = db.get_scores_for_run(args.run_id)
+    records = []
+    for score in scores:
+        if score.source not in ("judge", "judge_error", "skipped"):
+            continue
+        score_context: dict[str, Any] = score.context or {}  # type: ignore[assignment]
+        records.append(
+            build_argilla_record(
+                question_id=str(score.question_id),
+                question_text=str(score.question_text or ""),
+                answer_text=str(score.answer_text or ""),
+                judge_scores={
+                    "correctness": int(score.correctness or 0),
+                    "completeness": int(score.completeness or 0),
+                    "relevance": int(score.relevance or 0),
+                    "citation_quality": int(score.citation_quality or 0),
+                    "hedging": int(score.hedging or 0),
+                },
+                composite_score=float(score.composite_score or 0.0),
+                rag_context=score_context.get("rag_context"),
+                tool_results=score_context.get("tool_results"),
+                node_trace=score_context.get("node_trace"),
+                run_id=args.run_id,
+                agent_branch=run.agent_branch,
+                agent_commit=run.agent_commit,
+                judge_model=run.judge_model,
+                duration_ms=float(score.duration_ms) if score.duration_ms else None,
+            )
+        )
+
+    if not records:
+        print("No scores to push")
+        sys.exit(0)
+
+    pushed = push_scores_to_argilla(records, argilla_url, argilla_key, ds_name)
+    print(f"Pushed {pushed} records to Argilla dataset '{ds_name}'")
+    print(f"  System: {meta.get('system', '?')}")
+    print(f"  Battery: {run.question_set}")
+    print(f"  Composite: {run.composite_score:.2f}")
+
+
 def _handle_score_production(_args: argparse.Namespace) -> None:
     print("Production scoring is not yet implemented.")
     print()
@@ -191,6 +330,30 @@ def main() -> None:
     ask_parser = subparsers.add_parser("ask", help="Ask a question about eval data")
     ask_parser.add_argument("question", help="Natural language question")
 
+    comparison_parser = subparsers.add_parser(
+        "comparison", help="Generate A/B comparison report from paired runs"
+    )
+    comparison_parser.add_argument(
+        "pairs", nargs="+",
+        help="Run ID pairs as baseline_id:candidate_id (one per battery)",
+    )
+    comparison_parser.add_argument(
+        "--title", default="Production Baseline Comparison",
+        help="Report title",
+    )
+    comparison_parser.add_argument(
+        "--output", "-o", default=None,
+        help="Output file path (default: stdout)",
+    )
+
+    push_parser = subparsers.add_parser(
+        "argilla-push", help="Push a completed run to Argilla (all scores, no threshold)"
+    )
+    push_parser.add_argument("--run-id", required=True, help="Eval run ID to push")
+    push_parser.add_argument("--dataset", default=None, help="Argilla dataset name (default: eval-{branch})")
+    push_parser.add_argument("--argilla-url", default=None, help="Argilla URL (default: from config)")
+    push_parser.add_argument("--argilla-key", default=None, help="Argilla API key (default: from config)")
+
     # Production scoring is deferred — requires on-premise LLM or updated privacy policy
     # to send real user queries to a judge. See spec: docs/superpowers/specs/2026-03-31-eval-pipeline-design.md
     subparsers.add_parser(
@@ -203,7 +366,9 @@ def main() -> None:
     handlers = {
         "run": _handle_run,
         "compare": _handle_compare,
+        "comparison": _handle_comparison,
         "argilla-sync": _handle_argilla_sync,
+        "argilla-push": _handle_argilla_push,
         "cleanup": _handle_cleanup,
         "report": _handle_report,
         "ask": _handle_ask,
