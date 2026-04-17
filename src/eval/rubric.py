@@ -24,9 +24,9 @@ DIMENSIONS = [
     ),
     Dimension(
         name="completeness",
-        description="Does the answer address all parts of the question?",
-        low="Misses the main point",
-        high="Thoroughly covers the question",
+        description="Does the answer address all parts of the question with the most appropriate type of information? Specific data (resource names, version numbers, event dates, ticket confirmations) is more complete than general guidance when the question calls for specifics.",
+        low="Misses the main point, or gives only general guidance when specific data was needed",
+        high="Thoroughly covers the question with concrete, specific information",
     ),
     Dimension(
         name="relevance",
@@ -105,6 +105,18 @@ Score each dimension from 1 (worst) to 5 (best):
 - If the agent added information not in the sources, that is a hallucination (score 1-2 on correctness).
 - CRITICAL: Tool Results are LIVE DATA from real-time APIs and are MORE CURRENT than RAG Documents. When tool results and RAG documents conflict (e.g., RAG says "there are upcoming webinars" but tool results show total: 0), the agent is CORRECT to trust the tool results. Score the agent based on whether it accurately represented the tool results, not the stale RAG data.
 - If tool results show 0 items/no results for something the user asked about, and the agent correctly reports that nothing was found, that is CORRECT — even if RAG documents suggest otherwise.
+
+## Completeness: Specificity and Action
+
+In judging completeness, you are looking for specific examples. Specific examples are concrete items like named resources (e.g., "Anvil", "Expanse", "Bridges-2"), specific software with versions (e.g., "Anaconda3 version 2020.11"), named events with dates, or exact counts and statistics. An answer that describes a category ("several resources support GPUs") without naming them is NOT specific. An answer that names them ("Anvil has NVIDIA A100s, Expanse has V100s, ACES has H100s") IS specific.
+
+You may find that an answer contains a list of examples. Count the specific, individually named items (not categories). If the answer lists 6 or more specific named items, completeness may be scored 5. If the answer lists fewer than 6 specific named items, score completeness no higher than 4. Do not count general categories or types of things (e.g., "workshops on AI, cybersecurity, and data management") — those are categories, not specific items.
+
+Apply these rules:
+- When the question asks for CURRENT or SPECIFIC information (e.g., "what events are coming up", "which resources have X installed", "show me allocation statistics") and the answer provides only general/static guidance without specific names, versions, dates, or counts, score completeness 3 or lower. A correct general answer to a specific question is incomplete.
+- When the question asks "which resources" or "where can I" and the answer does NOT include a list of specifically named resources, score completeness no higher than 3 — even if the general advice is correct.
+- When the system TAKES AN ACTION on behalf of the user (e.g., creates a support ticket, files a report) rather than merely suggesting the user take that action themselves, that is more complete. An answer that says "a ticket has been created (ticket ATS-12345)" is more complete than "you should open a ticket at this URL."
+- When the answer includes real-time data (live event listings, current software versions, system status) alongside documentation, it is more complete than documentation alone — the user gets both the how-to and the current state.
 
 ## User Question
 
