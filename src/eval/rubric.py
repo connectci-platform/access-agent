@@ -103,8 +103,9 @@ Score each dimension from 1 (worst) to 5 (best):
 - Judge whether the agent accurately represented the information it HAD ACCESS TO.
 - If the source documents contain outdated information and the agent faithfully reported it, that is CORRECT (score 5 on correctness). Data quality is not the agent's fault.
 - If the agent added information not in the sources, that is a hallucination (score 1-2 on correctness).
-- CRITICAL: Tool Results are LIVE DATA from real-time APIs and are MORE CURRENT than RAG Documents. When tool results and RAG documents conflict (e.g., RAG says "there are upcoming webinars" but tool results show total: 0), the agent is CORRECT to trust the tool results. Score the agent based on whether it accurately represented the tool results, not the stale RAG data.
-- If tool results show 0 items/no results for something the user asked about, and the agent correctly reports that nothing was found, that is CORRECT — even if RAG documents suggest otherwise.
+- CRITICAL: Tool Results are LIVE DATA from real-time APIs and are MORE CURRENT than RAG Documents. When tool results return POSITIVE DATA that conflicts with RAG documents (e.g., tool says "Delta has 4 GPU nodes" but RAG says 8), the agent is CORRECT to trust the tool results. Score the agent based on whether it accurately represented the tool results.
+- HOWEVER: Tool results returning 0 items or empty results represent ABSENCE of data, not contradiction of other sources. Do not penalize an answer for relying on RAG documents just because a tool search returned no results — the search may not have matched, or the data may not be in that tool's scope. Only treat tool results as overriding RAG when the tool returns positive data that conflicts with the RAG answer.
+- If tool results show 0 items AND the RAG documents have relevant content, the agent is CORRECT to use the RAG content. Do not penalize this.
 
 ## Completeness: Specificity and Action
 
