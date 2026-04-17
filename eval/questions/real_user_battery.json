@@ -36,7 +36,7 @@
   {"id": "real-035", "question": "How do I get an account on a new resource?", "capability_area": "account_access", "battery": "real_user"},
   {"id": "real-036", "question": "which of the resources have comsol available and can also be used for gpu based compute jobs", "capability_area": "gpu", "battery": "real_user"},
   {"id": "real-037", "question": "if i get 300000 access cedit what will be the gpu hours", "capability_area": "gpu", "battery": "real_user"},
-  {"id": "real-038", "question": "does DARWIN GPU comes with storage space", "capability_area": "gpu", "battery": "real_user", "resource": "darwin"},
+  {"id": "real-038", "question": "does DARWIN GPU comes with storage space", "capability_area": "gpu", "battery": "real_user"},
   {"id": "real-039", "question": "Which compute resources utilize SLURM job management?", "capability_area": "jobs_slurm", "battery": "real_user"},
   {"id": "real-040", "question": "how can I access my slurm", "capability_area": "jobs_slurm", "battery": "real_user"},
   {"id": "real-041", "question": "sbatch: error: Batch job submission failed: Invalid qos specification", "capability_area": "jobs_slurm", "battery": "real_user"},
