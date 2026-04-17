@@ -128,6 +128,78 @@ def _handle_ask(args: argparse.Namespace) -> None:
     print(result)
 
 
+def _handle_comparison(args: argparse.Namespace) -> None:
+    from src.config import settings
+
+    from .db import EvalDB
+    from .report import generate_comparison_report
+
+    db = EvalDB(settings.DATABASE_URL)
+
+    # Parse run ID pairs: "baseline_id:candidate_id,baseline_id:candidate_id,..."
+    run_pairs = []
+    for pair_str in args.pairs:
+        parts = pair_str.split(":")
+        if len(parts) != 2:
+            print(f"Error: invalid pair '{pair_str}', expected 'baseline_id:candidate_id'")
+            sys.exit(1)
+        b_run = db.get_run(parts[0])
+        c_run = db.get_run(parts[1])
+        if not b_run or not c_run:
+            print(f"Error: run not found in pair '{pair_str}'")
+            sys.exit(1)
+
+        b_meta: dict[str, Any] = b_run.metadata_ or {}  # type: ignore[assignment]
+        c_meta: dict[str, Any] = c_run.metadata_ or {}  # type: ignore[assignment]
+
+        b_scores = db.get_scores_for_run(parts[0])
+        c_scores = db.get_scores_for_run(parts[1])
+
+        def score_to_dict(s: Any) -> dict[str, Any]:
+            return {
+                "question_id": s.question_id,
+                "question_text": s.question_text,
+                "answer_text": s.answer_text,
+                "composite_score": s.composite_score,
+                "correctness": s.correctness,
+                "completeness": s.completeness,
+                "relevance": s.relevance,
+                "citation_quality": s.citation_quality,
+                "hedging": s.hedging,
+                "duration_ms": s.duration_ms,
+                "context": s.context,
+                "source": s.source,
+            }
+
+        battery = (c_run.question_set or b_run.question_set or "unknown").split("/")[-1].replace(".json", "")
+        run_pairs.append({
+            "battery": battery,
+            "baseline": {
+                "run_id": parts[0],
+                "system": b_meta.get("system", "baseline"),
+                "composite": b_run.composite_score or 0,
+                "scores_summary": b_run.scores_summary or {},
+                "scores": [score_to_dict(s) for s in b_scores],
+            },
+            "candidate": {
+                "run_id": parts[1],
+                "system": c_meta.get("system", "candidate"),
+                "composite": c_run.composite_score or 0,
+                "scores_summary": c_run.scores_summary or {},
+                "scores": [score_to_dict(s) for s in c_scores],
+            },
+        })
+
+    report = generate_comparison_report(run_pairs, title=args.title)
+
+    if args.output:
+        with open(args.output, "w") as f:
+            f.write(report)
+        print(f"Report written to {args.output}")
+    else:
+        print(report)
+
+
 def _handle_argilla_push(args: argparse.Namespace) -> None:
     from src.config import settings
 
@@ -258,6 +330,22 @@ def main() -> None:
     ask_parser = subparsers.add_parser("ask", help="Ask a question about eval data")
     ask_parser.add_argument("question", help="Natural language question")
 
+    comparison_parser = subparsers.add_parser(
+        "comparison", help="Generate A/B comparison report from paired runs"
+    )
+    comparison_parser.add_argument(
+        "pairs", nargs="+",
+        help="Run ID pairs as baseline_id:candidate_id (one per battery)",
+    )
+    comparison_parser.add_argument(
+        "--title", default="Production Baseline Comparison",
+        help="Report title",
+    )
+    comparison_parser.add_argument(
+        "--output", "-o", default=None,
+        help="Output file path (default: stdout)",
+    )
+
     push_parser = subparsers.add_parser(
         "argilla-push", help="Push a completed run to Argilla (all scores, no threshold)"
     )
@@ -278,6 +366,7 @@ def main() -> None:
     handlers = {
         "run": _handle_run,
         "compare": _handle_compare,
+        "comparison": _handle_comparison,
         "argilla-sync": _handle_argilla_sync,
         "argilla-push": _handle_argilla_push,
         "cleanup": _handle_cleanup,
