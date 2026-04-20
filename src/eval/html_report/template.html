@@ -106,6 +106,73 @@
   }
   .blcard .bl-why strong { font-weight: 600; color: var(--text-dim); }
 
+  /* Comparison-judge narrative (run-level, one card per battery) */
+  .compare-summary { display: grid; grid-template-columns: 1fr; gap: 12px; margin-bottom: 20px; }
+  .csc {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px 18px;
+  }
+  .csc-head {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .csc-battery { font-weight: 700; font-size: 16px; }
+  .csc-verdict {
+    font-family: var(--mono); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    padding: 4px 10px; border-radius: 3px; font-weight: 600;
+  }
+  .csc-verdict.agent { background: var(--agent-bg); color: var(--agent); }
+  .csc-verdict.raw { background: var(--raw-bg); color: var(--raw); }
+  .csc-verdict.tie { background: var(--panel-inset); color: var(--text-dim); }
+  .csc-composites {
+    font-family: var(--mono); font-size: 11px; color: var(--text-muted);
+  }
+  .csc-why { color: var(--text); margin-bottom: 12px; line-height: 1.55; font-size: 14.5px; }
+  .csc-section { margin-top: 10px; font-size: 14px; }
+  .csc-label {
+    font-family: var(--mono); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-muted); font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .csc-patterns ul { margin: 0 0 0 18px; padding: 0; }
+  .csc-patterns li { margin-bottom: 4px; color: var(--text-dim); }
+  .csc-calib { color: var(--text-dim); font-style: italic; }
+
+  /* Per-question comparison verdict (inside qrow body) */
+  .qverdict {
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--text-muted);
+    border-radius: 4px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+  }
+  .qverdict.agent { border-left-color: var(--agent); }
+  .qverdict.raw { border-left-color: var(--raw); }
+  .qverdict.tie { border-left-color: var(--text-muted); }
+  .qverdict-head { display: flex; gap: 10px; align-items: baseline; margin-bottom: 6px; }
+  .qverdict-label {
+    font-family: var(--mono); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-muted); font-weight: 600;
+  }
+  .qverdict-pill {
+    font-family: var(--mono); font-size: 11px;
+    padding: 2px 8px; border-radius: 3px; font-weight: 600;
+  }
+  .qverdict-pill.agent { background: var(--agent-bg); color: var(--agent); }
+  .qverdict-pill.raw { background: var(--raw-bg); color: var(--raw); }
+  .qverdict-pill.tie { background: var(--panel-inset); color: var(--text-dim); }
+  .qverdict-why { color: var(--text); line-height: 1.5; }
+  .qverdict-judge-note {
+    margin-top: 6px; font-size: 13px;
+    color: var(--text-dim); font-style: italic;
+  }
+
   /* Battery summary strip — side-by-side agent vs raw per battery */
   .battery-strip {
     display: grid;
@@ -411,6 +478,9 @@
 <div class="section-label">Batteries</div>
 <div class="battery-legend" id="battery-legend"></div>
 
+<div class="section-label" id="compare-summary-label" style="display:none">Comparison Verdict</div>
+<div class="compare-summary" id="compare-summary"></div>
+
 <div class="section-label">Question-Level Results</div>
 <div class="filters" id="filters"></div>
 <div id="questions"></div>
@@ -477,6 +547,49 @@
       </div>`;
   }
 
+  // ---- Compare-judge helpers ----
+  function verdictKey(w) { return w === 'B' ? 'agent' : w === 'A' ? 'raw' : 'tie'; }
+  function verdictLabel(winner, margin) {
+    const who = winner === 'B' ? 'Agent wins' : winner === 'A' ? 'Raw wins' : 'Tie';
+    if (winner === 'tie' || !margin || margin === 'none') return who;
+    const qualifier = margin === 'large' ? 'decisively' : margin === 'small' ? 'narrowly' : margin;
+    return who === 'Tie' ? who : `${who} — ${qualifier}`;
+  }
+
+  // ---- Run-level comparison-judge narrative (one card per battery) ----
+  const comparisons = BUNDLE.comparisons || {};
+  const compareSummaryEl = document.getElementById('compare-summary');
+  const compareLabelEl = document.getElementById('compare-summary-label');
+  const comparisonBatteries = BUNDLE.battery_order.filter(b => comparisons[b] && comparisons[b].run_summary);
+  if (comparisonBatteries.length) {
+    compareLabelEl.style.display = '';
+    compareSummaryEl.innerHTML = comparisonBatteries.map(b => {
+      const entry = comparisons[b];
+      const summary = entry.run_summary || {};
+      const vKey = verdictKey(summary.winner);
+      const compositesStr = (entry.baseline_composite != null && entry.candidate_composite != null)
+        ? `Composites — Agent ${Number(entry.candidate_composite).toFixed(2)} · Raw ${Number(entry.baseline_composite).toFixed(2)}`
+        : '';
+      const patternsHtml = (summary.patterns && summary.patterns.length)
+        ? `<div class="csc-section csc-patterns"><div class="csc-label">Patterns</div><ul>${summary.patterns.map(p => `<li>${esc(p)}</li>`).join('')}</ul></div>`
+        : '';
+      const calibHtml = summary.per_answer_judge_calibration
+        ? `<div class="csc-section"><div class="csc-label">Per-answer judge calibration</div><div class="csc-calib">${esc(summary.per_answer_judge_calibration)}</div></div>`
+        : '';
+      return `
+        <div class="csc">
+          <div class="csc-head">
+            <span class="csc-battery">${BATTERY_LABELS[b] || b}</span>
+            <span class="csc-verdict ${vKey}">${esc(verdictLabel(summary.winner, summary.margin))}</span>
+            ${compositesStr ? `<span class="csc-composites">${compositesStr}</span>` : ''}
+          </div>
+          ${summary.why ? `<div class="csc-why">${esc(summary.why)}</div>` : ''}
+          ${patternsHtml}
+          ${calibHtml}
+        </div>`;
+    }).join('');
+  }
+
   // ---- Battery legend (descriptions) ----
   const legendEl = document.getElementById('battery-legend');
   legendEl.innerHTML = BUNDLE.battery_order.map(b => {
@@ -538,6 +651,20 @@
       const a = e.agent_full, r = e.raw_rag;
       const deltaStr = (e.delta >= 0 ? '+' : '') + e.delta.toFixed(2);
       const deltaCls = Math.abs(e.delta) < 0.01 ? 'tie' : (e.delta > 0 ? 'pos' : 'neg');
+      const cmp = e.comparison;
+      let qverdictHtml = '';
+      if (cmp && cmp.winner) {
+        const vKey = verdictKey(cmp.winner);
+        qverdictHtml = `
+          <div class="qverdict ${vKey}">
+            <div class="qverdict-head">
+              <span class="qverdict-label">Comparison judge</span>
+              <span class="qverdict-pill ${vKey}">${esc(verdictLabel(cmp.winner, cmp.margin))}</span>
+            </div>
+            ${cmp.why ? `<div class="qverdict-why">${esc(cmp.why)}</div>` : ''}
+            ${cmp.per_answer_judge_note ? `<div class="qverdict-judge-note"><strong>Per-answer judge note:</strong> ${esc(cmp.per_answer_judge_note)}</div>` : ''}
+          </div>`;
+      }
       return `
         <div class="qrow">
           <div class="qrow-head">
@@ -553,6 +680,7 @@
           </div>
           <div class="qrow-body">
             <div class="qb-q">${esc(e.question)}</div>
+            ${qverdictHtml}
             ${renderTrace(a.node_trace)}
             <div class="qb-pair">
               <div class="qcol agent">
