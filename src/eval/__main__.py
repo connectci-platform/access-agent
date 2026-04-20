@@ -200,6 +200,20 @@ def _handle_comparison(args: argparse.Namespace) -> None:
         print(report)
 
 
+def _handle_rejudge(args: argparse.Namespace) -> None:
+    import json as _json
+
+    from .rejudge import rejudge_run
+
+    summary = asyncio.run(
+        rejudge_run(
+            original_run_id=args.run_id,
+            judge_model=args.judge_model,
+        )
+    )
+    print(_json.dumps(summary, indent=2, default=str))
+
+
 def _handle_argilla_push(args: argparse.Namespace) -> None:
     from src.config import settings
 
@@ -372,6 +386,13 @@ def main() -> None:
         help="Output file path (default: stdout)",
     )
 
+    rejudge_parser = subparsers.add_parser(
+        "rejudge",
+        help="Re-judge an existing run's answers with the current rubric (no system re-call)",
+    )
+    rejudge_parser.add_argument("--run-id", required=True, help="Run ID to re-judge")
+    rejudge_parser.add_argument("--judge-model", default=None, help="Override judge model")
+
     push_parser = subparsers.add_parser(
         "argilla-push", help="Push a completed run to Argilla (all scores, no threshold)"
     )
@@ -418,6 +439,7 @@ def main() -> None:
         "comparison": _handle_comparison,
         "argilla-sync": _handle_argilla_sync,
         "argilla-push": _handle_argilla_push,
+        "rejudge": _handle_rejudge,
         "cleanup": _handle_cleanup,
         "report": _handle_report,
         "ask": _handle_ask,
