@@ -52,6 +52,9 @@ class ToolResult(BaseModel):
     data: ToolResultData = Field(default=None, description="Result data if successful")
     error: str | None = Field(default=None, description="Error message if failed")
     duration_ms: int = Field(default=0, description="Execution time in milliseconds")
+    arguments: ToolArguments = Field(
+        default_factory=dict, description="Arguments the tool was called with"
+    )
 
 
 class RAGMatch(BaseModel):

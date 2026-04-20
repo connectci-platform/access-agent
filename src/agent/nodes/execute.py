@@ -179,6 +179,7 @@ async def _execute_parallel(
                     success=False,
                     error=f"{type(result).__name__}: {result}",
                     duration_ms=0,
+                    arguments=tools[i].arguments,
                 )
             )
         else:
@@ -374,6 +375,7 @@ async def _execute_single_tool(
             data=result.data,
             error=result.error,
             duration_ms=result.duration_ms,
+            arguments=tool.arguments,
         )
 
 
