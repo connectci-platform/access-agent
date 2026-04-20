@@ -214,6 +214,29 @@ def _handle_rejudge(args: argparse.Namespace) -> None:
     print(_json.dumps(summary, indent=2, default=str))
 
 
+def _handle_grand_prix(args: argparse.Namespace) -> None:
+    import json as _json
+
+    from .grand_prix import DEFAULT_BATTERIES, run_grand_prix
+
+    batteries = None
+    if args.batteries:
+        batteries = [b.strip() for b in args.batteries.split(",") if b.strip()]
+
+    summary = asyncio.run(
+        run_grand_prix(
+            batteries=batteries,
+            output_html=args.output,
+            comparisons_dir=args.comparisons_dir,
+            judge_model=args.judge_model,
+            skip_runs=args.skip_runs,
+        )
+    )
+    print(_json.dumps(summary, indent=2, default=str))
+    print()
+    print(f"Default batteries: {', '.join(DEFAULT_BATTERIES)}")
+
+
 def _handle_compare_judge(args: argparse.Namespace) -> None:
     import json as _json
 
@@ -443,6 +466,45 @@ def main() -> None:
     rejudge_parser.add_argument("--run-id", required=True, help="Run ID to re-judge")
     rejudge_parser.add_argument("--judge-model", default=None, help="Override judge model")
 
+    gp_parser = subparsers.add_parser(
+        "grand-prix",
+        help=(
+            "Run the full Production Baseline Comparison: 8 eval runs "
+            "+ 4 compare-judges + 1 HTML report"
+        ),
+    )
+    gp_parser.add_argument(
+        "--batteries",
+        default=None,
+        help=(
+            "Comma-separated list of battery keys (e.g. "
+            "'friendly_battery,mcp_coverage_battery'). Default: all four."
+        ),
+    )
+    gp_parser.add_argument(
+        "--output", "-o", default=None,
+        help=(
+            "Output HTML path. Default: "
+            "~/.agent/diagrams/grand-prix-<timestamp>.html"
+        ),
+    )
+    gp_parser.add_argument(
+        "--comparisons-dir", default="comparisons",
+        help="Directory for per-battery compare-judge JSON artifacts",
+    )
+    gp_parser.add_argument(
+        "--judge-model", default=None,
+        help="Override judge model (default: from config)",
+    )
+    gp_parser.add_argument(
+        "--skip-runs", action="store_true",
+        help=(
+            "Skip phase 1 (eval runs); use newest existing runs per "
+            "(system, battery) on the current branch. For iterating on the "
+            "compare-judge + HTML phases without burning fresh runs."
+        ),
+    )
+
     compare_judge_parser = subparsers.add_parser(
         "compare-judge",
         help="Compare two runs head-to-head with an LLM; writes JSON artifact (no DB writes)",
@@ -524,6 +586,7 @@ def main() -> None:
         "argilla-push": _handle_argilla_push,
         "rejudge": _handle_rejudge,
         "compare-judge": _handle_compare_judge,
+        "grand-prix": _handle_grand_prix,
         "cleanup": _handle_cleanup,
         "report": _handle_report,
         "ask": _handle_ask,
