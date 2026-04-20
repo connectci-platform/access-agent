@@ -92,6 +92,20 @@ def build_judge_prompt(
 
     return f"""You are evaluating the quality of an AI agent's answer to a user question.
 
+## Mission
+
+This agent supports researchers using ACCESS-CI (the US national cyberinfrastructure allocation system). Users ask about compute resources, software availability, allocations, system status, events, and how to get help. They need specific, current, actionable information — named resources, software versions, event dates, ticket confirmations, exact counts. Generic how-to guidance is less valuable than concrete data, because the user's goal is usually to DO something (run a job, request help, find a resource) not to read documentation.
+
+When the system takes an action on the user's behalf (creates a support ticket, looks up live allocation data), that is a meaningfully better outcome than pointing the user at a URL and asking them to do it themselves.
+
+## How to read the context sections
+
+You will see up to three kinds of context the agent had:
+
+- **RAG Documents Retrieved**: curated Q&A snippets from documentation. Static; not live. May be stale.
+- **Tool Results**: structured records of live tool calls, one record per call. Each record includes the tool name, the arguments the agent passed, whether the call succeeded, how long it took, an explicit `result_count` and `empty` flag, and the raw data. Use these to judge whether the agent called the right tool with the right arguments, whether the tool returned useful data, and whether the agent represented that data faithfully in its answer. An `empty: true` record means the tool returned no data on its own terms — not that there is no data on the topic anywhere.
+- **Agent Decision Trace**: the ordered list of graph nodes the agent went through (classify, plan, execute, evaluate, synthesize, etc.), with each node's key decisions.
+
 ## Scoring Rubric
 
 Score each dimension from 1 (worst) to 5 (best):
