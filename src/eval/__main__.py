@@ -267,6 +267,32 @@ def _handle_argilla_push(args: argparse.Namespace) -> None:
     print(f"  Composite: {run.composite_score:.2f}")
 
 
+def _handle_html(args: argparse.Namespace) -> None:
+    from datetime import date as _date
+    from pathlib import Path
+
+    from src.config import settings
+
+    from .html_report.builder import build_report
+
+    on_date: _date | None = None
+    if args.date:
+        on_date = _date.fromisoformat(args.date)
+
+    question_sets: list[str] | None = None
+    if args.question_sets:
+        question_sets = [q.strip() for q in args.question_sets.split(",") if q.strip()]
+
+    output_path = Path(args.output)
+    bundle = build_report(
+        database_url=settings.DATABASE_URL,
+        output_path=output_path,
+        on_date=on_date,
+        question_sets=question_sets,
+    )
+    print(f"Wrote {output_path} ({len(bundle['all_pairs'])} question pairs)")
+
+
 def _handle_score_production(_args: argparse.Namespace) -> None:
     print("Production scoring is not yet implemented.")
     print()
@@ -354,6 +380,29 @@ def main() -> None:
     push_parser.add_argument("--argilla-url", default=None, help="Argilla URL (default: from config)")
     push_parser.add_argument("--argilla-key", default=None, help="Argilla API key (default: from config)")
 
+    html_parser = subparsers.add_parser(
+        "html", help="Generate the HTML comparison report (raw_rag vs agent_full)"
+    )
+    html_parser.add_argument(
+        "-o",
+        "--output",
+        default="comparison-report.html",
+        help="Output path (default: ./comparison-report.html)",
+    )
+    html_parser.add_argument(
+        "--date",
+        default=None,
+        help="YYYY-MM-DD — restrict to runs created on this date (UTC). Default: newest available.",
+    )
+    html_parser.add_argument(
+        "--question-sets",
+        default=None,
+        help=(
+            "Comma-separated list of battery keys (e.g. "
+            "'friendly_battery,combined_battery'). Default: all four."
+        ),
+    )
+
     # Production scoring is deferred — requires on-premise LLM or updated privacy policy
     # to send real user queries to a judge. See spec: docs/superpowers/specs/2026-03-31-eval-pipeline-design.md
     subparsers.add_parser(
@@ -372,6 +421,7 @@ def main() -> None:
         "cleanup": _handle_cleanup,
         "report": _handle_report,
         "ask": _handle_ask,
+        "html": _handle_html,
         "score-production": _handle_score_production,
     }
 

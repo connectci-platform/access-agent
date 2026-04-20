@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Production Baseline Comparison — raw RAG vs. full agent</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --font: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Consolas, monospace;
+
+    --bg: #ffffff;
+    --panel: #ffffff;
+    --panel-alt: #f8f9fb;
+    --panel-inset: #f4f5f8;
+    --border: #e5e7eb;
+    --border-strong: #d1d5db;
+
+    --text: #111827;
+    --text-dim: #4b5563;
+    --text-muted: #6b7280;
+
+    --agent: #0f766e;
+    --agent-bg: #ecfdf5;
+    --raw: #6d28d9;
+    --raw-bg: #f5f3ff;
+
+    --good: #15803d;
+    --warn: #b45309;
+    --bad: #b91c1c;
+    --info: #1d4ed8;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: var(--bg); color: var(--text); }
+  body {
+    font-family: var(--font);
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    padding: 40px 24px 80px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+
+  /* Header */
+  header.top { border-bottom: 1px solid var(--border); padding-bottom: 20px; margin-bottom: 28px; }
+  header.top .eyebrow {
+    font-family: var(--mono); text-transform: uppercase;
+    letter-spacing: 0.08em; font-size: 11px;
+    color: var(--text-muted); margin-bottom: 8px;
+  }
+  header.top h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.01em; }
+  header.top .subtitle { color: var(--text-dim); margin-top: 6px; font-size: 15px; }
+  header.top .meta {
+    margin-top: 10px; display: flex; flex-wrap: wrap;
+    gap: 6px 20px; font-family: var(--mono); font-size: 12px; color: var(--text-muted);
+  }
+
+  /* Section label */
+  .section-label {
+    font-family: var(--mono); font-size: 12px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-muted);
+    padding-bottom: 8px; margin: 36px 0 14px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* Battery legend — what each battery contains and why */
+  .battery-legend {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+  @media (max-width: 780px) { .battery-legend { grid-template-columns: 1fr; } }
+  .blcard {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 16px;
+  }
+  .blcard .bl-head {
+    display: flex; align-items: baseline; gap: 10px;
+    margin-bottom: 6px;
+  }
+  .blcard .bl-name { font-weight: 600; font-size: 15px; }
+  .blcard .bl-count {
+    font-family: var(--mono); font-size: 11px;
+    color: var(--text-muted);
+    background: var(--panel-inset);
+    padding: 2px 7px; border-radius: 4px;
+  }
+  .blcard .bl-what {
+    color: var(--text-dim);
+    font-size: 13.5px;
+    margin-bottom: 6px;
+  }
+  .blcard .bl-why {
+    font-size: 12.5px;
+    color: var(--text-muted);
+    border-top: 1px dashed var(--border);
+    padding-top: 8px;
+    margin-top: 8px;
+  }
+  .blcard .bl-why strong { font-weight: 600; color: var(--text-dim); }
+
+  /* Battery summary strip — side-by-side agent vs raw per battery */
+  .battery-strip {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+  }
+  @media (max-width: 900px) { .battery-strip { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 520px) { .battery-strip { grid-template-columns: 1fr; } }
+  .bcard {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 16px;
+  }
+  .bcard .bname {
+    font-family: var(--mono); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-muted); margin-bottom: 10px;
+    display: flex; justify-content: space-between; align-items: baseline;
+  }
+  .bcard .bname .n { color: var(--text-muted); }
+  .bcard .bpair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .bcard .bcol {
+    border-radius: 4px;
+    padding: 8px 10px;
+  }
+  .bcard .bcol.agent { background: var(--agent-bg); }
+  .bcard .bcol.raw   { background: var(--raw-bg); }
+  .bcard .bcol .sys {
+    font-family: var(--mono); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    font-weight: 600;
+  }
+  .bcard .bcol.agent .sys { color: var(--agent); }
+  .bcard .bcol.raw   .sys { color: var(--raw); }
+  .bcard .bcol .num {
+    font-family: var(--mono); font-size: 20px;
+    font-weight: 700; line-height: 1.1; margin-top: 2px;
+  }
+  .bcard .bcol.agent .num { color: var(--agent); }
+  .bcard .bcol.raw   .num { color: var(--raw); }
+  .bcard .bcol .dur {
+    font-family: var(--mono); font-size: 11px;
+    color: var(--text-muted); margin-top: 4px;
+  }
+  .bcard .bfoot {
+    margin-top: 10px; padding-top: 10px;
+    border-top: 1px dashed var(--border);
+    font-family: var(--mono); font-size: 11px;
+    color: var(--text-muted);
+    display: flex; justify-content: space-between;
+  }
+  .bcard .bfoot .wlt span { margin-right: 6px; }
+  .bcard .bfoot .wlt .w { color: var(--agent); }
+  .bcard .bfoot .wlt .l { color: var(--raw); }
+
+  /* Filters */
+  .filters {
+    display: flex; flex-wrap: wrap; gap: 8px;
+    padding: 12px 14px; margin-bottom: 16px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .filters .flabel {
+    font-family: var(--mono); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-muted);
+    align-self: center; margin-right: 4px;
+  }
+  .filters button {
+    font-family: var(--font); font-size: 13px; font-weight: 500;
+    color: var(--text-dim);
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 4px; padding: 5px 12px; cursor: pointer;
+    transition: all 0.12s ease;
+  }
+  .filters button:hover { border-color: var(--border-strong); color: var(--text); }
+  .filters button.active {
+    background: var(--text); color: var(--bg); border-color: var(--text);
+  }
+  .filters .fcount {
+    margin-left: auto; align-self: center;
+    font-family: var(--mono); font-size: 11px; color: var(--text-muted);
+  }
+
+  /* Question rows */
+  .qrow {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 8px;
+    overflow: hidden;
+  }
+  .qrow-head {
+    display: grid;
+    grid-template-columns: 16px 104px 1fr 120px 110px 56px;
+    gap: 14px;
+    align-items: center;
+    padding: 12px 16px;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  .qrow-head:hover { background: var(--panel-alt); }
+  .qh-caret {
+    font-family: var(--mono); font-size: 11px;
+    color: var(--text-muted);
+    transition: transform 0.15s ease;
+  }
+  .qrow.open .qh-caret { transform: rotate(90deg); }
+  .qh-qid {
+    font-family: var(--mono); font-size: 12px;
+    color: var(--text-muted);
+    min-width: 100px;
+  }
+  .qh-q {
+    color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .qh-bpill {
+    font-family: var(--mono); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-muted);
+    background: var(--panel-inset);
+    padding: 3px 8px; border-radius: 3px;
+  }
+  .qh-scores {
+    display: inline-flex; gap: 6px;
+    font-family: var(--mono); font-size: 12px;
+    align-items: baseline;
+  }
+  .qh-scores .sa {
+    background: var(--agent-bg);
+    color: var(--agent);
+    padding: 3px 8px; border-radius: 3px;
+    font-weight: 600;
+  }
+  .qh-scores .sr {
+    background: var(--raw-bg);
+    color: var(--raw);
+    padding: 3px 8px; border-radius: 3px;
+    font-weight: 600;
+  }
+  .qh-delta {
+    font-family: var(--mono); font-size: 11px;
+    font-weight: 600;
+    min-width: 44px; text-align: right;
+  }
+  .qh-delta.pos { color: var(--agent); }
+  .qh-delta.neg { color: var(--bad); }
+  .qh-delta.tie { color: var(--text-muted); }
+
+  .qrow-body {
+    display: none; padding: 0 16px 16px;
+    border-top: 1px solid var(--border);
+  }
+  .qrow.open .qrow-body { display: block; }
+  .qb-q {
+    padding: 14px 0 10px;
+    font-weight: 600;
+    font-size: 15px;
+  }
+
+  /* Agent execution trace — full width above the answer columns */
+  .trace {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    margin-bottom: 12px;
+  }
+  .trace .trace-label {
+    font-family: var(--mono); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-muted);
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+  .trace .trace-path {
+    display: flex; flex-wrap: wrap;
+    align-items: center; gap: 6px;
+    font-family: var(--mono); font-size: 12px;
+  }
+  .trace .trace-node {
+    padding: 3px 9px;
+    border-radius: 3px;
+    background: var(--panel-inset);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+  }
+  .trace .trace-node.n-classify   { background: #eef2ff; color: #3730a3; border-color: #c7d2fe; }
+  .trace .trace-node.n-rag_answer { background: var(--raw-bg); color: var(--raw); border-color: #ddd6fe; }
+  .trace .trace-node.n-plan       { background: #ecfeff; color: #0e7490; border-color: #a5f3fc; }
+  .trace .trace-node.n-execute    { background: var(--agent-bg); color: var(--agent); border-color: #a7f3d0; }
+  .trace .trace-node.n-evaluate   { background: #fffbeb; color: var(--warn); border-color: #fde68a; }
+  .trace .trace-node.n-synthesize { background: #fef2f2; color: var(--bad); border-color: #fecaca; }
+  .trace .trace-node.n-recover    { background: #fef2f2; color: var(--bad); border-color: #fecaca; }
+  .trace .trace-arrow {
+    color: var(--text-muted);
+    font-family: var(--mono); font-size: 12px;
+  }
+  .trace .trace-detail {
+    margin-top: 8px;
+    font-family: var(--mono); font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.55;
+  }
+  .trace .trace-detail .td-row { display: block; }
+  .trace .trace-detail code {
+    background: var(--panel-inset);
+    padding: 1px 5px; border-radius: 3px;
+    color: var(--text-dim);
+  }
+
+  .qb-pair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  @media (max-width: 780px) { .qb-pair { grid-template-columns: 1fr; } }
+  .qcol {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 16px;
+    background: var(--panel-alt);
+  }
+  .qcol.agent { border-left: 3px solid var(--agent); }
+  .qcol.raw   { border-left: 3px solid var(--raw); }
+  .qcol .qhead {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 10px;
+    font-family: var(--mono); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  .qcol.agent .qhead .sys { color: var(--agent); font-weight: 600; }
+  .qcol.raw   .qhead .sys { color: var(--raw);   font-weight: 600; }
+  .qcol .qhead .meta { color: var(--text-muted); }
+  .qcol .qtext {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 12px 14px;
+    font-size: 13.5px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+
+  /* Observations */
+  .observations {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 20px 24px;
+  }
+  .observations ul { list-style: none; padding: 0; margin: 0; }
+  .observations li {
+    padding-left: 16px; position: relative;
+    margin-bottom: 12px;
+    color: var(--text-dim);
+    font-size: 14px;
+  }
+  .observations li:last-child { margin-bottom: 0; }
+  .observations li::before {
+    content: ""; position: absolute; left: 0; top: 9px;
+    width: 5px; height: 5px; border-radius: 50%;
+    background: var(--text-muted);
+  }
+  .observations li strong { color: var(--text); font-weight: 600; }
+  .observations li code {
+    font-family: var(--mono); font-size: 12px;
+    background: var(--panel-inset); padding: 1px 6px; border-radius: 3px;
+  }
+
+  footer.foot {
+    margin-top: 60px; padding-top: 20px;
+    border-top: 1px solid var(--border);
+    font-family: var(--mono); font-size: 11px; color: var(--text-muted);
+  }
+  footer.foot code { background: var(--panel-inset); padding: 1px 5px; border-radius: 3px; }
+
+  a { color: var(--info); text-decoration: none; border-bottom: 1px dotted var(--info); }
+  a:hover { border-bottom-style: solid; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="eyebrow">Eval Report</div>
+  <h1>Production Baseline Comparison</h1>
+  <div class="subtitle" id="subtitle">—</div>
+  <div class="meta">
+    <span>Source: eval_runs / eval_scores (Postgres)</span>
+    <span>Generated: <span id="gen-date">—</span></span>
+  </div>
+</header>
+
+<div class="section-label">Batteries</div>
+<div class="battery-legend" id="battery-legend"></div>
+
+<div class="section-label">Question-Level Results</div>
+<div class="filters" id="filters"></div>
+<div id="questions"></div>
+
+<div class="section-label">Observations</div>
+<div class="observations"><ul id="observations"></ul></div>
+
+<footer class="foot">
+  <div id="run-ids"></div>
+</footer>
+
+</div>
+
+<script id="bundle" type="application/json">__BUNDLE_JSON__</script>
+<script>
+(function(){
+  const BUNDLE = JSON.parse(document.getElementById('bundle').textContent);
+  document.getElementById('gen-date').textContent = BUNDLE.generated_at;
+  document.getElementById('subtitle').textContent = BUNDLE.subtitle || '';
+  document.getElementById('observations').innerHTML = (BUNDLE.observations || [])
+    .map(o => `<li>${o.text}</li>`).join('');
+  document.getElementById('run-ids').innerHTML = 'Run IDs: ' + (BUNDLE.run_ids || [])
+    .map(r => `${r.battery} <code>${r.raw.slice(0,8)}</code> / <code>${r.agent.slice(0,8)}</code>`)
+    .join(' · ');
+
+  const BATTERY_LABELS = BUNDLE.battery_labels;
+
+  function esc(s) { return (s || '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+  function fmtSec(ms) { return (ms != null) ? (ms/1000).toFixed(1) + 's' : '—'; }
+
+  function renderTrace(trace) {
+    if (!trace || !trace.length) return '';
+    const pathParts = [];
+    trace.forEach((step, i) => {
+      if (i > 0) pathParts.push('<span class="trace-arrow">→</span>');
+      const nodeCls = 'n-' + (step.node || '').replace(/[^a-z_]/gi, '');
+      pathParts.push(`<span class="trace-node ${nodeCls}">${esc(step.node)}</span>`);
+    });
+    const details = [];
+    const first = trace[0];
+    if (first && first.query_type) {
+      details.push(`<span class="td-row">classified as <code>${esc(first.query_type)}</code>${first.confidence ? ' (' + esc(first.confidence) + ' confidence)' : ''}${first.capability_id ? ' — capability <code>' + esc(first.capability_id) + '</code>' : ''}</span>`);
+    }
+    trace.forEach(step => {
+      if (step.node === 'rag_answer' && step.match_count != null) {
+        details.push(`<span class="td-row">rag: ${step.match_count} match${step.match_count === 1 ? '' : 'es'}${step.best_score != null ? ', best score ' + (+step.best_score).toFixed(2) : ''}</span>`);
+      }
+      if (step.node === 'plan' && step.tools && step.tools.length) {
+        details.push(`<span class="td-row">planned tools: ${step.tools.map(t => '<code>' + esc(t) + '</code>').join(', ')}</span>`);
+      }
+      if (step.node === 'execute' && step.tools_called) {
+        const failed = (step.failed || []).length;
+        details.push(`<span class="td-row">executed: ${step.tools_called.map(t => '<code>' + esc(t) + '</code>').join(', ')}${failed ? ' — ' + failed + ' failed' : ''}</span>`);
+      }
+      if (step.node === 'evaluate' && step.reason) {
+        details.push(`<span class="td-row">evaluate: ${esc(step.reason)}</span>`);
+      }
+    });
+    return `
+      <div class="trace">
+        <div class="trace-label">Agent execution path</div>
+        <div class="trace-path">${pathParts.join('')}</div>
+        ${details.length ? `<div class="trace-detail">${details.join('')}</div>` : ''}
+      </div>`;
+  }
+
+  // ---- Battery legend (descriptions) ----
+  const legendEl = document.getElementById('battery-legend');
+  legendEl.innerHTML = BUNDLE.battery_order.map(b => {
+    const info = BUNDLE.battery_info[b];
+    return `
+      <div class="blcard">
+        <div class="bl-head">
+          <span class="bl-name">${info.name}</span>
+          <span class="bl-count">${info.count} questions</span>
+        </div>
+        <div class="bl-what">${info.what}</div>
+        <div class="bl-why"><strong>Why it exists:</strong> ${info.why}</div>
+      </div>`;
+  }).join('');
+
+  // ---- Filters + question list ----
+  let activeF = 'all';
+  let activeSort = 'battery';
+  const all = BUNDLE.all_pairs;
+  const byBattery = {};
+  BUNDLE.battery_order.forEach(b => { byBattery[b] = all.filter(e => e.battery === b); });
+
+  const filtersEl = document.getElementById('filters');
+  const filterDefs = [
+    { key: 'all', label: `All (${all.length})` },
+    ...BUNDLE.battery_order.map(b => ({ key: b, label: `${BATTERY_LABELS[b]} (${byBattery[b].length})` })),
+  ];
+  const sortDefs = [
+    { key: 'battery', label: 'Battery + ID' },
+    { key: 'delta-desc', label: 'Biggest disagreement first' },
+  ];
+
+  function renderFilters() {
+    let html = '<span class="flabel">Battery</span>';
+    html += filterDefs.map(f => `<button data-filter="${f.key}" class="${activeF === f.key ? 'active' : ''}">${f.label}</button>`).join('');
+    html += '<span class="flabel" style="margin-left:16px">Sort</span>';
+    html += sortDefs.map(s => `<button data-sort="${s.key}" class="${activeSort === s.key ? 'active' : ''}">${s.label}</button>`).join('');
+    html += `<span class="fcount" id="fcount"></span>`;
+    filtersEl.innerHTML = html;
+    filtersEl.querySelectorAll('button[data-filter]').forEach(btn => {
+      btn.addEventListener('click', () => { activeF = btn.dataset.filter; renderFilters(); renderQuestions(); });
+    });
+    filtersEl.querySelectorAll('button[data-sort]').forEach(btn => {
+      btn.addEventListener('click', () => { activeSort = btn.dataset.sort; renderFilters(); renderQuestions(); });
+    });
+  }
+
+  function renderQuestions() {
+    const el = document.getElementById('questions');
+    let rows = activeF === 'all' ? all.slice() : all.filter(e => e.battery === activeF);
+    if (activeSort === 'battery') {
+      rows.sort((a,b) => a.battery.localeCompare(b.battery) || a.qid.localeCompare(b.qid));
+    } else if (activeSort === 'delta-desc') {
+      rows.sort((a,b) => Math.abs(b.delta) - Math.abs(a.delta));
+    }
+    document.getElementById('fcount').textContent = `${rows.length} shown`;
+
+    el.innerHTML = rows.map(e => {
+      const a = e.agent_full, r = e.raw_rag;
+      const deltaStr = (e.delta >= 0 ? '+' : '') + e.delta.toFixed(2);
+      const deltaCls = Math.abs(e.delta) < 0.01 ? 'tie' : (e.delta > 0 ? 'pos' : 'neg');
+      return `
+        <div class="qrow">
+          <div class="qrow-head">
+            <span class="qh-caret">›</span>
+            <span class="qh-qid">${e.qid}</span>
+            <span class="qh-q">${esc(e.question)}</span>
+            <span class="qh-bpill">${BATTERY_LABELS[e.battery]}</span>
+            <span class="qh-scores">
+              <span class="sa">A ${a.composite.toFixed(2)}</span>
+              <span class="sr">R ${r.composite.toFixed(2)}</span>
+            </span>
+            <span class="qh-delta ${deltaCls}">Δ ${deltaStr}</span>
+          </div>
+          <div class="qrow-body">
+            <div class="qb-q">${esc(e.question)}</div>
+            ${renderTrace(a.node_trace)}
+            <div class="qb-pair">
+              <div class="qcol agent">
+                <div class="qhead">
+                  <span class="sys">Agent</span>
+                  <span class="meta">composite ${a.composite.toFixed(2)} · ${fmtSec(a.duration_ms)}</span>
+                </div>
+                <div class="qtext">${esc(a.answer) || '<em>(no answer)</em>'}</div>
+              </div>
+              <div class="qcol raw">
+                <div class="qhead">
+                  <span class="sys">Raw RAG</span>
+                  <span class="meta">composite ${r.composite.toFixed(2)} · ${fmtSec(r.duration_ms)}</span>
+                </div>
+                <div class="qtext">${esc(r.answer) || '<em>(no answer)</em>'}</div>
+              </div>
+            </div>
+          </div>
+        </div>`;
+    }).join('');
+
+    el.querySelectorAll('.qrow-head').forEach(h => {
+      h.addEventListener('click', () => h.parentElement.classList.toggle('open'));
+    });
+  }
+
+  renderFilters();
+  renderQuestions();
+})();
+</script>
+</body>
+</html>
