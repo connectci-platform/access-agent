@@ -237,6 +237,15 @@ def _handle_argilla_push(args: argparse.Namespace) -> None:
         print(f"Error: Run {args.run_id} not found")
         sys.exit(1)
 
+    if run.run_type == "rejudge" and not args.force:
+        print(f"Error: Run {args.run_id} is a rejudge run.")
+        print(
+            "Argilla records are keyed by question_id and would OVERWRITE the "
+            "originals on push, silently replacing the prior judge's suggestions."
+        )
+        print("If you really want to push a rejudge run, re-run with --force.")
+        sys.exit(1)
+
     meta: dict[str, Any] = run.metadata_ or {}  # type: ignore[assignment]
     ds_name = args.dataset or dataset_name_for_branch(run.agent_branch)
 
@@ -400,6 +409,11 @@ def main() -> None:
     push_parser.add_argument("--dataset", default=None, help="Argilla dataset name (default: eval-{branch})")
     push_parser.add_argument("--argilla-url", default=None, help="Argilla URL (default: from config)")
     push_parser.add_argument("--argilla-key", default=None, help="Argilla API key (default: from config)")
+    push_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Allow pushing a rejudge run (overwrites original's Argilla suggestions)",
+    )
 
     html_parser = subparsers.add_parser(
         "html", help="Generate the HTML comparison report (raw_rag vs agent_full)"
