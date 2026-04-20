@@ -214,6 +214,33 @@ def _handle_rejudge(args: argparse.Namespace) -> None:
     print(_json.dumps(summary, indent=2, default=str))
 
 
+def _handle_compare_judge(args: argparse.Namespace) -> None:
+    import json as _json
+
+    from .compare_judge import compare_runs
+
+    artifact = asyncio.run(
+        compare_runs(
+            baseline_run_id=args.baseline,
+            candidate_run_id=args.candidate,
+            output_path=args.output,
+            judge_model=args.judge_model,
+        )
+    )
+    preview = {
+        "baseline_run_id": artifact["baseline_run_id"],
+        "candidate_run_id": artifact["candidate_run_id"],
+        "baseline_system": artifact["baseline_system"],
+        "candidate_system": artifact["candidate_system"],
+        "questions_compared": artifact["questions_compared"],
+        "baseline_composite": artifact["baseline_composite"],
+        "candidate_composite": artifact["candidate_composite"],
+        "run_summary": artifact.get("run_summary"),
+        "output_path": args.output,
+    }
+    print(_json.dumps(preview, indent=2, default=str))
+
+
 def _handle_argilla_push(args: argparse.Namespace) -> None:
     from src.config import settings
 
@@ -402,6 +429,23 @@ def main() -> None:
     rejudge_parser.add_argument("--run-id", required=True, help="Run ID to re-judge")
     rejudge_parser.add_argument("--judge-model", default=None, help="Override judge model")
 
+    compare_judge_parser = subparsers.add_parser(
+        "compare-judge",
+        help="Compare two runs head-to-head with an LLM; writes JSON artifact (no DB writes)",
+    )
+    compare_judge_parser.add_argument(
+        "--baseline", required=True, help="Baseline run ID (e.g. raw_rag)"
+    )
+    compare_judge_parser.add_argument(
+        "--candidate", required=True, help="Candidate run ID (e.g. agent_full)"
+    )
+    compare_judge_parser.add_argument(
+        "--output", "-o", required=True, help="Output JSON file path"
+    )
+    compare_judge_parser.add_argument(
+        "--judge-model", default=None, help="Override judge model (default: from config)"
+    )
+
     push_parser = subparsers.add_parser(
         "argilla-push", help="Push a completed run to Argilla (all scores, no threshold)"
     )
@@ -454,6 +498,7 @@ def main() -> None:
         "argilla-sync": _handle_argilla_sync,
         "argilla-push": _handle_argilla_push,
         "rejudge": _handle_rejudge,
+        "compare-judge": _handle_compare_judge,
         "cleanup": _handle_cleanup,
         "report": _handle_report,
         "ask": _handle_ask,
