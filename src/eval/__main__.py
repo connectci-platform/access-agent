@@ -323,7 +323,22 @@ def _handle_html(args: argparse.Namespace) -> None:
 
     from src.config import settings
 
-    from .html_report.builder import build_report
+    from .html_report.builder import build_report, build_report_from_json
+
+    output_path = Path(args.output)
+
+    if args.from_json:
+        json_paths = [Path(p) for p in args.from_json]
+        missing = [p for p in json_paths if not p.exists()]
+        if missing:
+            print(f"Error: missing JSON file(s): {', '.join(str(p) for p in missing)}")
+            sys.exit(1)
+        bundle = build_report_from_json(json_paths=json_paths, output_path=output_path)
+        print(
+            f"Wrote {output_path} ({len(bundle['all_pairs'])} pairs "
+            f"from {len(json_paths)} compare-judge JSON(s))"
+        )
+        return
 
     on_date: _date | None = None
     if args.date:
@@ -333,7 +348,6 @@ def _handle_html(args: argparse.Namespace) -> None:
     if args.question_sets:
         question_sets = [q.strip() for q in args.question_sets.split(",") if q.strip()]
 
-    output_path = Path(args.output)
     bundle = build_report(
         database_url=settings.DATABASE_URL,
         output_path=output_path,
@@ -479,6 +493,17 @@ def main() -> None:
         help=(
             "Comma-separated list of battery keys (e.g. "
             "'friendly_battery,combined_battery'). Default: all four."
+        ),
+    )
+    html_parser.add_argument(
+        "--from-json",
+        nargs="+",
+        default=None,
+        help=(
+            "Render from one or more compare-judge JSON artifacts instead of "
+            "querying Postgres. Each JSON is one battery-pair; multiple JSONs "
+            "are merged into a multi-battery report. Overrides --date and "
+            "--question-sets."
         ),
     )
 

@@ -297,6 +297,161 @@ def _avg_ms(items: list[dict[str, Any]], system: str) -> int:
     return round(sum(vals) / len(vals)) if vals else 0
 
 
+def assemble_bundle_from_json(json_paths: list[Path]) -> dict[str, Any]:
+    """Build the same shape bundle that assemble_bundle() produces, but from
+    one or more compare-judge JSON artifacts instead of from Postgres.
+
+    Each JSON is expected to be one battery-pair (baseline=raw_rag,
+    candidate=agent_full). Multiple JSONs are merged into a multi-battery
+    bundle. Comparison-judge narrative fields (run_summary, per-question
+    winner/margin/why) are carried through on top-level `comparisons` and
+    per-pair `comparison` keys for the template to render if it wants.
+    """
+    all_pairs: list[dict[str, Any]] = []
+    run_ids_out: list[dict[str, str]] = []
+    comparisons_by_battery: dict[str, dict[str, Any]] = {}
+    question_set_keys_present: set[str] = set()
+
+    for path in json_paths:
+        data = json.loads(path.read_text())
+
+        baseline_system = data.get("baseline_system")
+        candidate_system = data.get("candidate_system")
+        if baseline_system != "raw_rag" or candidate_system != "agent_full":
+            logger.warning(
+                "JSON %s has unexpected system labels baseline=%s candidate=%s; "
+                "expected raw_rag/agent_full",
+                path, baseline_system, candidate_system,
+            )
+
+        qs_key = _normalize_question_set(data.get("question_set"))
+        short = qs_key.replace("_battery", "") if qs_key.endswith("_battery") else qs_key
+        question_set_keys_present.add(qs_key)
+
+        for q in data.get("per_question", []):
+            base = q.get("baseline") or {}
+            cand = q.get("candidate") or {}
+            entry: dict[str, Any] = {
+                "qid": q.get("question_id"),
+                "battery": short,
+                "question": q.get("question_text") or "",
+                "raw_rag": {
+                    "composite": float(base.get("composite", 0) or 0),
+                    "duration_ms": base.get("duration_ms"),
+                    "answer": base.get("answer") or "",
+                    "node_trace": base.get("node_trace"),
+                },
+                "agent_full": {
+                    "composite": float(cand.get("composite", 0) or 0),
+                    "duration_ms": cand.get("duration_ms"),
+                    "answer": cand.get("answer") or "",
+                    "node_trace": cand.get("node_trace"),
+                },
+                "comparison": {
+                    "winner": q.get("winner"),
+                    "margin": q.get("margin"),
+                    "why": q.get("why"),
+                    "per_answer_judge_note": q.get("per_answer_judge_note"),
+                },
+            }
+            entry["delta"] = entry["agent_full"]["composite"] - entry["raw_rag"]["composite"]
+            all_pairs.append(entry)
+
+        run_ids_out.append(
+            {
+                "battery": short,
+                "raw": data.get("baseline_run_id", ""),
+                "agent": data.get("candidate_run_id", ""),
+            }
+        )
+        if data.get("run_summary"):
+            comparisons_by_battery[short] = {
+                "run_summary": data["run_summary"],
+                "baseline_composite": data.get("baseline_composite"),
+                "candidate_composite": data.get("candidate_composite"),
+                "judge_model": data.get("judge_model"),
+                "generated_at": data.get("generated_at"),
+            }
+
+    all_pairs.sort(key=lambda e: (e["battery"], e["qid"] or ""))
+
+    # Per-battery aggregates — same shape as assemble_bundle()
+    per_battery: dict[str, dict[str, Any]] = {}
+    for qs_key in BATTERY_ORDER:
+        short = qs_key.replace("_battery", "")
+        items = [e for e in all_pairs if e["battery"] == short]
+        if not items:
+            continue
+        n = len(items)
+        wins = sum(1 for e in items if e["delta"] > 0.01)
+        losses = sum(1 for e in items if e["delta"] < -0.01)
+        ties = n - wins - losses
+        info = BATTERY_INFO[qs_key]
+        per_battery[short] = {
+            "battery": short,
+            "label": info["name"],
+            "n": n,
+            "wins": wins,
+            "losses": losses,
+            "ties": ties,
+            "agent_comp": round(sum(e["agent_full"]["composite"] for e in items) / n, 3),
+            "raw_comp": round(sum(e["raw_rag"]["composite"] for e in items) / n, 3),
+            "agent_dur_ms": _avg_ms(items, "agent_full"),
+            "raw_dur_ms": _avg_ms(items, "raw_rag"),
+        }
+
+    battery_info_out: dict[str, dict[str, Any]] = {}
+    battery_labels: dict[str, str] = {}
+    battery_order_out: list[str] = []
+    for qs_key in BATTERY_ORDER:
+        short = qs_key.replace("_battery", "")
+        if short not in per_battery:
+            continue
+        info = BATTERY_INFO[qs_key]
+        battery_info_out[short] = {
+            "name": info["name"],
+            "count": info["count"],
+            "what": info["what"],
+            "why": info["why"],
+        }
+        battery_labels[short] = info["name"]
+        battery_order_out.append(short)
+
+    return {
+        "generated_at": datetime.now(timezone.utc).date().isoformat(),
+        "subtitle": REPORT_SUBTITLE,
+        "battery_order": battery_order_out,
+        "battery_labels": battery_labels,
+        "battery_info": battery_info_out,
+        "per_battery": per_battery,
+        "all_pairs": all_pairs,
+        "observations": OBSERVATIONS,
+        "run_ids": run_ids_out,
+        "comparisons": comparisons_by_battery,  # new — compare-judge narrative per battery
+        "source": "compare_judge_json",  # marker for debugging / future template logic
+    }
+
+
+def build_report_from_json(
+    json_paths: list[Path],
+    output_path: Path,
+) -> dict[str, Any]:
+    """End-to-end for the JSON-backed path: parse JSONs → bundle → render → write."""
+    bundle = assemble_bundle_from_json(json_paths)
+    if not bundle["all_pairs"]:
+        raise RuntimeError(
+            "No question pairs found in the supplied JSON(s). "
+            "Check that the JSONs have `per_question` with both baseline and candidate."
+        )
+    html = render_html(bundle)
+    output_path.write_text(html)
+    logger.info(
+        "Wrote %s (%d bytes, %d pairs from %d battery JSON(s))",
+        output_path, len(html), len(bundle["all_pairs"]), len(json_paths),
+    )
+    return bundle
+
+
 def render_html(bundle: dict[str, Any]) -> str:
     """Stamp the bundle into template.html."""
     template = TEMPLATE_PATH.read_text()

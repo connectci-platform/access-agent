@@ -257,6 +257,42 @@ async def _summarize(
     return None
 
 
+def _score_to_public(score: Any, include_context: bool) -> dict[str, Any]:
+    """Pull the presentation-relevant fields off an EvalScore row."""
+    out: dict[str, Any] = {
+        "answer": str(score.answer_text or ""),
+        "composite": round(float(score.composite_score or 0), 2),
+        "dimensions": {
+            "correctness": score.correctness,
+            "completeness": score.completeness,
+            "relevance": score.relevance,
+            "citation_quality": score.citation_quality,
+            "hedging": score.hedging,
+        },
+        "justifications": score.justifications or {},
+        "duration_ms": (
+            float(score.duration_ms) if score.duration_ms is not None else None
+        ),
+    }
+    ctx: dict[str, Any] = score.context or {}
+    # node_trace is useful for the HTML's execution-path viz; always include it
+    trace = ctx.get("node_trace")
+    if isinstance(trace, str):
+        try:
+            out["node_trace"] = json.loads(trace)
+        except json.JSONDecodeError:
+            out["node_trace"] = None
+    elif isinstance(trace, list):
+        out["node_trace"] = trace
+    else:
+        out["node_trace"] = None
+
+    if include_context:
+        out["rag_context"] = ctx.get("rag_context")
+        out["tool_results"] = ctx.get("tool_results")
+    return out
+
+
 async def compare_runs(
     baseline_run_id: str,
     candidate_run_id: str,
@@ -265,10 +301,20 @@ async def compare_runs(
     judge_base_url: str | None = None,
     judge_api_key: str | None = None,
     judge_model: str | None = None,
+    include_context: bool = True,
 ) -> dict[str, Any]:
     """Compare a baseline run against a candidate run, one question at a time.
 
-    Writes a JSON artifact; returns the same artifact as a dict.
+    Writes a self-contained JSON artifact that carries everything needed to
+    render a report for this pair — both answers, per-dim scores, justifications,
+    durations, node traces, and (optionally) the full RAG/tool-result context.
+    The artifact is an immutable snapshot: same JSON → same rendered report,
+    regardless of later DB state.
+
+    Args:
+        include_context: if True (default), embed rag_context and tool_results
+            for each system in each question. Adds ~1-5 MB per battery-pair but
+            makes the artifact fully self-contained for rendering.
     """
     db_url = database_url or settings.DATABASE_URL
     j_base = judge_base_url or settings.EVAL_JUDGE_BASE_URL or None
@@ -325,8 +371,11 @@ async def compare_runs(
 
         verdict["question_id"] = qid
         verdict["question_text"] = str(base_s.question_text or "")
-        verdict["system_a_score"] = round(float(base_s.composite_score or 0), 2)
-        verdict["system_b_score"] = round(float(cand_s.composite_score or 0), 2)
+        verdict["baseline"] = _score_to_public(base_s, include_context)
+        verdict["candidate"] = _score_to_public(cand_s, include_context)
+        # Convenience top-level composites so consumers don't have to dig
+        verdict["baseline_composite"] = verdict["baseline"]["composite"]
+        verdict["candidate_composite"] = verdict["candidate"]["composite"]
         per_question.append(verdict)
 
     logger.info("generating run-level summary")
