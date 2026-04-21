@@ -106,30 +106,42 @@
   }
   .blcard .bl-why strong { font-weight: 600; color: var(--text-dim); }
 
-  /* Comparison-judge narrative (run-level, one card per battery) — lead section */
-  .compare-summary { display: grid; grid-template-columns: 1fr; gap: 14px; margin-bottom: 28px; }
+  /* Comparison-judge narrative (run-level, one card per battery).
+     Sits at the end of the report as an AI-generated summary, not a lead. */
+  .compare-summary { display: grid; grid-template-columns: 1fr; gap: 12px; margin-bottom: 20px; }
+  .provenance {
+    font-size: 13px;
+    color: var(--text-muted);
+    font-style: italic;
+    line-height: 1.55;
+    margin-bottom: 14px;
+    padding: 10px 14px;
+    background: var(--panel-alt);
+    border-left: 3px solid var(--border);
+    border-radius: 3px;
+  }
   .csc {
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 22px 24px;
-    border-left: 4px solid var(--border);
+    border-radius: 6px;
+    padding: 16px 18px;
+    border-left: 3px solid var(--border);
   }
   .csc.agent { border-left-color: var(--agent); }
   .csc.raw   { border-left-color: var(--raw); }
   .csc.tie   { border-left-color: var(--text-muted); }
   .csc-head {
-    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-    margin-bottom: 12px;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    margin-bottom: 10px;
   }
   .csc-battery {
-    font-weight: 700; font-size: 20px;
-    letter-spacing: -0.01em;
+    font-weight: 600; font-size: 16px;
+    letter-spacing: -0.005em;
   }
   .csc-verdict {
-    font-family: var(--mono); font-size: 12px;
+    font-family: var(--mono); font-size: 11px;
     text-transform: uppercase; letter-spacing: 0.06em;
-    padding: 5px 12px; border-radius: 4px; font-weight: 700;
+    padding: 4px 10px; border-radius: 3px; font-weight: 600;
   }
   .csc-verdict.agent { background: var(--agent-bg); color: var(--agent); }
   .csc-verdict.raw { background: var(--raw-bg); color: var(--raw); }
@@ -154,12 +166,6 @@
   .csc-patterns li { margin-bottom: 4px; color: var(--text-dim); }
   .csc-calib { color: var(--text-dim); font-style: italic; }
 
-  /* Lead section — the comparison verdict lives at the top, styled prominently */
-  .section-label.lead {
-    font-size: 14px; color: var(--text);
-    font-weight: 700; letter-spacing: 0.04em;
-    padding-bottom: 10px; margin-top: 8px;
-  }
 
   /* Per-question comparison verdict (inside qrow body) */
   .qverdict {
@@ -188,33 +194,47 @@
   .qverdict-pill.tie { background: var(--panel-inset); color: var(--text-dim); }
   .qverdict-why { color: var(--text); line-height: 1.5; }
 
-  /* Filters */
+  /* Filters — dropdowns are quieter at this width than a row of buttons */
   .filters {
-    display: flex; flex-wrap: wrap; gap: 8px;
-    padding: 12px 14px; margin-bottom: 16px;
+    display: flex; flex-wrap: wrap; gap: 18px;
+    align-items: center;
+    padding: 10px 14px; margin-bottom: 16px;
     background: var(--panel-alt);
     border: 1px solid var(--border);
     border-radius: 6px;
+  }
+  .filters .fgroup {
+    display: inline-flex; align-items: center; gap: 8px;
   }
   .filters .flabel {
     font-family: var(--mono); font-size: 10px;
     text-transform: uppercase; letter-spacing: 0.06em;
     color: var(--text-muted);
-    align-self: center; margin-right: 4px;
+    font-weight: 600;
   }
-  .filters button {
-    font-family: var(--font); font-size: 13px; font-weight: 500;
-    color: var(--text-dim);
-    background: var(--panel); border: 1px solid var(--border);
-    border-radius: 4px; padding: 5px 12px; cursor: pointer;
-    transition: all 0.12s ease;
+  .filters select {
+    font-family: var(--font); font-size: 13px;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 5px 28px 5px 10px;
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='none' stroke='%236b7280' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' d='M1 1l4 4 4-4'/></svg>");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    transition: border-color 0.12s ease;
   }
-  .filters button:hover { border-color: var(--border-strong); color: var(--text); }
-  .filters button.active {
-    background: var(--text); color: var(--bg); border-color: var(--text);
+  .filters select:hover { border-color: var(--border-strong); }
+  .filters select:focus {
+    outline: none;
+    border-color: var(--text-dim);
+    box-shadow: 0 0 0 2px var(--panel-inset);
   }
   .filters .fcount {
-    margin-left: auto; align-self: center;
+    margin-left: auto;
     font-family: var(--mono); font-size: 11px; color: var(--text-muted);
   }
 
@@ -228,7 +248,7 @@
   }
   .qrow-head {
     display: grid;
-    grid-template-columns: 16px 104px 1fr 120px 170px;
+    grid-template-columns: 16px 104px 1fr 120px;
     gap: 14px;
     align-items: center;
     padding: 12px 16px;
@@ -257,20 +277,42 @@
     color: var(--text-muted);
     background: var(--panel-inset);
     padding: 3px 8px; border-radius: 3px;
-  }
-  .qh-verdict {
-    font-family: var(--mono); font-size: 11px;
-    text-transform: uppercase; letter-spacing: 0.05em;
-    padding: 4px 10px; border-radius: 3px; font-weight: 600;
     text-align: center;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
-  .qh-verdict.agent { background: var(--agent-bg); color: var(--agent); }
-  .qh-verdict.raw { background: var(--raw-bg); color: var(--raw); }
-  .qh-verdict.tie { background: var(--panel-inset); color: var(--text-dim); }
-  .qh-verdict.none { color: var(--text-muted); background: transparent; font-style: italic; }
+
+  /* Nested AI-judge disclosure inside the expanded question body.
+     Second-level revelation: the viewer already opened the row to see the
+     data; this further step shows the AI's opinion only on request. */
+  details.judge-disclose {
+    margin-top: 14px;
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    background: var(--panel-alt);
+  }
+  details.judge-disclose[open] { background: var(--panel); }
+  details.judge-disclose > summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 10px 14px;
+    font-family: var(--mono); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-muted);
+    display: flex; align-items: center; gap: 10px;
+    user-select: none;
+  }
+  details.judge-disclose > summary::-webkit-details-marker { display: none; }
+  details.judge-disclose > summary::before {
+    content: '›';
+    display: inline-block;
+    transition: transform 0.15s ease;
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+  details.judge-disclose[open] > summary::before { transform: rotate(90deg); }
+  details.judge-disclose > summary:hover { color: var(--text-dim); }
+  details.judge-disclose .judge-body {
+    padding: 0 14px 14px;
+  }
 
   .qrow-body {
     display: none; padding: 0 16px 16px;
@@ -418,15 +460,21 @@
   </div>
 </header>
 
-<div class="section-label lead" id="compare-summary-label" style="display:none">Comparison Verdict — per battery</div>
-<div class="compare-summary" id="compare-summary"></div>
-
 <div class="section-label">Batteries</div>
 <div class="battery-legend" id="battery-legend"></div>
 
 <div class="section-label">Question-Level Results</div>
 <div class="filters" id="filters"></div>
 <div id="questions"></div>
+
+<div class="section-label" id="compare-summary-label" style="display:none">Analysis by AI Comparison Judge — per battery</div>
+<div class="provenance" id="compare-summary-provenance" style="display:none">
+  These summaries were written by an LLM ("comparison judge") that read both
+  system answers for every question in each battery and produced a verdict
+  with a narrative. They are a convenience, not ground truth. The data above —
+  questions, answers, and execution traces — is the evidence.
+</div>
+<div class="compare-summary" id="compare-summary"></div>
 
 <div class="section-label">Observations</div>
 <div class="observations"><ul id="observations"></ul></div>
@@ -515,13 +563,13 @@
     if (w === 'A') return SYS.A.css_class;
     return 'tie';
   }
-  function verdictLabel(winner, margin) {
-    const who = winner === 'B' ? `${SYS.B.label} wins`
-              : winner === 'A' ? `${SYS.A.label} wins`
-              : 'Tie';
-    if (winner === 'tie' || !margin || margin === 'none') return who;
-    const qualifier = margin === 'large' ? 'decisively' : margin === 'small' ? 'narrowly' : margin;
-    return who === 'Tie' ? who : `${who} — ${qualifier}`;
+  // Margin qualifiers ("decisively"/"narrowly") are intentionally dropped —
+  // they're AI-estimated confidence, not grounded in the evidence the reader
+  // can see. Label is just winner or tie.
+  function verdictLabel(winner) {
+    if (winner === 'B') return `${SYS.B.label} wins`;
+    if (winner === 'A') return `${SYS.A.label} wins`;
+    return 'Tie';
   }
   function marginRank(cmp) {
     if (!cmp) return -1;
@@ -547,6 +595,8 @@
   const comparisonBatteries = BUNDLE.battery_order.filter(b => comparisons[b] && comparisons[b].run_summary);
   if (comparisonBatteries.length) {
     compareLabelEl.style.display = '';
+    const provEl = document.getElementById('compare-summary-provenance');
+    if (provEl) provEl.style.display = '';
     compareSummaryEl.innerHTML = comparisonBatteries.map(b => {
       const entry = comparisons[b];
       const summary = entry.run_summary || {};
@@ -568,7 +618,7 @@
         <div class="csc ${vKey}">
           <div class="csc-head">
             <span class="csc-battery">${BATTERY_LABELS[b] || b}</span>
-            <span class="csc-verdict ${vKey}">${esc(verdictLabel(summary.winner, summary.margin))}</span>
+            <span class="csc-verdict ${vKey}">${esc(verdictLabel(summary.winner))}</span>
             ${tallyHtml}
           </div>
           ${summary.why ? `<div class="csc-why">${esc(relabel(summary.why))}</div>` : ''}
@@ -610,17 +660,28 @@
   ];
 
   function renderFilters() {
-    let html = '<span class="flabel">Battery</span>';
-    html += filterDefs.map(f => `<button data-filter="${f.key}" class="${activeF === f.key ? 'active' : ''}">${f.label}</button>`).join('');
-    html += '<span class="flabel" style="margin-left:16px">Sort</span>';
-    html += sortDefs.map(s => `<button data-sort="${s.key}" class="${activeSort === s.key ? 'active' : ''}">${s.label}</button>`).join('');
-    html += `<span class="fcount" id="fcount"></span>`;
-    filtersEl.innerHTML = html;
-    filtersEl.querySelectorAll('button[data-filter]').forEach(btn => {
-      btn.addEventListener('click', () => { activeF = btn.dataset.filter; renderFilters(); renderQuestions(); });
+    const batteryOptions = filterDefs
+      .map(f => `<option value="${f.key}" ${activeF === f.key ? 'selected' : ''}>${esc(f.label)}</option>`)
+      .join('');
+    const sortOptions = sortDefs
+      .map(s => `<option value="${s.key}" ${activeSort === s.key ? 'selected' : ''}>${esc(s.label)}</option>`)
+      .join('');
+    filtersEl.innerHTML = `
+      <div class="fgroup">
+        <label class="flabel" for="filter-battery">Battery</label>
+        <select id="filter-battery">${batteryOptions}</select>
+      </div>
+      <div class="fgroup">
+        <label class="flabel" for="filter-sort">Sort</label>
+        <select id="filter-sort">${sortOptions}</select>
+      </div>
+      <span class="fcount" id="fcount"></span>
+    `;
+    filtersEl.querySelector('#filter-battery').addEventListener('change', e => {
+      activeF = e.target.value; renderQuestions();
     });
-    filtersEl.querySelectorAll('button[data-sort]').forEach(btn => {
-      btn.addEventListener('click', () => { activeSort = btn.dataset.sort; renderFilters(); renderQuestions(); });
+    filtersEl.querySelector('#filter-sort').addEventListener('change', e => {
+      activeSort = e.target.value; renderQuestions();
     });
   }
 
@@ -641,17 +702,23 @@
       const a = e.agent_full, r = e.raw_rag;
       const cmp = e.comparison;
       const vKey = cmp && cmp.winner ? verdictKey(cmp.winner) : 'none';
-      const vLabel = cmp && cmp.winner ? verdictLabel(cmp.winner, cmp.margin) : 'no verdict';
-      let qverdictHtml = '';
+      // The AI judge's per-question opinion lives under a second disclosure,
+      // after the raw answers — by design, so readers judge the data first.
+      let judgeDisclosure = '';
       if (cmp && cmp.winner) {
-        qverdictHtml = `
-          <div class="qverdict ${vKey}">
-            <div class="qverdict-head">
-              <span class="qverdict-label">Comparison judge</span>
-              <span class="qverdict-pill ${vKey}">${esc(verdictLabel(cmp.winner, cmp.margin))}</span>
+        judgeDisclosure = `
+          <details class="judge-disclose">
+            <summary>AI comparison judge's opinion on this question</summary>
+            <div class="judge-body">
+              <div class="qverdict ${vKey}">
+                <div class="qverdict-head">
+                  <span class="qverdict-label">Verdict</span>
+                  <span class="qverdict-pill ${vKey}">${esc(verdictLabel(cmp.winner))}</span>
+                </div>
+                ${cmp.why ? `<div class="qverdict-why">${esc(relabel(cmp.why))}</div>` : ''}
+              </div>
             </div>
-            ${cmp.why ? `<div class="qverdict-why">${esc(relabel(cmp.why))}</div>` : ''}
-          </div>`;
+          </details>`;
       }
       return `
         <div class="qrow">
@@ -660,11 +727,9 @@
             <span class="qh-qid">${e.qid}</span>
             <span class="qh-q">${esc(e.question)}</span>
             <span class="qh-bpill">${BATTERY_LABELS[e.battery]}</span>
-            <span class="qh-verdict ${vKey}">${esc(vLabel)}</span>
           </div>
           <div class="qrow-body">
             <div class="qb-q">${esc(e.question)}</div>
-            ${qverdictHtml}
             ${renderTrace(a.node_trace)}
             <div class="qb-pair">
               <div class="qcol ${SYS.B.css_class}">
@@ -682,6 +747,7 @@
                 <div class="qtext">${esc(r.answer) || '<em>(no answer)</em>'}</div>
               </div>
             </div>
+            ${judgeDisclosure}
           </div>
         </div>`;
     }).join('');
