@@ -233,6 +233,33 @@
     border-color: var(--text-dim);
     box-shadow: 0 0 0 2px var(--panel-inset);
   }
+  .filters input[type="search"] {
+    font-family: var(--font); font-size: 13px;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 5px 10px;
+    width: 220px;
+    transition: border-color 0.12s ease;
+  }
+  .filters input[type="search"]:hover { border-color: var(--border-strong); }
+  .filters input[type="search"]:focus {
+    outline: none;
+    border-color: var(--text-dim);
+    box-shadow: 0 0 0 2px var(--panel-inset);
+  }
+  .filters input[type="search"].regex-invalid {
+    border-color: var(--bad);
+  }
+  .filters .fhint {
+    font-family: var(--mono); font-size: 10px;
+    color: var(--text-muted);
+    padding: 2px 6px;
+    background: var(--panel-inset);
+    border-radius: 3px;
+  }
+  .filters .fhint.invalid { color: var(--bad); background: transparent; }
   .filters .fcount {
     margin-left: auto;
     font-family: var(--mono); font-size: 11px; color: var(--text-muted);
@@ -645,6 +672,28 @@
   // ---- Filters + question list ----
   let activeF = 'all';
   let activeSort = 'battery';
+  let activeSearch = '';
+
+  // Build a match predicate from the search string.
+  // Syntax: plain substring (case-insensitive) by default. Wrap in /.../ to
+  // use regex; append /i for case-insensitive regex (default is sensitive
+  // when explicit slashes are used). Invalid regex → everything matches and
+  // the input gets the .regex-invalid style.
+  function makeMatcher(search) {
+    const trimmed = (search || '').trim();
+    if (!trimmed) return { test: () => true, valid: true, kind: 'empty' };
+    const m = trimmed.match(/^\/(.*)\/([gimsuy]*)$/);
+    if (m) {
+      try {
+        const re = new RegExp(m[1], m[2]);
+        return { test: s => re.test(s || ''), valid: true, kind: 'regex' };
+      } catch (err) {
+        return { test: () => true, valid: false, kind: 'regex' };
+      }
+    }
+    const lower = trimmed.toLowerCase();
+    return { test: s => (s || '').toLowerCase().includes(lower), valid: true, kind: 'substring' };
+  }
   const all = BUNDLE.all_pairs;
   const byBattery = {};
   BUNDLE.battery_order.forEach(b => { byBattery[b] = all.filter(e => e.battery === b); });
@@ -675,6 +724,12 @@
         <label class="flabel" for="filter-sort">Sort</label>
         <select id="filter-sort">${sortOptions}</select>
       </div>
+      <div class="fgroup">
+        <label class="flabel" for="filter-search">Search</label>
+        <input id="filter-search" type="search" placeholder="text, or /regex/i"
+               value="${esc(activeSearch)}" autocomplete="off" spellcheck="false">
+        <span class="fhint" id="search-hint"></span>
+      </div>
       <span class="fcount" id="fcount"></span>
     `;
     filtersEl.querySelector('#filter-battery').addEventListener('change', e => {
@@ -683,11 +738,18 @@
     filtersEl.querySelector('#filter-sort').addEventListener('change', e => {
       activeSort = e.target.value; renderQuestions();
     });
+    const searchEl = filtersEl.querySelector('#filter-search');
+    searchEl.addEventListener('input', e => {
+      activeSearch = e.target.value;
+      renderQuestions();
+    });
   }
 
   function renderQuestions() {
     const el = document.getElementById('questions');
     let rows = activeF === 'all' ? all.slice() : all.filter(e => e.battery === activeF);
+    const matcher = makeMatcher(activeSearch);
+    if (activeSearch) rows = rows.filter(e => matcher.test(e.question) || matcher.test(e.qid));
     if (activeSort === 'battery') {
       rows.sort((a,b) => a.battery.localeCompare(b.battery) || (a.qid || '').localeCompare(b.qid || ''));
     } else if (activeSort === 'decisive') {
@@ -697,6 +759,24 @@
                         || (a.qid || '').localeCompare(b.qid || ''));
     }
     document.getElementById('fcount').textContent = `${rows.length} shown`;
+
+    // Sync search hint + error state (input element is recreated on each
+    // renderFilters, so query it fresh here).
+    const searchEl = document.getElementById('filter-search');
+    const hintEl = document.getElementById('search-hint');
+    if (searchEl && hintEl) {
+      searchEl.classList.toggle('regex-invalid', !matcher.valid);
+      if (matcher.kind === 'empty') {
+        hintEl.textContent = '';
+        hintEl.classList.remove('invalid');
+      } else if (!matcher.valid) {
+        hintEl.textContent = 'invalid regex';
+        hintEl.classList.add('invalid');
+      } else {
+        hintEl.textContent = matcher.kind;
+        hintEl.classList.remove('invalid');
+      }
+    }
 
     el.innerHTML = rows.map(e => {
       const a = e.agent_full, r = e.raw_rag;
