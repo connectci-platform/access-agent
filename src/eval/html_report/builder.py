@@ -33,7 +33,13 @@ from sqlalchemy import and_, bindparam, create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from ..models import EvalRun, EvalScore
-from .notes import BATTERY_INFO, BATTERY_ORDER, OBSERVATIONS, REPORT_SUBTITLE
+from .notes import (
+    BATTERY_INFO,
+    BATTERY_ORDER,
+    OBSERVATIONS,
+    REPORT_SUBTITLE,
+    label_for_system,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +47,27 @@ TEMPLATE_PATH = Path(__file__).parent / "template.html"
 BUNDLE_MARKER = "__BUNDLE_JSON__"
 
 SYSTEMS = ("raw_rag", "agent_full")
+
+# Slot A = baseline (purple palette), Slot B = candidate (teal palette).
+# The css_class values map to existing `.qcol.agent` / `.qcol.raw` and
+# `.qh-verdict.agent` / `.qh-verdict.raw` CSS rules. Keeping the CSS names
+# fixed to the slot — not the system ID — means we can swap systems in and
+# out of slots without rewriting the template.
+def _make_systems(baseline_id: str, candidate_id: str) -> dict[str, dict[str, str]]:
+    return {
+        "A": {
+            "id": baseline_id,
+            "label": label_for_system(baseline_id),
+            "css_class": "raw",
+            "slot": "baseline",
+        },
+        "B": {
+            "id": candidate_id,
+            "label": label_for_system(candidate_id),
+            "css_class": "agent",
+            "slot": "candidate",
+        },
+    }
 
 
 @dataclass(frozen=True)
@@ -289,6 +316,7 @@ def assemble_bundle(
         "all_pairs": all_pairs,
         "observations": OBSERVATIONS,
         "run_ids": run_ids_out,
+        "systems": _make_systems("raw_rag", "agent_full"),
     }
 
 
@@ -311,17 +339,25 @@ def assemble_bundle_from_json(json_paths: list[Path]) -> dict[str, Any]:
     run_ids_out: list[dict[str, str]] = []
     comparisons_by_battery: dict[str, dict[str, Any]] = {}
     question_set_keys_present: set[str] = set()
+    # Resolved slot system IDs. Taken from the first JSON; every other JSON in
+    # the same bundle must agree. A bundle that mixes different baseline or
+    # candidate systems across batteries has no coherent report to render.
+    slot_a_id: str | None = None
+    slot_b_id: str | None = None
 
     for path in json_paths:
         data = json.loads(path.read_text())
 
         baseline_system = data.get("baseline_system")
         candidate_system = data.get("candidate_system")
-        if baseline_system != "raw_rag" or candidate_system != "agent_full":
+        if slot_a_id is None:
+            slot_a_id = baseline_system
+            slot_b_id = candidate_system
+        elif baseline_system != slot_a_id or candidate_system != slot_b_id:
             logger.warning(
-                "JSON %s has unexpected system labels baseline=%s candidate=%s; "
-                "expected raw_rag/agent_full",
-                path, baseline_system, candidate_system,
+                "JSON %s mixes systems (baseline=%s candidate=%s) with earlier JSONs "
+                "(baseline=%s candidate=%s); report will label by the first pair.",
+                path, baseline_system, candidate_system, slot_a_id, slot_b_id,
             )
 
         qs_key = _normalize_question_set(data.get("question_set"))
@@ -428,6 +464,7 @@ def assemble_bundle_from_json(json_paths: list[Path]) -> dict[str, Any]:
         "observations": OBSERVATIONS,
         "run_ids": run_ids_out,
         "comparisons": comparisons_by_battery,  # new — compare-judge narrative per battery
+        "systems": _make_systems(slot_a_id or "raw_rag", slot_b_id or "agent_full"),
         "source": "compare_judge_json",  # marker for debugging / future template logic
     }
 

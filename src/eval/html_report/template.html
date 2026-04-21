@@ -106,41 +106,60 @@
   }
   .blcard .bl-why strong { font-weight: 600; color: var(--text-dim); }
 
-  /* Comparison-judge narrative (run-level, one card per battery) */
-  .compare-summary { display: grid; grid-template-columns: 1fr; gap: 12px; margin-bottom: 20px; }
+  /* Comparison-judge narrative (run-level, one card per battery) — lead section */
+  .compare-summary { display: grid; grid-template-columns: 1fr; gap: 14px; margin-bottom: 28px; }
   .csc {
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 16px 18px;
+    border-radius: 8px;
+    padding: 22px 24px;
+    border-left: 4px solid var(--border);
   }
+  .csc.agent { border-left-color: var(--agent); }
+  .csc.raw   { border-left-color: var(--raw); }
+  .csc.tie   { border-left-color: var(--text-muted); }
   .csc-head {
-    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-    margin-bottom: 10px;
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    margin-bottom: 12px;
   }
-  .csc-battery { font-weight: 700; font-size: 16px; }
+  .csc-battery {
+    font-weight: 700; font-size: 20px;
+    letter-spacing: -0.01em;
+  }
   .csc-verdict {
-    font-family: var(--mono); font-size: 11px;
+    font-family: var(--mono); font-size: 12px;
     text-transform: uppercase; letter-spacing: 0.06em;
-    padding: 4px 10px; border-radius: 3px; font-weight: 600;
+    padding: 5px 12px; border-radius: 4px; font-weight: 700;
   }
   .csc-verdict.agent { background: var(--agent-bg); color: var(--agent); }
   .csc-verdict.raw { background: var(--raw-bg); color: var(--raw); }
   .csc-verdict.tie { background: var(--panel-inset); color: var(--text-dim); }
-  .csc-composites {
-    font-family: var(--mono); font-size: 11px; color: var(--text-muted);
+  .csc-tally {
+    font-family: var(--mono); font-size: 12px; color: var(--text-muted);
+    display: inline-flex; gap: 10px; align-items: center;
+    margin-left: auto;
   }
-  .csc-why { color: var(--text); margin-bottom: 12px; line-height: 1.55; font-size: 14.5px; }
-  .csc-section { margin-top: 10px; font-size: 14px; }
+  .csc-tally .t-agent { color: var(--agent); font-weight: 600; }
+  .csc-tally .t-raw { color: var(--raw); font-weight: 600; }
+  .csc-tally .t-tie { color: var(--text-muted); font-weight: 600; }
+  .csc-why { color: var(--text); margin-bottom: 14px; line-height: 1.6; font-size: 15px; }
+  .csc-section { margin-top: 14px; font-size: 14px; }
   .csc-label {
     font-family: var(--mono); font-size: 10px;
     text-transform: uppercase; letter-spacing: 0.06em;
     color: var(--text-muted); font-weight: 600;
-    margin-bottom: 4px;
+    margin-bottom: 5px;
   }
   .csc-patterns ul { margin: 0 0 0 18px; padding: 0; }
   .csc-patterns li { margin-bottom: 4px; color: var(--text-dim); }
   .csc-calib { color: var(--text-dim); font-style: italic; }
+
+  /* Lead section — the comparison verdict lives at the top, styled prominently */
+  .section-label.lead {
+    font-size: 14px; color: var(--text);
+    font-weight: 700; letter-spacing: 0.04em;
+    padding-bottom: 10px; margin-top: 8px;
+  }
 
   /* Per-question comparison verdict (inside qrow body) */
   .qverdict {
@@ -168,70 +187,6 @@
   .qverdict-pill.raw { background: var(--raw-bg); color: var(--raw); }
   .qverdict-pill.tie { background: var(--panel-inset); color: var(--text-dim); }
   .qverdict-why { color: var(--text); line-height: 1.5; }
-  .qverdict-judge-note {
-    margin-top: 6px; font-size: 13px;
-    color: var(--text-dim); font-style: italic;
-  }
-
-  /* Battery summary strip — side-by-side agent vs raw per battery */
-  .battery-strip {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 10px;
-  }
-  @media (max-width: 900px) { .battery-strip { grid-template-columns: repeat(2, 1fr); } }
-  @media (max-width: 520px) { .battery-strip { grid-template-columns: 1fr; } }
-  .bcard {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 14px 16px;
-  }
-  .bcard .bname {
-    font-family: var(--mono); font-size: 10px;
-    text-transform: uppercase; letter-spacing: 0.06em;
-    color: var(--text-muted); margin-bottom: 10px;
-    display: flex; justify-content: space-between; align-items: baseline;
-  }
-  .bcard .bname .n { color: var(--text-muted); }
-  .bcard .bpair {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
-  }
-  .bcard .bcol {
-    border-radius: 4px;
-    padding: 8px 10px;
-  }
-  .bcard .bcol.agent { background: var(--agent-bg); }
-  .bcard .bcol.raw   { background: var(--raw-bg); }
-  .bcard .bcol .sys {
-    font-family: var(--mono); font-size: 10px;
-    text-transform: uppercase; letter-spacing: 0.06em;
-    font-weight: 600;
-  }
-  .bcard .bcol.agent .sys { color: var(--agent); }
-  .bcard .bcol.raw   .sys { color: var(--raw); }
-  .bcard .bcol .num {
-    font-family: var(--mono); font-size: 20px;
-    font-weight: 700; line-height: 1.1; margin-top: 2px;
-  }
-  .bcard .bcol.agent .num { color: var(--agent); }
-  .bcard .bcol.raw   .num { color: var(--raw); }
-  .bcard .bcol .dur {
-    font-family: var(--mono); font-size: 11px;
-    color: var(--text-muted); margin-top: 4px;
-  }
-  .bcard .bfoot {
-    margin-top: 10px; padding-top: 10px;
-    border-top: 1px dashed var(--border);
-    font-family: var(--mono); font-size: 11px;
-    color: var(--text-muted);
-    display: flex; justify-content: space-between;
-  }
-  .bcard .bfoot .wlt span { margin-right: 6px; }
-  .bcard .bfoot .wlt .w { color: var(--agent); }
-  .bcard .bfoot .wlt .l { color: var(--raw); }
 
   /* Filters */
   .filters {
@@ -273,7 +228,7 @@
   }
   .qrow-head {
     display: grid;
-    grid-template-columns: 16px 104px 1fr 120px 110px 56px;
+    grid-template-columns: 16px 104px 1fr 120px 170px;
     gap: 14px;
     align-items: center;
     padding: 12px 16px;
@@ -303,31 +258,19 @@
     background: var(--panel-inset);
     padding: 3px 8px; border-radius: 3px;
   }
-  .qh-scores {
-    display: inline-flex; gap: 6px;
-    font-family: var(--mono); font-size: 12px;
-    align-items: baseline;
-  }
-  .qh-scores .sa {
-    background: var(--agent-bg);
-    color: var(--agent);
-    padding: 3px 8px; border-radius: 3px;
-    font-weight: 600;
-  }
-  .qh-scores .sr {
-    background: var(--raw-bg);
-    color: var(--raw);
-    padding: 3px 8px; border-radius: 3px;
-    font-weight: 600;
-  }
-  .qh-delta {
+  .qh-verdict {
     font-family: var(--mono); font-size: 11px;
-    font-weight: 600;
-    min-width: 44px; text-align: right;
+    text-transform: uppercase; letter-spacing: 0.05em;
+    padding: 4px 10px; border-radius: 3px; font-weight: 600;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-  .qh-delta.pos { color: var(--agent); }
-  .qh-delta.neg { color: var(--bad); }
-  .qh-delta.tie { color: var(--text-muted); }
+  .qh-verdict.agent { background: var(--agent-bg); color: var(--agent); }
+  .qh-verdict.raw { background: var(--raw-bg); color: var(--raw); }
+  .qh-verdict.tie { background: var(--panel-inset); color: var(--text-dim); }
+  .qh-verdict.none { color: var(--text-muted); background: transparent; font-style: italic; }
 
   .qrow-body {
     display: none; padding: 0 16px 16px;
@@ -470,16 +413,16 @@
   <h1>Production Baseline Comparison</h1>
   <div class="subtitle" id="subtitle">—</div>
   <div class="meta">
-    <span>Source: eval_runs / eval_scores (Postgres)</span>
+    <span>Verdicts from pairwise comparison judge</span>
     <span>Generated: <span id="gen-date">—</span></span>
   </div>
 </header>
 
+<div class="section-label lead" id="compare-summary-label" style="display:none">Comparison Verdict — per battery</div>
+<div class="compare-summary" id="compare-summary"></div>
+
 <div class="section-label">Batteries</div>
 <div class="battery-legend" id="battery-legend"></div>
-
-<div class="section-label" id="compare-summary-label" style="display:none">Comparison Verdict</div>
-<div class="compare-summary" id="compare-summary"></div>
 
 <div class="section-label">Question-Level Results</div>
 <div class="filters" id="filters"></div>
@@ -507,9 +450,27 @@
     .join(' · ');
 
   const BATTERY_LABELS = BUNDLE.battery_labels;
+  // Slot registry: A = baseline (purple), B = candidate (teal). Labels come
+  // from the bundle's `systems` map so "System A"/"System B" text from the
+  // compare-judge narrative can be rewritten to the human label, and so all
+  // UI pills/headers refer to each system by one consistent name.
+  const SYS = (BUNDLE.systems && BUNDLE.systems.A && BUNDLE.systems.B)
+    ? BUNDLE.systems
+    : {
+        A: { id: 'raw_rag',    label: 'Raw RAG', css_class: 'raw',   slot: 'baseline' },
+        B: { id: 'agent_full', label: 'Agent',   css_class: 'agent', slot: 'candidate' },
+      };
 
   function esc(s) { return (s || '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
   function fmtSec(ms) { return (ms != null) ? (ms/1000).toFixed(1) + 's' : '—'; }
+  // Rewrite the compare-judge's "System A" / "System B" phrasing to the
+  // labeled system in that slot. Longer first so "System" doesn't collide.
+  function relabel(text) {
+    if (!text) return '';
+    return String(text)
+      .replace(/System B/g, SYS.B.label)
+      .replace(/System A/g, SYS.A.label);
+  }
 
   function renderTrace(trace) {
     if (!trace || !trace.length) return '';
@@ -548,12 +509,35 @@
   }
 
   // ---- Compare-judge helpers ----
-  function verdictKey(w) { return w === 'B' ? 'agent' : w === 'A' ? 'raw' : 'tie'; }
+  // Map a winner code ('A' | 'B' | 'tie') to the slot's CSS class.
+  function verdictKey(w) {
+    if (w === 'B') return SYS.B.css_class;
+    if (w === 'A') return SYS.A.css_class;
+    return 'tie';
+  }
   function verdictLabel(winner, margin) {
-    const who = winner === 'B' ? 'Agent wins' : winner === 'A' ? 'Raw wins' : 'Tie';
+    const who = winner === 'B' ? `${SYS.B.label} wins`
+              : winner === 'A' ? `${SYS.A.label} wins`
+              : 'Tie';
     if (winner === 'tie' || !margin || margin === 'none') return who;
     const qualifier = margin === 'large' ? 'decisively' : margin === 'small' ? 'narrowly' : margin;
     return who === 'Tie' ? who : `${who} — ${qualifier}`;
+  }
+  function marginRank(cmp) {
+    if (!cmp) return -1;
+    if (cmp.margin === 'large') return 2;
+    if (cmp.margin === 'small') return 1;
+    return 0;
+  }
+  function tallyByWinner(pairs) {
+    const t = { B: 0, A: 0, tie: 0 };
+    pairs.forEach(p => {
+      const w = p.comparison && p.comparison.winner;
+      if (w === 'B') t.B++;
+      else if (w === 'A') t.A++;
+      else t.tie++;
+    });
+    return t;
   }
 
   // ---- Run-level comparison-judge narrative (one card per battery) ----
@@ -567,25 +551,28 @@
       const entry = comparisons[b];
       const summary = entry.run_summary || {};
       const vKey = verdictKey(summary.winner);
-      const compositesStr = (entry.baseline_composite != null && entry.candidate_composite != null)
-        ? `Composites — Agent ${Number(entry.candidate_composite).toFixed(2)} · Raw ${Number(entry.baseline_composite).toFixed(2)}`
+      const t = tallyByWinner((BUNDLE.all_pairs || []).filter(p => p.battery === b));
+      const total = t.B + t.A + t.tie;
+      const tallyHtml = total
+        ? `<span class="csc-tally">
+             <span class="t-agent">${esc(SYS.B.label)} ${t.B}</span>·
+             <span class="t-tie">Tie ${t.tie}</span>·
+             <span class="t-raw">${esc(SYS.A.label)} ${t.A}</span>
+             <span style="color:var(--text-muted)">of ${total}</span>
+           </span>`
         : '';
       const patternsHtml = (summary.patterns && summary.patterns.length)
-        ? `<div class="csc-section csc-patterns"><div class="csc-label">Patterns</div><ul>${summary.patterns.map(p => `<li>${esc(p)}</li>`).join('')}</ul></div>`
-        : '';
-      const calibHtml = summary.per_answer_judge_calibration
-        ? `<div class="csc-section"><div class="csc-label">Per-answer judge calibration</div><div class="csc-calib">${esc(summary.per_answer_judge_calibration)}</div></div>`
+        ? `<div class="csc-section csc-patterns"><div class="csc-label">Patterns</div><ul>${summary.patterns.map(p => `<li>${esc(relabel(p))}</li>`).join('')}</ul></div>`
         : '';
       return `
-        <div class="csc">
+        <div class="csc ${vKey}">
           <div class="csc-head">
             <span class="csc-battery">${BATTERY_LABELS[b] || b}</span>
             <span class="csc-verdict ${vKey}">${esc(verdictLabel(summary.winner, summary.margin))}</span>
-            ${compositesStr ? `<span class="csc-composites">${compositesStr}</span>` : ''}
+            ${tallyHtml}
           </div>
-          ${summary.why ? `<div class="csc-why">${esc(summary.why)}</div>` : ''}
+          ${summary.why ? `<div class="csc-why">${esc(relabel(summary.why))}</div>` : ''}
           ${patternsHtml}
-          ${calibHtml}
         </div>`;
     }).join('');
   }
@@ -619,7 +606,7 @@
   ];
   const sortDefs = [
     { key: 'battery', label: 'Battery + ID' },
-    { key: 'delta-desc', label: 'Biggest disagreement first' },
+    { key: 'decisive', label: 'Most decisive verdicts first' },
   ];
 
   function renderFilters() {
@@ -641,28 +628,29 @@
     const el = document.getElementById('questions');
     let rows = activeF === 'all' ? all.slice() : all.filter(e => e.battery === activeF);
     if (activeSort === 'battery') {
-      rows.sort((a,b) => a.battery.localeCompare(b.battery) || a.qid.localeCompare(b.qid));
-    } else if (activeSort === 'delta-desc') {
-      rows.sort((a,b) => Math.abs(b.delta) - Math.abs(a.delta));
+      rows.sort((a,b) => a.battery.localeCompare(b.battery) || (a.qid || '').localeCompare(b.qid || ''));
+    } else if (activeSort === 'decisive') {
+      // large-margin wins first (either side), then small, then ties
+      rows.sort((a,b) => marginRank(b.comparison) - marginRank(a.comparison)
+                        || a.battery.localeCompare(b.battery)
+                        || (a.qid || '').localeCompare(b.qid || ''));
     }
     document.getElementById('fcount').textContent = `${rows.length} shown`;
 
     el.innerHTML = rows.map(e => {
       const a = e.agent_full, r = e.raw_rag;
-      const deltaStr = (e.delta >= 0 ? '+' : '') + e.delta.toFixed(2);
-      const deltaCls = Math.abs(e.delta) < 0.01 ? 'tie' : (e.delta > 0 ? 'pos' : 'neg');
       const cmp = e.comparison;
+      const vKey = cmp && cmp.winner ? verdictKey(cmp.winner) : 'none';
+      const vLabel = cmp && cmp.winner ? verdictLabel(cmp.winner, cmp.margin) : 'no verdict';
       let qverdictHtml = '';
       if (cmp && cmp.winner) {
-        const vKey = verdictKey(cmp.winner);
         qverdictHtml = `
           <div class="qverdict ${vKey}">
             <div class="qverdict-head">
               <span class="qverdict-label">Comparison judge</span>
               <span class="qverdict-pill ${vKey}">${esc(verdictLabel(cmp.winner, cmp.margin))}</span>
             </div>
-            ${cmp.why ? `<div class="qverdict-why">${esc(cmp.why)}</div>` : ''}
-            ${cmp.per_answer_judge_note ? `<div class="qverdict-judge-note"><strong>Per-answer judge note:</strong> ${esc(cmp.per_answer_judge_note)}</div>` : ''}
+            ${cmp.why ? `<div class="qverdict-why">${esc(relabel(cmp.why))}</div>` : ''}
           </div>`;
       }
       return `
@@ -672,28 +660,24 @@
             <span class="qh-qid">${e.qid}</span>
             <span class="qh-q">${esc(e.question)}</span>
             <span class="qh-bpill">${BATTERY_LABELS[e.battery]}</span>
-            <span class="qh-scores">
-              <span class="sa">A ${a.composite.toFixed(2)}</span>
-              <span class="sr">R ${r.composite.toFixed(2)}</span>
-            </span>
-            <span class="qh-delta ${deltaCls}">Δ ${deltaStr}</span>
+            <span class="qh-verdict ${vKey}">${esc(vLabel)}</span>
           </div>
           <div class="qrow-body">
             <div class="qb-q">${esc(e.question)}</div>
             ${qverdictHtml}
             ${renderTrace(a.node_trace)}
             <div class="qb-pair">
-              <div class="qcol agent">
+              <div class="qcol ${SYS.B.css_class}">
                 <div class="qhead">
-                  <span class="sys">Agent</span>
-                  <span class="meta">composite ${a.composite.toFixed(2)} · ${fmtSec(a.duration_ms)}</span>
+                  <span class="sys">${esc(SYS.B.label)}</span>
+                  <span class="meta">${fmtSec(a.duration_ms)}</span>
                 </div>
                 <div class="qtext">${esc(a.answer) || '<em>(no answer)</em>'}</div>
               </div>
-              <div class="qcol raw">
+              <div class="qcol ${SYS.A.css_class}">
                 <div class="qhead">
-                  <span class="sys">Raw RAG</span>
-                  <span class="meta">composite ${r.composite.toFixed(2)} · ${fmtSec(r.duration_ms)}</span>
+                  <span class="sys">${esc(SYS.A.label)}</span>
+                  <span class="meta">${fmtSec(r.duration_ms)}</span>
                 </div>
                 <div class="qtext">${esc(r.answer) || '<em>(no answer)</em>'}</div>
               </div>

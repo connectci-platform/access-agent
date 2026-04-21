@@ -110,17 +110,33 @@ OBSERVATIONS: list[dict[str, str]] = [
     },
     {
         "text": (
-            "<strong>The judge is not fully calibrated.</strong> Same LLM rubric scores both "
-            "systems so bias is symmetric on averages, but it favors generic well-phrased answers "
-            'on questions where the actual win is a specific live-data lookup. The composite numbers '
-            'here should be read as "faithful-to-sources" scores, not ground-truth correctness. '
-            "Calibration path: push this batch to Argilla for human review, then refine the rubric."
+            "<strong>Verdicts come from a pairwise comparison judge,</strong> not from "
+            "individual per-answer scores. The comparison judge sees both answers side by side "
+            "and picks a winner with a margin and a why — that's the narrative surfaced in "
+            "this report. Next calibration step: push disputed verdicts to Argilla for human "
+            "review."
         ),
     },
 ]
 
+# System ID → display label. Used by the renderer to translate the eval_runs
+# system identifier (e.g. "raw_rag", "agent_full") into human-facing text in
+# report copy, pills, and narrative substitution ("System A"/"System B" →
+# label). Unknown IDs fall back to the raw ID.
+SYSTEM_LABELS: dict[str, str] = {
+    "raw_rag": "Raw RAG",
+    "agent_full": "Agent",
+}
+
+
+def label_for_system(system_id: str | None) -> str:
+    if not system_id:
+        return "(unknown)"
+    return SYSTEM_LABELS.get(system_id, system_id)
+
+
 # Subtitle shown under the main title
 REPORT_SUBTITLE: str = (
-    "Raw UKY RAG vs. full ACCESS agent — multiple question batteries, "
-    "scored by the eval-side LLM judge."
+    "Raw UKY RAG vs. full ACCESS agent — pairwise verdicts from the "
+    "comparison judge across four question batteries."
 )
