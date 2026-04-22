@@ -18,7 +18,7 @@ compare-judge + HTML phases without burning an hour on fresh runs.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -65,7 +65,7 @@ def _find_recent_run_id(
 
     from .models import EvalRun
 
-    with db._session_factory() as session:
+    with db._session_factory() as session:  # noqa: SLF001  # intentional access to grand-prix internals
         q = session.query(EvalRun).filter(
             EvalRun.question_set == question_set,
         )
@@ -73,9 +73,9 @@ def _find_recent_run_id(
             q = q.filter(EvalRun.agent_branch == branch)
         rows = q.order_by(desc(EvalRun.created_at)).limit(50).all()
         for row in rows:
-            md = row.metadata_ or {}
+            md: Any = row.metadata_ or {}
             if isinstance(md, dict) and md.get("system") == system:
-                return row.id
+                return str(row.id)
     return None
 
 
@@ -103,7 +103,7 @@ async def run_grand_prix(
             agent branch. Defaults to the current git branch.
     """
     batteries = batteries or DEFAULT_BATTERIES
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(tz=UTC).strftime("%Y%m%d_%H%M%S")
 
     comparisons_path = Path(comparisons_dir)
     comparisons_path.mkdir(parents=True, exist_ok=True)
@@ -122,8 +122,7 @@ async def run_grand_prix(
 
             branch_filter = get_git_info().get("branch")
         logger.info(
-            f"--skip-runs: picking up newest runs per (system, battery) "
-            f"on branch={branch_filter}"
+            f"--skip-runs: picking up newest runs per (system, battery) on branch={branch_filter}"
         )
         db = EvalDB(settings.DATABASE_URL)
         for battery in batteries:
@@ -166,9 +165,7 @@ async def run_grand_prix(
         baseline = run_ids[("raw_rag", battery)]
         candidate = run_ids[("agent_full", battery)]
         out = str(comparisons_path / f"grand_prix_{ts}_{_short_battery(battery)}.json")
-        logger.info(
-            f"=== Phase 2 [{i}/{len(batteries)}]: compare-judge {battery} ==="
-        )
+        logger.info(f"=== Phase 2 [{i}/{len(batteries)}]: compare-judge {battery} ===")
         logger.info(f"  baseline={baseline[:8]} candidate={candidate[:8]} -> {out}")
         artifact = await compare_runs(
             baseline_run_id=baseline,
@@ -178,8 +175,7 @@ async def run_grand_prix(
         )
         summary = artifact.get("run_summary") or {}
         logger.info(
-            f"  done {battery}: winner={summary.get('winner')} "
-            f"margin={summary.get('margin')}"
+            f"  done {battery}: winner={summary.get('winner')} margin={summary.get('margin')}"
         )
         json_paths.append(out)
 

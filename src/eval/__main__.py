@@ -9,7 +9,7 @@ import argparse
 import asyncio
 import logging
 import sys
-from typing import Any
+from typing import Any, cast
 
 logging.basicConfig(
     level=logging.INFO,
@@ -129,6 +129,8 @@ def _handle_ask(args: argparse.Namespace) -> None:
 
 
 def _handle_comparison(args: argparse.Namespace) -> None:
+    from pathlib import Path
+
     from src.config import settings
 
     from .db import EvalDB
@@ -171,29 +173,35 @@ def _handle_comparison(args: argparse.Namespace) -> None:
                 "source": s.source,
             }
 
-        battery = (c_run.question_set or b_run.question_set or "unknown").split("/")[-1].replace(".json", "")
-        run_pairs.append({
-            "battery": battery,
-            "baseline": {
-                "run_id": parts[0],
-                "system": b_meta.get("system", "baseline"),
-                "composite": b_run.composite_score or 0,
-                "scores_summary": b_run.scores_summary or {},
-                "scores": [score_to_dict(s) for s in b_scores],
-            },
-            "candidate": {
-                "run_id": parts[1],
-                "system": c_meta.get("system", "candidate"),
-                "composite": c_run.composite_score or 0,
-                "scores_summary": c_run.scores_summary or {},
-                "scores": [score_to_dict(s) for s in c_scores],
-            },
-        })
+        battery = (
+            (c_run.question_set or b_run.question_set or "unknown")
+            .split("/")[-1]
+            .replace(".json", "")
+        )
+        run_pairs.append(
+            {
+                "battery": battery,
+                "baseline": {
+                    "run_id": parts[0],
+                    "system": b_meta.get("system", "baseline"),
+                    "composite": b_run.composite_score or 0,
+                    "scores_summary": b_run.scores_summary or {},
+                    "scores": [score_to_dict(s) for s in b_scores],
+                },
+                "candidate": {
+                    "run_id": parts[1],
+                    "system": c_meta.get("system", "candidate"),
+                    "composite": c_run.composite_score or 0,
+                    "scores_summary": c_run.scores_summary or {},
+                    "scores": [score_to_dict(s) for s in c_scores],
+                },
+            }
+        )
 
     report = generate_comparison_report(run_pairs, title=args.title)
 
     if args.output:
-        with open(args.output, "w") as f:
+        with Path(args.output).open("w") as f:
             f.write(report)
         print(f"Report written to {args.output}")
     else:
@@ -297,7 +305,7 @@ def _handle_argilla_push(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     meta: dict[str, Any] = run.metadata_ or {}  # type: ignore[assignment]
-    ds_name = args.dataset or dataset_name_for_branch(run.agent_branch)
+    ds_name = args.dataset or dataset_name_for_branch(cast("str | None", run.agent_branch))
 
     scores = db.get_scores_for_run(args.run_id)
     records = []
@@ -322,9 +330,9 @@ def _handle_argilla_push(args: argparse.Namespace) -> None:
                 tool_results=score_context.get("tool_results"),
                 node_trace=score_context.get("node_trace"),
                 run_id=args.run_id,
-                agent_branch=run.agent_branch,
-                agent_commit=run.agent_commit,
-                judge_model=run.judge_model,
+                agent_branch=cast("str | None", run.agent_branch),
+                agent_commit=cast("str | None", run.agent_commit),
+                judge_model=cast("str | None", run.judge_model),
                 duration_ms=float(score.duration_ms) if score.duration_ms else None,
             )
         )
@@ -392,7 +400,7 @@ def _handle_score_production(_args: argparse.Namespace) -> None:
     sys.exit(1)
 
 
-def main() -> None:
+def main() -> None:  # noqa: PLR0915  # CLI dispatcher, statements not meaningfully extractable
     parser = argparse.ArgumentParser(
         prog="python -m src.eval",
         description="Agent answer evaluation pipeline",
@@ -447,15 +455,19 @@ def main() -> None:
         "comparison", help="Generate A/B comparison report from paired runs"
     )
     comparison_parser.add_argument(
-        "pairs", nargs="+",
+        "pairs",
+        nargs="+",
         help="Run ID pairs as baseline_id:candidate_id (one per battery)",
     )
     comparison_parser.add_argument(
-        "--title", default="Production Baseline Comparison",
+        "--title",
+        default="Production Baseline Comparison",
         help="Report title",
     )
     comparison_parser.add_argument(
-        "--output", "-o", default=None,
+        "--output",
+        "-o",
+        default=None,
         help="Output file path (default: stdout)",
     )
 
@@ -482,22 +494,24 @@ def main() -> None:
         ),
     )
     gp_parser.add_argument(
-        "--output", "-o", default=None,
-        help=(
-            "Output HTML path. Default: "
-            "~/.agent/diagrams/grand-prix-<timestamp>.html"
-        ),
+        "--output",
+        "-o",
+        default=None,
+        help=("Output HTML path. Default: ~/.agent/diagrams/grand-prix-<timestamp>.html"),
     )
     gp_parser.add_argument(
-        "--comparisons-dir", default="comparisons",
+        "--comparisons-dir",
+        default="comparisons",
         help="Directory for per-battery compare-judge JSON artifacts",
     )
     gp_parser.add_argument(
-        "--judge-model", default=None,
+        "--judge-model",
+        default=None,
         help="Override judge model (default: from config)",
     )
     gp_parser.add_argument(
-        "--skip-runs", action="store_true",
+        "--skip-runs",
+        action="store_true",
         help=(
             "Skip phase 1 (eval runs); use newest existing runs per "
             "(system, battery) on the current branch. For iterating on the "
@@ -515,9 +529,7 @@ def main() -> None:
     compare_judge_parser.add_argument(
         "--candidate", required=True, help="Candidate run ID (e.g. agent_full)"
     )
-    compare_judge_parser.add_argument(
-        "--output", "-o", required=True, help="Output JSON file path"
-    )
+    compare_judge_parser.add_argument("--output", "-o", required=True, help="Output JSON file path")
     compare_judge_parser.add_argument(
         "--judge-model", default=None, help="Override judge model (default: from config)"
     )
@@ -526,9 +538,15 @@ def main() -> None:
         "argilla-push", help="Push a completed run to Argilla (all scores, no threshold)"
     )
     push_parser.add_argument("--run-id", required=True, help="Eval run ID to push")
-    push_parser.add_argument("--dataset", default=None, help="Argilla dataset name (default: eval-{branch})")
-    push_parser.add_argument("--argilla-url", default=None, help="Argilla URL (default: from config)")
-    push_parser.add_argument("--argilla-key", default=None, help="Argilla API key (default: from config)")
+    push_parser.add_argument(
+        "--dataset", default=None, help="Argilla dataset name (default: eval-{branch})"
+    )
+    push_parser.add_argument(
+        "--argilla-url", default=None, help="Argilla URL (default: from config)"
+    )
+    push_parser.add_argument(
+        "--argilla-key", default=None, help="Argilla API key (default: from config)"
+    )
     push_parser.add_argument(
         "--force",
         action="store_true",

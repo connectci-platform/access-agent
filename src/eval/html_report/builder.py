@@ -22,10 +22,9 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +46,7 @@ TEMPLATE_PATH = Path(__file__).parent / "template.html"
 BUNDLE_MARKER = "__BUNDLE_JSON__"
 
 SYSTEMS = ("raw_rag", "agent_full")
+
 
 # Slot A = baseline (purple palette), Slot B = candidate (teal palette).
 # The css_class values map to existing `.qcol.agent` / `.qcol.raw` and
@@ -83,7 +83,7 @@ def _normalize_question_set(raw: str | None) -> str:
     """Turn 'eval/questions/friendly_battery.json' into 'friendly_battery'."""
     if not raw:
         return ""
-    base = os.path.basename(raw)
+    base = Path(raw).name
     return base[:-5] if base.endswith(".json") else base
 
 
@@ -106,7 +106,7 @@ def pick_run_ids(
     Silent about missing combinations — callers decide whether to warn.
     """
     engine = create_engine(database_url.replace("postgresql://", "postgresql+psycopg://", 1))
-    Session = sessionmaker(bind=engine)
+    Session = sessionmaker(bind=engine)  # noqa: N806  # SQLAlchemy session factory class alias
 
     wanted_sets = set(question_sets or BATTERY_ORDER)
 
@@ -118,8 +118,8 @@ def pick_run_ids(
             EvalRun.created_at,
         )
         if on_date is not None:
-            start = datetime(on_date.year, on_date.month, on_date.day, tzinfo=timezone.utc)
-            end = datetime(on_date.year, on_date.month, on_date.day, 23, 59, 59, tzinfo=timezone.utc)
+            start = datetime(on_date.year, on_date.month, on_date.day, tzinfo=UTC)
+            end = datetime(on_date.year, on_date.month, on_date.day, 23, 59, 59, tzinfo=UTC)
             q = q.filter(and_(EvalRun.created_at >= start, EvalRun.created_at <= end))
 
         rows = q.all()
@@ -151,7 +151,7 @@ def fetch_scores(database_url: str, refs: list[RunRef]) -> dict[str, list[dict[s
     Includes answer_text and the full context JSON (for node_trace extraction).
     """
     engine = create_engine(database_url.replace("postgresql://", "postgresql+psycopg://", 1))
-    Session = sessionmaker(bind=engine)
+    Session = sessionmaker(bind=engine)  # noqa: N806  # SQLAlchemy session factory class alias
 
     by_run: dict[str, list[dict[str, Any]]] = defaultdict(list)
     run_ids = [r.id for r in refs]
@@ -163,7 +163,7 @@ def fetch_scores(database_url: str, refs: list[RunRef]) -> dict[str, list[dict[s
             .all()
         )
         for row in rows:
-            by_run[row.run_id].append(
+            by_run[str(row.run_id)].append(
                 {
                     "question_id": row.question_id,
                     "question_text": row.question_text,
@@ -181,7 +181,8 @@ def _trace_from_context(context: Any) -> list[dict[str, Any]] | None:
     trace = context.get("node_trace") if isinstance(context, dict) else None
     if isinstance(trace, str):
         try:
-            return json.loads(trace)
+            parsed: list[dict[str, Any]] = json.loads(trace)
+            return parsed
         except json.JSONDecodeError:
             return None
     if isinstance(trace, list):
@@ -218,9 +219,7 @@ def assemble_bundle(
 ) -> dict[str, Any]:
     """Fold per-run scores into the shape the template expects."""
     # Index refs by (system, qs_key) for quick lookup
-    ref_lookup: dict[tuple[str, str], RunRef] = {
-        (r.system, r.question_set_key): r for r in refs
-    }
+    ref_lookup: dict[tuple[str, str], RunRef] = {(r.system, r.question_set_key): r for r in refs}
 
     # Per-question pairs keyed by (question_set_key, question_id)
     pairs: dict[tuple[str, str], dict[str, Any]] = {}
@@ -307,7 +306,7 @@ def assemble_bundle(
             )
 
     return {
-        "generated_at": datetime.now(timezone.utc).date().isoformat(),
+        "generated_at": datetime.now(UTC).date().isoformat(),
         "subtitle": REPORT_SUBTITLE,
         "battery_order": battery_order_out,
         "battery_labels": battery_labels,
@@ -357,7 +356,11 @@ def assemble_bundle_from_json(json_paths: list[Path]) -> dict[str, Any]:
             logger.warning(
                 "JSON %s mixes systems (baseline=%s candidate=%s) with earlier JSONs "
                 "(baseline=%s candidate=%s); report will label by the first pair.",
-                path, baseline_system, candidate_system, slot_a_id, slot_b_id,
+                path,
+                baseline_system,
+                candidate_system,
+                slot_a_id,
+                slot_b_id,
             )
 
         qs_key = _normalize_question_set(data.get("question_set"))
@@ -454,7 +457,7 @@ def assemble_bundle_from_json(json_paths: list[Path]) -> dict[str, Any]:
         battery_order_out.append(short)
 
     return {
-        "generated_at": datetime.now(timezone.utc).date().isoformat(),
+        "generated_at": datetime.now(UTC).date().isoformat(),
         "subtitle": REPORT_SUBTITLE,
         "battery_order": battery_order_out,
         "battery_labels": battery_labels,
@@ -484,7 +487,10 @@ def build_report_from_json(
     output_path.write_text(html)
     logger.info(
         "Wrote %s (%d bytes, %d pairs from %d battery JSON(s))",
-        output_path, len(html), len(bundle["all_pairs"]), len(json_paths),
+        output_path,
+        len(html),
+        len(bundle["all_pairs"]),
+        len(json_paths),
     )
     return bundle
 
@@ -522,7 +528,9 @@ def build_report(
     bundle = assemble_bundle(refs, scores, durations)
     html = render_html(bundle)
     output_path.write_text(html)
-    logger.info("Wrote %s (%d bytes, %d question pairs)", output_path, len(html), len(bundle["all_pairs"]))
+    logger.info(
+        "Wrote %s (%d bytes, %d question pairs)", output_path, len(html), len(bundle["all_pairs"])
+    )
     return bundle
 
 
