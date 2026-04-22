@@ -45,3 +45,13 @@ jobs:
         with:
           name: coverage-xml
           path: coverage.xml
+
+      - name: Fetch main for diff
+        if: github.event_name == 'pull_request'
+        run: git fetch --no-tags --depth=200 origin main
+
+      - name: Coverage diff-gate (100% on changed lines)
+        if: >
+          github.event_name == 'pull_request' &&
+          !contains(github.event.pull_request.labels.*.name, 'coverage-override-approved')
+        run: uv run diff-cover coverage.xml --compare-branch=origin/main --fail-under=100
