@@ -55,3 +55,11 @@ jobs:
           github.event_name == 'pull_request' &&
           !contains(github.event.pull_request.labels.*.name, 'coverage-override-approved')
         run: uv run diff-cover coverage.xml --compare-branch=origin/main --fail-under=100
+
+      - name: Post coverage comment
+        if: github.event_name == 'pull_request'
+        uses: py-cov-action/python-coverage-comment-action@v3
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MINIMUM_GREEN: 80
+          MINIMUM_ORANGE: 60
