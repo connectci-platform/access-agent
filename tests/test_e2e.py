@@ -23,7 +23,7 @@ import pytest
 
 # Mark all tests in this module as e2e and skip if OPENAI_API_KEY is not set
 pytestmark = [
-    pytest.mark.e2e,
+    pytest.mark.e2e,  # Requires live MCP servers + real OpenAI; runs nightly
     pytest.mark.skipif(
         not os.environ.get("OPENAI_API_KEY"),
         reason="OPENAI_API_KEY required for e2e tests",

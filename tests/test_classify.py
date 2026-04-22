@@ -13,7 +13,7 @@ import os
 import pytest
 
 pytestmark = [
-    pytest.mark.classify,
+    pytest.mark.e2e,  # Requires real OpenAI for classifier routing; runs nightly
     pytest.mark.skipif(
         not os.environ.get("OPENAI_API_KEY"),
         reason="OPENAI_API_KEY required for classification tests",
