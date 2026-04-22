@@ -104,6 +104,12 @@ class Settings(BaseSettings):
     # removed from UI discovery, system prompt, MCP tool catalog, RAG
     # routing, domain agent routing, and usage attribution.
     DISABLED_CAPABILITIES: str = ""
+    # READ_ONLY: when True, force-disables all write-capable capabilities
+    # (manage_announcements, open_ticket, report_login_problem, report_security)
+    # by adding them to the disabled set at registry build time. Intended for
+    # staging environments, the smoke test window, and any deploy where
+    # inadvertent writes would be unacceptable. Overrides nothing else.
+    READ_ONLY: bool = False
 
     # MCP Servers
     MCP_CATALOG_URL: str = "http://localhost:5678/webhook/generate-mcp-catalog"
