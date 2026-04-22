@@ -63,3 +63,42 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MINIMUM_GREEN: 80
           MINIMUM_ORANGE: 60
+
+      - name: Dependency audit (surface findings as warnings)
+        run: |
+          IGNORE_ARGS=""
+          if [ -f .audit-ignore.txt ]; then
+            while IFS= read -r line; do
+              line="${line%%#*}"
+              line="$(echo "$line" | tr -d '[:space:]')"
+              [ -z "$line" ] && continue
+              IGNORE_ARGS="$IGNORE_ARGS --ignore-vuln $line"
+            done < .audit-ignore.txt
+          fi
+
+          uv run pip-audit --format json --vulnerability-service osv $IGNORE_ARGS > audit.json || true
+
+          # pip-audit prepends a human-readable status line before the JSON
+          # when vulnerabilities are found; strip any leading non-JSON lines.
+          sed -n '/^{/,$p' audit.json > audit.clean.json || true
+          mv audit.clean.json audit.json
+
+          jq -r '
+            .dependencies[]?
+            | . as $dep
+            | (.vulns // [])[]
+            | [($dep.name // "unknown"), (.id // "UNKNOWN"), (.description // "" | .[0:200])]
+            | @tsv
+          ' audit.json > audit.tsv
+
+          if [ ! -s audit.tsv ]; then
+            echo "No vulnerabilities found."
+            exit 0
+          fi
+
+          while IFS=$'\t' read -r pkg id desc; do
+            echo "::warning::pip-audit: $id in $pkg — $desc"
+          done < audit.tsv
+
+          COUNT=$(wc -l < audit.tsv)
+          echo "pip-audit surfaced $COUNT unsuppressed findings (warnings, not failures)."
