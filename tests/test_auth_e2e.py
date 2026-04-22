@@ -118,6 +118,20 @@ def _jwks_server():
     configure_trusted_issuers({})
 
 
+@pytest.fixture(autouse=True)
+def _disable_turnstile(monkeypatch):
+    """Isolate these tests from local .env TURNSTILE_SECRET_KEY leakage.
+
+    These tests exercise the anonymous-user path through /api/v1/query.
+    If TURNSTILE_SECRET_KEY is set (e.g. from a local .env loaded by
+    conftest), the route returns 400 before auth runs, breaking tests
+    that are unrelated to Turnstile.
+    """
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "TURNSTILE_SECRET_KEY", "", raising=False)
+
+
 @pytest.fixture
 def mock_agent():
     """Mock stream_agent to avoid needing LLM/MCP infrastructure.
