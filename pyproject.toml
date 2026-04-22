@@ -123,7 +123,6 @@ testpaths = ["tests"]
 addopts = "-v --tb=short"
 markers = [
     "e2e: end-to-end tests that require live MCP servers and LLM API",
-    "classify: classifier routing tests that require LLM API (no MCP servers)",
 ]
 
 [tool.mypy]
