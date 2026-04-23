@@ -288,3 +288,88 @@ async def test_tool_results_backfilled_from_messages(base_state):
     assert failures[0].tool_name == "search_resources"
     assert failures[0].step_id == "call_2"
     assert failures[0].error == "timeout"
+
+
+# ---------------------------------------------------------------------------
+# Task 5: graph routing with the USE_TOOL_CALLING_LOOP feature flag
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_graph_registers_tool_calling_loop_node():
+    """The tool_calling_loop node is registered regardless of flag state."""
+    from src.agent.graph import create_agent_graph
+
+    graph = create_agent_graph()
+    graph_obj = graph.get_graph()
+    assert "tool_calling_loop" in graph_obj.nodes
+
+
+@pytest.mark.asyncio
+async def test_route_after_rag_uses_tool_calling_loop_when_flag_on(monkeypatch):
+    """With flag on, route_after_rag returns tool_calling_loop where it would have returned plan."""
+    from src.agent.graph import route_after_rag
+
+    monkeypatch.setattr("src.config.settings.USE_TOOL_CALLING_LOOP", True)
+
+    # No classification, no final_answer: hits the "no UKY match, fall back" branch
+    state = {"query_classification": None, "final_answer": None}
+    assert route_after_rag(state) == "tool_calling_loop"
+
+
+@pytest.mark.asyncio
+async def test_route_after_rag_preserves_plan_when_flag_off(monkeypatch):
+    """With flag off (default), route_after_rag returns plan as before."""
+    from src.agent.graph import route_after_rag
+
+    monkeypatch.setattr("src.config.settings.USE_TOOL_CALLING_LOOP", False)
+
+    state = {"query_classification": None, "final_answer": None}
+    assert route_after_rag(state) == "plan"
+
+
+@pytest.mark.asyncio
+async def test_route_after_rag_still_ends_on_confident_static_when_flag_on(monkeypatch):
+    """Flag doesn't change the 'confident RAG → END' decision."""
+    from src.agent.graph import route_after_rag
+
+    monkeypatch.setattr("src.config.settings.USE_TOOL_CALLING_LOOP", True)
+
+    # final_answer present, non-deflection (no hedge phrases): static/end
+    state = {
+        "query_classification": None,
+        "final_answer": (
+            "ACCESS has multiple GPU resources. "
+            "See https://access-ci.org/resources for the full list."
+        ),
+    }
+    assert route_after_rag(state) == "end"
+
+
+@pytest.mark.asyncio
+async def test_route_by_classification_forces_rag_answer_when_flag_on(monkeypatch):
+    """With flag on, combined/dynamic queries route to rag_answer so the loop can consume RAG context."""
+    from src.agent.graph import route_by_classification
+    from src.agent.state import QueryClassification
+
+    monkeypatch.setattr("src.config.settings.USE_TOOL_CALLING_LOOP", True)
+
+    # Combined query that would normally go to rag_and_plan
+    state = {
+        "query_classification": QueryClassification(query_type="combined"),
+    }
+    assert route_by_classification(state) == "rag_answer"
+
+
+@pytest.mark.asyncio
+async def test_route_by_classification_preserves_rag_and_plan_when_flag_off(monkeypatch):
+    """Default path unchanged: combined/dynamic → rag_and_plan."""
+    from src.agent.graph import route_by_classification
+    from src.agent.state import QueryClassification
+
+    monkeypatch.setattr("src.config.settings.USE_TOOL_CALLING_LOOP", False)
+
+    state = {
+        "query_classification": QueryClassification(query_type="combined"),
+    }
+    assert route_by_classification(state) == "rag_and_plan"

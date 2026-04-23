@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
 from langgraph.graph import END, START, StateGraph
 
+from ..config import settings
 from ..telemetry import get_tracer
 from .edges.routing import (
     should_execute_tools,
@@ -47,6 +48,7 @@ from .nodes import (
     recover_node,
     synthesize_node,
 )
+from .nodes.tool_calling_loop import tool_calling_loop_node
 from .state import AgentState
 
 logger = logging.getLogger(__name__)
@@ -71,6 +73,16 @@ def route_by_classification(
     Returns:
         "rag_answer" for static/domain, "rag_and_plan" for combined/dynamic.
     """
+    # Phase 3 tool_calling_loop handles combined/dynamic cases inline using
+    # RAG context from state, so when the flag is on we always go through
+    # rag_answer first. rag_and_plan becomes unreachable in that mode.
+    if settings.USE_TOOL_CALLING_LOOP:
+        logger.info(
+            "USE_TOOL_CALLING_LOOP=true: routing to rag_answer "
+            "(tool_calling_loop will consume RAG context + dispatch tools)"
+        )
+        return "rag_answer"
+
     classification = state.get("query_classification")
     query_type = classification.query_type if classification else "unknown"
     domain = classification.domain if classification else None
@@ -143,7 +155,9 @@ def _rag_answer_is_deflection(answer: str) -> bool:
     return True
 
 
-def route_after_rag(state: AgentState) -> Literal["end", "plan", "domain_agent"]:
+def route_after_rag(
+    state: AgentState,
+) -> Literal["end", "plan", "tool_calling_loop", "domain_agent"]:
     """Route after RAG answer attempt.
 
     Every query has now consulted UKY. Decide what to do next based on
@@ -161,12 +175,23 @@ def route_after_rag(state: AgentState) -> Literal["end", "plan", "domain_agent"]
     - Always continue to plan (tools) for real-time/supplementary data
     - RAG results are preserved in state for synthesis
 
+    When USE_TOOL_CALLING_LOOP=true, the "plan" path is replaced with
+    "tool_calling_loop" — a single-node LLM-driven loop supersedes the
+    legacy plan+execute+evaluate+recover+synthesize chain. The "end" and
+    "domain_agent" paths are unaffected by the flag.
+
     Args:
         state: Current agent state.
 
     Returns:
-        Next node: "end", "plan", or "domain_agent".
+        Next node: "end", "plan", "tool_calling_loop", or "domain_agent".
     """
+    # Determines whether tool-using branches go to the new single-node
+    # loop (Phase 3) or the legacy chain.
+    tool_path: Literal["plan", "tool_calling_loop"] = (
+        "tool_calling_loop" if settings.USE_TOOL_CALLING_LOOP else "plan"
+    )
+
     classification = state.get("query_classification")
     query_type = classification.query_type if classification else "static"
     domain = classification.domain if classification else None
@@ -178,9 +203,9 @@ def route_after_rag(state: AgentState) -> Literal["end", "plan", "domain_agent"]
 
         if not get_capability_registry().is_domain_enabled(domain):
             logger.info(
-                f"Domain '{domain}' disabled by capability registry, falling through to plan"
+                f"Domain '{domain}' disabled by capability registry, falling through to {tool_path}"
             )
-            return "plan"
+            return tool_path
         rag_matches = state.get("rag_matches", [])
         logger.info(
             f"Domain query ({domain}): UKY provided {len(rag_matches)} matches, "
@@ -195,23 +220,25 @@ def route_after_rag(state: AgentState) -> Literal["end", "plan", "domain_agent"]
         if rag_matches:
             logger.info(
                 f"{query_type.title()} query: UKY provided {len(rag_matches)} matches, "
-                "continuing to plan for supplementary data"
+                f"continuing to {tool_path} for supplementary data"
             )
         else:
-            logger.info(f"{query_type.title()} query: No UKY matches, continuing to plan")
-        return "plan"
+            logger.info(f"{query_type.title()} query: No UKY matches, continuing to {tool_path}")
+        return tool_path
 
     # For static queries, end if RAG provided a confident answer
     final_answer = state.get("final_answer")
     if final_answer:
         if _rag_answer_is_deflection(final_answer):
-            logger.info("Static query: RAG answer is a true deflection, falling back to tools")
-            return "plan"
+            logger.info(
+                f"Static query: RAG answer is a true deflection, falling back to {tool_path}"
+            )
+            return tool_path
         return "end"
 
     # No RAG match for static query, fall back to tools
-    logger.info("Static query: No UKY match, falling back to plan")
-    return "plan"
+    logger.info(f"Static query: No UKY match, falling back to {tool_path}")
+    return tool_path
 
 
 def _build_graph_structure(
@@ -251,6 +278,13 @@ def _build_graph_structure(
     builder.add_node("recover", recover_node)
     builder.add_node("evaluate", evaluate_node)
     builder.add_node("synthesize", synthesize_node)
+    # Phase 3: single-node tool-calling loop (behind USE_TOOL_CALLING_LOOP flag).
+    # Always registered so flipping the flag needs no graph rebuild; only the
+    # routing edges below decide whether execution flows through it.
+    # The node signature is `dict[str, Any] -> dict[str, Any]` (accepts the
+    # react-agent messages dict shape); mypy can't narrow that to AgentState
+    # at the StateGraph generic, so we suppress the type-var mismatch.
+    builder.add_node("tool_calling_loop", tool_calling_loop_node)  # type: ignore[type-var]
 
     # Add edges
     # Start with classification
@@ -275,12 +309,16 @@ def _build_graph_structure(
         {
             "end": END,
             "plan": "plan",
+            "tool_calling_loop": "tool_calling_loop",
             "domain_agent": "domain_agent",
         },
     )
 
     # Domain agent goes directly to END
     builder.add_edge("domain_agent", END)
+
+    # Phase 3: tool-calling loop produces final_answer directly, so it ends here.
+    builder.add_edge("tool_calling_loop", END)
 
     # Parallel path: after rag_and_plan, planning is already done — go to execute
     builder.add_conditional_edges(
