@@ -174,7 +174,7 @@ PRESETS: dict[str, Preset] = {
             "compare-judge for the Phase 3 parity check."
         ),
         battery_info={
-            "phase3_smoke": {
+            "phase3_smoke_battery": {
                 "name": "Phase 3 Smoke Battery",
                 "count": 40,
                 "what": (

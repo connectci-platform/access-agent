@@ -356,7 +356,7 @@ def _build_per_battery_views(
         }
         battery_info_out[short] = {
             "name": info["name"],
-            "count": info["count"],
+            "count": n,
             "what": info["what"],
             "why": info["why"],
         }
