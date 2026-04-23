@@ -111,6 +111,14 @@ class Settings(BaseSettings):
     # inadvertent writes would be unacceptable. Overrides nothing else.
     READ_ONLY: bool = False
 
+    # USE_TOOL_CALLING_LOOP: when True, routes tool-using queries through the
+    # single-node `tool_calling_loop` (LLM-driven react-style loop) instead of
+    # the legacy plan → execute → evaluate → recover → synthesize chain. The
+    # old path remains functional when False so we can A/B them in Phase 7
+    # evidence collection. Default False during development; flipped True
+    # in staging first, then production at cutover.
+    USE_TOOL_CALLING_LOOP: bool = False
+
     # MCP Servers
     MCP_CATALOG_URL: str = "http://localhost:5678/webhook/generate-mcp-catalog"
     MCP_CATALOG_PATH: str | None = None
