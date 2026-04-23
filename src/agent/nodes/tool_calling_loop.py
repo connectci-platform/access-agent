@@ -16,6 +16,7 @@ import logging
 from typing import Any
 
 from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.errors import GraphRecursionError
 from langgraph.prebuilt import create_react_agent
 
 from ...llm import get_llm
@@ -86,23 +87,48 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
             domain_hint,
         )
 
+        final_answer: str | None = None
+        recursion_limit_hit = False
+
         # recursion_limit = 2 * max_tool_turns + 1; gives the LLM room for
         # roughly 10 tool turns before LangGraph hard-stops.
-        result = await agent.ainvoke(
-            {"messages": messages},
-            {"recursion_limit": 25},
-        )
+        recursion_limit = 25
+        try:
+            result = await agent.ainvoke(
+                {"messages": messages},
+                {"recursion_limit": recursion_limit},
+            )
+            result_messages = result.get("messages", [])
+        except GraphRecursionError:
+            # create_react_agent exhausted its recursion budget (e.g., the LLM
+            # kept requesting tool calls and never emitted a final answer).
+            # Return a user-facing apology rather than a 500 so the chatbot
+            # can render something useful.
+            recursion_limit_hit = True
+            logger.warning(
+                "tool_calling_loop hit GraphRecursionError: "
+                "tool_count=%d, recursion_limit=%d, messages_so_far=%d",
+                len(tools),
+                recursion_limit,
+                len(messages),
+            )
+            span.set_attribute("agent.recursion_limit_hit", True)
+            result_messages = list(messages)
+            final_answer = (
+                "I wasn't able to complete an answer for this query within "
+                "the allotted tool-turn budget. You can try rephrasing, or "
+                "open a support ticket at "
+                "https://support.access-ci.org/open-a-ticket."
+            )
 
-        result_messages = result.get("messages", [])
-
-        final_answer = ""
-        for msg in reversed(result_messages):
-            if isinstance(msg, AIMessage) and msg.content:
-                # AIMessage.content can be str or list[str|dict] (multimodal);
-                # the loop only emits string content for final answers.
-                content = msg.content
-                final_answer = content if isinstance(content, str) else str(content)
-                break
+        if not recursion_limit_hit:
+            for msg in reversed(result_messages):
+                if isinstance(msg, AIMessage) and msg.content:
+                    # AIMessage.content can be str or list[str|dict] (multimodal);
+                    # the loop only emits string content for final answers.
+                    content = msg.content
+                    final_answer = content if isinstance(content, str) else str(content)
+                    break
 
         tools_used: list[str] = []
         for msg in result_messages:
@@ -113,11 +139,14 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
                         tools_used.append(name)
 
         tool_result_count = sum(1 for m in result_messages if isinstance(m, ToolMessage))
-        tool_results = _build_tool_results(result_messages, tools)
+        tool_results, orphan_count = _build_tool_results(result_messages, tools)
 
-        span.set_attribute("agent.answer_length", len(final_answer))
+        answer_length = len(final_answer) if final_answer else 0
+        span.set_attribute("agent.answer_length", answer_length)
         span.set_attribute("agent.tool_calls_made", len(tools_used))
         span.set_attribute("agent.tool_results_received", tool_result_count)
+        if orphan_count > 0:
+            span.set_attribute("agent.tool_results_orphaned", orphan_count)
 
         logger.info(
             "tool_calling_loop complete: %d messages, %d tool calls, "
@@ -125,7 +154,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
             len(result_messages),
             len(tools_used),
             tool_result_count,
-            len(final_answer),
+            answer_length,
         )
 
         return {
@@ -139,7 +168,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
                     "tool_count": len(tools),
                     "tool_calls_made": len(tools_used),
                     "tool_results": tool_result_count,
-                    "answer_length": len(final_answer),
+                    "answer_length": answer_length,
                 }
             ],
         }
@@ -148,7 +177,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
 def _build_tool_results(
     result_messages: list[Any],
     tools: list[Any],
-) -> list[ToolResult]:
+) -> tuple[list[ToolResult], int]:
     """Back-fill state.tool_results from a react-loop message thread.
 
     Downstream consumers (eval scorer, observability, legacy node APIs) read
@@ -158,9 +187,18 @@ def _build_tool_results(
     id) and parsing the JSON content MCPToolWrapper produced.
 
     Orphan ToolMessages (no matching tool_call id) are dropped — we never
-    fabricate a ToolResult we can't anchor to an AIMessage call.
+    fabricate a ToolResult we can't anchor to an AIMessage call. The caller
+    still receives the orphan count so telemetry can surface these rare
+    cases (e.g., future LLM quirks where a ToolMessage appears without a
+    matching call).
+
     duration_ms is left at 0 because the react loop doesn't track per-call
     timing; the eval scorer doesn't depend on it.
+
+    Returns:
+        (tool_results, orphan_count) — the reconstructed ToolResult list and
+        the number of ToolMessages skipped because their tool_call_id had no
+        matching AIMessage tool_call.
     """
     tool_server_lookup: dict[str, str] = {
         getattr(t, "name", ""): getattr(t, "tool_server", "") for t in tools
@@ -178,17 +216,19 @@ def _build_tool_results(
                 call_lookup[tc_id] = (tc_name, tc_args or {})
 
     results: list[ToolResult] = []
+    orphan_count = 0
     for msg in result_messages:
         if not isinstance(msg, ToolMessage):
             continue
         tc_id = msg.tool_call_id
         if not tc_id or tc_id not in call_lookup:
+            orphan_count += 1
             continue
         tool_name, tool_args = call_lookup[tc_id]
         server = tool_server_lookup.get(tool_name, "")
         results.append(_parse_tool_message(msg, tc_id, tool_name, server, tool_args))
 
-    return results
+    return results, orphan_count
 
 
 def _parse_tool_message(

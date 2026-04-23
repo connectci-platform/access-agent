@@ -291,6 +291,119 @@ async def test_tool_results_backfilled_from_messages(base_state):
 
 
 # ---------------------------------------------------------------------------
+# Hardening fixes (Phase 3 final review)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_final_answer_is_none_when_no_ai_message_content(base_state):
+    """When the loop emits only tool calls + tool results (no AIMessage text),
+    final_answer should be None — not "" — so downstream can distinguish
+    "loop produced nothing" from "LLM emitted an empty string"."""
+    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
+
+    tool_call = AIMessage(
+        content="",
+        tool_calls=[{"id": "call_1", "name": "search_resources", "args": {}}],
+    )
+    tool_result = ToolMessage(
+        content='{"resources": []}',
+        tool_call_id="call_1",
+    )
+
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke.return_value = {
+        "messages": [*base_state["messages"], tool_call, tool_result]
+    }
+
+    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+        result = await tool_calling_loop_node(base_state)
+
+    assert result["final_answer"] is None
+    # node_trace should reflect 0 answer_length, not crash on len(None)
+    assert result["node_trace"][0]["answer_length"] == 0
+
+
+@pytest.mark.asyncio
+async def test_recursion_limit_error_produces_graceful_response(base_state):
+    """GraphRecursionError from create_react_agent is caught and converted to
+    a user-facing apology pointing at the support ticket path. The original
+    input messages are preserved so the caller sees at minimum their query."""
+    from langgraph.errors import GraphRecursionError
+
+    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
+
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke.side_effect = GraphRecursionError("test recursion limit")
+
+    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+        # Must NOT re-raise
+        result = await tool_calling_loop_node(base_state)
+
+    answer = result["final_answer"]
+    assert answer is not None
+    assert isinstance(answer, str)
+    assert len(answer) > 0
+    # Flexible match on the user-facing wording
+    lowered = answer.lower()
+    assert "support" in lowered or "try rephrasing" in lowered
+
+    # Input messages are preserved
+    assert result["messages"] == base_state["messages"]
+
+
+@pytest.mark.asyncio
+async def test_orphan_tool_messages_are_counted(base_state):
+    """A ToolMessage with no matching AIMessage tool_call.id is silently dropped
+    from tool_results (existing behavior) but tracked in orphan_count so
+    telemetry surfaces the rare edge case."""
+    from src.agent.nodes.tool_calling_loop import (
+        _build_tool_results,
+        tool_calling_loop_node,
+    )
+
+    # One paired call+result, plus one orphan ToolMessage (no AIMessage anchors it).
+    valid_call = AIMessage(
+        content="",
+        tool_calls=[{"id": "call_1", "name": "search_resources", "args": {}}],
+    )
+    valid_result = ToolMessage(
+        content='{"resources": [{"name": "Delta"}]}',
+        tool_call_id="call_1",
+    )
+    orphan_result = ToolMessage(
+        content='{"resources": []}',
+        tool_call_id="call_orphan",  # no AIMessage has this id
+    )
+    final = AIMessage(content="Found Delta.")
+
+    messages = [
+        *base_state["messages"],
+        valid_call,
+        valid_result,
+        orphan_result,
+        final,
+    ]
+
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke.return_value = {"messages": messages}
+
+    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+        result = await tool_calling_loop_node(base_state)
+
+    # Orphan excluded from tool_results — consistent with existing behavior
+    tool_message_count = sum(1 for m in messages if isinstance(m, ToolMessage))
+    assert tool_message_count == 2
+    assert len(result["tool_results"]) == 1
+    assert result["tool_results"][0].step_id == "call_1"
+
+    # Sanity-check the helper directly returns the orphan count
+    tool_results, orphan_count = _build_tool_results(messages, [])
+    assert orphan_count == 1
+    assert len(tool_results) == 1
+
+
+# ---------------------------------------------------------------------------
 # Task 5: graph routing with the USE_TOOL_CALLING_LOOP feature flag
 # ---------------------------------------------------------------------------
 
