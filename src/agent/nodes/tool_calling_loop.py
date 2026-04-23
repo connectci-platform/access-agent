@@ -11,6 +11,7 @@ happen inside that loop — no separate nodes needed.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -21,6 +22,7 @@ from ...llm import get_llm
 from ...telemetry import get_tracer
 from ..domains.tools import create_mcp_tools_from_catalog
 from ..prompts.tool_calling_loop import build_system_prompt, format_rag_matches
+from ..state import ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +113,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
                         tools_used.append(name)
 
         tool_result_count = sum(1 for m in result_messages if isinstance(m, ToolMessage))
+        tool_results = _build_tool_results(result_messages, tools)
 
         span.set_attribute("agent.answer_length", len(final_answer))
         span.set_attribute("agent.tool_calls_made", len(tools_used))
@@ -129,6 +132,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
             "final_answer": final_answer,
             "messages": result_messages,
             "tools_used": tools_used,
+            "tool_results": tool_results,
             "node_trace": [
                 {
                     "node": "tool_calling_loop",
@@ -139,3 +143,83 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
                 }
             ],
         }
+
+
+def _build_tool_results(
+    result_messages: list[Any],
+    tools: list[Any],
+) -> list[ToolResult]:
+    """Back-fill state.tool_results from a react-loop message thread.
+
+    Downstream consumers (eval scorer, observability, legacy node APIs) read
+    state.tool_results in the same shape plan+execute produced. The react
+    loop only emits ToolMessages, so we reconstruct ToolResult objects by
+    pairing each ToolMessage with its originating AIMessage tool_call (by
+    id) and parsing the JSON content MCPToolWrapper produced.
+
+    Orphan ToolMessages (no matching tool_call id) are dropped — we never
+    fabricate a ToolResult we can't anchor to an AIMessage call.
+    duration_ms is left at 0 because the react loop doesn't track per-call
+    timing; the eval scorer doesn't depend on it.
+    """
+    tool_server_lookup: dict[str, str] = {
+        getattr(t, "name", ""): getattr(t, "tool_server", "") for t in tools
+    }
+
+    call_lookup: dict[str, tuple[str, dict[str, Any]]] = {}
+    for msg in result_messages:
+        if not (isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None)):
+            continue
+        for tc in msg.tool_calls:
+            tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+            tc_name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+            tc_args = tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
+            if tc_id and tc_name:
+                call_lookup[tc_id] = (tc_name, tc_args or {})
+
+    results: list[ToolResult] = []
+    for msg in result_messages:
+        if not isinstance(msg, ToolMessage):
+            continue
+        tc_id = msg.tool_call_id
+        if not tc_id or tc_id not in call_lookup:
+            continue
+        tool_name, tool_args = call_lookup[tc_id]
+        server = tool_server_lookup.get(tool_name, "")
+        results.append(_parse_tool_message(msg, tc_id, tool_name, server, tool_args))
+
+    return results
+
+
+def _parse_tool_message(
+    msg: ToolMessage,
+    tc_id: str,
+    tool_name: str,
+    server: str,
+    tool_args: dict[str, Any],
+) -> ToolResult:
+    """Build a ToolResult from a single ToolMessage + its originating call metadata."""
+    raw_content = msg.content if isinstance(msg.content, str) else str(msg.content)
+    try:
+        parsed: Any = json.loads(raw_content)
+    except (json.JSONDecodeError, TypeError):
+        parsed = raw_content
+
+    if isinstance(parsed, dict) and "error" in parsed:
+        return ToolResult(
+            step_id=tc_id,
+            tool_name=tool_name,
+            server=server,
+            success=False,
+            error=str(parsed["error"]),
+            arguments=tool_args,
+        )
+
+    return ToolResult(
+        step_id=tc_id,
+        tool_name=tool_name,
+        server=server,
+        success=True,
+        data=parsed,
+        arguments=tool_args,
+    )

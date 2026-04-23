@@ -203,7 +203,6 @@ async def test_system_prompt_includes_acting_user_when_authenticated(base_state)
 async def test_system_prompt_includes_rag_context_when_present(base_state):
     """When rag_matches is non-empty, the system prompt should embed them."""
     from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
     from src.agent.state import RAGMatch
 
     state = {
@@ -233,3 +232,59 @@ async def test_system_prompt_includes_rag_context_when_present(base_state):
         await tool_calling_loop_node(state)
 
     assert "Delta has NVIDIA A100s" in captured_prompt["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_tool_results_backfilled_from_messages(base_state):
+    """Loop must populate state.tool_results from ToolMessage content for eval-scorer parity."""
+    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
+
+    tool_call_msg = AIMessage(
+        content="",
+        tool_calls=[{"id": "call_1", "name": "search_resources", "args": {"has_gpu": True}}],
+    )
+    success_result = ToolMessage(
+        content='{"resources": [{"name": "Delta"}]}',
+        tool_call_id="call_1",
+    )
+    tool_call_msg_2 = AIMessage(
+        content="",
+        tool_calls=[{"id": "call_2", "name": "search_resources", "args": {}}],
+    )
+    failed_result = ToolMessage(
+        content='{"error": "timeout"}',
+        tool_call_id="call_2",
+    )
+    final = AIMessage(content="Found Delta.")
+
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke.return_value = {
+        "messages": [
+            *base_state["messages"],
+            tool_call_msg,
+            success_result,
+            tool_call_msg_2,
+            failed_result,
+            final,
+        ]
+    }
+
+    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+        result = await tool_calling_loop_node(base_state)
+
+    tool_results = result["tool_results"]
+    assert len(tool_results) == 2
+
+    successes = [r for r in tool_results if r.success]
+    failures = [r for r in tool_results if not r.success]
+    assert len(successes) == 1
+    assert len(failures) == 1
+
+    assert successes[0].tool_name == "search_resources"
+    assert successes[0].step_id == "call_1"
+    assert successes[0].data == {"resources": [{"name": "Delta"}]}
+    assert successes[0].arguments == {"has_gpu": True}
+
+    assert failures[0].tool_name == "search_resources"
+    assert failures[0].step_id == "call_2"
+    assert failures[0].error == "timeout"
