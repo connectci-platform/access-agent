@@ -12,7 +12,7 @@ from src.services.uky_client import get_uky_client
 
 logger = logging.getLogger(__name__)
 
-SystemMode = Literal["agent_full", "agent_rag_only", "raw_rag"]
+SystemMode = Literal["agent_full", "agent_full_legacy", "agent_rag_only", "raw_rag"]
 
 
 @dataclass
@@ -160,13 +160,17 @@ async def run_question(
             result = await _run_raw_rag(question_id, question_text, resource_context)
         elif system == "agent_rag_only":
             result = await _run_agent(
-                question_id, question_text, tool_catalog,
+                question_id,
+                question_text,
+                tool_catalog,
                 resource_context=resource_context,
                 enabled_capabilities="ask_question",
             )
-        else:  # agent_full
+        else:  # agent_full or agent_full_legacy — same code path, different USE_TOOL_CALLING_LOOP state
             result = await _run_agent(
-                question_id, question_text, tool_catalog,
+                question_id,
+                question_text,
+                tool_catalog,
                 resource_context=resource_context,
             )
         result.duration_ms = (time.monotonic() - start) * 1000
@@ -187,7 +191,7 @@ async def run_question(
 async def _run_raw_rag(
     question_id: str,
     question_text: str,
-    resource_context: str | None = None,
+    resource_context: str | None = None,  # noqa: ARG001 — see docstring
 ) -> RunResult:
     """Call UKY RAG directly — no agent graph. Simulates current production.
 

@@ -24,6 +24,18 @@ async def run_eval(  # noqa: PLR0915
     judge_model: str | None = None,
     push_argilla: bool = False,
 ) -> dict[str, Any]:
+    # Override USE_TOOL_CALLING_LOOP based on --system choice (CLI is authoritative for eval runs).
+    # agent_full → loop (new default); agent_full_legacy → legacy plan→execute chain.
+    # Other systems (agent_rag_only, raw_rag) don't exercise the flag, so we leave the state
+    # as whatever it resolved to but force a predictable value for log clarity.
+    flag_value = system == "agent_full"
+    if flag_value != settings.USE_TOOL_CALLING_LOOP:
+        logger.info(
+            f"Overriding USE_TOOL_CALLING_LOOP from {settings.USE_TOOL_CALLING_LOOP} "
+            f"to {flag_value} for --system {system}"
+        )
+    settings.USE_TOOL_CALLING_LOOP = flag_value
+
     db_url = database_url or settings.DATABASE_URL
     j_base = judge_base_url or settings.EVAL_JUDGE_BASE_URL or None
     j_key = judge_api_key or settings.EVAL_JUDGE_API_KEY or settings.OPENAI_API_KEY
@@ -65,7 +77,9 @@ async def run_eval(  # noqa: PLR0915
         logger.info(f"[{i}/{len(questions)}] {q.question[:60]}...")
 
         result = await run_question(
-            q.id, q.question, registry.catalog,
+            q.id,
+            q.question,
+            registry.catalog,
             system=system,
             resource_context=q.metadata.get("resource"),
         )

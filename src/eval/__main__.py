@@ -410,9 +410,16 @@ def main() -> None:  # noqa: PLR0915  # CLI dispatcher, statements not meaningfu
     run_parser = subparsers.add_parser("run", help="Run pre-production eval")
     run_parser.add_argument(
         "--system",
-        choices=["agent_full", "agent_rag_only", "raw_rag"],
+        choices=["agent_full", "agent_full_legacy", "agent_rag_only", "raw_rag"],
         default="agent_full",
-        help="System to evaluate: agent_full (default), agent_rag_only, or raw_rag",
+        help=(
+            "System to evaluate: "
+            "agent_full (default, tool-calling loop — the new Phase-3 path), "
+            "agent_full_legacy (old plan→execute→evaluate→recover→synthesize chain, "
+            "for parity comparison), "
+            "agent_rag_only (skip the agent, serve RAG matches directly), "
+            "raw_rag (UKY /ask, no agent)."
+        ),
     )
     run_parser.add_argument(
         "--questions",

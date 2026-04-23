@@ -126,6 +126,8 @@ OBSERVATIONS: list[dict[str, str]] = [
 SYSTEM_LABELS: dict[str, str] = {
     "raw_rag": "Raw RAG",
     "agent_full": "Agent",
+    "agent_full_legacy": "Agent (legacy chain)",
+    "agent_rag_only": "Agent (RAG only)",
 }
 
 
