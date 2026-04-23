@@ -179,11 +179,14 @@ async def run_grand_prix(
         )
         json_paths.append(out)
 
-    # Phase 3: render HTML from all per-battery JSONs
+    # Phase 3: render HTML from all per-battery JSONs.
+    # grand-prix is explicitly a raw_rag-vs-agent_full comparison, so always
+    # use the matching narrative preset regardless of any future default change.
     logger.info(f"=== Phase 3: render HTML to {output_html} ===")
     build_report_from_json(
         json_paths=[Path(p) for p in json_paths],
         output_path=Path(output_html),
+        preset="grand-prix",
     )
 
     return {

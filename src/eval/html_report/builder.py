@@ -33,10 +33,8 @@ from sqlalchemy.orm import sessionmaker
 
 from ..models import EvalRun, EvalScore
 from .notes import (
-    BATTERY_INFO,
     BATTERY_ORDER,
-    OBSERVATIONS,
-    REPORT_SUBTITLE,
+    get_preset,
     label_for_system,
 )
 
@@ -216,8 +214,17 @@ def assemble_bundle(
     refs: list[RunRef],
     scores_by_run: dict[str, list[dict[str, Any]]],
     durations: dict[tuple[str, str], float],
+    *,
+    preset: str = "grand-prix",
 ) -> dict[str, Any]:
-    """Fold per-run scores into the shape the template expects."""
+    """Fold per-run scores into the shape the template expects.
+
+    `preset` controls the editorial prose (subtitle, per-battery descriptions,
+    observations). Defaults to ``"grand-prix"`` for backward compatibility.
+    """
+    preset_obj = get_preset(preset)
+    battery_info_src = preset_obj.battery_info
+
     # Index refs by (system, qs_key) for quick lookup
     ref_lookup: dict[tuple[str, str], RunRef] = {(r.system, r.question_set_key): r for r in refs}
 
@@ -249,47 +256,10 @@ def assemble_bundle(
             all_pairs.append(entry)
     all_pairs.sort(key=lambda e: (e["battery"], e["qid"]))
 
-    # Per-battery aggregates (counts, wins/losses/ties, averages)
-    per_battery: dict[str, dict[str, Any]] = {}
-    for qs_key in BATTERY_ORDER:
-        short = qs_key.replace("_battery", "")
-        items = [e for e in all_pairs if e["battery"] == short]
-        if not items:
-            continue
-        n = len(items)
-        wins = sum(1 for e in items if e["delta"] > 0.01)
-        losses = sum(1 for e in items if e["delta"] < -0.01)
-        ties = n - wins - losses
-        info = BATTERY_INFO[qs_key]
-        per_battery[short] = {
-            "battery": short,
-            "label": info["name"],
-            "n": n,
-            "wins": wins,
-            "losses": losses,
-            "ties": ties,
-            "agent_comp": round(sum(e["agent_full"]["composite"] for e in items) / n, 3),
-            "raw_comp": round(sum(e["raw_rag"]["composite"] for e in items) / n, 3),
-            "agent_dur_ms": _avg_ms(items, "agent_full"),
-            "raw_dur_ms": _avg_ms(items, "raw_rag"),
-        }
-
-    battery_info_out: dict[str, dict[str, Any]] = {}
-    battery_labels: dict[str, str] = {}
-    battery_order_out: list[str] = []
-    for qs_key in BATTERY_ORDER:
-        short = qs_key.replace("_battery", "")
-        if short not in per_battery:
-            continue
-        info = BATTERY_INFO[qs_key]
-        battery_info_out[short] = {
-            "name": info["name"],
-            "count": info["count"],
-            "what": info["what"],
-            "why": info["why"],
-        }
-        battery_labels[short] = info["name"]
-        battery_order_out.append(short)
+    # Per-battery aggregates (counts, wins/losses/ties, averages) + per-battery prose views
+    per_battery, battery_info_out, battery_labels, battery_order_out = _build_per_battery_views(
+        all_pairs, BATTERY_ORDER, battery_info_src
+    )
 
     # Run-id strip for the footer
     run_ids_out = []
@@ -307,15 +277,31 @@ def assemble_bundle(
 
     return {
         "generated_at": datetime.now(UTC).date().isoformat(),
-        "subtitle": REPORT_SUBTITLE,
+        "subtitle": preset_obj.report_subtitle,
         "battery_order": battery_order_out,
         "battery_labels": battery_labels,
         "battery_info": battery_info_out,
         "per_battery": per_battery,
         "all_pairs": all_pairs,
-        "observations": OBSERVATIONS,
+        "observations": preset_obj.observations,
         "run_ids": run_ids_out,
         "systems": _make_systems("raw_rag", "agent_full"),
+    }
+
+
+def _fallback_battery_info(qs_key: str) -> dict[str, Any]:
+    """Generic battery metadata for keys not covered by the active preset.
+
+    Keeps the renderer robust when a preset omits a battery description — the
+    bundle still gets a non-empty `name`/`count`/`what`/`why` so downstream
+    rendering doesn't crash.
+    """
+    pretty = qs_key.replace("_", " ").title()
+    return {
+        "name": pretty,
+        "count": 0,
+        "what": "",
+        "why": "",
     }
 
 
@@ -324,7 +310,67 @@ def _avg_ms(items: list[dict[str, Any]], system: str) -> int:
     return round(sum(vals) / len(vals)) if vals else 0
 
 
-def assemble_bundle_from_json(json_paths: list[Path]) -> dict[str, Any]:
+def _build_per_battery_views(
+    all_pairs: list[dict[str, Any]],
+    ordered_qs_keys: list[str],
+    battery_info_src: dict[str, Any],
+) -> tuple[
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+    dict[str, str],
+    list[str],
+]:
+    """Fold `all_pairs` into the four per-battery views the bundle exposes:
+    per_battery aggregates, battery_info, battery_labels, and battery_order.
+
+    Shared between assemble_bundle (Postgres-backed) and
+    assemble_bundle_from_json (JSON-backed) so per-battery shape stays in one
+    place.
+    """
+    per_battery: dict[str, dict[str, Any]] = {}
+    battery_info_out: dict[str, dict[str, Any]] = {}
+    battery_labels: dict[str, str] = {}
+    battery_order_out: list[str] = []
+
+    for qs_key in ordered_qs_keys:
+        short = qs_key.replace("_battery", "") if qs_key.endswith("_battery") else qs_key
+        items = [e for e in all_pairs if e["battery"] == short]
+        if not items:
+            continue
+        n = len(items)
+        wins = sum(1 for e in items if e["delta"] > 0.01)
+        losses = sum(1 for e in items if e["delta"] < -0.01)
+        ties = n - wins - losses
+        info = battery_info_src.get(qs_key) or _fallback_battery_info(qs_key)
+        per_battery[short] = {
+            "battery": short,
+            "label": info["name"],
+            "n": n,
+            "wins": wins,
+            "losses": losses,
+            "ties": ties,
+            "agent_comp": round(sum(e["agent_full"]["composite"] for e in items) / n, 3),
+            "raw_comp": round(sum(e["raw_rag"]["composite"] for e in items) / n, 3),
+            "agent_dur_ms": _avg_ms(items, "agent_full"),
+            "raw_dur_ms": _avg_ms(items, "raw_rag"),
+        }
+        battery_info_out[short] = {
+            "name": info["name"],
+            "count": info["count"],
+            "what": info["what"],
+            "why": info["why"],
+        }
+        battery_labels[short] = info["name"]
+        battery_order_out.append(short)
+
+    return per_battery, battery_info_out, battery_labels, battery_order_out
+
+
+def assemble_bundle_from_json(
+    json_paths: list[Path],
+    *,
+    preset: str = "grand-prix",
+) -> dict[str, Any]:
     """Build the same shape bundle that assemble_bundle() produces, but from
     one or more compare-judge JSON artifacts instead of from Postgres.
 
@@ -333,7 +379,12 @@ def assemble_bundle_from_json(json_paths: list[Path]) -> dict[str, Any]:
     bundle. Comparison-judge narrative fields (run_summary, per-question
     winner/margin/why) are carried through on top-level `comparisons` and
     per-pair `comparison` keys for the template to render if it wants.
+
+    `preset` controls the editorial prose (subtitle, per-battery descriptions,
+    observations). Defaults to ``"grand-prix"`` for backward compatibility.
     """
+    preset_obj = get_preset(preset)
+    battery_info_src = preset_obj.battery_info
     all_pairs: list[dict[str, Any]] = []
     run_ids_out: list[dict[str, str]] = []
     comparisons_by_battery: dict[str, dict[str, Any]] = {}
@@ -414,57 +465,27 @@ def assemble_bundle_from_json(json_paths: list[Path]) -> dict[str, Any]:
 
     all_pairs.sort(key=lambda e: (e["battery"], e["qid"] or ""))
 
-    # Per-battery aggregates — same shape as assemble_bundle()
-    per_battery: dict[str, dict[str, Any]] = {}
-    for qs_key in BATTERY_ORDER:
-        short = qs_key.replace("_battery", "")
-        items = [e for e in all_pairs if e["battery"] == short]
-        if not items:
-            continue
-        n = len(items)
-        wins = sum(1 for e in items if e["delta"] > 0.01)
-        losses = sum(1 for e in items if e["delta"] < -0.01)
-        ties = n - wins - losses
-        info = BATTERY_INFO[qs_key]
-        per_battery[short] = {
-            "battery": short,
-            "label": info["name"],
-            "n": n,
-            "wins": wins,
-            "losses": losses,
-            "ties": ties,
-            "agent_comp": round(sum(e["agent_full"]["composite"] for e in items) / n, 3),
-            "raw_comp": round(sum(e["raw_rag"]["composite"] for e in items) / n, 3),
-            "agent_dur_ms": _avg_ms(items, "agent_full"),
-            "raw_dur_ms": _avg_ms(items, "raw_rag"),
-        }
+    # Battery iteration order: canonical batteries first (so familiar reports
+    # look unchanged), then any preset- or JSON-discovered batteries outside
+    # BATTERY_ORDER (e.g. "phase3_smoke" for parity runs).
+    ordered_qs_keys: list[str] = list(BATTERY_ORDER)
+    for qs_key in sorted(question_set_keys_present):
+        if qs_key and qs_key not in ordered_qs_keys:
+            ordered_qs_keys.append(qs_key)
 
-    battery_info_out: dict[str, dict[str, Any]] = {}
-    battery_labels: dict[str, str] = {}
-    battery_order_out: list[str] = []
-    for qs_key in BATTERY_ORDER:
-        short = qs_key.replace("_battery", "")
-        if short not in per_battery:
-            continue
-        info = BATTERY_INFO[qs_key]
-        battery_info_out[short] = {
-            "name": info["name"],
-            "count": info["count"],
-            "what": info["what"],
-            "why": info["why"],
-        }
-        battery_labels[short] = info["name"]
-        battery_order_out.append(short)
+    per_battery, battery_info_out, battery_labels, battery_order_out = _build_per_battery_views(
+        all_pairs, ordered_qs_keys, battery_info_src
+    )
 
     return {
         "generated_at": datetime.now(UTC).date().isoformat(),
-        "subtitle": REPORT_SUBTITLE,
+        "subtitle": preset_obj.report_subtitle,
         "battery_order": battery_order_out,
         "battery_labels": battery_labels,
         "battery_info": battery_info_out,
         "per_battery": per_battery,
         "all_pairs": all_pairs,
-        "observations": OBSERVATIONS,
+        "observations": preset_obj.observations,
         "run_ids": run_ids_out,
         "comparisons": comparisons_by_battery,  # new — compare-judge narrative per battery
         "systems": _make_systems(slot_a_id or "raw_rag", slot_b_id or "agent_full"),
@@ -475,9 +496,15 @@ def assemble_bundle_from_json(json_paths: list[Path]) -> dict[str, Any]:
 def build_report_from_json(
     json_paths: list[Path],
     output_path: Path,
+    *,
+    preset: str = "grand-prix",
 ) -> dict[str, Any]:
-    """End-to-end for the JSON-backed path: parse JSONs → bundle → render → write."""
-    bundle = assemble_bundle_from_json(json_paths)
+    """End-to-end for the JSON-backed path: parse JSONs → bundle → render → write.
+
+    `preset` controls the editorial prose. Defaults to ``"grand-prix"`` for
+    backward compatibility.
+    """
+    bundle = assemble_bundle_from_json(json_paths, preset=preset)
     if not bundle["all_pairs"]:
         raise RuntimeError(
             "No question pairs found in the supplied JSON(s). "
@@ -511,10 +538,12 @@ def build_report(
     *,
     on_date: date | None = None,
     question_sets: list[str] | None = None,
+    preset: str = "grand-prix",
 ) -> dict[str, Any]:
     """End-to-end: pick runs → fetch → assemble → render → write.
 
-    Returns the bundle (handy for tests / scripting).
+    `preset` controls the editorial prose. Defaults to ``"grand-prix"`` for
+    backward compatibility. Returns the bundle (handy for tests / scripting).
     """
     refs = pick_run_ids(database_url, on_date=on_date, question_sets=question_sets)
     if not refs:
@@ -525,7 +554,7 @@ def build_report(
 
     scores = fetch_scores(database_url, refs)
     durations = _fetch_durations(database_url, [r.id for r in refs])
-    bundle = assemble_bundle(refs, scores, durations)
+    bundle = assemble_bundle(refs, scores, durations, preset=preset)
     html = render_html(bundle)
     output_path.write_text(html)
     logger.info(

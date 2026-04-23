@@ -364,7 +364,11 @@ def _handle_html(args: argparse.Namespace) -> None:
         if missing:
             print(f"Error: missing JSON file(s): {', '.join(str(p) for p in missing)}")
             sys.exit(1)
-        bundle = build_report_from_json(json_paths=json_paths, output_path=output_path)
+        bundle = build_report_from_json(
+            json_paths=json_paths,
+            output_path=output_path,
+            preset=args.preset,
+        )
         print(
             f"Wrote {output_path} ({len(bundle['all_pairs'])} pairs "
             f"from {len(json_paths)} compare-judge JSON(s))"
@@ -384,6 +388,7 @@ def _handle_html(args: argparse.Namespace) -> None:
         output_path=output_path,
         on_date=on_date,
         question_sets=question_sets,
+        preset=args.preset,
     )
     print(f"Wrote {output_path} ({len(bundle['all_pairs'])} question pairs)")
 
@@ -591,6 +596,15 @@ def main() -> None:  # noqa: PLR0915  # CLI dispatcher, statements not meaningfu
             "querying Postgres. Each JSON is one battery-pair; multiple JSONs "
             "are merged into a multi-battery report. Overrides --date and "
             "--question-sets."
+        ),
+    )
+    html_parser.add_argument(
+        "--preset",
+        choices=["grand-prix", "phase3-parity"],
+        default="grand-prix",
+        help=(
+            "Narrative prose preset: 'grand-prix' (default — raw_rag vs agent_full "
+            "production-baseline comparison) or 'phase3-parity' (loop vs legacy chain)."
         ),
     )
 
