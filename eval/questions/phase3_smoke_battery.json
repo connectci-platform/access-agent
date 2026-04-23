@@ -1,0 +1,402 @@
+[
+  {
+    "id": "friendly-001",
+    "question": "How do I log in to Expanse using SSH and set up two-factor authentication?",
+    "capability_area": "expanse",
+    "battery": "phase3_smoke",
+    "expected_type": "static",
+    "expected_tools": [],
+    "phase3_category": "static-confident",
+    "source_battery": "friendly"
+  },
+  {
+    "id": "friendly-004",
+    "question": "How do I submit a batch job on Expanse using SLURM?",
+    "capability_area": "expanse",
+    "battery": "phase3_smoke",
+    "expected_type": "static",
+    "expected_tools": [],
+    "phase3_category": "static-confident",
+    "source_battery": "friendly"
+  },
+  {
+    "id": "friendly-018",
+    "question": "How do I cite Jetstream2 in a research publication?",
+    "capability_area": "jetstream2",
+    "battery": "phase3_smoke",
+    "expected_type": "static",
+    "expected_tools": [],
+    "phase3_category": "static-confident",
+    "source_battery": "friendly"
+  },
+  {
+    "id": "friendly-037",
+    "question": "What are the ACCESS Office Hours and how do I attend?",
+    "capability_area": "account_management",
+    "battery": "phase3_smoke",
+    "expected_type": "static",
+    "expected_tools": [],
+    "phase3_category": "static-confident",
+    "source_battery": "friendly"
+  },
+  {
+    "id": "friendly-038",
+    "question": "How do I use Globus to transfer files between ACCESS resources?",
+    "capability_area": "file_transfer",
+    "battery": "phase3_smoke",
+    "expected_type": "static",
+    "expected_tools": [],
+    "phase3_category": "static-confident",
+    "source_battery": "friendly"
+  },
+  {
+    "id": "real-001",
+    "question": "How to access the login node login.expanse.sdsc.edu",
+    "capability_area": "expanse",
+    "battery": "phase3_smoke",
+    "expected_type": "static",
+    "expected_tools": [],
+    "phase3_category": "static-deflection",
+    "source_battery": "real_user"
+  },
+  {
+    "id": "real-005",
+    "question": "I can't login to Expanse right now",
+    "capability_area": "expanse",
+    "battery": "phase3_smoke",
+    "expected_type": "static",
+    "expected_tools": [],
+    "phase3_category": "static-deflection",
+    "source_battery": "real_user"
+  },
+  {
+    "id": "real-009",
+    "question": "I had an access proposal approved today. I logged in on delta but cannot find my allocation",
+    "capability_area": "delta",
+    "battery": "phase3_smoke",
+    "expected_type": "static",
+    "expected_tools": [],
+    "phase3_category": "static-deflection",
+    "source_battery": "real_user"
+  },
+  {
+    "id": "real-013",
+    "question": "(sraj5@anvil.rcac.purdue.edu) Password: Connection closed by 128.211.133.145 port 22",
+    "capability_area": "anvil",
+    "battery": "phase3_smoke",
+    "expected_type": "static",
+    "expected_tools": [],
+    "phase3_category": "static-deflection",
+    "source_battery": "real_user"
+  },
+  {
+    "id": "real-017",
+    "question": "forgot or password not working to ssh into Bridges 2",
+    "capability_area": "bridges2",
+    "battery": "phase3_smoke",
+    "expected_type": "static",
+    "expected_tools": [],
+    "phase3_category": "static-deflection",
+    "source_battery": "real_user"
+  },
+  {
+    "id": "real-022",
+    "question": "I had a runaway instance on JetStream2. The compute resources stayed active after they were supposed to shut down. This fully depleated my usage credits.",
+    "capability_area": "jetstream2",
+    "battery": "phase3_smoke",
+    "expected_type": "static",
+    "expected_tools": [],
+    "phase3_category": "static-deflection",
+    "source_battery": "real_user"
+  },
+  {
+    "id": "real-031",
+    "question": "What is a Kerberos password?",
+    "capability_area": "account_access",
+    "battery": "phase3_smoke",
+    "expected_type": "static",
+    "expected_tools": [],
+    "phase3_category": "static-deflection",
+    "source_battery": "real_user"
+  },
+  {
+    "id": "comb-001",
+    "question": "Search for ACCESS projects related to climate modeling",
+    "capability_area": "allocations_mcp",
+    "battery": "phase3_smoke",
+    "expected_type": "dynamic",
+    "expected_tools": ["search_projects"],
+    "phase3_category": "combined-simple",
+    "source_battery": "combined"
+  },
+  {
+    "id": "comb-002",
+    "question": "How many active allocation projects use GPU resources?",
+    "capability_area": "allocations_mcp",
+    "battery": "phase3_smoke",
+    "expected_type": "dynamic",
+    "expected_tools": ["get_allocation_statistics"],
+    "phase3_category": "combined-simple",
+    "source_battery": "combined"
+  },
+  {
+    "id": "comb-006",
+    "question": "Which ACCESS resources have A100 GPUs?",
+    "capability_area": "compute_resources",
+    "battery": "phase3_smoke",
+    "expected_type": "dynamic",
+    "expected_tools": ["search_resources"],
+    "phase3_category": "combined-simple",
+    "source_battery": "combined"
+  },
+  {
+    "id": "comb-009",
+    "question": "Which resources have both TensorFlow and CUDA available?",
+    "capability_area": "software_cross_resource",
+    "battery": "phase3_smoke",
+    "expected_type": "dynamic",
+    "expected_tools": ["compare_software_availability"],
+    "phase3_category": "combined-simple",
+    "source_battery": "combined"
+  },
+  {
+    "id": "comb-010",
+    "question": "Where can I run GROMACS with GPU support across ACCESS?",
+    "capability_area": "software_cross_resource",
+    "battery": "phase3_smoke",
+    "expected_type": "combined",
+    "expected_tools": ["search_software"],
+    "phase3_category": "combined-simple",
+    "source_battery": "combined"
+  },
+  {
+    "id": "comb-016",
+    "question": "I'm new to ACCESS. What events are coming up that could help me get started?",
+    "capability_area": "combined_rag_tools",
+    "battery": "phase3_smoke",
+    "expected_type": "combined",
+    "expected_tools": ["search_events"],
+    "phase3_category": "combined-simple",
+    "source_battery": "combined"
+  },
+  {
+    "id": "mcp-cov-006",
+    "question": "Are there any affinity groups for machine learning?",
+    "capability_area": "affinity_groups",
+    "battery": "phase3_smoke",
+    "expected_type": "dynamic",
+    "expected_tools": ["search_affinity_groups"],
+    "phase3_category": "combined-simple",
+    "source_battery": "mcp_coverage"
+  },
+  {
+    "id": "mcp-cov-009",
+    "question": "What training events are happening this month?",
+    "capability_area": "events",
+    "battery": "phase3_smoke",
+    "expected_type": "dynamic",
+    "expected_tools": ["search_events"],
+    "phase3_category": "combined-simple",
+    "source_battery": "mcp_coverage"
+  },
+  {
+    "id": "mcp-cov-012",
+    "question": "How do I check my XDMoD usage for last quarter?",
+    "capability_area": "xdmod_tools",
+    "battery": "phase3_smoke",
+    "expected_type": "dynamic",
+    "expected_tools": ["get_xdmod_metrics"],
+    "phase3_category": "combined-simple",
+    "source_battery": "mcp_coverage"
+  },
+  {
+    "id": "comb-012",
+    "question": "I want to run a large machine learning job. Which resource should I use and how do I get started?",
+    "capability_area": "combined_rag_tools",
+    "battery": "phase3_smoke",
+    "expected_type": "combined",
+    "expected_tools": ["search_resources", "search_software"],
+    "phase3_category": "multi-tool",
+    "source_battery": "combined"
+  },
+  {
+    "id": "comb-013",
+    "question": "Is there any maintenance planned for Delta, and if not, how do I submit a GPU job there?",
+    "capability_area": "combined_rag_tools",
+    "battery": "phase3_smoke",
+    "expected_type": "combined",
+    "expected_tools": ["get_infrastructure_news"],
+    "phase3_category": "multi-tool",
+    "source_battery": "combined"
+  },
+  {
+    "id": "comb-015",
+    "question": "Show me NSF awards for quantum computing and which ACCESS resources would be good for that work",
+    "capability_area": "combined_rag_tools",
+    "battery": "phase3_smoke",
+    "expected_type": "combined",
+    "expected_tools": ["search_nsf_awards", "search_resources"],
+    "phase3_category": "multi-tool",
+    "source_battery": "combined"
+  },
+  {
+    "id": "comb-022",
+    "question": "my job keeps failing on anvil, are there any outages? also what gpu types do they have",
+    "capability_area": "messy_combined",
+    "battery": "phase3_smoke",
+    "expected_type": "combined",
+    "expected_tools": ["get_infrastructure_news", "get_resource_hardware"],
+    "phase3_category": "multi-tool",
+    "source_battery": "combined"
+  },
+  {
+    "id": "comb-029",
+    "question": "show me everything about expanse - hardware specs, software, any outages, upcoming events",
+    "capability_area": "messy_combined",
+    "battery": "phase3_smoke",
+    "expected_type": "combined",
+    "expected_tools": ["get_resource_hardware", "search_software", "get_infrastructure_news", "search_events"],
+    "phase3_category": "multi-tool",
+    "source_battery": "combined"
+  },
+  {
+    "id": "real-025",
+    "question": "Generate a research profile for top research institutions combining their NSF funding and computational usage in the last year.",
+    "capability_area": "sage",
+    "battery": "phase3_smoke",
+    "expected_type": "combined",
+    "expected_tools": ["search_nsf_awards"],
+    "phase3_category": "multi-tool",
+    "source_battery": "real_user"
+  },
+  {
+    "id": "mcp-cov-001",
+    "question": "Is Delta down right now?",
+    "capability_area": "system_status",
+    "battery": "phase3_smoke",
+    "expected_type": "dynamic",
+    "expected_tools": ["get_infrastructure_status"],
+    "phase3_category": "pure-mcp",
+    "source_battery": "mcp_coverage"
+  },
+  {
+    "id": "mcp-cov-002",
+    "question": "Are there any planned outages on Expanse this week?",
+    "capability_area": "system_status",
+    "battery": "phase3_smoke",
+    "expected_type": "dynamic",
+    "expected_tools": ["get_infrastructure_news"],
+    "phase3_category": "pure-mcp",
+    "source_battery": "mcp_coverage"
+  },
+  {
+    "id": "mcp-cov-004",
+    "question": "Show me recent infrastructure news for ACCESS resources",
+    "capability_area": "system_status",
+    "battery": "phase3_smoke",
+    "expected_type": "dynamic",
+    "expected_tools": ["get_infrastructure_news"],
+    "phase3_category": "pure-mcp",
+    "source_battery": "mcp_coverage"
+  },
+  {
+    "id": "mcp-cov-008",
+    "question": "Show me affinity groups related to climate and environmental research",
+    "capability_area": "affinity_groups",
+    "battery": "phase3_smoke",
+    "expected_type": "dynamic",
+    "expected_tools": ["search_affinity_groups"],
+    "phase3_category": "pure-mcp",
+    "source_battery": "mcp_coverage"
+  },
+  {
+    "id": "mcp-cov-018",
+    "question": "Show me recent NSF awards for quantum computing",
+    "capability_area": "nsf_awards",
+    "battery": "phase3_smoke",
+    "expected_type": "dynamic",
+    "expected_tools": ["search_nsf_awards"],
+    "phase3_category": "pure-mcp",
+    "source_battery": "mcp_coverage"
+  },
+  {
+    "id": "real-003",
+    "question": "Now that I have access to the NSG allocation, how do I get started on Expanse?",
+    "capability_area": "expanse",
+    "battery": "phase3_smoke",
+    "expected_type": "static",
+    "expected_tools": [],
+    "phase3_category": "error-prone",
+    "source_battery": "real_user"
+  },
+  {
+    "id": "real-004",
+    "question": "I want my username for SDSC Expanse CPU get approved. right now it shows pending.",
+    "capability_area": "expanse",
+    "battery": "phase3_smoke",
+    "expected_type": "static",
+    "expected_tools": [],
+    "phase3_category": "error-prone",
+    "source_battery": "real_user"
+  },
+  {
+    "id": "real-028",
+    "question": "I am an allocation manager for a account. The account shows pending.",
+    "capability_area": "allocations",
+    "battery": "phase3_smoke",
+    "expected_type": "static",
+    "expected_tools": [],
+    "phase3_category": "error-prone",
+    "source_battery": "real_user"
+  },
+  {
+    "id": "real-041",
+    "question": "sbatch: error: Batch job submission failed: Invalid qos specification",
+    "capability_area": "jobs_slurm",
+    "battery": "phase3_smoke",
+    "expected_type": "static",
+    "expected_tools": [],
+    "phase3_category": "error-prone",
+    "source_battery": "real_user"
+  },
+  {
+    "id": "real-046",
+    "question": "what is the link to register for the webinar?",
+    "capability_area": "general_access",
+    "battery": "phase3_smoke",
+    "expected_type": "static",
+    "expected_tools": [],
+    "phase3_category": "domain-routed",
+    "source_battery": "real_user"
+  },
+  {
+    "id": "comb-020",
+    "question": "Tell me about Delta and also check if Expanse has LAMMPS and find any upcoming workshops",
+    "capability_area": "edge_case",
+    "battery": "phase3_smoke",
+    "expected_type": "combined",
+    "expected_tools": ["search_software", "search_events"],
+    "phase3_category": "domain-routed",
+    "source_battery": "combined"
+  },
+  {
+    "id": "real-047",
+    "question": "I'm a graduate student and planning to make a Discover ACCESS request. In Related Personnel section, should I put my advisor as the PI?",
+    "capability_area": "general_access",
+    "battery": "phase3_smoke",
+    "expected_type": "static",
+    "expected_tools": [],
+    "phase3_category": "domain-routed",
+    "source_battery": "real_user"
+  },
+  {
+    "id": "mcp-cov-020",
+    "question": "Which ACCESS resources have TensorFlow available?",
+    "capability_area": "software_discovery",
+    "battery": "phase3_smoke",
+    "expected_type": "dynamic",
+    "expected_tools": ["search_software"],
+    "phase3_category": "combined-simple",
+    "source_battery": "mcp_coverage"
+  }
+]
