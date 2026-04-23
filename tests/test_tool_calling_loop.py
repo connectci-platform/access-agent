@@ -210,10 +210,12 @@ async def test_system_prompt_includes_rag_context_when_present(base_state):
         **base_state,
         "rag_matches": [
             RAGMatch(
+                id="rag_001",
                 question="What GPUs exist?",
                 answer="Delta has NVIDIA A100s.",
-                source="https://example.org/delta",
-                score=0.92,
+                domain="compute-resources",
+                entity_id="delta",
+                similarity_score=0.92,
             )
         ],
     }
