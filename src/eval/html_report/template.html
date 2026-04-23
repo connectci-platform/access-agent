@@ -360,6 +360,19 @@
     padding: 12px 14px;
     margin-bottom: 12px;
   }
+  .trace-pair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+  @media (max-width: 780px) { .trace-pair { grid-template-columns: 1fr; } }
+  .trace-pair .trace {
+    margin-bottom: 0;
+    border-left: 3px solid;
+  }
+  .trace-pair .trace.baseline { border-left-color: var(--raw); }
+  .trace-pair .trace.candidate { border-left-color: var(--agent); }
   .trace .trace-label {
     font-family: var(--mono); font-size: 10px;
     text-transform: uppercase; letter-spacing: 0.06em;
@@ -547,8 +560,8 @@
       .replace(/System A/g, SYS.A.label);
   }
 
-  function renderTrace(trace) {
-    if (!trace || !trace.length) return '';
+  function renderTraceContent(trace) {
+    if (!trace || !trace.length) return null;
     const pathParts = [];
     trace.forEach((step, i) => {
       if (i > 0) pathParts.push('<span class="trace-arrow">→</span>');
@@ -575,11 +588,40 @@
         details.push(`<span class="td-row">evaluate: ${esc(step.reason)}</span>`);
       }
     });
+    return {
+      path: pathParts,
+      details: details
+    };
+  }
+
+  function renderTrace(trace) {
+    if (!trace || !trace.length) return '';
+    const content = renderTraceContent(trace);
+    if (!content) return '';
     return `
       <div class="trace">
         <div class="trace-label">Agent execution path</div>
-        <div class="trace-path">${pathParts.join('')}</div>
-        ${details.length ? `<div class="trace-detail">${details.join('')}</div>` : ''}
+        <div class="trace-path">${content.path.join('')}</div>
+        ${content.details.length ? `<div class="trace-detail">${content.details.join('')}</div>` : ''}
+      </div>`;
+  }
+
+  function renderTracePair(baselineTrace, candidateTrace) {
+    const baselineContent = renderTraceContent(baselineTrace);
+    const candidateContent = renderTraceContent(candidateTrace);
+    if (!baselineContent && !candidateContent) return '';
+    return `
+      <div class="trace-pair">
+        ${baselineContent ? `<div class="trace baseline">
+        <div class="trace-label">${esc(SYS.A.label + ' execution path')}</div>
+        <div class="trace-path">${baselineContent.path.join('')}</div>
+        ${baselineContent.details.length ? `<div class="trace-detail">${baselineContent.details.join('')}</div>` : ''}
+      </div>` : ''}
+        ${candidateContent ? `<div class="trace candidate">
+        <div class="trace-label">${esc(SYS.B.label + ' execution path')}</div>
+        <div class="trace-path">${candidateContent.path.join('')}</div>
+        ${candidateContent.details.length ? `<div class="trace-detail">${candidateContent.details.join('')}</div>` : ''}
+      </div>` : ''}
       </div>`;
   }
 
@@ -810,7 +852,7 @@
           </div>
           <div class="qrow-body">
             <div class="qb-q">${esc(e.question)}</div>
-            ${renderTrace(a.node_trace)}
+            ${renderTracePair(r.node_trace, a.node_trace)}
             <div class="qb-pair">
               <div class="qcol ${SYS.B.css_class}">
                 <div class="qhead">
