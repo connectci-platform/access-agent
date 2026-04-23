@@ -854,19 +854,19 @@
             <div class="qb-q">${esc(e.question)}</div>
             ${renderTracePair(r.node_trace, a.node_trace)}
             <div class="qb-pair">
-              <div class="qcol ${SYS.B.css_class}">
-                <div class="qhead">
-                  <span class="sys">${esc(SYS.B.label)}</span>
-                  <span class="meta">${fmtSec(a.duration_ms)}</span>
-                </div>
-                <div class="qtext">${esc(a.answer) || '<em>(no answer)</em>'}</div>
-              </div>
               <div class="qcol ${SYS.A.css_class}">
                 <div class="qhead">
                   <span class="sys">${esc(SYS.A.label)}</span>
                   <span class="meta">${fmtSec(r.duration_ms)}</span>
                 </div>
                 <div class="qtext">${esc(r.answer) || '<em>(no answer)</em>'}</div>
+              </div>
+              <div class="qcol ${SYS.B.css_class}">
+                <div class="qhead">
+                  <span class="sys">${esc(SYS.B.label)}</span>
+                  <span class="meta">${fmtSec(a.duration_ms)}</span>
+                </div>
+                <div class="qtext">${esc(a.answer) || '<em>(no answer)</em>'}</div>
               </div>
             </div>
             ${judgeDisclosure}
