@@ -12,7 +12,10 @@ doesn't invalidate review of the orchestration code.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..state import RAGMatch
 
 SYSTEM_IDENTITY = """You are the ACCESS-CI assistant. You help US researchers \
 understand and use ACCESS-CI — a federally funded program that allocates \
@@ -86,12 +89,11 @@ def build_system_prompt(
     return "\n\n".join(sections)
 
 
-def format_rag_matches(matches: list[Any]) -> str:
+def format_rag_matches(matches: list[RAGMatch]) -> str:
     """Render a list of RAGMatch objects as a prompt-ready text block.
 
     Args:
-        matches: List of objects with .question, .answer, .source, .score attrs
-            (matches the RAGMatch shape from src/agent/state.py).
+        matches: List of RAGMatch instances from src.agent.state.
 
     Returns:
         Markdown-formatted text block, ready to pass to build_system_prompt's
@@ -102,17 +104,9 @@ def format_rag_matches(matches: list[Any]) -> str:
 
     rendered: list[str] = []
     for i, match in enumerate(matches, start=1):
-        question = getattr(match, "question", "")
-        answer = getattr(match, "answer", "")
-        source = getattr(match, "source", None)
-        score = getattr(match, "score", None)
-
-        block = f"### Match {i}"
-        if score is not None:
-            block += f" (score: {score:.2f})"
-        block += f"\n\n**Q:** {question}\n\n**A:** {answer}"
-        if source:
-            block += f"\n\n*Source:* {source}"
+        block = f"### Match {i} (score: {match.similarity_score:.2f})"
+        block += f"\n\n**Q:** {match.question}\n\n**A:** {match.answer}"
+        block += f"\n\n*Source:* {match.domain}/{match.entity_id}"
         rendered.append(block)
 
     return "\n\n".join(rendered)
