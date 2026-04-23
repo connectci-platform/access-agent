@@ -390,6 +390,11 @@ async def _execute_single_tool(
         )
 
 
+# DEPRECATED (Phase 3): used only by the legacy plan→execute path when
+# USE_TOOL_CALLING_LOOP=false. The new tool_calling_loop does not need
+# $step_N substitution — tool outputs flow via ToolMessage content and
+# the LLM reads actual values on subsequent turns. Delete alongside
+# the legacy path during the post-launch cleanup.
 def _resolve_parameters(
     arguments: dict[str, Any],
     previous_results: dict[str, ToolResult],
@@ -426,6 +431,11 @@ def _resolve_parameters(
     return resolved
 
 
+# DEPRECATED (Phase 3): used only by the legacy plan→execute path when
+# USE_TOOL_CALLING_LOOP=false. The new tool_calling_loop does not need
+# $step_N substitution — tool outputs flow via ToolMessage content and
+# the LLM reads actual values on subsequent turns. Delete alongside
+# the legacy path during the post-launch cleanup.
 def _resolve_reference(
     reference: str,
     previous_results: dict[str, ToolResult],
