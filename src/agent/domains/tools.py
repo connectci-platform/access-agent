@@ -151,3 +151,64 @@ def create_domain_tools(
         f"Created {len(tools)} tools for domain '{config.name}' from servers {config.mcp_servers}"
     )
     return tools
+
+
+def create_mcp_tools_from_catalog(
+    tool_catalog: dict[str, Any],
+    acting_user: str | None = None,
+) -> list[BaseTool]:
+    """Create LangChain tool wrappers for every available tool in the catalog.
+
+    Unlike create_domain_tools, this function is not scoped to a single
+    domain — it materializes every enabled MCP tool so the tool_calling_loop
+    can pick from the full set. Respects the capability registry via the
+    tool_catalog input (caller populates the catalog from enabled
+    capabilities only).
+
+    Args:
+        tool_catalog: The MCP tool catalog dict with "servers" key.
+        acting_user: ACCESS ID for auth headers, or None for anonymous.
+
+    Returns:
+        List of MCPToolWrapper instances, one per available tool in the catalog.
+    """
+    client = MCPClient()
+    tools: list[BaseTool] = []
+
+    servers = tool_catalog.get("servers", [])
+    for server_info in servers:
+        server_name = server_info.get("server", "")
+        if not server_name:
+            continue
+        # Treat missing status as "available" — older catalogs may omit it,
+        # and we only want to skip when status is explicitly something else.
+        status = server_info.get("status", "available")
+        if status != "available":
+            logger.warning(
+                f"Server {server_name} unavailable (status={status}), "
+                f"skipping for tool_calling_loop"
+            )
+            continue
+
+        for tool_def in server_info.get("tools", []):
+            tool_name = tool_def.get("name", "")
+            description = tool_def.get("description", "")
+            parameters = tool_def.get("parameters", [])
+
+            args_schema = _build_args_schema(tool_name, parameters)
+
+            wrapper = MCPToolWrapper(
+                name=tool_name,
+                description=description,
+                args_schema=args_schema,
+                tool_server=server_name,
+                mcp_client=client,
+                acting_user=acting_user,
+            )
+            tools.append(wrapper)
+
+    logger.info(
+        f"Created {len(tools)} tools for tool_calling_loop from catalog "
+        f"({len(servers)} servers in catalog)"
+    )
+    return tools
