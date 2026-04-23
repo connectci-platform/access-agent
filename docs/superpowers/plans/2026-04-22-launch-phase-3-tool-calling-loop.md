@@ -65,6 +65,7 @@ The `rag_answer` and `domain_agent` nodes stay unchanged — the flag only affec
 - `src/config.py` — add `USE_TOOL_CALLING_LOOP: bool = False`.
 - `.env.example` — document the new flag.
 - `src/agent/graph.py` — add the new node; conditional routing on the flag; keep old path as default.
+- `src/agent/domains/tools.py` — add `create_mcp_tools_from_catalog` as a sibling of `create_domain_tools` (scoped vs unscoped). `MCPToolWrapper` itself is unchanged.
 - Docstrings at the top of `src/agent/nodes/plan.py`, `execute.py`, `evaluate.py`, `recover.py`, `synthesize.py` — add a one-liner deprecation note referencing the new node.
 
 **Not touched:**
@@ -72,7 +73,6 @@ The `rag_answer` and `domain_agent` nodes stay unchanged — the flag only affec
 - `src/agent/nodes/domain_agent.py` — unchanged; already a tool-calling loop.
 - `src/agent/nodes/classify.py` — unchanged; classifier routing runs ahead of both paths.
 - `src/agent/nodes/rag_and_plan.py` — unchanged when flag is false; bypassed when flag is true (new routing doesn't enter it).
-- `src/agent/domains/tools.py` — `MCPToolWrapper` and `create_domain_tools` are already the right shape; reused as-is.
 - `src/llm/providers.py` — `get_llm()` already returns a LangChain `BaseChatModel` that supports `.bind_tools()`; no changes needed.
 - `src/agent/state.py` — the existing `AgentState` fields are a superset of what the new node needs.
 
@@ -169,6 +169,11 @@ doesn't invalidate review of the orchestration code.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..state import RAGMatch
+
 
 SYSTEM_IDENTITY = """You are the ACCESS-CI assistant. You help US researchers \
 understand and use ACCESS-CI — a federally funded program that allocates \
@@ -242,12 +247,11 @@ def build_system_prompt(
     return "\n\n".join(sections)
 
 
-def format_rag_matches(matches: list) -> str:
+def format_rag_matches(matches: list[RAGMatch]) -> str:
     """Render a list of RAGMatch objects as a prompt-ready text block.
 
     Args:
-        matches: List of objects with .question, .answer, .source, .score attrs
-            (matches the RAGMatch shape from src/agent/state.py).
+        matches: List of RAGMatch instances from src.agent.state.
 
     Returns:
         Markdown-formatted text block, ready to pass to build_system_prompt's
@@ -258,21 +262,15 @@ def format_rag_matches(matches: list) -> str:
 
     rendered: list[str] = []
     for i, match in enumerate(matches, start=1):
-        question = getattr(match, "question", "")
-        answer = getattr(match, "answer", "")
-        source = getattr(match, "source", None)
-        score = getattr(match, "score", None)
-
-        block = f"### Match {i}"
-        if score is not None:
-            block += f" (score: {score:.2f})"
-        block += f"\n\n**Q:** {question}\n\n**A:** {answer}"
-        if source:
-            block += f"\n\n*Source:* {source}"
+        block = f"### Match {i} (score: {match.similarity_score:.2f})"
+        block += f"\n\n**Q:** {match.question}\n\n**A:** {match.answer}"
+        block += f"\n\n*Source:* {match.domain}/{match.entity_id}"
         rendered.append(block)
 
     return "\n\n".join(rendered)
 ```
+
+**Note on field names:** `RAGMatch` (in `src/agent/state.py`) has the fields `id`, `question`, `answer`, `domain`, `entity_id`, `similarity_score`, and `metadata` — there is no `source` or `score` field. The snippet above uses the real field names. `RAGMatch` is imported under `TYPE_CHECKING` because the annotation is the only reference; a runtime import would create an import cycle with `state.py`.
 
 - [ ] **Step 3: Commit**
 
@@ -298,15 +296,38 @@ Create `tests/test_tool_calling_loop.py` with:
 """Tests for tool_calling_loop_node (launch Phase 3).
 
 Strategy: mock the LLM + tools at the create_react_agent boundary so the
-node's orchestration logic is tested without live API calls. Covers:
+node's orchestration logic is tested without live API calls.
 
-1. Basic flow: query in → LLM picks no tools → direct answer out.
-2. Tool-calling flow: LLM emits one tool call → tool runs → LLM produces answer.
-3. Multi-tool flow: LLM chains two tools using results from the first.
+The suite grew beyond the 7 behaviors originally scoped as corner cases
+surfaced during implementation (tool_results back-fill, None-vs-empty-string
+final_answer distinction, GraphRecursionError handling, orphan ToolMessages,
+flag-driven routing). Final shape — 18 tests — broken out below:
+
+Core orchestration (8):
+1. Node exists and is importable.
+2. Basic flow: query in → LLM picks no tools → direct answer out.
+3. Tool-calling flow: LLM emits one tool call → tool runs → LLM produces answer.
 4. Tool failure: LLM sees a failed tool result and recovers gracefully.
 5. No tools available: node handles empty tool_catalog without crashing.
 6. Message threading: caller's messages are preserved in output state.
-7. System prompt: builds correctly from state (rag_matches, acting_user, domain).
+7. System prompt: includes acting_user when authenticated.
+8. System prompt: includes rag_context when rag_matches is non-empty.
+
+tool_results back-fill (1):
+9. state.tool_results is populated from ToolMessage content (eval-scorer parity).
+
+Hardening / edge cases (3):
+10. final_answer is None (not "") when loop emits no AIMessage content.
+11. GraphRecursionError caught → user-facing apology, input messages preserved.
+12. Orphan ToolMessages are counted (but dropped from tool_results).
+
+Routing / graph structure (6):
+13. tool_calling_loop node is registered regardless of flag state.
+14. route_after_rag returns "tool_calling_loop" when flag is on.
+15. route_after_rag returns "plan" when flag is off (legacy preserved).
+16. route_after_rag still ends on confident-static answers when flag is on.
+17. route_by_classification forces rag_answer for combined/dynamic when flag is on.
+18. route_by_classification preserves rag_and_plan for combined/dynamic when flag is off.
 """
 
 from __future__ import annotations
@@ -520,10 +541,12 @@ async def test_system_prompt_includes_rag_context_when_present(base_state):
         **base_state,
         "rag_matches": [
             RAGMatch(
+                id="rag_001",
                 question="What GPUs exist?",
                 answer="Delta has NVIDIA A100s.",
-                source="https://example.org/delta",
-                score=0.92,
+                domain="compute-resources",
+                entity_id="delta",
+                similarity_score=0.92,
             )
         ],
     }
@@ -551,7 +574,7 @@ async def test_system_prompt_includes_rag_context_when_present(base_state):
 uv run pytest tests/test_tool_calling_loop.py -v
 ```
 
-Expected: `ImportError: cannot import name 'tool_calling_loop_node' from 'src.agent.nodes.tool_calling_loop'` on the first test, and cascading failures on the rest. This is the expected TDD baseline.
+Expected: `ImportError: cannot import name 'tool_calling_loop_node' from 'src.agent.nodes.tool_calling_loop'` on the first test, and cascading failures on the rest. This is the expected TDD baseline. (At TDD time only the 8 core tests exist; the back-fill, hardening, and routing tests are added in later tasks.)
 
 - [ ] **Step 3: Commit**
 
@@ -585,16 +608,19 @@ happen inside that loop — no separate nodes needed.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
 from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.errors import GraphRecursionError
 from langgraph.prebuilt import create_react_agent
 
 from ...llm import get_llm
 from ...telemetry import get_tracer
 from ..domains.tools import create_mcp_tools_from_catalog
 from ..prompts.tool_calling_loop import build_system_prompt, format_rag_matches
+from ..state import ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -611,9 +637,10 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
         state.query_classification: optional classifier output with .domain
 
     Produces:
-        final_answer: LLM's final text response
+        final_answer: LLM's final text response (None when the loop produced no AI text)
         messages: full loop message history (caller messages + tool calls + result messages + final)
         tools_used: list of tool-name strings the loop actually invoked
+        tool_results: reconstructed list[ToolResult] for eval-scorer / observability parity
         node_trace: telemetry entry for this node
     """
     tracer = get_tracer("access-agent.nodes")
@@ -662,22 +689,46 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
             domain_hint,
         )
 
+        # `None` (not "") is the signal that the loop produced no AI text
+        # response — this matters to downstream consumers that need to
+        # distinguish "no output" from "empty-string output".
+        final_answer: str | None = None
+        recursion_limit_hit = False
+
         # recursion_limit = 2 * max_tool_turns + 1; gives the LLM room for
         # roughly 10 tool turns before LangGraph hard-stops. Chosen to match
         # the legacy max_attempts * max_retries envelope loosely.
-        result = await agent.ainvoke(
-            {"messages": messages},
-            {"recursion_limit": 25},
-        )
+        recursion_limit = 25
+        try:
+            result = await agent.ainvoke(
+                {"messages": messages},
+                {"recursion_limit": recursion_limit},
+            )
+            result_messages = result.get("messages", [])
+        except GraphRecursionError:
+            # See Step 2.6: graceful-degradation wrapping. The react loop
+            # exhausted its budget; return a user-facing apology rather than
+            # bubble a 500 to the chatbot.
+            recursion_limit_hit = True
+            span.set_attribute("agent.recursion_limit_hit", True)
+            result_messages = list(messages)
+            final_answer = (
+                "I wasn't able to complete an answer for this query within "
+                "the allotted tool-turn budget. You can try rephrasing, or "
+                "open a support ticket at "
+                "https://support.access-ci.org/open-a-ticket."
+            )
 
-        result_messages = result.get("messages", [])
-
-        # Extract the final text answer
-        final_answer = ""
-        for msg in reversed(result_messages):
-            if isinstance(msg, AIMessage) and msg.content:
-                final_answer = msg.content
-                break
+        # Extract the final text answer only when the loop ran successfully.
+        # AIMessage.content is typed `str | list[str | dict]` (multimodal);
+        # the loop only emits string content for final answers but we narrow
+        # defensively.
+        if not recursion_limit_hit:
+            for msg in reversed(result_messages):
+                if isinstance(msg, AIMessage) and msg.content:
+                    content = msg.content
+                    final_answer = content if isinstance(content, str) else str(content)
+                    break
 
         # Extract the set of tools the loop actually called
         tools_used: list[str] = []
@@ -691,9 +742,15 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
         # Count how many tool results came back (used/successful)
         tool_result_count = sum(1 for m in result_messages if isinstance(m, ToolMessage))
 
-        span.set_attribute("agent.answer_length", len(final_answer))
+        # Step 2.5: back-fill tool_results for eval-scorer parity.
+        tool_results, orphan_count = _build_tool_results(result_messages, tools)
+
+        answer_length = len(final_answer) if final_answer else 0
+        span.set_attribute("agent.answer_length", answer_length)
         span.set_attribute("agent.tool_calls_made", len(tools_used))
         span.set_attribute("agent.tool_results_received", tool_result_count)
+        if orphan_count > 0:
+            span.set_attribute("agent.tool_results_orphaned", orphan_count)
 
         logger.info(
             "tool_calling_loop complete: %d messages, %d tool calls, "
@@ -701,20 +758,21 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
             len(result_messages),
             len(tools_used),
             tool_result_count,
-            len(final_answer),
+            answer_length,
         )
 
         return {
             "final_answer": final_answer,
             "messages": result_messages,
             "tools_used": tools_used,
+            "tool_results": tool_results,
             "node_trace": [
                 {
                     "node": "tool_calling_loop",
                     "tool_count": len(tools),
                     "tool_calls_made": len(tools_used),
                     "tool_results": tool_result_count,
-                    "answer_length": len(final_answer),
+                    "answer_length": answer_length,
                 }
             ],
         }
@@ -722,16 +780,16 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
 
 - [ ] **Step 2: Add the catalog-to-tools helper**
 
-The existing `create_domain_tools(config, tool_catalog, acting_user)` in `src/agent/domains/tools.py` takes a domain config and filters to that domain's servers. For the tool_calling_loop we want ALL enabled tools — not scoped to a single domain. Add a sibling function:
+The existing `create_domain_tools(config, tool_catalog, acting_user)` in `src/agent/domains/tools.py` takes a domain config and filters to that domain's servers. For the tool_calling_loop we want ALL enabled tools — not scoped to a single domain. Add a sibling function that mirrors `create_domain_tools`'s real signatures (`MCPToolWrapper` uses `mcp_client=` / `tool_server=`; `_build_args_schema(tool_name, parameters)` takes two positional args):
 
 Open `src/agent/domains/tools.py`. Find `create_domain_tools`. After it, add:
 
 ```python
 def create_mcp_tools_from_catalog(
-    tool_catalog: dict,
-    acting_user: str | None,
+    tool_catalog: dict[str, Any],
+    acting_user: str | None = None,
 ) -> list[BaseTool]:
-    """Create LangChain tool wrappers for every tool in the catalog.
+    """Create LangChain tool wrappers for every available tool in the catalog.
 
     Unlike create_domain_tools, this function is not scoped to a single
     domain — it materializes every enabled MCP tool so the tool_calling_loop
@@ -740,37 +798,86 @@ def create_mcp_tools_from_catalog(
     capabilities only).
 
     Args:
-        tool_catalog: MCP catalog dict with "servers" key (list of
-            {"server": str, "tools": [...]}).
+        tool_catalog: The MCP tool catalog dict with "servers" key.
         acting_user: ACCESS ID for auth headers, or None for anonymous.
 
     Returns:
-        List of MCPToolWrapper instances, one per tool in the catalog.
+        List of MCPToolWrapper instances, one per available tool in the catalog.
     """
     client = MCPClient()
     tools: list[BaseTool] = []
 
     servers = tool_catalog.get("servers", [])
     for server_info in servers:
-        server_name = server_info.get("server")
+        server_name = server_info.get("server", "")
         if not server_name:
             continue
-        for tool_info in server_info.get("tools", []):
-            tools.append(
-                MCPToolWrapper(
-                    name=tool_info["name"],
-                    description=tool_info.get("description", ""),
-                    args_schema=_build_args_schema(tool_info),
-                    client=client,
-                    server=server_name,
-                    acting_user=acting_user,
-                )
+        # Mirror create_domain_tools: older catalogs may omit status, so we
+        # treat missing status as "available" and only skip when it's
+        # explicitly something else.
+        status = server_info.get("status", "available")
+        if status != "available":
+            logger.warning(
+                f"Server {server_name} unavailable (status={status}), "
+                f"skipping for tool_calling_loop"
             )
+            continue
+
+        for tool_def in server_info.get("tools", []):
+            tool_name = tool_def.get("name", "")
+            description = tool_def.get("description", "")
+            parameters = tool_def.get("parameters", [])
+
+            args_schema = _build_args_schema(tool_name, parameters)
+
+            wrapper = MCPToolWrapper(
+                name=tool_name,
+                description=description,
+                args_schema=args_schema,
+                tool_server=server_name,
+                mcp_client=client,
+                acting_user=acting_user,
+            )
+            tools.append(wrapper)
 
     return tools
 ```
 
-Reuses `MCPClient`, `MCPToolWrapper`, and `_build_args_schema` that already live in that file. Add the import alongside the existing `BaseTool` import if needed (likely already present).
+Reuses `MCPClient`, `MCPToolWrapper`, and `_build_args_schema` that already live in that file. Note these are the shapes that actually shipped (not what the earlier draft of this plan used):
+- `MCPToolWrapper` takes `mcp_client=` (not `client=`) and `tool_server=` (not `server=`).
+- `_build_args_schema(tool_name, parameters)` has a two-argument signature, not a one-arg one.
+- The `status != "available"` skip mirrors the existing `create_domain_tools` behavior so both helpers treat server availability consistently.
+
+- [ ] **Step 2.5: Add `_build_tool_results` helper and populate `tool_results` return key**
+
+Downstream consumers — in particular the eval scorer at `src/eval/scorer.py` — read `state["tool_results"]` in the same `list[ToolResult]` shape the legacy `plan+execute` path produced. The react loop only emits `AIMessage` tool_calls and `ToolMessage` results; without a back-fill, the Phase 7 old-vs-new comparison would see "no tools used" for every loop response.
+
+Add a `_build_tool_results(result_messages, tools)` module-level helper that:
+
+1. Builds a `tool_name → tool_server` lookup from the materialized `tools` list (so each `ToolResult` records which MCP server served the call).
+2. Walks `result_messages` once to build a `tool_call_id → (tool_name, args)` lookup from every `AIMessage.tool_calls` entry.
+3. Walks `result_messages` a second time, and for each `ToolMessage`:
+   - Looks up the originating call by `msg.tool_call_id`.
+   - Parses the content as JSON; if the parsed value is a dict with a top-level `"error"` key, emits a failed `ToolResult` (`success=False`, `error=<that value>`); otherwise emits a successful `ToolResult` (`success=True`, `data=<parsed>`).
+   - Orphan `ToolMessages` (no matching `AIMessage` call) are silently dropped but counted; the helper returns `(tool_results, orphan_count)`.
+4. Sets `step_id = tool_call_id` on each `ToolResult` so traces can cross-reference the call that produced it.
+5. Leaves `duration_ms` at the `ToolResult` default (0). The react loop doesn't track per-call timing; the eval scorer doesn't read `duration_ms`, so this is acceptable.
+
+Caller-side wiring:
+- Call the helper immediately before building the telemetry attributes.
+- When `orphan_count > 0`, set `span.set_attribute("agent.tool_results_orphaned", orphan_count)`. (Don't set it when it's 0 — keeps traces uncluttered for the healthy case.)
+- Include `"tool_results": tool_results` in the return dict (already shown in the Step 1 snippet).
+
+Import `ToolResult` at the top of the file: `from ..state import ToolResult`. Import `json` for the `json.loads` parse step.
+
+- [ ] **Step 2.6: Wrap `agent.ainvoke` for graceful degradation**
+
+Two failure modes need handling so the chatbot gets a renderable response instead of an HTTP 500:
+
+1. **`langgraph.errors.GraphRecursionError`** — thrown when the react loop exhausts `recursion_limit` without the LLM producing a final answer (e.g., a pathological tool-call loop). Catch it, set `span.set_attribute("agent.recursion_limit_hit", True)`, preserve the caller's input messages as `result_messages`, and set `final_answer` to a short user-facing apology that points at `https://support.access-ci.org/open-a-ticket`.
+2. **Empty `AIMessage.content` throughout the loop** — the loop terminated without the LLM emitting any textual response. Leave `final_answer` as `None` (not `""`) so downstream callers can distinguish "loop produced nothing" from "LLM emitted an empty string". `node_trace[0]["answer_length"]` uses `len(final_answer) if final_answer else 0` to avoid a `TypeError` on the `None` path.
+
+Both behaviors are already woven into the Step 1 snippet above — call this out as a discrete sub-step so future readers understand why the `try/except` and the `Optional[str]` typing exist.
 
 - [ ] **Step 3: Run the tests**
 
@@ -778,7 +885,7 @@ Reuses `MCPClient`, `MCPToolWrapper`, and `_build_args_schema` that already live
 uv run pytest tests/test_tool_calling_loop.py -v
 ```
 
-Expected: all 8 tests PASS.
+Expected: all 8 core tests PASS (the back-fill, hardening, and routing tests are added in later tasks).
 
 If any fail, inspect the failure, fix minimally, re-run. Common likely issues:
 - Mock patch path is wrong (e.g., `src.agent.nodes.tool_calling_loop.create_react_agent` vs where it's imported from). Adjust the patch target or the import in the node.
@@ -791,7 +898,7 @@ If any fail, inspect the failure, fix minimally, re-run. Common likely issues:
 uv run pytest tests/ -q -m "not e2e"
 ```
 
-Expected: previous pass count plus the 8 new tests. Nothing else should move.
+Expected: previous pass count plus the 8 new core tests. Nothing else should move. (Routing and hardening tests land in Task 5; `tool_results` back-fill test is added alongside the Step 2.5 implementation.)
 
 - [ ] **Step 5: Commit**
 
@@ -843,30 +950,82 @@ Do this unconditionally — the node is registered, but whether the graph routes
 
 - [ ] **Step 2: Add the flag-aware router**
 
-Find `route_after_rag` (from the architecture map, around graph.py:146). Its current logic: if deflection → `plan`, if domain → `domain_agent`, if confident RAG → `END`. We need to add: if `USE_TOOL_CALLING_LOOP=true` AND the query needs tools, route to `tool_calling_loop` instead of `plan`.
+Find `route_after_rag` (from the architecture map, around graph.py:146). Its current logic has **four distinct `return "plan"` sites**:
 
-Add import of settings:
+1. Disabled-domain fallback — `if not get_capability_registry().is_domain_enabled(domain)` after a domain was detected.
+2. Combined/dynamic with matches — `query_type in ("combined", "dynamic")` and `rag_matches` is non-empty.
+3. Combined/dynamic without matches — same `query_type` check, empty `rag_matches`.
+4. Static deflection fallback — `_rag_answer_is_deflection(final_answer)` is true.
+5. Static no-match fallback — no `final_answer` returned by RAG at all.
+
+(The Literal return annotation plus four/five logical branches is the reality. Earlier drafts of this plan showed a single `if settings.USE_TOOL_CALLING_LOOP: return "tool_calling_loop"` appended at the end — that doesn't reach all the sites.)
+
+Pick a `tool_path` local once at the top, and substitute it at every `return "plan"` site. This keeps the function readable and guarantees the flag flips all legacy-path returns together:
+
+```python
+def route_after_rag(
+    state: AgentState,
+) -> Literal["end", "plan", "tool_calling_loop", "domain_agent"]:
+    """Decide next node after rag_answer produces matches.
+
+    When USE_TOOL_CALLING_LOOP=true, every legacy "plan" branch routes to
+    "tool_calling_loop" instead. The "end" and "domain_agent" paths are
+    unaffected.
+    """
+    # Single point-of-substitution for the four-five legacy "plan" returns.
+    tool_path: Literal["plan", "tool_calling_loop"] = (
+        "tool_calling_loop" if settings.USE_TOOL_CALLING_LOOP else "plan"
+    )
+
+    classification = state.get("query_classification")
+    query_type = classification.query_type if classification else "static"
+    domain = classification.domain if classification else None
+
+    # Domain branch (unchanged): domain enabled → domain_agent; disabled → tool_path
+    if domain:
+        from .domains.capabilities import get_capability_registry
+        if not get_capability_registry().is_domain_enabled(domain):
+            return tool_path
+        return "domain_agent"
+
+    # Combined/dynamic: tools either way — uses tool_path
+    if query_type in ("combined", "dynamic"):
+        return tool_path
+
+    # Static: end if confident, tool_path if deflection or no match
+    final_answer = state.get("final_answer")
+    if final_answer:
+        if _rag_answer_is_deflection(final_answer):
+            return tool_path
+        return "end"
+    return tool_path
+```
+
+Two related changes land with this refactor:
+
+1. The `Literal` return-type annotation widens from `Literal["end", "plan", "domain_agent"]` to `Literal["end", "plan", "tool_calling_loop", "domain_agent"]`.
+2. The `_build_graph_structure` conditional-edge mapping for `rag_answer` must include the new target:
+
+```python
+builder.add_conditional_edges(
+    "rag_answer",
+    route_after_rag,
+    {
+        "end": END,
+        "plan": "plan",
+        "tool_calling_loop": "tool_calling_loop",
+        "domain_agent": "domain_agent",
+    },
+)
+```
+
+Add import of settings at the top of `graph.py` if it isn't already imported:
 
 ```python
 from ..config import settings
 ```
 
-Modify `route_after_rag` to consult the flag. Pattern:
-
-```python
-def route_after_rag(state: AgentState) -> str:
-    """Decide next node after rag_answer produces matches."""
-    # ... existing deflection / domain / confidence checks ...
-
-    if settings.USE_TOOL_CALLING_LOOP:
-        # Tool-using path: skip plan+execute+evaluate+recover+synthesize
-        return "tool_calling_loop"
-
-    # Legacy path
-    return "plan"
-```
-
-Preserve all existing behavior for the false path.
+Preserve all existing behavior for the false path — the `tool_path` local evaluates to `"plan"` when the flag is off, so every legacy branch returns the same value it did before.
 
 - [ ] **Step 3: Also update the combined/dynamic path router**
 
@@ -902,37 +1061,84 @@ The loop terminates with a final answer; no synthesize step needed on this path.
 
 - [ ] **Step 5: Test the flag toggles between paths**
 
-Add a test at the bottom of `tests/test_tool_calling_loop.py`:
+Add tests at the bottom of `tests/test_tool_calling_loop.py`. The factory function exported by `src/agent/graph.py` is `create_agent_graph` (earlier plan drafts called it `build_graph` — that name doesn't exist). The compiled-graph introspection API on LangGraph 1.x is `graph.get_graph().nodes`, not `graph.nodes`.
+
+Rather than walk the graph structure, the shipped tests exercise the router functions directly (simpler and more targeted), plus one sanity-check that the node is registered:
 
 ```python
 @pytest.mark.asyncio
-async def test_graph_routes_to_loop_when_flag_true(monkeypatch, base_state):
-    """With USE_TOOL_CALLING_LOOP=true, rag_answer routes to tool_calling_loop not plan."""
-    from src.agent.graph import build_graph
-    from src.agent.state import AgentState  # noqa: F401 — used by type system
+async def test_graph_registers_tool_calling_loop_node():
+    """The tool_calling_loop node is registered regardless of flag state."""
+    from src.agent.graph import create_agent_graph
 
-    monkeypatch.setattr("src.config.settings.USE_TOOL_CALLING_LOOP", True)
-
-    # Build the graph and inspect: tool_calling_loop should be a reachable node
-    graph = build_graph()
-    # LangGraph's compiled graph exposes .nodes and .edges
-    assert "tool_calling_loop" in graph.nodes
+    graph = create_agent_graph()
+    graph_obj = graph.get_graph()
+    assert "tool_calling_loop" in graph_obj.nodes
 
 
 @pytest.mark.asyncio
-async def test_graph_preserves_legacy_path_when_flag_false(monkeypatch):
-    """With USE_TOOL_CALLING_LOOP=false (default), plan and execute remain reachable."""
-    from src.agent.graph import build_graph
+async def test_route_after_rag_uses_tool_calling_loop_when_flag_on(monkeypatch):
+    """With flag on, route_after_rag returns tool_calling_loop where it would have returned plan."""
+    from src.agent.graph import route_after_rag
+
+    monkeypatch.setattr("src.config.settings.USE_TOOL_CALLING_LOOP", True)
+
+    # No classification, no final_answer: hits the "no UKY match, fall back" branch
+    state = {"query_classification": None, "final_answer": None}
+    assert route_after_rag(state) == "tool_calling_loop"
+
+
+@pytest.mark.asyncio
+async def test_route_after_rag_preserves_plan_when_flag_off(monkeypatch):
+    """With flag off (default), route_after_rag returns plan as before."""
+    from src.agent.graph import route_after_rag
 
     monkeypatch.setattr("src.config.settings.USE_TOOL_CALLING_LOOP", False)
 
-    graph = build_graph()
-    assert "plan" in graph.nodes
-    assert "execute" in graph.nodes
-    assert "evaluate" in graph.nodes
-```
+    state = {"query_classification": None, "final_answer": None}
+    assert route_after_rag(state) == "plan"
 
-Adjust the exact graph introspection API to match LangGraph 1.x's surface — if `.nodes` isn't the right attribute, use whatever is.
+
+@pytest.mark.asyncio
+async def test_route_after_rag_still_ends_on_confident_static_when_flag_on(monkeypatch):
+    """Flag doesn't change the 'confident RAG → END' decision."""
+    from src.agent.graph import route_after_rag
+
+    monkeypatch.setattr("src.config.settings.USE_TOOL_CALLING_LOOP", True)
+
+    state = {
+        "query_classification": None,
+        "final_answer": (
+            "ACCESS has multiple GPU resources. "
+            "See https://access-ci.org/resources for the full list."
+        ),
+    }
+    assert route_after_rag(state) == "end"
+
+
+@pytest.mark.asyncio
+async def test_route_by_classification_forces_rag_answer_when_flag_on(monkeypatch):
+    """With flag on, combined/dynamic queries route to rag_answer so the loop can consume RAG context."""
+    from src.agent.graph import route_by_classification
+    from src.agent.state import QueryClassification
+
+    monkeypatch.setattr("src.config.settings.USE_TOOL_CALLING_LOOP", True)
+
+    state = {"query_classification": QueryClassification(query_type="combined")}
+    assert route_by_classification(state) == "rag_answer"
+
+
+@pytest.mark.asyncio
+async def test_route_by_classification_preserves_rag_and_plan_when_flag_off(monkeypatch):
+    """Default path unchanged: combined/dynamic → rag_and_plan."""
+    from src.agent.graph import route_by_classification
+    from src.agent.state import QueryClassification
+
+    monkeypatch.setattr("src.config.settings.USE_TOOL_CALLING_LOOP", False)
+
+    state = {"query_classification": QueryClassification(query_type="combined")}
+    assert route_by_classification(state) == "rag_and_plan"
+```
 
 - [ ] **Step 6: Run the tests**
 
@@ -940,13 +1146,13 @@ Adjust the exact graph introspection API to match LangGraph 1.x's surface — if
 uv run pytest tests/test_tool_calling_loop.py -v
 ```
 
-Expected: all tests PASS. If the two graph-routing tests fail because of the introspection API, inspect a compiled graph interactively:
+Expected: all tests PASS. If the node-registration test fails because of an unexpected introspection API, inspect a compiled graph interactively:
 
 ```bash
-uv run python -c "from src.agent.graph import build_graph; g = build_graph(); print(dir(g))"
+uv run python -c "from src.agent.graph import create_agent_graph; g = create_agent_graph(); print(g.get_graph().nodes)"
 ```
 
-Adjust the assertions to match the actual API surface.
+On LangGraph 1.x the compiled graph exposes `.get_graph().nodes` (not `.nodes` directly). Adjust the assertion if the API has shifted.
 
 - [ ] **Step 7: Run the full non-e2e suite**
 
@@ -1135,7 +1341,7 @@ git commit -m "docs(agent): mark \$step_N resolver deprecated (Phase 3)"
 **Rollback strategy:** every task is a separate commit; if a task's changes break the build, revert just that commit. The feature flag ensures the old path keeps working even if the new node has bugs — an accidental production rollout with a broken loop just means users silently keep hitting the legacy path.
 
 **Known unknowns (raised at plan time; resolve during execution):**
-1. LangGraph 1.x compiled-graph introspection API for Task 5 Step 5 — adjust tests against actual API.
+1. ~~LangGraph 1.x compiled-graph introspection API for Task 5 Step 5 — adjust tests against actual API.~~ **Resolved** (commit `b8b9153`): the API is `graph.get_graph().nodes`. Tests use that form.
 2. Exact eval-runner subcommand for Task 7 Step 2 — pattern-match on Joe's most recent a3 run.
 3. Whether the loop's recursion_limit of 25 is too low for some multi-tool queries — adjust upward based on eval results.
 
@@ -1144,3 +1350,26 @@ git commit -m "docs(agent): mark \$step_N resolver deprecated (Phase 3)"
 - Switching to `langchain.agents.create_agent` (the LangChain 1.x umbrella's newer entry point) — requires installing the `langchain` umbrella package, which is not currently a dep.
 - Explicit retry/budget accounting in the loop (currently relies on `recursion_limit` only).
 - Tool-result summarization/compression for long-context-window management (the old path had `SYNTHESIS_TOKEN_BUDGET` logic; the new path trusts the LLM's context window).
+
+---
+
+## Implementation notes — deviations from plan
+
+This plan was authored before the implementation began; several snippets referenced APIs and field names that differed from reality. Snippets in the task sections above have been corrected in-place. The following substantive deviations are worth calling out:
+
+**Additions beyond the original plan:**
+- **Task 4 back-fill of `state["tool_results"]`** (commit `251def1`) — the eval scorer at `src/eval/scorer.py` reads `state["tool_results"]`; without back-fill, Phase 7's old-vs-new comparison would have seen "no tools used" for every loop response. Added as Step 2.5 in this plan post-hoc.
+- **Task 4 graceful-degradation wrapping** (commit `92ae941`) — `GraphRecursionError` and empty-AI-message-content cases now produce a user-facing response rather than propagating an HTTP 500 or returning an empty string. Surfaced in the branch-wide final review.
+
+**Snippet-level corrections applied above:**
+- `MCPToolWrapper` field names: `mcp_client=` (not `client=`), `tool_server=` (not `server=`); `_build_args_schema(name, parameters)` takes two positional args.
+- `RAGMatch` field names: `entity_id`, `domain`, `similarity_score` (not `source`, `score`).
+- `route_after_rag` has four `return "plan"` sites (not two) — refactored via a shared `tool_path` local in the shipped code.
+- Graph factory function is `create_agent_graph` (not `build_graph`); compiled-graph introspection is via `graph.get_graph().nodes`.
+
+**Files that were modified but listed as "Not touched":**
+- `src/agent/domains/tools.py` — received `create_mcp_tools_from_catalog`, a sibling of `create_domain_tools`.
+
+**Test count:** the suite in `tests/test_tool_calling_loop.py` grew to 18 tests (8 core scenarios + 1 `tool_results` back-fill + 6 routing/graph-structure + 3 hardening).
+
+**Commits on this branch:** `4a9d9d2` (flag) → `64b9da5` (prompts) → `1b3dcca`/`acbf91d` (tests + field-name fix) → `f8a5278` (node) → `b4ac03f` (prompts field-name fix) → `251def1` (tool_results back-fill) → `b8b9153` (graph wiring) → `de637d1`/`617f66c` (deprecation docs) → `92ae941` (pre-Phase-7 hardening).
