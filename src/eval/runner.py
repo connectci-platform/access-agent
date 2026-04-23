@@ -14,6 +14,35 @@ logger = logging.getLogger(__name__)
 
 SystemMode = Literal["agent_full", "agent_full_legacy", "agent_rag_only", "raw_rag"]
 
+# Mapping from SystemMode to short architectural names used in run IDs.
+# These describe the pipeline architecture, not the user-facing system choice,
+# so the IDs stay meaningful in Argilla's "Eval Run ID" filter and psql output.
+SYSTEM_SHORTCODES: dict[SystemMode, str] = {
+    "agent_full": "loop",
+    "agent_full_legacy": "chain",
+    "agent_rag_only": "rag_only",
+    "raw_rag": "raw_rag",
+}
+
+
+def gen_semantic_run_id(system: SystemMode) -> str:
+    """Generate a semantic run ID of form `{shortcode}-{YYYYMMDD}-{HHMMSS}-{hash6}`.
+
+    Lex-sortable by time. Fits in the existing String(36) column. Collision-safe
+    against same-second same-system runs via a 6-hex random suffix.
+
+    Returns a plain string; the caller passes it as an explicit `id=` to
+    `db.create_run(...)`, overriding the UUID default. Remove this helper and
+    its call site to revert to UUID IDs — no schema or data migration needed.
+    """
+    import secrets
+    from datetime import UTC, datetime
+
+    shortcode = SYSTEM_SHORTCODES[system]
+    ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    suffix = secrets.token_hex(3)
+    return f"{shortcode}-{ts}-{suffix}"
+
 
 @dataclass
 class RunResult:

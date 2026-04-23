@@ -54,6 +54,19 @@ The `run` command's `--system` flag selects which pipeline scores the questions.
 
 **Note on grand-prix historical compatibility.** Prior to 2026-04-23, `agent_full` meant the legacy chain. After, it means the tool-calling loop. Grand-prix runs recorded before vs after this date are NOT apples-to-apples in the `agent_full` column — if you need to compare against pre-2026-04-23 grand-prix runs, use `--system agent_full_legacy` for re-runs.
 
+## Run IDs
+
+Runs get semantic IDs of the form `{shortcode}-{YYYYMMDD}-{HHMMSS}-{hash6}`, where `shortcode` reflects the pipeline architecture:
+
+| System | Shortcode | Example |
+|---|---|---|
+| `agent_full` | `loop` | `loop-20260423-143052-a1b2c3` |
+| `agent_full_legacy` | `chain` | `chain-20260423-143107-8d7e4f` |
+| `agent_rag_only` | `rag_only` | `rag_only-20260423-143122-3f91a8` |
+| `raw_rag` | `raw_rag` | `raw_rag-20260423-143135-77c4de` |
+
+The IDs are lex-sortable by timestamp, fit in the existing `String(36)` column (no migration), and make Argilla's "Eval Run ID" metadata filter self-describing. The 6-hex random suffix prevents collisions between same-second runs.
+
 ## Requirements
 
 - `OPENAI_API_KEY` set in `.env` (for the agent and the judge LLM)

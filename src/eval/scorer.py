@@ -10,7 +10,7 @@ from .db import EvalDB
 from .judge import Judge
 from .questions import load_questions
 from .rubric import DIMENSION_NAMES, compute_composite
-from .runner import SystemMode, get_git_info, run_question
+from .runner import SystemMode, gen_semantic_run_id, get_git_info, run_question
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +60,7 @@ async def run_eval(  # noqa: PLR0915
     judge = Judge(base_url=j_base, api_key=j_key, model=j_model)
 
     run = db.create_run(
+        id=gen_semantic_run_id(system),
         run_type="pre_production",
         agent_commit=git_info.get("commit"),
         agent_branch=git_info.get("branch"),
