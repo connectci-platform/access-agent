@@ -1,4 +1,15 @@
-"""Synthesize node - answer generation from tool results and RAG matches.
+"""Synthesize node — DEPRECATED: superseded by tool_calling_loop_node (Phase 3).
+
+This node runs only when USE_TOOL_CALLING_LOOP=false. The new path in
+src/agent/nodes/tool_calling_loop.py folds planning, execution, evaluation,
+and recovery into a single LLM-driven loop. See
+docs/superpowers/specs/2026-04-21-production-launch-hardening-design.md §Phase 3.
+
+Retained for rollback safety until the feature-flag cutover is complete.
+
+--- Original docstring below ---
+
+Synthesize node - answer generation from tool results and RAG matches.
 
 This node takes the tool execution results and/or RAG matches and generates
 a natural language answer for the user. For combined queries, it merges
