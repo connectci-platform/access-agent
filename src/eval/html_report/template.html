@@ -392,13 +392,69 @@
     color: var(--text-dim);
     border: 1px solid var(--border);
   }
-  .trace .trace-node.n-classify   { background: #eef2ff; color: #3730a3; border-color: #c7d2fe; }
-  .trace .trace-node.n-rag_answer { background: var(--raw-bg); color: var(--raw); border-color: #ddd6fe; }
-  .trace .trace-node.n-plan       { background: #ecfeff; color: #0e7490; border-color: #a5f3fc; }
-  .trace .trace-node.n-execute    { background: var(--agent-bg); color: var(--agent); border-color: #a7f3d0; }
-  .trace .trace-node.n-evaluate   { background: #fffbeb; color: var(--warn); border-color: #fde68a; }
-  .trace .trace-node.n-synthesize { background: #fef2f2; color: var(--bad); border-color: #fecaca; }
-  .trace .trace-node.n-recover    { background: #fef2f2; color: var(--bad); border-color: #fecaca; }
+  .trace .trace-node.n-classify          { background: #eef2ff; color: #3730a3; border-color: #c7d2fe; }
+  .trace .trace-node.n-rag_answer        { background: var(--raw-bg); color: var(--raw); border-color: #ddd6fe; }
+  .trace .trace-node.n-plan              { background: #ecfeff; color: #0e7490; border-color: #a5f3fc; }
+  .trace .trace-node.n-execute           { background: var(--agent-bg); color: var(--agent); border-color: #a7f3d0; }
+  .trace .trace-node.n-tool_calling_loop { background: var(--agent-bg); color: var(--agent); border-color: #a7f3d0; }
+  .trace .trace-node.n-evaluate          { background: #fffbeb; color: var(--warn); border-color: #fde68a; }
+  .trace .trace-node.n-synthesize        { background: #fef2f2; color: var(--bad); border-color: #fecaca; }
+  .trace .trace-node.n-recover           { background: #fef2f2; color: var(--bad); border-color: #fecaca; }
+
+  /* Tool-call summary — per-question, above the execution trace */
+  .tool-summary {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+  @media (max-width: 900px) { .tool-summary { grid-template-columns: 1fr; } }
+  .tool-summary .ts-cell {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: 3px solid;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .tool-summary .ts-cell.baseline { border-left-color: var(--raw); }
+  .tool-summary .ts-cell.candidate { border-left-color: var(--agent); }
+  .tool-summary .ts-cell.diverged {
+    background: #fffbeb;
+    border-color: var(--warn);
+    border-left-width: 3px;
+  }
+  .tool-summary .ts-label {
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    font-size: 10px;
+    margin-right: 6px;
+  }
+  .tool-summary .ts-count {
+    font-weight: 600;
+    color: var(--text-dim);
+  }
+  .tool-summary .ts-count.zero {
+    color: var(--bad);
+  }
+  .tool-summary .ts-warn {
+    margin-left: 6px;
+    color: var(--warn);
+    font-weight: 600;
+  }
+  .tool-summary .tool-chip {
+    display: inline-block;
+    margin: 2px 3px 0 0;
+    padding: 1px 6px;
+    background: var(--panel-inset);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text-dim);
+    font-size: 10px;
+  }
   .trace .trace-arrow {
     color: var(--text-muted);
     font-family: var(--mono); font-size: 12px;
@@ -584,6 +640,17 @@
         const failed = (step.failed || []).length;
         details.push(`<span class="td-row">executed: ${step.tools_called.map(t => '<code>' + esc(t) + '</code>').join(', ')}${failed ? ' — ' + failed + ' failed' : ''}</span>`);
       }
+      if (step.node === 'tool_calling_loop') {
+        const called = step.tools_called || [];
+        const madeCount = typeof step.tool_calls_made === 'number' ? step.tool_calls_made : called.length;
+        if (called.length) {
+          details.push(`<span class="td-row">tools called: ${called.map(t => '<code>' + esc(t) + '</code>').join(', ')}</span>`);
+        } else if (madeCount > 0) {
+          details.push(`<span class="td-row">tools called: ${madeCount} <em>(names not recorded in this run)</em></span>`);
+        } else {
+          details.push(`<span class="td-row">tools called: <em>none</em></span>`);
+        }
+      }
       if (step.node === 'evaluate' && step.reason) {
         details.push(`<span class="td-row">evaluate: ${esc(step.reason)}</span>`);
       }
@@ -604,6 +671,59 @@
         <div class="trace-path">${content.path.join('')}</div>
         ${content.details.length ? `<div class="trace-detail">${content.details.join('')}</div>` : ''}
       </div>`;
+  }
+
+  // Extract the list of tools actually invoked from a node_trace.
+  // Looks at chain's `execute.tools_called` and loop's `tool_calling_loop.tools_called`.
+  // Falls back to the loop's `tool_calls_made` count when names aren't stored
+  // (older loop runs before we added tools_called to the trace step).
+  function toolsFromTrace(trace) {
+    if (!trace || !trace.length) return { names: null, count: 0 };
+    for (const step of trace) {
+      if (step.node === 'execute' && Array.isArray(step.tools_called)) {
+        return { names: step.tools_called, count: step.tools_called.length };
+      }
+      if (step.node === 'tool_calling_loop') {
+        if (Array.isArray(step.tools_called)) {
+          return { names: step.tools_called, count: step.tools_called.length };
+        }
+        if (typeof step.tool_calls_made === 'number') {
+          return { names: null, count: step.tool_calls_made };
+        }
+      }
+    }
+    return { names: null, count: 0 };
+  }
+
+  // Per-question tool-call summary. Renders both systems' counts + tool names
+  // side-by-side. Adds a `diverged` cue when one side called 0 tools and the
+  // other called ≥1, or when the count delta is ≥2 — Andrew's "the composite
+  // tied but tool-use differed" failure mode is exactly this divergence.
+  function renderToolSummaryPair(baselineTrace, candidateTrace) {
+    const a = toolsFromTrace(baselineTrace);
+    const b = toolsFromTrace(candidateTrace);
+    if (!a.count && !b.count && !a.names && !b.names) return '';
+
+    const strongDivergence = (a.count === 0) !== (b.count === 0);
+    const mildDivergence = Math.abs(a.count - b.count) >= 2;
+    const diverged = strongDivergence || mildDivergence;
+
+    function cellHtml(data, cls, label) {
+      const countCls = data.count === 0 ? 'zero' : '';
+      const warn = diverged ? `<span class="ts-warn" title="counts diverge between systems">⚠</span>` : '';
+      const chips = (data.names && data.names.length)
+        ? ' · ' + data.names.map(t => `<span class="tool-chip">${esc(t)}</span>`).join('')
+        : '';
+      return `<div class="ts-cell ${cls}${diverged ? ' diverged' : ''}">
+        <span class="ts-label">${esc(label)} tools</span>
+        <span class="ts-count ${countCls}">${data.count}</span>${warn}${chips}
+      </div>`;
+    }
+
+    return `<div class="tool-summary">
+      ${cellHtml(a, 'baseline', SYS.A.label)}
+      ${cellHtml(b, 'candidate', SYS.B.label)}
+    </div>`;
   }
 
   function renderTracePair(baselineTrace, candidateTrace) {
@@ -852,6 +972,7 @@
           </div>
           <div class="qrow-body">
             <div class="qb-q">${esc(e.question)}</div>
+            ${renderToolSummaryPair(r.node_trace, a.node_trace)}
             ${renderTracePair(r.node_trace, a.node_trace)}
             <div class="qb-pair">
               <div class="qcol ${SYS.A.css_class}">
