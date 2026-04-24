@@ -1,0 +1,149 @@
+[
+  {
+    "id": "tc-status-01",
+    "question": "Are any ACCESS resources currently down or in maintenance?",
+    "capability_area": "system_status",
+    "battery": "tool_coverage",
+    "expected_tool": "get_infrastructure_news",
+    "required_facts": [
+      "TODO — run get_infrastructure_news(time='current') and list each resource currently in an outage or maintenance state (or state 'none' if the tool returns empty)"
+    ]
+  },
+  {
+    "id": "tc-software-01",
+    "question": "Which ACCESS resources have PyTorch available?",
+    "capability_area": "software_discovery",
+    "battery": "tool_coverage",
+    "expected_tool": "search_software",
+    "required_facts": [
+      "TODO — run search_software(pytorch) and list each ACCESS resource that has PyTorch installed"
+    ]
+  },
+  {
+    "id": "tc-software-02",
+    "question": "What version of CUDA is available on Delta?",
+    "capability_area": "software_discovery",
+    "battery": "tool_coverage",
+    "expected_tool": "get_software_details",
+    "required_facts": [
+      "TODO — state the specific CUDA version(s) on Delta as returned by get_software_details(cuda, resource=delta)"
+    ]
+  },
+  {
+    "id": "tc-allocations-01",
+    "question": "How many active ACCESS allocation projects are there right now?",
+    "capability_area": "allocations",
+    "battery": "tool_coverage",
+    "expected_tool": "get_allocation_statistics",
+    "required_facts": [
+      "TODO — provide the current count of active allocation projects from get_allocation_statistics"
+    ]
+  },
+  {
+    "id": "tc-allocations-02",
+    "question": "Search for ACCESS projects on Delta related to climate modeling.",
+    "capability_area": "allocations",
+    "battery": "tool_coverage",
+    "expected_tool": "search_projects",
+    "required_facts": [
+      "TODO — list the project titles returned by search_projects(query='climate modeling', resource='Delta'), or state 'no matching projects' if the tool returns empty"
+    ]
+  },
+  {
+    "id": "tc-nsf-01",
+    "question": "What are some recent NSF awards related to cyberinfrastructure?",
+    "capability_area": "nsf_awards",
+    "battery": "tool_coverage",
+    "expected_tool": "search_nsf_awards",
+    "required_facts": [
+      "TODO — cite specific NSF award titles and/or IDs returned by search_nsf_awards(topic='cyberinfrastructure')"
+    ]
+  },
+  {
+    "id": "tc-events-01",
+    "question": "What ACCESS events are happening in the next two weeks?",
+    "capability_area": "events",
+    "battery": "tool_coverage",
+    "expected_tool": "search_events",
+    "required_facts": [
+      "TODO — list the events occurring in the 14 days after run-date, with date and registration/info URL for each, from search_events(date='upcoming')"
+    ]
+  },
+  {
+    "id": "tc-affinity-01",
+    "question": "Are there ACCESS affinity groups for researchers using GPUs?",
+    "capability_area": "affinity_groups",
+    "battery": "tool_coverage",
+    "expected_tool": "search_affinity_groups",
+    "required_facts": [
+      "TODO — name specific affinity groups returned by search_affinity_groups(query='GPU'), using their real group names/IDs (not generic categories)"
+    ]
+  },
+  {
+    "id": "tc-announce-01",
+    "question": "What are the most recent ACCESS announcements about Expanse?",
+    "capability_area": "announcements",
+    "battery": "tool_coverage",
+    "expected_tool": "search_announcements",
+    "required_facts": [
+      "TODO — cite recent announcement titles and dates from search_announcements(query='Expanse'), or state 'no recent announcements mention Expanse' if none"
+    ]
+  },
+  {
+    "id": "tc-xdmod-01",
+    "question": "What types of usage data and metrics can I explore in XDMoD?",
+    "capability_area": "xdmod",
+    "battery": "tool_coverage",
+    "expected_tool": "describe_realms",
+    "required_facts": [
+      "TODO — name the realms XDMoD supports (e.g., Jobs, SUPREMM, Cloud, Storage) as returned by describe_realms"
+    ]
+  },
+  {
+    "id": "tc-rag-01",
+    "question": "How do I set up SSH keys to log into Expanse?",
+    "capability_area": "expanse",
+    "battery": "tool_coverage",
+    "expected_tool": null,
+    "required_facts": [
+      "TODO — covers SSH key generation (ssh-keygen or reference)",
+      "TODO — covers where/how to register the public key for Expanse (confirm current Expanse onboarding process)",
+      "TODO — mentions MFA/Duo enrollment as part of the login flow"
+    ]
+  },
+  {
+    "id": "tc-rag-02",
+    "question": "What's the difference between an Explore allocation and an Accelerate allocation?",
+    "capability_area": "allocations",
+    "battery": "tool_coverage",
+    "expected_tool": null,
+    "required_facts": [
+      "TODO — correctly describes the Explore tier (confirm from ACCESS allocations tier docs)",
+      "TODO — correctly describes the Accelerate tier (confirm from tier docs)",
+      "TODO — names at least one dimension on which they differ (size / review / duration / eligibility)"
+    ]
+  },
+  {
+    "id": "tc-rag-03",
+    "question": "How do I use Globus to transfer files between ACCESS resources?",
+    "capability_area": "file_transfer",
+    "battery": "tool_coverage",
+    "expected_tool": null,
+    "required_facts": [
+      "TODO — mentions needing a Globus account (and that ACCESS identity works)",
+      "TODO — mentions the Globus endpoint/collection concept",
+      "TODO — mentions using app.globus.org (confirm canonical URL)"
+    ]
+  },
+  {
+    "id": "tc-rag-04",
+    "question": "Who is eligible to apply for an ACCESS allocation?",
+    "capability_area": "allocations",
+    "battery": "tool_coverage",
+    "expected_tool": null,
+    "required_facts": [
+      "TODO — identifies eligible applicant categories (confirm from allocations eligibility page)",
+      "TODO — identifies any explicit exclusions if documented"
+    ]
+  }
+]
