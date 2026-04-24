@@ -167,6 +167,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
                     "node": "tool_calling_loop",
                     "tool_count": len(tools),
                     "tool_calls_made": len(tools_used),
+                    "tools_called": list(tools_used),
                     "tool_results": tool_result_count,
                     "answer_length": answer_length,
                 }
