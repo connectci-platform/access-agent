@@ -1,10 +1,12 @@
-"""Load eval question sets from JSON files."""
+"""Load eval question sets from JSON or YAML files."""
 
 import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -19,13 +21,13 @@ class EvalQuestion:
 
 
 def load_questions(path: str) -> list[EvalQuestion]:
-    """Load questions from a JSON file."""
+    """Load questions from a JSON or YAML file (dispatched by extension)."""
     file_path = Path(path)
     if not file_path.is_absolute():
         file_path = Path.cwd() / file_path
 
     with file_path.open() as f:
-        data = json.load(f)
+        data = yaml.safe_load(f) if file_path.suffix in (".yaml", ".yml") else json.load(f)
 
     questions = []
     for item in data:

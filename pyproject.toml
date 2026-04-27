@@ -31,6 +31,7 @@ dependencies = [
     # Reporting
     "google-analytics-data>=0.18.0",
     "python-dotenv>=1.0.0",
+    "pyyaml>=6.0.3",
 ]
 
 [project.optional-dependencies]
@@ -157,4 +158,9 @@ exclude_lines = [
     "raise NotImplementedError",
     "if TYPE_CHECKING:",
     "if __name__ == .__main__.:",
+]
+
+[dependency-groups]
+dev = [
+    "types-pyyaml>=6.0.12.20260408",
 ]
