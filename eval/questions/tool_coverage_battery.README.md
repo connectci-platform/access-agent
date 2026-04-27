@@ -99,6 +99,37 @@ Every `TODO` in the file needs a human to replace with a real claim:
   catalog we pulled — placeholder for now; add a question if one
   exists.
 
+## Repeatability — refreshing time_bound facts
+
+This eval system is **ongoing infrastructure**, not a one-time exercise.
+We will iterate on agent setup repeatedly, and each iteration needs to
+be reliably re-runnable. Repeatability is not optional polish — it's the
+operational core.
+
+A `time_bound` fact authored on 2026-04-24 saying "no current outages"
+can be wrong on 2026-04-25 — and the judge would unfairly penalize a
+correctly-fresh agent answer. So before each eval run that includes
+`time_bound` questions, the relevant `required_facts` must be refreshed
+against live tool output.
+
+**Per-question refresh recipe** (each question carries its own):
+- `sources` lists the live tools/URLs to query with which arguments.
+- `authoring_notes` describes the regen logic in plain English (e.g.,
+  "F1's count is regenerated from /current-projects.json (pages ×
+  per-page) before each eval run").
+- The snapshot at last refresh date is preserved in `authoring_notes`
+  as a worked example for human reviewers.
+
+**Refresh script status:** Not yet built. For now, refresh manually by
+running the documented MCP tool calls and editing the YAML in place.
+The refresh script is a Track C deliverable, intended to read each
+`time_bound` question's `sources`, call the listed tools, and rewrite
+the relevant `required_facts` plus update the snapshot in
+`authoring_notes`.
+
+`stable` questions are author-once; eligibility, workflows, and policy
+rarely change.
+
 ## Scorer status
 
 Factoid-based scoring isn't implemented yet. Running this battery
