@@ -421,21 +421,33 @@ def assemble_bundle_from_json(
         for q in data.get("per_question", []):
             base = q.get("baseline") or {}
             cand = q.get("candidate") or {}
+            # Per-question required_facts + ground_truth_stability are battery
+            # properties — the same on both sides — but compare-judge stamps
+            # them on each side's payload, so prefer baseline and fall back.
+            shared_required_facts = base.get("required_facts") or cand.get("required_facts")
+            shared_stability = base.get("ground_truth_stability") or cand.get(
+                "ground_truth_stability"
+            )
+
             entry: dict[str, Any] = {
                 "qid": q.get("question_id"),
                 "battery": short,
                 "question": q.get("question_text") or "",
+                "required_facts": shared_required_facts,
+                "ground_truth_stability": shared_stability,
                 "raw_rag": {
                     "composite": float(base.get("composite", 0) or 0),
                     "duration_ms": base.get("duration_ms"),
                     "answer": base.get("answer") or "",
                     "node_trace": base.get("node_trace"),
+                    "fact_verdicts": base.get("fact_verdicts") or [],
                 },
                 "agent_full": {
                     "composite": float(cand.get("composite", 0) or 0),
                     "duration_ms": cand.get("duration_ms"),
                     "answer": cand.get("answer") or "",
                     "node_trace": cand.get("node_trace"),
+                    "fact_verdicts": cand.get("fact_verdicts") or [],
                 },
                 "comparison": {
                     "winner": q.get("winner"),

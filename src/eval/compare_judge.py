@@ -107,7 +107,7 @@ def _build_comparison_prompt(
 {_format_context(context_a)}
 
 ### Prior per-answer judge composite score for A
-{score_a:.2f} (on a 1.0–5.0 scale)
+{score_a:.2f} (on a 1.0-5.0 scale)
 
 ## System B — {system_b}
 
@@ -118,7 +118,7 @@ def _build_comparison_prompt(
 {_format_context(context_b)}
 
 ### Prior per-answer judge composite score for B
-{score_b:.2f} (on a 1.0–5.0 scale)
+{score_b:.2f} (on a 1.0-5.0 scale)
 
 ## Your task
 
@@ -270,9 +270,7 @@ def _score_to_public(score: Any, include_context: bool) -> dict[str, Any]:
             "hedging": score.hedging,
         },
         "justifications": score.justifications or {},
-        "duration_ms": (
-            float(score.duration_ms) if score.duration_ms is not None else None
-        ),
+        "duration_ms": (float(score.duration_ms) if score.duration_ms is not None else None),
     }
     ctx: dict[str, Any] = score.context or {}
     # node_trace is useful for the HTML's execution-path viz; always include it
@@ -286,6 +284,16 @@ def _score_to_public(score: Any, include_context: bool) -> dict[str, Any]:
         out["node_trace"] = trace
     else:
         out["node_trace"] = None
+
+    # Required-facts grading (when the battery has authored required_facts and
+    # the judge produced per-fact verdicts). Always included — it's part of the
+    # presentation surface and small enough not to need gating on include_context.
+    if ctx.get("fact_verdicts"):
+        out["fact_verdicts"] = ctx["fact_verdicts"]
+    if ctx.get("required_facts"):
+        out["required_facts"] = ctx["required_facts"]
+    if ctx.get("ground_truth_stability"):
+        out["ground_truth_stability"] = ctx["ground_truth_stability"]
 
     if include_context:
         out["rag_context"] = ctx.get("rag_context")

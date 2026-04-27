@@ -194,6 +194,47 @@
   .qverdict-pill.tie { background: var(--panel-inset); color: var(--text-dim); }
   .qverdict-why { color: var(--text); line-height: 1.5; }
 
+  /* Required-facts grading (side-by-side per-fact verdicts) */
+  .facts-disclose { margin: 12px 0 0; }
+  .facts-disclose summary {
+    cursor: pointer; padding: 6px 10px; user-select: none;
+    background: var(--panel-inset); border: 1px solid var(--border);
+    border-radius: 4px; font-size: 13px; color: var(--text-dim);
+  }
+  .facts-disclose summary:hover { color: var(--text); }
+  .facts-disclose[open] summary { background: var(--panel-alt); }
+  .facts-summary-pill {
+    display: inline-block; margin-left: 8px; padding: 1px 6px;
+    border-radius: 3px; font-size: 11px; font-family: ui-monospace, monospace;
+  }
+  .facts-summary-pill.baseline { background: var(--raw-bg); color: var(--raw); }
+  .facts-summary-pill.candidate { background: var(--agent-bg); color: var(--agent); }
+  .facts-table {
+    width: 100%; border-collapse: collapse; margin-top: 8px;
+    font-size: 12px; background: var(--panel);
+  }
+  .facts-table thead th {
+    text-align: left; padding: 6px 10px;
+    background: var(--panel-alt); color: var(--text-dim);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--border);
+  }
+  .facts-table tbody td {
+    padding: 6px 10px; border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .facts-table .ft-id { font-family: ui-monospace, monospace; color: var(--text-dim); width: 32px; }
+  .facts-table .ft-text { color: var(--text); }
+  .facts-table .ft-verdict { width: 90px; white-space: nowrap; font-weight: 600; }
+  .verdict-yes     { color: #16a34a; }
+  .verdict-partial { color: #d97706; }
+  .verdict-no      { color: #dc2626; }
+  .verdict-none    { color: var(--text-muted); font-style: italic; }
+  .facts-table .ft-verdict .vglyph {
+    display: inline-block; width: 14px; text-align: center; margin-right: 4px;
+  }
+  .facts-table tbody tr:hover { background: var(--panel-inset); }
+
   /* Filters — dropdowns are quieter at this width than a row of buttons */
   .filters {
     display: flex; flex-wrap: wrap; gap: 18px;
@@ -907,6 +948,83 @@
     });
   }
 
+  // Flatten required_facts (mirror of src/eval/rubric.py:flatten_required_facts).
+  // String facts → one entry. {heading, items} dicts → one entry per item.
+  function flattenFacts(facts) {
+    if (!Array.isArray(facts)) return [];
+    const out = [];
+    let counter = 1;
+    for (const fact of facts) {
+      if (typeof fact === 'string') {
+        out.push({ id: 'F' + counter, text: fact });
+        counter++;
+      } else if (fact && typeof fact === 'object' && fact.heading && Array.isArray(fact.items)) {
+        const heading = String(fact.heading).replace(/:$/, '');
+        for (const item of fact.items) {
+          out.push({ id: 'F' + counter, text: heading + ': ' + String(item) });
+          counter++;
+        }
+      }
+    }
+    return out;
+  }
+
+  const VERDICT_GLYPH = { yes: '✓', partial: '~', no: '✗' };
+
+  function renderFactCell(verdict) {
+    if (!verdict) return `<span class="verdict-none">—</span>`;
+    const v = verdict.verdict || '';
+    const glyph = VERDICT_GLYPH[v] || '?';
+    const klass = 'verdict-' + (['yes','partial','no'].includes(v) ? v : 'none');
+    const titleAttr = verdict.justification ? ` title="${esc(verdict.justification)}"` : '';
+    return `<span class="${klass}"${titleAttr}><span class="vglyph">${glyph}</span>${esc(v)}</span>`;
+  }
+
+  function summarizeVerdicts(verdicts) {
+    const c = { yes: 0, partial: 0, no: 0 };
+    for (const v of (verdicts || [])) {
+      if (v && c[v.verdict] !== undefined) c[v.verdict]++;
+    }
+    return c;
+  }
+
+  function renderFactVerdicts(entry) {
+    if (!entry.required_facts || !entry.required_facts.length) return '';
+    const flat = flattenFacts(entry.required_facts);
+    if (!flat.length) return '';
+    const baseByFid = Object.fromEntries((entry.raw_rag.fact_verdicts || []).map(v => [v.id, v]));
+    const candByFid = Object.fromEntries((entry.agent_full.fact_verdicts || []).map(v => [v.id, v]));
+    const baseSum = summarizeVerdicts(entry.raw_rag.fact_verdicts);
+    const candSum = summarizeVerdicts(entry.agent_full.fact_verdicts);
+    const fmt = (s) => `${s.yes}✓ ${s.partial}~ ${s.no}✗`;
+    const rows = flat.map(f => `
+      <tr>
+        <td class="ft-id">${esc(f.id)}</td>
+        <td class="ft-text">${esc(f.text)}</td>
+        <td class="ft-verdict">${renderFactCell(baseByFid[f.id])}</td>
+        <td class="ft-verdict">${renderFactCell(candByFid[f.id])}</td>
+      </tr>`).join('');
+    return `
+      <details class="facts-disclose">
+        <summary>
+          Required facts (${flat.length})
+          <span class="facts-summary-pill baseline">${esc(SYS.A.label)}: ${fmt(baseSum)}</span>
+          <span class="facts-summary-pill candidate">${esc(SYS.B.label)}: ${fmt(candSum)}</span>
+        </summary>
+        <table class="facts-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Required fact</th>
+              <th>${esc(SYS.A.label)}</th>
+              <th>${esc(SYS.B.label)}</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </details>`;
+  }
+
   function renderQuestions() {
     const el = document.getElementById('questions');
     let rows = activeF === 'all' ? all.slice() : all.filter(e => e.battery === activeF);
@@ -990,6 +1108,7 @@
                 <div class="qtext">${esc(a.answer) || '<em>(no answer)</em>'}</div>
               </div>
             </div>
+            ${renderFactVerdicts(e)}
             ${judgeDisclosure}
           </div>
         </div>`;

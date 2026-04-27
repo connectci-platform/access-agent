@@ -103,6 +103,7 @@ async def run_eval(  # noqa: PLR0915
             rag_context=result.rag_context,
             tool_results=result.tool_results,
             node_trace=result.node_trace,
+            required_facts=q.metadata.get("required_facts"),
         )
 
         if judge_result is None:
@@ -131,6 +132,9 @@ async def run_eval(  # noqa: PLR0915
                 "rag_context": result.rag_context,
                 "tool_results": result.tool_results,
                 "node_trace": result.node_trace,
+                "required_facts": q.metadata.get("required_facts"),
+                "fact_verdicts": judge_result.fact_verdicts,
+                "ground_truth_stability": q.metadata.get("ground_truth_stability"),
             },
             context_completeness="full" if result.rag_context or result.tool_results else "partial",
             correctness=judge_result.scores["correctness"],
