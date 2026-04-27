@@ -173,9 +173,20 @@
   expected_tool: describe_realms
   ground_truth_stability: stable
   required_facts:
-  - 'XDMoD exposes usage and performance data organized into realms: Jobs, SUPREMM, Cloud, Storage, and ResourceSpecifications.'
-  - |-
-    Each realm covers a distinct domain: Jobs = HPC job accounting (CPU hours, job/wall hours, allocations); SUPREMM = detailed job performance including GPU metrics; Cloud = cloud resource usage; Storage = storage usage; ResourceSpecifications = configured resource capacity.
+  - heading: 'XDMoD exposes usage and performance data organized into realms:'
+    items:
+    - Jobs
+    - SUPREMM
+    - Cloud
+    - Storage
+    - ResourceSpecifications
+  - heading: 'Each realm covers a distinct domain:'
+    items:
+    - 'Jobs: HPC job accounting (CPU hours, job/wall hours, allocations)'
+    - 'SUPREMM: detailed job performance including GPU metrics'
+    - 'Cloud: cloud resource usage'
+    - 'Storage: storage usage'
+    - 'ResourceSpecifications: configured resource capacity'
   - Answer points to the ACCESS XDMoD portal at https://xdmod.access-ci.org/.
   sources:
   - 'tool: describe_realms at localhost:3008 (currently returns HTTP 500 — see authoring_notes)'
@@ -217,9 +228,16 @@
   ground_truth_stability: stable
   required_facts:
   - Answer is produced from documentation without calling any MCP tool.
-  - |-
-    Explore: 400,000 ACCESS Credits; entry-level use cases (evaluation, grad-student projects, training, benchmarking); lightweight eligibility-based review.
-  - 'Accelerate: 3,000,000 ACCESS Credits; experienced users with mid-scale needs; up to 3-page proposal with panel merit review.'
+  - heading: 'Explore allocation properties:'
+    items:
+    - 400,000 ACCESS Credits
+    - Entry-level use cases (evaluation, grad-student projects, training, benchmarking)
+    - Lightweight eligibility-based review
+  - heading: 'Accelerate allocation properties:'
+    items:
+    - 3,000,000 ACCESS Credits
+    - Experienced users with mid-scale needs
+    - Up to 3-page proposal with panel merit review
   - Both allow anytime requests and share the same duration rule (supporting-grant duration or 12 months, whichever is greater).
   sources:
   - 'doc: https://allocations.access-ci.org/project-types'
@@ -259,13 +277,28 @@
   ground_truth_stability: stable
   required_facts:
   - Answer is produced from documentation without calling any MCP tool.
-  - |-
-    Eligible PIs: faculty, postdocs, research staff, and graduate students at U.S.-based academic institutions (grad students need an advisor letter); K-12 teachers at accredited U.S. institutions for classroom allocations.
-  - |-
-    Eligible institutions: U.S.-based academic institutions, non-profit non-academic organizations (museums, libraries, research labs), FFRDCs, U.S. military service academies, and U.S. commercial/private-sector organizations.
-  - |-
-    NOT eligible to lead a project: undergraduate students, K-12 students, retired/self-employed/unaffiliated individuals. PIs must use an institutional email (per July 2025 NSF Notice 149; gmail/yahoo prohibited).
-  - Any field of study is eligible; any funding source is acceptable; no funding is required (unfunded PIs limited to one allocation).
+  - heading: 'Eligible PIs:'
+    items:
+    - Faculty at U.S.-based academic institutions
+    - Postdocs at U.S.-based academic institutions
+    - Research staff at U.S.-based academic institutions
+    - Graduate students at U.S.-based academic institutions (need an advisor letter)
+    - K-12 teachers at accredited U.S. institutions (for classroom allocations)
+  - heading: 'Eligible institutions:'
+    items:
+    - U.S.-based academic institutions
+    - Non-profit non-academic organizations (museums, libraries, research labs)
+    - FFRDCs
+    - U.S. military service academies
+    - U.S. commercial/private-sector organizations
+  - heading: 'NOT eligible to lead a project:'
+    items:
+    - Undergraduate students
+    - K-12 students
+    - Retired, self-employed, or unaffiliated individuals
+  - PIs must use an institutional email (per July 2025 NSF Notice 149; gmail/yahoo prohibited).
+  - Any field of study is eligible.
+  - Any funding source is acceptable; no funding is required (unfunded PIs limited to one allocation).
   sources:
   - 'doc: https://allocations.access-ci.org/allocations-policy'
   - 'doc: https://allocations.access-ci.org/'

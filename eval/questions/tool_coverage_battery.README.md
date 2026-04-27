@@ -25,6 +25,10 @@ existing `phase3_smoke_battery.json` wasn't designed for that question.
   ground_truth_stability: stable     # or time_bound — see below
   required_facts:
     - plain-English claim the answer must make (atomic, durable)
+    - heading: For enumerative claims, use heading + items
+      items:
+        - sub-claim 1
+        - sub-claim 2
   sources:
     - "tool: <name>(<args>) at <host>"
     - "doc: <url>"
@@ -39,6 +43,12 @@ built, the judge prompt will be something like: "for each fact, rate
 whether the candidate answer supports it (yes / partial / no),
 regardless of exact wording." Don't write facts as regex strings —
 write them as claims a human reviewer would check.
+
+A fact can be either a plain string (single atomic claim) or a
+`{heading, items}` dict (one heading claim with sub-items the answer
+should enumerate). Use the dict form when the claim is genuinely
+enumerative — "must mention each of these" rather than "for example,
+any of these." The judge prompt template renders both shapes uniformly.
 
 ### `ground_truth_stability`
 
