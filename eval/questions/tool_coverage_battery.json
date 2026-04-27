@@ -5,16 +5,17 @@
     "capability_area": "system_status",
     "battery": "tool_coverage",
     "expected_tool": "get_infrastructure_news",
+    "ground_truth_stability": "time_bound",
     "required_facts": [
-      "Answer reflects current output of get_infrastructure_news(time='current'). At authoring time (2026-04-24) the tool returned total_outages=0, empty affected_resources, and no outages in any severity tier — i.e. no resources are currently down or in maintenance.",
-      "Answer does not fabricate specific outages, affected resources, or maintenance windows that aren't present in the tool output.",
-      "Answer cites live system-status / infrastructure-news data rather than relying on static documentation for current operational state."
+      "No ACCESS resources are down or in maintenance per the live status feed.",
+      "Answer adds no outages, resources, or maintenance windows beyond the live status feed.",
+      "Answer cites the live status feed as its source, not static docs."
     ],
     "sources": [
       "tool: get_infrastructure_news(time='current') at localhost:3003",
       "doc: https://operations.access-ci.org/"
     ],
-    "authoring_notes": "Outage state is volatile — re-run the tool at judge time. At authoring time the state was 'no outages'; at other times the agent should faithfully report whatever the tool returns."
+    "authoring_notes": "time_bound — F1 is regenerated from get_infrastructure_news(time='current') before each eval run. F1 text varies with current state: zero outages → 'No ACCESS resources are currently down…'; outages present → 'Currently affected: <list from tool>'. Snapshot at 2026-04-24: total_outages=0, empty affected_resources, no severity-tier outages."
   },
   {
     "id": "tc-software-01",
@@ -22,17 +23,16 @@
     "capability_area": "software_discovery",
     "battery": "tool_coverage",
     "expected_tool": "search_software",
+    "ground_truth_stability": "time_bound",
     "required_facts": [
-      "PyTorch is available on Anvil (resource_ids anvil.purdue.access-ci.org, anvil-gpu.purdue.access-ci.org, anvil-ai.purdue.access-ci.org) as the 'pytorch' module, with 18 versions including 1.10.0 and NGC container builds such as 21.09-py3 and 21.06-py3.",
-      "PyTorch is available on Delta (delta-gpu.ncsa.access-ci.org, delta-cpu.ncsa.access-ci.org) via the 'pytorch-conda' package at version 2.8.",
-      "PyTorch is available on DeltaAI (deltaai.ncsa.access-ci.org) via the 'miniforge3_pytorch' package at versions 2.7.0 and 2.5.0.",
-      "The set of resources the tool surfaces for PyTorch is {Anvil, Delta, DeltaAI}. Answers that name additional resources (Expanse, Bridges-2, Stampede3, Jetstream2, etc.) without tool-grounded support are fabricated."
+      "Answer names the ACCESS resources where PyTorch is currently installed per search_software (Anvil, Delta, DeltaAI at last refresh).",
+      "Answer does not name resources that the tool did not return (e.g., Expanse, Bridges-2, Stampede3, Jetstream2)."
     ],
     "sources": [
       "tool: search_software(query='pytorch') at localhost:3004",
       "doc: https://support.access-ci.org/software"
     ],
-    "authoring_notes": "The software-discovery tool's fuzzy search returned three distinct package names (pytorch, pytorch-conda, miniforge3_pytorch) rather than a unified PyTorch entry. The resources NOT returned (Expanse, Bridges-2, etc.) likely support PyTorch via user-installed conda/containers but don't expose it as an indexed site module — a common false-positive for a plausibility-only answer."
+    "authoring_notes": "time_bound — F1's resource list is regenerated from search_software(query='pytorch') before each eval run. Snapshot at 2026-04-24: tool's fuzzy search returned three package names — 'pytorch' on Anvil (anvil.purdue.access-ci.org, anvil-gpu, anvil-ai; 18 versions including 1.10.0, NGC builds 21.09-py3 / 21.06-py3); 'pytorch-conda' on Delta (delta-gpu.ncsa, delta-cpu.ncsa; v2.8); 'miniforge3_pytorch' on DeltaAI (deltaai.ncsa; v2.7.0, v2.5.0). Resources not returned (Expanse, Bridges-2, etc.) likely support PyTorch via user-installed conda/containers but don't expose it as an indexed site module — a common false-positive for plausibility-only answers."
   },
   {
     "id": "tc-software-02",
@@ -40,18 +40,18 @@
     "capability_area": "software_discovery",
     "battery": "tool_coverage",
     "expected_tool": "get_software_details",
+    "ground_truth_stability": "time_bound",
     "required_facts": [
-      "On Delta (delta-cpu/delta-gpu.ncsa.access-ci.org) CUDA is available at versions 12.8 and 11.8.",
-      "The default cudatoolkit module on Delta RH9 is cudatoolkit/25.3_12.8 (wraps CUDA 12.8).",
-      "Users load CUDA via 'module load cuda/<version>' (or 'module spider cuda' to list versions).",
-      "Answer distinguishes Delta (CUDA 12.8, 11.8) from DeltaAI (a separate resource with CUDA 13.1.1, 12.9, 11.8) — conflating them is a precision error."
+      "Answer states the current CUDA versions on Delta per get_software_details (12.8 and 11.8 at last refresh).",
+      "Answer distinguishes Delta from DeltaAI (a separate resource with different CUDA versions).",
+      "Answer mentions loading CUDA via 'module load cuda/<version>' (or 'module spider cuda')."
     ],
     "sources": [
       "tool: get_software_details(software_name='cuda', resource='delta') at localhost:3004",
       "doc: https://docs.ncsa.illinois.edu/systems/delta/en/latest/user_guide/software.html",
       "doc: https://docs.ncsa.illinois.edu/systems/delta/en/latest/user_guide/prog_env.html"
     ],
-    "authoring_notes": "The tool's correct argument is `software_name` (not `name` — that returns HTTP 500). Delta and DeltaAI are distinct; tool treats them as different resources. Question specifies 'Delta'."
+    "authoring_notes": "time_bound — F1's version list is regenerated from get_software_details before each eval run. Snapshot at 2026-04-24: Delta (delta-cpu/delta-gpu.ncsa.access-ci.org) had CUDA 12.8 and 11.8; default module on Delta RH9 was cudatoolkit/25.3_12.8 (wraps CUDA 12.8); DeltaAI had CUDA 13.1.1, 12.9, 11.8. Tool's correct argument is `software_name` (not `name` — that returns HTTP 500)."
   },
   {
     "id": "tc-allocations-01",
@@ -59,17 +59,17 @@
     "capability_area": "allocations",
     "battery": "tool_coverage",
     "expected_tool": "get_allocation_statistics",
+    "ground_truth_stability": "time_bound",
     "required_facts": [
-      "Answer reflects current output of get_allocation_statistics() (and the underlying /current-projects.json API). At authoring time (2026-04-24) the API reported 300 pages × 20 per page with 13 on the last page — roughly 5,993 active allocation projects.",
-      "Reasonable answers give either a specific count from the live API (~5,993 at authoring time) or an order-of-magnitude range (~5,000–6,500) with an acknowledgement that the count fluctuates as allocations begin and expire.",
-      "Answer does not confuse the tool's sample window (default 100 projects) with the total count. Reporting '100 active projects' is wrong — that's sample size."
+      "Answer reports ~5,993 active ACCESS allocation projects per the live allocations API.",
+      "Answer does not report the tool's sample-window size (100) as the total count."
     ],
     "sources": [
       "tool: get_allocation_statistics at localhost:3006 (pages_to_analyze=5 and =20)",
       "tool: search_projects at localhost:3006 (verified {total, items} shape)",
       "upstream API: https://allocations.access-ci.org/current-projects.json (pages=300, 20 per page; last page has 13)"
     ],
-    "authoring_notes": "get_allocation_statistics samples pages — it does NOT print a total count directly. A well-behaved agent should multiply pages × per-page from the underlying API, or cite the sample breakdown (Explore 208, Discover 161, Accelerate 19, Maximize 11, Discretionary 1 at 400-sample scope) with clear framing."
+    "authoring_notes": "time_bound — F1's count is regenerated from /current-projects.json (pages × per-page) before each eval run. get_allocation_statistics samples pages and does NOT print a total directly. Snapshot at 2026-04-24: 300 pages × 20 + 13 = ~5,993 projects; sample breakdown at 400-sample scope was Explore 208, Discover 161, Accelerate 19, Maximize 11, Discretionary 1."
   },
   {
     "id": "tc-allocations-02",
@@ -77,15 +77,15 @@
     "capability_area": "allocations",
     "battery": "tool_coverage",
     "expected_tool": "search_projects",
+    "ground_truth_stability": "time_bound",
     "required_facts": [
-      "Answer reflects current output of search_projects(query='climate modeling', resource_name='Delta'). At authoring time the tool returned 20 items ranked by 'climate modeling' relevance, but only 4 were actually allocated on a Delta-family resource (all on NCSA DeltaAI): CIS260772, CIS260765, CIS260746, CIS260667.",
-      "Answer is truthful about scope: none of the 4 Delta-family results are actually climate-modeling projects (they are LLMs, world modeling, video generation). A strict search with query='climate' returns 5 projects, zero on any Delta resource.",
-      "Answer either (a) lists the returned titles faithfully with their actual resources and flags the topic mismatch, or (b) clearly states that zero current projects match both 'climate modeling' AND 'Delta' in a strong sense. Answers that fabricate Delta climate-modeling projects fail."
+      "No current ACCESS projects on Delta are about climate modeling per search_projects.",
+      "Answer does not present loose-match results as actual climate-modeling Delta projects."
     ],
     "sources": [
       "tool: search_projects(query='climate modeling', resource_name='Delta') at localhost:3006"
     ],
-    "authoring_notes": "The allocations MCP's search_projects uses loose matching — resource_name does not strictly filter; it biases ranking. Of 20 items returned, only 4 actually run on a Delta-family resource (all DeltaAI), and none are topically about climate modeling. Zero-result handling is the correctness criterion for this question. Project list is volatile."
+    "authoring_notes": "time_bound — F1 is regenerated by running search_projects(query='climate modeling', resource_name='Delta') and search_projects(query='climate', resource_name='Delta') before each eval run; F1 reads 'no projects' if neither query returns a true Delta-family climate-modeling match. The tool uses loose matching — resource_name biases ranking but does not strictly filter. Snapshot at 2026-04-24: tool returned 20 items, only 4 were actually allocated on a Delta-family resource (all DeltaAI: CIS260772, CIS260765, CIS260746, CIS260667), and none of those 4 are topically about climate modeling (LLMs, world modeling, video generation); strict 'climate' search returned 5 projects, zero on any Delta resource."
   },
   {
     "id": "tc-nsf-01",
@@ -93,15 +93,15 @@
     "capability_area": "nsf_awards",
     "battery": "tool_coverage",
     "expected_tool": "search_nsf_awards",
+    "ground_truth_stability": "time_bound",
     "required_facts": [
-      "Answer reflects current output of search_nsf_awards(query='cyberinfrastructure'). At authoring time (2026-04-24) the tool returned 10 awards including 'Collaborative Research: Elements: CHAI: Cyberinfrastructure for Hypergraph-based Analysis and Innovation' (award 2609071, University of North Texas), 'Collaborative Research: Conference: CI PAOS' (award 2554298, University of Oklahoma), and 'Conference: Research Computing at Smaller Institutions (RCSI) 2026' (award 2620452, Swarthmore College).",
-      "Answer cites at least one specific NSF award by title and/or award number from the tool result (any of: CHAI 2609071, CI PAOS 2554298/2554299, RCSI 2026 2620452, AnalogEDA-Hub 2514071, DiffAI 2513797/2513798, FAMLIES 2513927/2513928).",
-      "Answer identifies these as NSF awards retrieved from a live source; institution names match the tool output when mentioned."
+      "Answer cites at least one specific NSF award by title and/or award number from the live search_nsf_awards result.",
+      "Institution names mentioned in the answer match the tool output."
     ],
     "sources": [
       "tool: search_nsf_awards(query='cyberinfrastructure') at localhost:3007"
     ],
-    "authoring_notes": "Volatile — NSF index refreshes as new awards are posted. Fact #2 is intentionally permissive (any one award from the current list) to accommodate drift."
+    "authoring_notes": "time_bound — NSF index refreshes as awards post; F1 is graded against the live tool output at judge time, not a snapshot. Snapshot at 2026-04-24: tool returned 10 awards including CHAI (2609071, UNT), CI PAOS (2554298, U Oklahoma), RCSI 2026 (2620452, Swarthmore), AnalogEDA-Hub (2514071), DiffAI (2513797/2513798), FAMLIES (2513927/2513928)."
   },
   {
     "id": "tc-events-01",
@@ -109,16 +109,17 @@
     "capability_area": "events",
     "battery": "tool_coverage",
     "expected_tool": "search_events",
+    "ground_truth_stability": "time_bound",
     "required_facts": [
-      "Answer reflects current output of search_events(date='upcoming') filtered to events within 14 days of today. At authoring time (2026-04-24) the tool returned 15 upcoming events in that window, including Responsible AI & Governance 2.0 (2026-04-24), ACES: Incorporating Snakemake in HPC Workflows (2026-04-28), COMPLECS: Data Storage and File Systems (2026-04-30), Globus Office Hours (2026-04-30), and Open OnDemand Tips and Tricks Call (2026-05-07).",
-      "Each listed event is named with its date (Jetstream2 Office Hours on 2026-04-28/2026-05-05, Anvil Support Hour on 2026-04-30/2026-05-07, Sage Office Hours on multiple dates at authoring time).",
-      "Each event is accompanied by a registration or info URL on support.access-ci.org/events/ (e.g., https://support.access-ci.org/events/9053, https://support.access-ci.org/events/9023).",
-      "Response cites the events tool / support.access-ci.org as the source; event data is highly volatile and changes daily."
+      "Answer lists upcoming ACCESS events from the live search_events output, filtered to within 14 days.",
+      "Each listed event is named with its date.",
+      "Each listed event includes a registration or info URL on support.access-ci.org/events/.",
+      "Answer cites the events tool / support.access-ci.org as the source."
     ],
     "sources": [
       "tool: search_events(date='upcoming', limit=20) at localhost:3010"
     ],
-    "authoring_notes": "Highly volatile — re-run the tool at judge time rather than holding this list fixed. Facts are framed around 'reflects current tool output' so any reasonable subset of real upcoming events in the 14-day window is acceptable."
+    "authoring_notes": "time_bound (highly volatile, re-runs daily) — facts grade behavior against fresh tool output at judge time. Snapshot at 2026-04-24: tool returned 15 events in the 14-day window, including Responsible AI & Governance 2.0 (2026-04-24), ACES: Incorporating Snakemake in HPC Workflows (2026-04-28), COMPLECS: Data Storage and File Systems (2026-04-30), Globus Office Hours (2026-04-30), Open OnDemand Tips and Tricks Call (2026-05-07), Jetstream2 Office Hours (2026-04-28/2026-05-05), Anvil Support Hour (2026-04-30/2026-05-07), Sage Office Hours (multiple). Example URLs: https://support.access-ci.org/events/9053, https://support.access-ci.org/events/9023."
   },
   {
     "id": "tc-affinity-01",
@@ -126,16 +127,16 @@
     "capability_area": "affinity_groups",
     "battery": "tool_coverage",
     "expected_tool": "search_affinity_groups",
+    "ground_truth_stability": "time_bound",
     "required_facts": [
-      "Answer names at least two real, GPU-equipped ACCESS RP affinity groups by their actual names or IDs (e.g., DELTA / delta.ncsa.access-ci.org, DeltaAI / deltaai.ncsa.access-ci.org, Anvil / anvil.purdue.access-ci.org, ACES / aces.tamu.access-ci.org, FASTER / faster.tamu.access-ci.org, Expanse / expanse.sdsc.access-ci.org, Rockfish, Neocortex, Voyager) — NOT generic category labels like 'machine-learning', 'ai', 'deep-learning', or 'gpu'.",
-      "Answer directs the user to the ACCESS affinity groups browse page at https://support.access-ci.org/affinity-groups (or a specific affinity-group URL under that domain).",
-      "Answer reflects that affinity groups are tied to specific ACCESS resources/communities rather than abstract topic buckets."
+      "Answer names at least two real GPU-equipped ACCESS affinity groups by ID (e.g., DELTA, DeltaAI, Anvil, ACES, FASTER, Expanse), not generic category labels.",
+      "Answer points to https://support.access-ci.org/affinity-groups or a specific group URL under that domain."
     ],
     "sources": [
       "tool: search_affinity_groups(query='GPU', limit=20) at localhost:3011 — returned 57 items",
       "doc: https://support.access-ci.org/affinity-groups (confirmed live 2026-04-24)"
     ],
-    "authoring_notes": "Prior parity testing flagged both agents producing generic category answers ('machine-learning', 'ai', 'deep-learning') that are NOT real group IDs. Required_facts are written so generic-category answers fail the real-names check. Strongest GPU-specific matches: DELTA (A100/A40/H200/MI100), DeltaAI, Anvil (A100/H100), ACES, FASTER, Expanse (V100), Rockfish."
+    "authoring_notes": "time_bound (slow drift) — refresh F1's example group IDs from search_affinity_groups(query='GPU') periodically. Snapshot at 2026-04-24: tool returned 57 items; strongest GPU-specific matches were DELTA (A100/A40/H200/MI100), DeltaAI, Anvil (A100/H100), ACES, FASTER, Expanse (V100), Rockfish, Neocortex, Voyager. Prior parity testing flagged both agents producing generic category answers ('machine-learning', 'ai', 'deep-learning') that are NOT real group IDs — the 'not generic category labels' clause in F1 catches this."
   },
   {
     "id": "tc-announce-01",
@@ -143,14 +144,15 @@
     "capability_area": "announcements",
     "battery": "tool_coverage",
     "expected_tool": "search_announcements",
+    "ground_truth_stability": "time_bound",
     "required_facts": [
-      "Answer reflects current output of search_announcements(query='Expanse'). At authoring time (2026-04-24) the tool returned 0 matches.",
-      "Correct behavior is to state that no ACCESS announcements mentioning Expanse were found — rather than fabricating titles. May optionally suggest related queries (e.g., SDSC) or direct the user to support.access-ci.org/announcements."
+      "Answer states no current ACCESS announcements mention Expanse per search_announcements.",
+      "Answer does not fabricate announcement titles."
     ],
     "sources": [
       "tool: search_announcements(query='Expanse', limit=10) at localhost:3009"
     ],
-    "authoring_notes": "Volatile. Zero-result handling is the correctness criterion. Verified tool healthy via sibling queries: 'SDSC' returned 4, empty query returned 5 — so the Expanse-zero result is a genuine content gap, not a server failure."
+    "authoring_notes": "time_bound — zero-result handling is the correctness criterion; F1's 'no announcements' claim is regenerated against the live tool. Snapshot at 2026-04-24: tool returned 0 matches for 'Expanse'; sibling queries verified the tool was healthy ('SDSC' returned 4, empty query returned 5) — the Expanse-zero result is a genuine content gap, not a server failure."
   },
   {
     "id": "tc-xdmod-01",
@@ -158,10 +160,11 @@
     "capability_area": "xdmod",
     "battery": "tool_coverage",
     "expected_tool": "describe_realms",
+    "ground_truth_stability": "stable",
     "required_facts": [
       "XDMoD exposes usage and performance data organized into realms: Jobs, SUPREMM, Cloud, Storage, and ResourceSpecifications.",
-      "Jobs realm covers HPC job accounting (CPU hours, job counts, wall hours, allocations); SUPREMM covers detailed job performance metrics including GPU metrics; Cloud covers cloud resource usage; Storage covers storage usage; ResourceSpecifications describes configured resource capacity.",
-      "Users can explore these metrics interactively at the ACCESS XDMoD portal: https://xdmod.access-ci.org/"
+      "Each realm covers a distinct domain: Jobs = HPC job accounting (CPU hours, job/wall hours, allocations); SUPREMM = detailed job performance including GPU metrics; Cloud = cloud resource usage; Storage = storage usage; ResourceSpecifications = configured resource capacity.",
+      "Answer points to the ACCESS XDMoD portal at https://xdmod.access-ci.org/."
     ],
     "sources": [
       "tool: describe_realms at localhost:3008 (currently returns HTTP 500 — see authoring_notes)",
@@ -169,7 +172,7 @@
       "doc: https://xdmod.access-ci.org/user_manual/Introduction.html",
       "doc: https://support.access-ci.org/tools/xdmod"
     ],
-    "authoring_notes": "The describe_realms tool currently fails with HTTP 500 ('Object of type TextContent is not JSON serializable'). Same bug affects describe_fields. Realm names were recovered from the server's /tools listing (unaffected by the bug) where get_raw_data's inputSchema enumerates realms. File a ticket against the xdmod-data MCP to fix this serialization bug — it may affect the live agent too."
+    "authoring_notes": "stable — realm set changes rarely. describe_realms currently fails with HTTP 500 ('Object of type TextContent is not JSON serializable'); same bug affects describe_fields. Realm names were recovered from the server's /tools listing (unaffected by the bug) where get_raw_data's inputSchema enumerates realms. File a ticket against the xdmod-data MCP to fix this serialization bug — also affects the live agent."
   },
   {
     "id": "tc-rag-01",
@@ -177,11 +180,12 @@
     "capability_area": "expanse",
     "battery": "tool_coverage",
     "expected_tool": null,
+    "ground_truth_stability": "stable",
     "required_facts": [
       "Answer is produced from documentation without calling any MCP tool.",
-      "Covers generating an SSH key pair with ssh-keygen (RSA, ECDSA, or ed25519) and protecting the private key with a strong passphrase.",
-      "Covers registering the public key via the ACCESS registry at https://registry.access-ci.org/ ('SSH Key: Manage your SSH keys'), or alternatively appending it to ~/.ssh/authorized_keys on Expanse after a first password-based login.",
-      "Covers ACCESS two-factor authentication (TOTP) — enrolling an authenticator app (Google Authenticator, Duo Mobile, or LastPass Authenticator) for Expanse login. Login host is login.expanse.sdsc.edu."
+      "Generate an SSH key pair with ssh-keygen (RSA, ECDSA, or ed25519); protect the private key with a strong passphrase.",
+      "Register the public key via the ACCESS registry at https://registry.access-ci.org/, or append it to ~/.ssh/authorized_keys on Expanse after a first password-based login.",
+      "Enroll an authenticator app (Google Authenticator, Duo Mobile, or LastPass Authenticator) for Expanse's TOTP-based 2FA; login host is login.expanse.sdsc.edu."
     ],
     "sources": [
       "doc: https://www.sdsc.edu/systems/expanse/user_guide.html",
@@ -189,7 +193,7 @@
       "doc: https://operations.access-ci.org/identity/ssh-pubkey",
       "doc: https://registry.access-ci.org/"
     ],
-    "authoring_notes": "Expanse's 2FA is a TOTP/authenticator-app flow separate from the Duo flow used on some other RPs. Answer should cover ssh-keygen, registry upload (or authorized_keys append), 2FA enrollment, and login.expanse.sdsc.edu."
+    "authoring_notes": "stable. Expanse's 2FA is TOTP/authenticator-app, separate from the Duo flow used on some other RPs."
   },
   {
     "id": "tc-rag-02",
@@ -197,11 +201,12 @@
     "capability_area": "allocations",
     "battery": "tool_coverage",
     "expected_tool": null,
+    "ground_truth_stability": "stable",
     "required_facts": [
       "Answer is produced from documentation without calling any MCP tool.",
-      "Explore is an entry-level allocation: 400,000 ACCESS Credits; best for resource evaluation, grad-student projects, small classes, training events, benchmarking, code development/porting; anytime requests; lightweight review (eligibility + suitability of requested resources).",
-      "Accelerate is a mid-scale allocation: 3,000,000 ACCESS Credits; for experienced users with mid-scale resource needs, collaborative projects, multi-grant consolidation, preparing for Maximize; anytime requests; up to 3-page proposal with panel merit review.",
-      "Explore and Accelerate differ on credit amount (400K vs 3M), review rigor (eligibility confirmation vs panel merit review), and proposal length (overview vs 3-page proposal). Both share the same duration rule (supporting-grant duration or 12 months, whichever is greater) and both allow anytime requests."
+      "Explore: 400,000 ACCESS Credits; entry-level use cases (evaluation, grad-student projects, training, benchmarking); lightweight eligibility-based review.",
+      "Accelerate: 3,000,000 ACCESS Credits; experienced users with mid-scale needs; up to 3-page proposal with panel merit review.",
+      "Both allow anytime requests and share the same duration rule (supporting-grant duration or 12 months, whichever is greater)."
     ],
     "sources": [
       "doc: https://allocations.access-ci.org/project-types",
@@ -215,12 +220,13 @@
     "capability_area": "file_transfer",
     "battery": "tool_coverage",
     "expected_tool": null,
+    "ground_truth_stability": "stable",
     "required_facts": [
       "Answer is produced from documentation without calling any MCP tool.",
-      "User needs a Globus account; they can sign in to Globus using their ACCESS-CI identity by selecting 'ACCESS CI (formerly XSEDE)' as the identity provider on the Globus login page.",
-      "Each ACCESS-allocated resource exposes its own Globus collection/endpoint (e.g., 'NCSA Delta', 'PSC Bridges-2', Purdue 'Anvil'); users locate them via the Collection Search box in the Globus File Manager.",
-      "Transfers are initiated through the Globus web application at https://app.globus.org — open two collections side-by-side in the File Manager, select files, click Start.",
-      "For transfers to/from a laptop or non-endpoint machine, users install Globus Connect Personal to turn that system into a Globus endpoint."
+      "User signs in to Globus using their ACCESS-CI identity by selecting 'ACCESS CI (formerly XSEDE)' as the identity provider.",
+      "Each ACCESS-allocated resource exposes its own Globus collection/endpoint (e.g., 'NCSA Delta', 'PSC Bridges-2', Purdue 'Anvil'); users locate them via the Collection Search box.",
+      "Transfers are initiated at https://app.globus.org — open two collections side-by-side in the File Manager, select files, click Start.",
+      "For laptops or non-endpoint machines, users install Globus Connect Personal to make that system a Globus endpoint."
     ],
     "sources": [
       "doc: https://access-ci.atlassian.net/wiki/spaces/ACCESSdocumentation/pages/552861811/Use+Globus+to+upload+download+or+move+files+on+ACCESS",
@@ -228,7 +234,7 @@
       "doc: https://support.access-ci.org/knowledge-base/resources/3842",
       "doc: https://docs.globus.org/guides/tutorials/manage-files/transfer-files/"
     ],
-    "authoring_notes": "Both 'endpoint' and 'collection' terminology are acceptable (Globus uses both; newer docs prefer 'collection'). Naming one or two specific ACCESS collections is sufficient — the answer doesn't need to enumerate all of them."
+    "authoring_notes": "stable. Both 'endpoint' and 'collection' terminology are acceptable (Globus uses both; newer docs prefer 'collection'). Naming one or two specific ACCESS collections is sufficient."
   },
   {
     "id": "tc-rag-04",
@@ -236,13 +242,13 @@
     "capability_area": "allocations",
     "battery": "tool_coverage",
     "expected_tool": null,
+    "ground_truth_stability": "stable",
     "required_facts": [
       "Answer is produced from documentation without calling any MCP tool.",
-      "To lead (be PI of) an allocated project, one must be a U.S.-based researcher or educator at the graduate-student level or higher.",
-      "Eligible PIs include faculty, postdocs, research staff, and graduate students at U.S.-based academic institutions (graduate students need an advisor letter of collaboration). K-12 teachers at accredited U.S. institutions are eligible for classroom allocations.",
-      "Eligible institutions include U.S.-based academic institutions, U.S.-based non-profit non-academic organizations (museums, libraries, research labs), FFRDCs, U.S. military service academies, and U.S. commercial/private-sector organizations.",
-      "NOT eligible to lead a project: undergraduate students, K-12 students, retired/self-employed/unaffiliated individuals. PIs must use an institutional email matching their affiliation (per July 2025 NSF Important Notice No. 149; gmail.com, yahoo.com, etc. are prohibited).",
-      "Work from any field of study is eligible; funding from any source is acceptable, and no funding is required (unfunded PIs limited to one allocation)."
+      "Eligible PIs: faculty, postdocs, research staff, and graduate students at U.S.-based academic institutions (grad students need an advisor letter); K-12 teachers at accredited U.S. institutions for classroom allocations.",
+      "Eligible institutions: U.S.-based academic institutions, non-profit non-academic organizations (museums, libraries, research labs), FFRDCs, U.S. military service academies, and U.S. commercial/private-sector organizations.",
+      "NOT eligible to lead a project: undergraduate students, K-12 students, retired/self-employed/unaffiliated individuals. PIs must use an institutional email (per July 2025 NSF Notice 149; gmail/yahoo prohibited).",
+      "Any field of study is eligible; any funding source is acceptable; no funding is required (unfunded PIs limited to one allocation)."
     ],
     "sources": [
       "doc: https://allocations.access-ci.org/allocations-policy",
