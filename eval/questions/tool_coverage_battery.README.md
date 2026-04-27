@@ -28,8 +28,10 @@ existing `phase3_smoke_battery.json` wasn't designed for that question.
   sources:
     - "tool: <name>(<args>) at <host>"
     - "doc: <url>"
-  authoring_notes: |
-    Snapshot data, regen logic, reviewer hints. NOT graded by the judge.
+  authoring_notes:
+    - Bullet 1: regen logic or volatility note.
+    - Bullet 2: snapshot data ("Snapshot at YYYY-MM-DD: …").
+    - Bullet 3: edge cases, tool quirks, reviewer hints. NOT graded.
 ```
 
 `required_facts` are **semantic**, not verbatim. When the scorer is
