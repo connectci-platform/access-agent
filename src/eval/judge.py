@@ -4,6 +4,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from openai import AsyncOpenAI
 
@@ -17,6 +18,7 @@ class JudgeResult:
     scores: dict[str, int]
     justifications: dict[str, str]
     composite: float
+    fact_verdicts: list[dict[str, Any]] | None = None
 
 
 def parse_judge_response(raw: str) -> JudgeResult | None:
@@ -50,10 +52,31 @@ def parse_judge_response(raw: str) -> JudgeResult | None:
         scores[name] = score
         justifications[name] = entry.get("justification", "")
 
+    fact_verdicts: list[dict[str, Any]] | None = None
+    raw_facts = data.get("required_facts")
+    if isinstance(raw_facts, list):
+        fact_verdicts = []
+        for entry in raw_facts:
+            if not isinstance(entry, dict):
+                continue
+            verdict = entry.get("verdict")
+            fid = entry.get("id")
+            if verdict not in ("yes", "partial", "no") or not isinstance(fid, str):
+                logger.warning(f"Judge fact entry malformed: {entry}")
+                continue
+            fact_verdicts.append(
+                {
+                    "id": fid,
+                    "verdict": verdict,
+                    "justification": entry.get("justification", ""),
+                }
+            )
+
     return JudgeResult(
         scores=scores,
         justifications=justifications,
         composite=compute_composite(scores),
+        fact_verdicts=fact_verdicts,
     )
 
 
@@ -79,6 +102,7 @@ class Judge:
         rag_context: str | None = None,
         tool_results: str | None = None,
         node_trace: str | None = None,
+        required_facts: list[str | dict[str, Any]] | None = None,
     ) -> JudgeResult | None:
         prompt = build_judge_prompt(
             query=query,
@@ -86,7 +110,15 @@ class Judge:
             rag_context=rag_context,
             tool_results=tool_results,
             node_trace=node_trace,
+            required_facts=required_facts,
         )
+
+        # Base 500 tokens for the 5-dimension scoring; ~80 tokens per fact verdict
+        # (id + verdict + brief justification) when required_facts present.
+        from .rubric import flatten_required_facts
+
+        n_facts = len(flatten_required_facts(required_facts)) if required_facts else 0
+        max_tokens = 500 + 80 * n_facts
 
         for attempt in range(2):
             try:
@@ -94,7 +126,7 @@ class Judge:
                     model=self.model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.1,
-                    max_tokens=500,
+                    max_tokens=max_tokens,
                 )
                 raw = response.choices[0].message.content or ""
                 result = parse_judge_response(raw)

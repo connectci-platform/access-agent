@@ -5,6 +5,7 @@ The same rubric is used by both the LLM judge and human reviewers in Argilla.
 """
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -68,12 +69,36 @@ def compute_composite(
     return sum(scores[name] * w[name] for name in DIMENSION_NAMES)
 
 
+def flatten_required_facts(
+    facts: list[str | dict[str, Any]],
+) -> list[tuple[str, str]]:
+    """Flatten required_facts into [(id, text), ...] for prompt rendering.
+
+    Plain string facts stay as-is. {heading, items} dicts produce one entry
+    per item, with the heading prefixed for context. IDs are F1, F2, ...
+    in document order.
+    """
+    out: list[tuple[str, str]] = []
+    counter = 1
+    for fact in facts:
+        if isinstance(fact, str):
+            out.append((f"F{counter}", fact))
+            counter += 1
+        elif isinstance(fact, dict) and "heading" in fact and "items" in fact:
+            heading = str(fact["heading"]).rstrip(":")
+            for item in fact["items"]:
+                out.append((f"F{counter}", f"{heading}: {item}"))
+                counter += 1
+    return out
+
+
 def build_judge_prompt(
     query: str,
     answer: str,
     rag_context: str | None = None,
     tool_results: str | None = None,
     node_trace: str | None = None,
+    required_facts: list[str | dict[str, Any]] | None = None,
 ) -> str:
     """Build the LLM judge prompt with the rubric and context."""
     rubric_text = "\n".join(
@@ -89,6 +114,31 @@ def build_judge_prompt(
         context_sections.append(f"## Agent Decision Trace\n{node_trace}")
 
     context_text = "\n\n".join(context_sections) if context_sections else "No context available."
+
+    facts_section = ""
+    facts_response_schema = ""
+    if required_facts:
+        flat = flatten_required_facts(required_facts)
+        facts_lines = "\n".join(f"{fid}. {text}" for fid, text in flat)
+        facts_section = f"""
+
+## Required Facts
+
+A correct answer for this question must support each of the following claims. For each one, rate whether the agent's answer supports it:
+- "yes" — the answer states the claim or makes a specific statement that directly supports it
+- "partial" — the answer touches on the claim but is incomplete, vague, or imprecise
+- "no" — the answer omits or contradicts the claim. If the answer is silent on the claim, that is "no", not "yes" — do not infer support from absence of contradiction
+
+{facts_lines}
+"""
+        verdict_lines = ",\n    ".join(
+            f'{{"id": "{fid}", "verdict": "<yes|partial|no>", "justification": "<brief>"}}'
+            for fid, _ in flat
+        )
+        facts_response_schema = f""",
+  "required_facts": [
+    {verdict_lines}
+  ]"""
 
     return f"""You are evaluating the quality of an AI agent's answer to a user question.
 
@@ -143,7 +193,7 @@ Apply these rules:
 
 ## Context the Agent Had Access To
 
-{context_text}
+{context_text}{facts_section}
 
 ## Your Response
 
@@ -154,6 +204,6 @@ Return a JSON object with this exact structure (no other text):
   "completeness": {{"score": <1-5>, "justification": "<brief explanation>"}},
   "relevance": {{"score": <1-5>, "justification": "<brief explanation>"}},
   "citation_quality": {{"score": <1-5>, "justification": "<brief explanation>"}},
-  "hedging": {{"score": <1-5>, "justification": "<brief explanation>"}}
+  "hedging": {{"score": <1-5>, "justification": "<brief explanation>"}}{facts_response_schema}
 }}
 ```"""
