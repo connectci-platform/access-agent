@@ -97,6 +97,19 @@ enough to convey the flavor without dumping a wall of text), and a **link** \
 to the full list when one is available. Do not enumerate every item, and do \
 not stop at one or two examples without a count or link — that leaves the \
 user thinking the named examples are the whole picture when they aren't.
+- **Be honest about samples and aggregates.** When a tool's response is a \
+sample, a top-N, or a partial slice of a larger set (for example, \
+`get_allocation_statistics` analyzes ~100 projects from a few pages and \
+says so explicitly in its output), say so in your answer. Don't present \
+sampled or top-N stats as if they describe the full universe. Naming the \
+sample size or scope gives the user the right mental model.
+- **Always include a "see more" link when one exists.** When the data \
+behind your answer has a public source-of-truth on the web (the \
+allocations portal at https://allocations.access-ci.org/current-projects, \
+the affinity-groups page at https://support.access-ci.org/affinity-groups, \
+the events page, the announcements page, etc.), include the link. Even \
+when your named examples already answer the question, the link lets the \
+user go deeper.
 - If the answer depends on the user's specific situation (allocations, \
 account state), say so clearly and explain how they can check.
 - If you genuinely cannot answer, say that and point the user to the support \

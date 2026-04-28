@@ -55,23 +55,24 @@
   - Tool's correct argument is `software_name` (not `name` — that returns HTTP 500).
 
 - id: tc-allocations-01
-  question: How many active ACCESS allocation projects are there right now?
+  question: What are the most common allocation types and fields of science in current ACCESS projects?
   capability_area: allocations
   battery: tool_coverage
   expected_tool: get_allocation_statistics
   ground_truth_stability: time_bound
   required_facts:
-  - Answer reports ~5,993 active ACCESS allocation projects per the live allocations API.
-  - Answer does not report the tool's sample-window size (100) as the total count.
+  - Answer reports the allocation-type breakdown. Specifically, Explore is the most common allocation type, followed closely by Discover; Accelerate and Discretionary are much smaller. Acceptable phrasings include "most are Explore", "Explore and Discover dominate", or specific counts from the tool's sample.
+  - Answer reports the top fields of science. Computer Science is the largest field; Artificial Intelligence and Intelligent Systems is typically second. Naming at least 3 fields from the tool's top-10 list (e.g., Computer Science, AI, Electrical/Electronic Engineering, Mechanical Engineering, Physical Chemistry) is required.
+  - Answer acknowledges that the breakdown is based on a sample (the tool analyzes ~100 projects from a few pages by default), or otherwise indicates the figures are not a full universe count. It is fine if the agent simply quotes the tool's "Analysis of N projects from M pages" header.
+  - Answer does not invent specific numeric counts that aren't in the tool output. Specific counts and percentages must come from the tool's response, not from prior knowledge.
+  - Optionally, the answer points to https://allocations.access-ci.org/current-projects (or similar) for users who want the full project list.
   sources:
-  - 'tool: get_allocation_statistics at localhost:3006 (pages_to_analyze=5 and =20)'
-  - 'tool: search_projects at localhost:3006 (verified {total, items} shape)'
-  - 'upstream API: https://allocations.access-ci.org/current-projects.json (pages=300, 20 per page; last page has 13)'
+  - 'tool: get_allocation_statistics at localhost:3006 (default pages_to_analyze=5)'
+  - 'upstream API: https://allocations.access-ci.org/current-projects.json (verified 2026-04-28: ~302 pages, ~6,000 projects; allocation type ranks Explore > Discover > Accelerate ≈ Discretionary)'
   authoring_notes:
-  - F1's count is regenerated from /current-projects.json (pages × per-page) before each eval run.
-  - get_allocation_statistics samples pages and does NOT print a total directly.
-  - 'Snapshot at 2026-04-27: get_allocation_statistics samples 100 projects from 5 pages. Top fields: Computer Science (29), Artificial Intelligence and Intelligent Systems (16), Mechanical Engineering (6), Applied Computer Science (5). Underlying /current-projects.json continues to report ~5,000-6,000 active projects (rough count from pagination).'
-  - Sample breakdown at 400-sample scope was Explore 208, Discover 161, Accelerate 19, Maximize 11, Discretionary 1.
+  - 'Snapshot at 2026-04-28: get_allocation_statistics with pages_to_analyze=5 returns: Allocation Types {Explore: 56, Discover: 42, Accelerate: 1, Discretionary: 1}; Top fields {Computer Science: 31, AI: 16, Electrical/Electronic Eng: 6, Mechanical Eng: 6, Physical Chemistry: 5, Applied CS: 4, Astronomy: 3, Statistics: 2, Systematics: 2, Other Bio: 2}.'
+  - The specific counts drift daily as new projects join and old ones expire, but the rank order (Explore > Discover; Computer Science > AI > engineering fields) has been stable across snapshots.
+  - Replaced an earlier version of this question ("How many active ACCESS allocation projects are there right now?") because no MCP tool reliably reports a true universe count — get_allocation_statistics samples and search_projects.total reflects per-page result count, not the universe. The reframed question exercises get_allocation_statistics on what it's designed to do.
 
 - id: tc-allocations-02
   question: Search for ACCESS projects on Delta related to climate modeling.
