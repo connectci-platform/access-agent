@@ -133,16 +133,19 @@
   expected_tool: search_affinity_groups
   ground_truth_stability: time_bound
   required_facts:
-  - Answer names at least two real GPU-equipped ACCESS affinity groups by ID (e.g., DELTA, DeltaAI, Anvil, ACES, FASTER, Expanse), not generic category labels.
+  - 'Answer names at least 3 GPU-equipped ACCESS affinity groups from the public affinity-groups list. The full set as of the snapshot below is ACES, AI Institutes Cyberinfrastructure, Anvil, DELTA, DeltaAI, Expanse, FABRIC Testbed, FASTER, High Performance Visualization, Jetstream-2, Neocortex, and Voyager. Bridges-2 is also acceptable.'
+  - Answer reports a count of GPU-equipped affinity groups (e.g., "there are about a dozen", "12 of the affinity groups offer GPU resources", or similar phrasing that gives the user the order of magnitude rather than implying the named examples are the full set).
+  - 'Answer treats "affinity group" as the entity being asked about. Named items should be entries on https://support.access-ci.org/affinity-groups, not other ACCESS resources presented as if they were affinity groups. Derecho is a real ACCESS resource (NCAR) but is not on the affinity-groups list, so naming it as a GPU affinity group is a category error.'
+  - Answer does not substitute generic category labels (e.g., "machine-learning", "ai", "deep-learning", "GPU computing group") for real affinity group names. Real groups have IDs from the affinity-groups page.
   - Answer points to https://support.access-ci.org/affinity-groups or a specific group URL under that domain.
   sources:
-  - 'tool: search_affinity_groups(query=''GPU'', limit=20) at localhost:3011 — returned 57 items'
-  - 'doc: https://support.access-ci.org/affinity-groups (confirmed live 2026-04-24)'
+  - 'tool: search_affinity_groups(query=''GPU'', limit=20) at localhost:3011'
+  - 'doc: https://support.access-ci.org/affinity-groups (verified live 2026-04-28 via web)'
   authoring_notes:
-  - Slow drift — refresh F1's example group IDs from search_affinity_groups(query='GPU') periodically.
-  - 'Snapshot at 2026-04-27: tool returned 57 items; GPU-equipped affinity groups present include Neocortex, Voyager, DeltaAI, ACES, Rockfish, FASTER. Also expect DELTA, Anvil, Expanse from prior snapshots.'
+  - Slow drift — re-verify F1's full list against https://support.access-ci.org/affinity-groups periodically.
+  - 'Snapshot at 2026-04-28: full set of GPU-equipped affinity groups on the public page is ACES, AI Institutes Cyberinfrastructure, Anvil, DELTA, DeltaAI, Expanse, FABRIC Testbed, FASTER, High Performance Visualization, Jetstream-2, Neocortex, Voyager.'
   - |-
-    Prior parity testing flagged both agents producing generic category answers ('machine-learning', 'ai', 'deep-learning') that are NOT real group IDs — the 'not generic category labels' clause in F1 catches this.
+    Note about Derecho: prior parity testing flagged both agents naming Derecho as a GPU affinity group. Derecho IS a real ACCESS-allocated NCAR resource with GPUs (Derecho-GPU), but it is NOT an entry on the affinity-groups page. The mistake is a resource-vs-group conflation, not a fabrication. F2 catches this. The UKY RAG corpus appears to have an entry that conflates these — a corpus issue worth tracking separately.
 
 - id: tc-announce-01
   question: What are the most recent ACCESS announcements about Expanse?

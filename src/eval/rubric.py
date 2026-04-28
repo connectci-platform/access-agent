@@ -125,8 +125,8 @@ def build_judge_prompt(
 ## Required Facts
 
 A correct answer for this question must support each of the following claims. For each one, rate whether the agent's answer supports it:
-- "yes" — the answer states the claim or makes a specific statement that directly supports it
-- "partial" — the answer touches on the claim but is incomplete, vague, or imprecise
+- "yes" — the answer states the claim AND the claim is supported by the Tool Results, RAG Documents, or well-known ACCESS-CI facts. A specific name or number stated only in the answer (not in the context) is not evidence — that is a hallucination, score it accordingly on the relevant fact.
+- "partial" — the answer touches on the claim but is incomplete, vague, imprecise, OR mixes a correct statement with hallucinated specifics
 - "no" — the answer omits or contradicts the claim. If the answer is silent on the claim, that is "no", not "yes" — do not infer support from absence of contradiction
 
 {facts_lines}
@@ -155,6 +155,8 @@ You will see up to three kinds of context the agent had:
 - **RAG Documents Retrieved**: curated Q&A snippets from documentation. Static; not live. May be stale.
 - **Tool Results**: structured records of live tool calls, one record per call. Each record includes the tool name, the arguments the agent passed, whether the call succeeded, how long it took, an explicit `result_count` and `empty` flag, and the raw data. Use these to judge whether the agent called the right tool with the right arguments, whether the tool returned useful data, and whether the agent represented that data faithfully in its answer. An `empty: true` record means the tool returned no data on its own terms — not that there is no data on the topic anywhere.
 - **Agent Decision Trace**: the ordered list of graph nodes the agent went through (classify, plan, execute, evaluate, synthesize, etc.), with each node's key decisions.
+
+**Treat the context as your source of truth, not the answer.** The agent's answer is what you are grading. When the answer makes a specific factual claim — names a resource, group, person, software version, count, date, URL, ticket number — that claim must be supported either by the Tool Results, by the RAG Documents, or by widely known ACCESS-CI facts you are confident about. A specific name or number that appears only in the answer and nowhere in the context is unsupported, and should be treated as a hallucination. Penalize unsupported specifics in the relevant rubric dimensions and in the per-fact verdicts below.
 
 ## Scoring Rubric
 
