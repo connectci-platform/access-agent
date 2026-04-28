@@ -65,7 +65,7 @@
   - Answer reports the top fields of science. Computer Science is the largest field; Artificial Intelligence and Intelligent Systems is typically second. Naming at least 3 fields from the tool's top-10 list (e.g., Computer Science, AI, Electrical/Electronic Engineering, Mechanical Engineering, Physical Chemistry) is required.
   - Answer acknowledges that the breakdown is based on a sample (the tool analyzes ~100 projects from a few pages by default), or otherwise indicates the figures are not a full universe count. It is fine if the agent simply quotes the tool's "Analysis of N projects from M pages" header.
   - Answer does not invent specific numeric counts that aren't in the tool output. Specific counts and percentages must come from the tool's response, not from prior knowledge.
-  - Optionally, the answer points to https://allocations.access-ci.org/current-projects (or similar) for users who want the full project list.
+  - Answer points to a useful "see more" destination — the allocations portal at https://allocations.access-ci.org/current-projects for browsing projects, OR an XDMoD chart URL (https://xdmod.access-ci.org/...) for additional aggregate views, OR another specific ACCESS portal link relevant to allocations data. A generic "see ACCESS-CI for more" without a specific URL is too vague.
   sources:
   - 'tool: get_allocation_statistics at localhost:3006 (default pages_to_analyze=5)'
   - 'upstream API: https://allocations.access-ci.org/current-projects.json (verified 2026-04-28: ~302 pages, ~6,000 projects; allocation type ranks Explore > Discover > Accelerate ≈ Discretionary)'
