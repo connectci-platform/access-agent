@@ -178,32 +178,24 @@
   expected_tool: describe_realms
   ground_truth_stability: stable
   required_facts:
-  - heading: 'XDMoD exposes usage and performance data organized into realms:'
-    items:
-    - Jobs
-    - SUPREMM
-    - Cloud
-    - Storage
-    - ResourceSpecifications
-  - heading: 'Each realm covers a distinct domain:'
-    items:
-    - 'Jobs: HPC job accounting (CPU hours, job/wall hours, allocations)'
-    - 'SUPREMM: detailed job performance including GPU metrics'
-    - 'Cloud: cloud resource usage'
-    - 'Storage: storage usage'
-    - 'ResourceSpecifications: configured resource capacity'
+  - Answer describes XDMoD as a tool/portal for exploring HPC usage and performance metrics on ACCESS resources.
+  - Answer enumerates at least 3 distinct kinds of data XDMoD covers — accepted as either named realms (Jobs, SUPREMM, Cloud, Storage, ResourceSpecifications, Allocations, Accounts, Gateways) or as named metric categories that map to those realms (e.g., job accounting + job performance + cloud usage + storage usage).
+  - Answer mentions at least one job-related metric (e.g., CPU hours, service units, wall time, job count) and at least one performance/system-level signal (e.g., GPU/memory metrics, system performance, file-system performance, network latency) — covering the Jobs and SUPREMM realms by content.
   - Answer points to the ACCESS XDMoD portal at https://xdmod.access-ci.org/.
   sources:
-  - 'tool: describe_realms at localhost:3008 (currently returns HTTP 500 — see authoring_notes)'
+  - 'tool: describe_realms at localhost:3008 (still returns HTTP 500 as of 2026-04-29 — see authoring_notes)'
   - 'tool: GET /tools at localhost:3008 — MCP server self-describes realms in get_raw_data schema'
   - 'doc: https://xdmod.access-ci.org/user_manual/Introduction.html'
+  - 'doc: https://metrics.access-ci.org/data_catalog/ — ACCESS XDMoD data catalog (lists all realms)'
   - 'doc: https://support.access-ci.org/tools/xdmod'
   authoring_notes:
   - Realm set changes rarely — facts are stable across many runs.
   - |-
-    describe_realms currently fails with HTTP 500 ('Object of type TextContent is not JSON serializable'); same bug affects describe_fields.
+    describe_realms still fails 2026-04-29 with HTTP 500 ('Object of type TextContent is not JSON serializable'); same bug affects describe_fields. Bug is unchanged from the 2026-04-27 snapshot.
   - |-
-    Realm names were recovered from the server's /tools listing (unaffected by the bug) where get_raw_data's inputSchema enumerates realms.
+    Realm names enumerated by the MCP's get_raw_data schema (Jobs, SUPREMM, Cloud, Storage, ResourceSpecifications) are a strict subset of what the ACCESS XDMoD portal actually exposes. WebSearch / metrics.access-ci.org/data_catalog show the full list also includes Accounts, Allocations, Gateways, OnDemand, Requests. F2 accepts any of these so the agent isn't penalized for naming portal-correct realms the MCP schema omits.
+  - |-
+    Replaced earlier heading+items dict-shaped facts with atomic per-claim facts (per routine — heading+items flattens into redundant verdicts).
   - File a ticket against the xdmod-data MCP to fix this serialization bug — also affects the live agent.
 
 - id: tc-rag-01
