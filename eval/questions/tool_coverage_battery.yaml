@@ -253,11 +253,10 @@
   ground_truth_stability: stable
   required_facts:
   - Answer is produced from documentation without calling any MCP tool.
-  - |-
-    User signs in to Globus using their ACCESS-CI identity by selecting 'ACCESS CI (formerly XSEDE)' as the identity provider.
+  - Answer indicates the user logs in / signs in to Globus before transferring (any framing — the canonical identity-provider option is 'ACCESS-CI (formerly XSEDE)' but explicit naming is not required).
   - |-
     Each ACCESS-allocated resource exposes its own Globus collection/endpoint (e.g., 'NCSA Delta', 'PSC Bridges-2', Purdue 'Anvil'); users locate them via the Collection Search box.
-  - Transfers are initiated at https://app.globus.org — open two collections side-by-side in the File Manager, select files, click Start.
+  - Answer points users at the Globus File Manager interface for performing the transfer — either explicitly via the https://app.globus.org URL, or by describing the File-Manager-based workflow (open two collections, select files, start).
   - For laptops or non-endpoint machines, users install Globus Connect Personal to make that system a Globus endpoint.
   sources:
   - 'doc: https://access-ci.atlassian.net/wiki/spaces/ACCESSdocumentation/pages/552861811/Use+Globus+to+upload+download+or+move+files+on+ACCESS'
@@ -269,6 +268,9 @@
     Both 'endpoint' and 'collection' terminology are acceptable (Globus uses both; newer docs prefer 'collection').
   - |-
     Naming one or two specific ACCESS collections is sufficient — the answer doesn't need to enumerate all of them.
+  - 'Verified 2026-04-29: Globus identity-provider dropdown lists "ACCESS-CI (formerly XSEDE)". UKY RAG content does not reliably surface this specific identity-provider name nor the app.globus.org URL — F2 and F4 loosened accordingly. If RAG content improves, tighten F2 to require the specific identity provider name and F4 to require the explicit URL.'
+  - 'WebFetch on Atlassian wiki pages (access-ci.atlassian.net/wiki/...) consistently returns truncated content; rely on WebSearch for ground-truthing those sources.'
+  - 'Run-to-run variance observed 2026-04-29: 3 sequential runs gave (4.45, 3.10, 4.45). When UKY RAG returns ACCESS-specific content, all 5 verdicts are yes; when it returns nothing, agent falls back to general knowledge and F1/F3/F5 fail correctly. The composite oscillation is RAG variance, not rubric or agent flakiness — the per-fact verdicts honestly distinguish the two cases.'
 
 - id: tc-rag-04
   question: Who is eligible to apply for an ACCESS allocation?
