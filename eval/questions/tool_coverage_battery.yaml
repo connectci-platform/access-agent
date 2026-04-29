@@ -42,17 +42,19 @@
   expected_tool: get_software_details
   ground_truth_stability: time_bound
   required_facts:
-  - Answer states the current CUDA versions on Delta per get_software_details (13.1.1, 12.9, 12.8, 11.8 at last refresh).
-  - Answer distinguishes Delta from DeltaAI (a separate resource with different CUDA versions).
-  - Answer mentions loading CUDA via 'module load cuda/<version>' (or 'module spider cuda').
+  - Answer states the current CUDA versions on Delta per get_software_details (12.8 and 11.8 at last refresh).
+  - Answer does not conflate Delta with DeltaAI — if any CUDA versions are listed, they are Delta's (12.8, 11.8) and do not include DeltaAI-only versions (13.1.1, 12.9) without identifying them as DeltaAI's.
   sources:
   - 'tool: get_software_details(software_name=''cuda'', resource=''delta'') at localhost:3004'
   - 'doc: https://docs.ncsa.illinois.edu/systems/delta/en/latest/user_guide/software.html'
   - 'doc: https://docs.ncsa.illinois.edu/systems/delta/en/latest/user_guide/prog_env.html'
   authoring_notes:
   - F1's version list is regenerated from get_software_details before each eval run.
-  - 'Snapshot at 2026-04-27: get_software_details for cuda+delta returned versions 13.1.1, 12.9, 12.8, 11.8 (13.1.1 and 12.9 are new since the 2026-04-24 snapshot).'
+  - 'Snapshot at 2026-04-29: get_software_details(software_name=''cuda'', resource=''delta'') returns versions_by_resource={delta: [12.8, 11.8], deltaai: [13.1.1, 12.9, 11.8]}. Earlier 2026-04-27 snapshot conflated these via the top-level versions union — corrected.'
   - Tool's correct argument is `software_name` (not `name` — that returns HTTP 500).
+  - On Delta, NCSA exposes CUDA primarily as the `cudatoolkit` module (e.g. `cudatoolkit/25.3_12.8`), not `cuda` — relevant if a future fact tests load syntax.
+  - WebFetch on docs.ncsa.illinois.edu/systems/delta/... returned blank during 2026-04-29 ground-truthing (JS-rendered page); WebSearch retrieved the cached content. For Delta-specific ground-truth, prefer WebSearch + MCP over WebFetch.
+  - 'Earlier rubric had a third fact requiring loading-hint guidance (''module load cudatoolkit/<version>'' etc). Dropped 2026-04-29 because the question literally asks "what version" — F3 was systematically punishing the loop''s concise style on a dimension unrelated to the asked question. F1 + F2 cover the substantive ground.'
 
 - id: tc-allocations-01
   question: What are the most common allocation types and fields of science in current ACCESS projects?
