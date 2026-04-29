@@ -123,12 +123,13 @@
   - Answer lists upcoming ACCESS events from the live search_events output, filtered to within 14 days.
   - Each listed event is named with its date.
   - Each listed event includes a registration or info URL on support.access-ci.org/events/.
-  - Answer cites the events tool / support.access-ci.org as the source.
+  - Answer links to support.access-ci.org/events (or per-event URLs on that domain) as its source — verbal "cited from" phrasing not required, the link target is what counts.
   sources:
   - 'tool: search_events(date=''upcoming'', limit=20) at localhost:3010'
   authoring_notes:
   - Highly volatile (re-runs daily) — facts grade behavior against fresh tool output at judge time.
-  - 'Snapshot at 2026-04-27: tool returned 20 events including ACES Snakemake in HPC Workflows (id=9023), Sage Office Hours (id=8208), Jetstream2 Office Hours (id=8920), ACES AI/ML TechLab on Intel PVC GPUs (id=9017), Anvil Support Hour (id=8845). Highly volatile — list changes daily.'
+  - 'Snapshot at 2026-04-29: tool returned 20 upcoming events. First 14 days (2026-04-29 → 2026-05-13) include Anvil Support Hour (8845, 8846, 8847), COMPLECS Data Storage and File Systems (8718), Globus Office Hours (9026), Sage Office Hours (8144, 8209, 8145, 8210, 8146), Jetstream2 Office Hours (8921, 8922), Open OnDemand Tips and Tricks (8501), Open OnDemand Office Hours (8755), Introduction to Chameleon (9041), Atoms to Algorithms GPU Molecular Dynamics (8719), ACCESS/NAIRR Pilot Office Hours (8772), Compute Across Distributed Resources (9029).'
+  - MCP response includes docs.see_all_url=https://support.access-ci.org/events.
   - 'Example URLs: https://support.access-ci.org/events/9053, https://support.access-ci.org/events/9023.'
 
 - id: tc-affinity-01
