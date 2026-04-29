@@ -13,19 +13,46 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.errors import GraphRecursionError
 from langgraph.prebuilt import create_react_agent
 
+if TYPE_CHECKING:
+    from langchain_core.tools import BaseTool
+
+from ...config import settings
 from ...llm import get_llm
 from ...telemetry import get_tracer
+from ..domains.capabilities import WRITE_MCP_TOOL_NAMES
 from ..domains.tools import create_mcp_tools_from_catalog
 from ..prompts.tool_calling_loop import build_system_prompt, format_rag_matches
 from ..state import ToolResult
 
 logger = logging.getLogger(__name__)
+
+
+def _apply_read_only_filter(tools: list[BaseTool]) -> list[BaseTool]:
+    """Strip write-capable MCP tools when ``settings.READ_ONLY`` is True.
+
+    The legacy chain enforces READ_ONLY at the capability-registry level,
+    but this node builds tools directly from the MCP catalog. Applying the
+    same deny-list here keeps the audit's "READ_ONLY blocks all writes"
+    claim true on both code paths. See `docs/security/write-capability-audit.md`.
+    """
+    if not settings.READ_ONLY:
+        return tools
+    before = len(tools)
+    filtered = [t for t in tools if t.name not in WRITE_MCP_TOOL_NAMES]
+    removed = before - len(filtered)
+    if removed:
+        logger.info(
+            "READ_ONLY=true active in tool_calling_loop — removed %d "
+            "write-capable tool(s) from registry",
+            removed,
+        )
+    return filtered
 
 
 async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
@@ -64,7 +91,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
             acting_user=acting_user,
         )
 
-        tools = create_mcp_tools_from_catalog(tool_catalog, acting_user)
+        tools = _apply_read_only_filter(create_mcp_tools_from_catalog(tool_catalog, acting_user))
 
         span.set_attribute("agent.tool_count", len(tools))
         span.set_attribute("agent.has_rag_context", bool(rag_context))

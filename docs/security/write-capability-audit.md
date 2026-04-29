@@ -51,6 +51,8 @@ When active, the process logs a prominent WARNING at startup:
 READ_ONLY=true active — write capabilities disabled: manage_announcements, open_ticket, report_login_problem, report_security
 ```
 
+The legacy `plan→execute→evaluate→recover→synthesize` chain enforces this guard at the capability-registry level. The new `tool_calling_loop` (Phase 3) builds tools directly from the MCP catalog and never sees the registry, so it applies the same guard via a parallel deny-list of MCP tool names (`WRITE_MCP_TOOL_NAMES` in `src/agent/domains/capabilities.py`). Both code paths are covered by tests in `tests/test_capabilities_read_only.py` and `tests/test_tool_calling_loop.py::test_read_only_strips_write_tools_from_loop_registry` — the audit's "READ_ONLY blocks all writes" claim is machine-verified on both paths.
+
 ### Staging default
 
 The staging environment runs with `READ_ONLY=true` by default. This guarantees the smoke test (and any manual testing against staging) cannot create tickets or announcements regardless of classifier behavior or developer experimentation.
@@ -73,3 +75,4 @@ The production smoke test, when the process is started with `READ_ONLY=true`, ca
 ## Change log
 
 - 2026-04-21: Initial audit. Four write capabilities enumerated; `WRITE_CAPABILITY_IDS` constant and `READ_ONLY` guard landed together.
+- 2026-04-29: Extended `READ_ONLY` guard to the `tool_calling_loop` code path (Phase 3). Added `WRITE_MCP_TOOL_NAMES` deny-list in `capabilities.py` and a filter in `tool_calling_loop_node` so the loop's tool registry honors `READ_ONLY=true` the same way the legacy chain does. Without this, the loop bypassed the guard entirely. Machine-verified by `tests/test_tool_calling_loop.py::test_read_only_strips_write_tools_from_loop_registry`.

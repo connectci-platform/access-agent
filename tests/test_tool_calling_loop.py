@@ -486,3 +486,140 @@ async def test_route_by_classification_preserves_rag_and_plan_when_flag_off(monk
         "query_classification": QueryClassification(query_type="combined"),
     }
     assert route_by_classification(state) == "rag_and_plan"
+
+
+# ── READ_ONLY guard on the tool_calling_loop ─────────────────────────────────
+#
+# The legacy chain enforces READ_ONLY by removing write capabilities from the
+# capability registry at build time. The tool_calling_loop builds tools
+# directly from the MCP catalog and never sees the registry — so the filter
+# must be applied separately on this code path. These tests machine-verify
+# the audit's "READ_ONLY blocks all writes" claim on the new path.
+
+
+@pytest.fixture
+def mixed_catalog_state(base_state):
+    """Catalog containing both read tools and every write tool the deny-list covers."""
+    state = {**base_state}
+    state["tool_catalog"] = {
+        "servers": [
+            {
+                "server": "compute-resources",
+                "tools": [
+                    {
+                        "name": "search_resources",
+                        "description": "Read tool — search compute resources",
+                        "inputSchema": {"properties": {}, "required": []},
+                    }
+                ],
+            },
+            {
+                "server": "announcements",
+                "tools": [
+                    {
+                        "name": "create_announcement",
+                        "description": "Write tool — create announcement",
+                        "inputSchema": {"properties": {}, "required": []},
+                    },
+                    {
+                        "name": "update_announcement",
+                        "description": "Write tool — update announcement",
+                        "inputSchema": {"properties": {}, "required": []},
+                    },
+                    {
+                        "name": "delete_announcement",
+                        "description": "Write tool — delete announcement",
+                        "inputSchema": {"properties": {}, "required": []},
+                    },
+                ],
+            },
+            {
+                "server": "jsm",
+                "tools": [
+                    {
+                        "name": "create_support_ticket",
+                        "description": "Write tool — create support ticket",
+                        "inputSchema": {"properties": {}, "required": []},
+                    },
+                    {
+                        "name": "create_login_ticket",
+                        "description": "Write tool — create login ticket",
+                        "inputSchema": {"properties": {}, "required": []},
+                    },
+                    {
+                        "name": "report_security_incident",
+                        "description": "Write tool — report security incident",
+                        "inputSchema": {"properties": {}, "required": []},
+                    },
+                ],
+            },
+        ]
+    }
+    return state
+
+
+def _capture_tools_kwarg(mock_graph):
+    """Helper: returns a side_effect callable that records `tools` from create_react_agent."""
+    captured: dict = {}
+
+    def _capture(**kwargs):  # type: ignore[no-untyped-def]
+        captured["tools"] = kwargs.get("tools")
+        return mock_graph
+
+    return _capture, captured
+
+
+@pytest.mark.asyncio
+async def test_read_only_strips_write_tools_from_loop_registry(monkeypatch, mixed_catalog_state):
+    """With READ_ONLY=true, no MCP tool name in WRITE_MCP_TOOL_NAMES reaches create_react_agent."""
+    from src.agent.domains.capabilities import WRITE_MCP_TOOL_NAMES
+    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
+
+    monkeypatch.setattr("src.config.settings.READ_ONLY", True, raising=False)
+
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke.return_value = {
+        "messages": [*mixed_catalog_state["messages"], AIMessage(content="ok")]
+    }
+    capture, captured = _capture_tools_kwarg(mock_graph)
+
+    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", side_effect=capture):
+        await tool_calling_loop_node(mixed_catalog_state)
+
+    tool_names = {t.name for t in captured["tools"]}
+    leaked = tool_names & WRITE_MCP_TOOL_NAMES
+    assert not leaked, (
+        f"READ_ONLY=true must block all WRITE_MCP_TOOL_NAMES from the loop, "
+        f"but these leaked through: {sorted(leaked)}"
+    )
+    # Read tools survive the filter.
+    assert "search_resources" in tool_names
+
+
+@pytest.mark.asyncio
+async def test_read_only_off_keeps_write_tools_in_loop_registry(monkeypatch, mixed_catalog_state):
+    """Baseline: with READ_ONLY=false, write tools remain available to the loop."""
+    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
+
+    monkeypatch.setattr("src.config.settings.READ_ONLY", False, raising=False)
+
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke.return_value = {
+        "messages": [*mixed_catalog_state["messages"], AIMessage(content="ok")]
+    }
+    capture, captured = _capture_tools_kwarg(mock_graph)
+
+    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", side_effect=capture):
+        await tool_calling_loop_node(mixed_catalog_state)
+
+    tool_names = {t.name for t in captured["tools"]}
+    # All 6 write tools survive when the guard is off.
+    for write_tool in (
+        "create_announcement",
+        "update_announcement",
+        "delete_announcement",
+        "create_support_ticket",
+        "create_login_ticket",
+        "report_security_incident",
+    ):
+        assert write_tool in tool_names, f"{write_tool} should be available when READ_ONLY=false"

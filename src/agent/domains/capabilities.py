@@ -89,12 +89,32 @@ _ATTRIBUTION_FALLBACK_ORDER: tuple[str, ...] = (
 # external system. Source of truth for the READ_ONLY guard; enumerated in
 # docs/security/write-capability-audit.md. If a new write-capable capability
 # is added, it MUST be added here AND in the audit document.
-WRITE_CAPABILITY_IDS: frozenset[str] = frozenset({
-    "manage_announcements",   # announcements domain: create/update/delete
-    "open_ticket",            # jsm domain: create support ticket
-    "report_login_problem",   # jsm domain: create login-issue ticket
-    "report_security",        # jsm domain: create security-concern ticket
-})
+WRITE_CAPABILITY_IDS: frozenset[str] = frozenset(
+    {
+        "manage_announcements",  # announcements domain: create/update/delete
+        "open_ticket",  # jsm domain: create support ticket
+        "report_login_problem",  # jsm domain: create login-issue ticket
+        "report_security",  # jsm domain: create security-concern ticket
+    }
+)
+
+# MCP tool names corresponding to the write capabilities above. The legacy
+# chain enforces READ_ONLY by removing write capabilities from the registry,
+# but the tool_calling_loop builds tools directly from the MCP catalog and
+# never sees the registry — so it needs an explicit deny-list of MCP tool
+# names. Keep in sync with the capabilities above.
+WRITE_MCP_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        # announcements domain (manage_announcements)
+        "create_announcement",
+        "update_announcement",
+        "delete_announcement",
+        # jsm domain (open_ticket / report_login_problem / report_security)
+        "create_support_ticket",
+        "create_login_ticket",
+        "report_security_incident",
+    }
+)
 
 # ── Categories ────────────────────────────────────────────────────────────
 
