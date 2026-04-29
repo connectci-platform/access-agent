@@ -7,14 +7,14 @@
   required_facts:
   - No ACCESS resources are down or in maintenance per the live status feed.
   - Answer adds no outages, resources, or maintenance windows beyond the live status feed.
-  - Answer cites the live status feed as its source, not static docs.
+  - Answer links to a live ACCESS outages/status page (e.g. support.access-ci.org/outages or operations.access-ci.org), not a generic docs/how-to page.
   sources:
   - 'tool: get_infrastructure_news(time=''current'') at localhost:3003'
   - 'doc: https://operations.access-ci.org/'
   authoring_notes:
   - F1 is regenerated from get_infrastructure_news(time='current') before each eval run.
   - 'F1 text varies with state: zero outages → "No ACCESS resources are currently down…"; outages present → "Currently affected: <list from tool>".'
-  - 'Snapshot at 2026-04-27: total_outages=0, empty affected_resources, no severity-tier outages.'
+  - 'Snapshot at 2026-04-29: total_outages=0, empty affected_resources, no severity-tier outages. Verified via local MCP get_infrastructure_news(time=''current'') and operations.access-ci.org/infrastructure_news_view.'
 
 - id: tc-software-01
   question: Which ACCESS resources have PyTorch available?
