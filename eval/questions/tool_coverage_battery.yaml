@@ -280,32 +280,19 @@
   ground_truth_stability: stable
   required_facts:
   - Answer is produced from documentation without calling any MCP tool.
-  - heading: 'Eligible PIs:'
-    items:
-    - Faculty at U.S.-based academic institutions
-    - Postdocs at U.S.-based academic institutions
-    - Research staff at U.S.-based academic institutions
-    - Graduate students at U.S.-based academic institutions (need an advisor letter)
-    - K-12 teachers at accredited U.S. institutions (for classroom allocations)
-  - heading: 'Eligible institutions:'
-    items:
-    - U.S.-based academic institutions
-    - Non-profit non-academic organizations (museums, libraries, research labs)
-    - FFRDCs
-    - U.S. military service academies
-    - U.S. commercial/private-sector organizations
-  - heading: 'NOT eligible to lead a project:'
-    items:
-    - Undergraduate students
-    - K-12 students
-    - Retired, self-employed, or unaffiliated individuals
-  - PIs must use an institutional email (per July 2025 NSF Notice 149; gmail/yahoo prohibited).
-  - Any field of study is eligible.
-  - Any funding source is acceptable; no funding is required (unfunded PIs limited to one allocation).
+  - Answer names U.S.-based faculty / researchers / postdocs at academic institutions as eligible PIs (any 1 of these 3 is sufficient).
+  - Answer notes graduate students are eligible to lead allocations (typically Explore or Discover, with advisor involvement / advisor letter).
+  - Answer mentions that eligibility extends beyond academia — at least one non-academic category like nonprofit research/educational organizations, FFRDCs, U.S. military service academies, U.S. commercial/private-sector organizations, or U.S. state/local government research staff.
+  - Answer identifies at least one group NOT eligible to lead a project. Examples — undergraduate students, K-12 students, unaffiliated/retired/self-employed individuals, or international researchers without a U.S.-based PI. Naming any one of these is sufficient.
+  - Answer mentions the institutional-affiliation / institutional-email requirement (per NSF Important Notice No. 149, July 2025) — generic domains like gmail.com / yahoo.com are prohibited; PIs must use an organizational email matching their institutional affiliation.
   sources:
   - 'doc: https://allocations.access-ci.org/allocations-policy'
   - 'doc: https://allocations.access-ci.org/'
   - 'doc: https://access-ci.org/get-started/for-researchers/'
+  - 'doc: https://support.access-ci.org/announcements/important-update-access-eligibility-policy-changes'
   authoring_notes:
-  - Eligibility tightened in July 2025 per NSF Important Notice No. 149 (unaffiliated individuals no longer eligible; institutional-email requirement).
-  - Correct answers from fresh docs should reflect this.
+  - Eligibility tightened in July 2025 per NSF Important Notice No. 149 (unaffiliated individuals no longer eligible; institutional-email requirement; PIs must use organizational email matching their institutional affiliation).
+  - 'Verified 2026-04-29 via WebSearch + WebFetch on allocations.access-ci.org/allocations-policy: faculty/postdocs/research staff at U.S. academic institutions are eligible PIs; grad students eligible for Explore or Discover with advisor letter; K-12 teachers eligible for classroom allocations; institutions can be U.S. academic, nonprofit, FFRDCs, military service academies, U.S. commercial/private-sector (with publication requirements), state/local government; undergraduates, K-12 students, and unaffiliated individuals are NOT eligible to lead.'
+  - 'Restructured 2026-04-29 from heading+items dict (which flattens into N redundant fact verdicts per routine) to 6 atomic facts that can each be true in a short answer.'
+  - 'Dropped two original facts: "any field of study is eligible" and "no funding required" — both true but tangential to the asked "who is eligible" framing. The substantive coverage (roles + institutions + ineligible groups + email policy) is in the 6 atomic facts.'
+  - 'Run-to-run variance observed 2026-04-29 across 3 runs: RAG returned 0 chars twice, 2015 chars once. When RAG returns content, the content includes outdated language saying "unaffiliated or self-employed CAN apply" — which contradicts current NSF Notice 149 policy (July 2025). F6 (institutional email / affiliation requirement) is therefore a real signal: when it fails, it''s because RAG has not been re-indexed against the post-2025-07 docs. Keep F6 strict — fixing F6 means improving RAG content, not loosening the rubric.'
