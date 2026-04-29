@@ -28,6 +28,11 @@ dependencies = [
     "opentelemetry-instrumentation-httpx>=0.41b0",
     "opentelemetry-instrumentation-langchain>=0.41b0",
     "opentelemetry-instrumentation-logging>=0.41b0",
+    # opentelemetry-instrumentation-langchain (Traceloop openllmetry) calls
+    # wrap_function_wrapper(module=...), but wrapt 2.x dropped the `module=`
+    # kwarg — TypeError on import. Pin wrapt<2 until upstream ships a wrapt-2
+    # compatible release (tracking: traceloop/openllmetry#4025, #4048).
+    "wrapt<2",
     # Reporting
     "google-analytics-data>=0.18.0",
     "python-dotenv>=1.0.0",
