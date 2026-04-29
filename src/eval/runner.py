@@ -12,7 +12,7 @@ from src.services.uky_client import get_uky_client
 
 logger = logging.getLogger(__name__)
 
-SystemMode = Literal["agent_full", "agent_full_legacy", "agent_rag_only", "raw_rag"]
+SystemMode = Literal["agent_full", "agent_full_legacy", "raw_rag"]
 
 # Mapping from SystemMode to short architectural names used in run IDs.
 # These describe the pipeline architecture, not the user-facing system choice,
@@ -20,7 +20,6 @@ SystemMode = Literal["agent_full", "agent_full_legacy", "agent_rag_only", "raw_r
 SYSTEM_SHORTCODES: dict[SystemMode, str] = {
     "agent_full": "loop",
     "agent_full_legacy": "chain",
-    "agent_rag_only": "rag_only",
     "raw_rag": "raw_rag",
 }
 
@@ -187,14 +186,6 @@ async def run_question(
     try:
         if system == "raw_rag":
             result = await _run_raw_rag(question_id, question_text, resource_context)
-        elif system == "agent_rag_only":
-            result = await _run_agent(
-                question_id,
-                question_text,
-                tool_catalog,
-                resource_context=resource_context,
-                enabled_capabilities="ask_question",
-            )
         else:  # agent_full or agent_full_legacy — same code path, different USE_TOOL_CALLING_LOOP state
             result = await _run_agent(
                 question_id,
@@ -247,30 +238,16 @@ async def _run_agent(
     question_text: str,
     tool_catalog: Any,
     resource_context: str | None = None,
-    enabled_capabilities: str | None = None,
 ) -> RunResult:
-    """Call run_agent() with optional capability restriction."""
-    import os
-
-    # Temporarily override ENABLED_CAPABILITIES if restricting to RAG-only
-    old_caps = os.environ.get("ENABLED_CAPABILITIES")
-    if enabled_capabilities is not None:
-        os.environ["ENABLED_CAPABILITIES"] = enabled_capabilities
-    try:
-        state = await run_agent(
-            query=question_text,
-            session_id=f"eval_{question_id}",
-            question_id=question_id,
-            tool_catalog=tool_catalog,
-            use_checkpointing=False,
-            resource_context=resource_context,
-        )
-    finally:
-        if enabled_capabilities is not None:
-            if old_caps is not None:
-                os.environ["ENABLED_CAPABILITIES"] = old_caps
-            else:
-                os.environ.pop("ENABLED_CAPABILITIES", None)
+    """Call run_agent() and capture the final answer + execution context."""
+    state = await run_agent(
+        query=question_text,
+        session_id=f"eval_{question_id}",
+        question_id=question_id,
+        tool_catalog=tool_catalog,
+        use_checkpointing=False,
+        resource_context=resource_context,
+    )
 
     answer = state.get("final_answer", "")
     return RunResult(

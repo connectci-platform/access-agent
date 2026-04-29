@@ -334,6 +334,10 @@ def _handle_argilla_push(args: argparse.Namespace) -> None:
                 agent_commit=cast("str | None", run.agent_commit),
                 judge_model=cast("str | None", run.judge_model),
                 duration_ms=float(score.duration_ms) if score.duration_ms else None,
+                question_set=cast("str | None", run.question_set),
+                tool_count=cast("int | None", run.tool_catalog.get("total_tools"))
+                if run.tool_catalog
+                else None,
             )
         )
 
@@ -415,14 +419,13 @@ def main() -> None:  # noqa: PLR0915  # CLI dispatcher, statements not meaningfu
     run_parser = subparsers.add_parser("run", help="Run pre-production eval")
     run_parser.add_argument(
         "--system",
-        choices=["agent_full", "agent_full_legacy", "agent_rag_only", "raw_rag"],
+        choices=["agent_full", "agent_full_legacy", "raw_rag"],
         default="agent_full",
         help=(
             "System to evaluate: "
             "agent_full (default, tool-calling loop — the new Phase-3 path), "
             "agent_full_legacy (old plan→execute→evaluate→recover→synthesize chain, "
             "for parity comparison), "
-            "agent_rag_only (skip the agent, serve RAG matches directly), "
             "raw_rag (UKY /ask, no agent)."
         ),
     )

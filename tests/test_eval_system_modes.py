@@ -71,11 +71,8 @@ async def test_agent_full_legacy_sets_use_tool_calling_loop_false():
 
 
 @pytest.mark.asyncio
-async def test_non_agent_systems_also_force_flag_false():
-    """--system raw_rag or agent_rag_only → flag forced False.
-
-    The flag is a no-op for these systems, but we set it for log clarity.
-    """
+async def test_raw_rag_system_also_forces_flag_false():
+    """--system raw_rag → flag forced False (raw_rag doesn't exercise it, but we set it for log clarity)."""
     from src.config import settings
     from src.eval.scorer import run_eval
 
@@ -102,7 +99,7 @@ def test_gen_semantic_run_id_format():
 
     from src.eval.runner import gen_semantic_run_id
 
-    for system in ("agent_full", "agent_full_legacy", "agent_rag_only", "raw_rag"):
+    for system in ("agent_full", "agent_full_legacy", "raw_rag"):
         run_id = gen_semantic_run_id(system)  # type: ignore[arg-type]
         # Must fit in the existing String(36) column
         assert len(run_id) <= 36, f"ID too long for String(36): {run_id!r}"
@@ -110,9 +107,9 @@ def test_gen_semantic_run_id_format():
         assert re.match(r"^[a-z_]+-\d{8}-\d{6}-[0-9a-f]{6}$", run_id), (
             f"ID does not match expected format: {run_id!r}"
         )
-        # Shortcode must be one of the four expected values
+        # Shortcode must be one of the three expected values
         shortcode = run_id.split("-")[0]
-        assert shortcode in {"loop", "chain", "rag_only", "raw_rag"}
+        assert shortcode in {"loop", "chain", "raw_rag"}
 
 
 def test_gen_semantic_run_id_uses_correct_shortcode_per_system():
@@ -121,7 +118,6 @@ def test_gen_semantic_run_id_uses_correct_shortcode_per_system():
 
     assert gen_semantic_run_id("agent_full").startswith("loop-")
     assert gen_semantic_run_id("agent_full_legacy").startswith("chain-")
-    assert gen_semantic_run_id("agent_rag_only").startswith("rag_only-")
     assert gen_semantic_run_id("raw_rag").startswith("raw_rag-")
 
 

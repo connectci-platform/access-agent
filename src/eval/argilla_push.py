@@ -34,6 +34,8 @@ def build_argilla_record(
     agent_commit: str | None = None,
     judge_model: str | None = None,
     duration_ms: float | None = None,
+    question_set: str | None = None,
+    tool_count: int | None = None,
 ) -> dict[str, Any]:
     """Build a record dict for Argilla."""
     return {
@@ -53,6 +55,8 @@ def build_argilla_record(
             "agent_commit": agent_commit or "",
             "judge_model": judge_model or "",
             "duration_ms": str(round(duration_ms, 1)) if duration_ms else "",
+            "question_set": question_set or "",
+            "tool_count": str(tool_count) if tool_count is not None else "",
         },
         "suggestions": {
             **judge_scores,
@@ -176,6 +180,8 @@ def create_eval_dataset(argilla_url: str, argilla_api_key: str, dataset_name: st
             rg.TermsMetadataProperty(name="agent_commit", title="Agent Commit"),
             rg.TermsMetadataProperty(name="judge_model", title="Judge Model"),
             rg.TermsMetadataProperty(name="duration_ms", title="Duration (ms)"),
+            rg.TermsMetadataProperty(name="question_set", title="Question Set / Battery"),
+            rg.TermsMetadataProperty(name="tool_count", title="Tool Count"),
         ],
     )
 

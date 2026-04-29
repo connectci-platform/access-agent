@@ -257,8 +257,14 @@ async def _summarize(
     return None
 
 
-def _score_to_public(score: Any, include_context: bool) -> dict[str, Any]:
-    """Pull the presentation-relevant fields off an EvalScore row."""
+def _score_to_public(score: Any) -> dict[str, Any]:
+    """Pull the presentation-relevant fields off an EvalScore row.
+
+    Always includes rag_context and tool_results — the artifact is meant to
+    be a self-contained snapshot for rendering. (An earlier version had an
+    `include_context: bool` toggle for slimmer artifacts; the False branch
+    had no callers and was dropped.)
+    """
     out: dict[str, Any] = {
         "answer": str(score.answer_text or ""),
         "composite": round(float(score.composite_score or 0), 2),
@@ -273,7 +279,7 @@ def _score_to_public(score: Any, include_context: bool) -> dict[str, Any]:
         "duration_ms": (float(score.duration_ms) if score.duration_ms is not None else None),
     }
     ctx: dict[str, Any] = score.context or {}
-    # node_trace is useful for the HTML's execution-path viz; always include it
+    # node_trace is useful for the HTML's execution-path viz
     trace = ctx.get("node_trace")
     if isinstance(trace, str):
         try:
@@ -286,8 +292,7 @@ def _score_to_public(score: Any, include_context: bool) -> dict[str, Any]:
         out["node_trace"] = None
 
     # Required-facts grading (when the battery has authored required_facts and
-    # the judge produced per-fact verdicts). Always included — it's part of the
-    # presentation surface and small enough not to need gating on include_context.
+    # the judge produced per-fact verdicts).
     if ctx.get("fact_verdicts"):
         out["fact_verdicts"] = ctx["fact_verdicts"]
     if ctx.get("required_facts"):
@@ -295,9 +300,8 @@ def _score_to_public(score: Any, include_context: bool) -> dict[str, Any]:
     if ctx.get("ground_truth_stability"):
         out["ground_truth_stability"] = ctx["ground_truth_stability"]
 
-    if include_context:
-        out["rag_context"] = ctx.get("rag_context")
-        out["tool_results"] = ctx.get("tool_results")
+    out["rag_context"] = ctx.get("rag_context")
+    out["tool_results"] = ctx.get("tool_results")
     return out
 
 
@@ -309,20 +313,14 @@ async def compare_runs(
     judge_base_url: str | None = None,
     judge_api_key: str | None = None,
     judge_model: str | None = None,
-    include_context: bool = True,
 ) -> dict[str, Any]:
     """Compare a baseline run against a candidate run, one question at a time.
 
     Writes a self-contained JSON artifact that carries everything needed to
     render a report for this pair — both answers, per-dim scores, justifications,
-    durations, node traces, and (optionally) the full RAG/tool-result context.
-    The artifact is an immutable snapshot: same JSON → same rendered report,
-    regardless of later DB state.
-
-    Args:
-        include_context: if True (default), embed rag_context and tool_results
-            for each system in each question. Adds ~1-5 MB per battery-pair but
-            makes the artifact fully self-contained for rendering.
+    durations, node traces, and the full RAG/tool-result context. The artifact
+    is an immutable snapshot: same JSON → same rendered report, regardless of
+    later DB state.
     """
     db_url = database_url or settings.DATABASE_URL
     j_base = judge_base_url or settings.EVAL_JUDGE_BASE_URL or None
@@ -379,8 +377,8 @@ async def compare_runs(
 
         verdict["question_id"] = qid
         verdict["question_text"] = str(base_s.question_text or "")
-        verdict["baseline"] = _score_to_public(base_s, include_context)
-        verdict["candidate"] = _score_to_public(cand_s, include_context)
+        verdict["baseline"] = _score_to_public(base_s)
+        verdict["candidate"] = _score_to_public(cand_s)
         # Convenience top-level composites so consumers don't have to dig
         verdict["baseline_composite"] = verdict["baseline"]["composite"]
         verdict["candidate_composite"] = verdict["candidate"]["composite"]

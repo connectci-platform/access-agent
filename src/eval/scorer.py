@@ -1,7 +1,7 @@
 """Orchestrate an eval run: load questions, run agent, judge answers, store results."""
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 from src.config import settings
 from src.tools import ToolRegistry, get_catalog_aggregator
@@ -26,8 +26,7 @@ async def run_eval(  # noqa: PLR0915
 ) -> dict[str, Any]:
     # Override USE_TOOL_CALLING_LOOP based on --system choice (CLI is authoritative for eval runs).
     # agent_full → loop (new default); agent_full_legacy → legacy plan→execute chain.
-    # Other systems (agent_rag_only, raw_rag) don't exercise the flag, so we leave the state
-    # as whatever it resolved to but force a predictable value for log clarity.
+    # raw_rag doesn't exercise the flag, so we force a predictable value for log clarity.
     flag_value = system == "agent_full"
     if flag_value != settings.USE_TOOL_CALLING_LOOP:
         logger.info(
@@ -197,6 +196,10 @@ async def run_eval(  # noqa: PLR0915
                     agent_commit=git_info.get("commit"),
                     judge_model=j_model,
                     duration_ms=float(score.duration_ms) if score.duration_ms else None,
+                    question_set=cast("str | None", run.question_set),
+                    tool_count=cast("int | None", run.tool_catalog.get("total_tools"))
+                    if run.tool_catalog
+                    else None,
                 )
             )
 
