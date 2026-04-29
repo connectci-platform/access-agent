@@ -207,9 +207,9 @@
   required_facts:
   - Answer is produced from documentation without calling any MCP tool.
   - Generate an SSH key pair with ssh-keygen (RSA, ECDSA, or ed25519); protect the private key with a strong passphrase.
-  - Register the public key via the ACCESS registry at https://registry.access-ci.org/, or append it to ~/.ssh/authorized_keys on Expanse after a first password-based login.
-  - |-
-    Enroll an authenticator app (Google Authenticator, Duo Mobile, or LastPass Authenticator) for Expanse's TOTP-based 2FA; login host is login.expanse.sdsc.edu.
+  - Answer describes how to install the public key on Expanse so it's used at login (e.g. by appending to ~/.ssh/authorized_keys on Expanse, or via the ACCESS registry at registry.access-ci.org). At least one such path must be present.
+  - Answer mentions Expanse's login host (login.expanse.sdsc.edu) at least once.
+  - Answer mentions Expanse's TOTP / authenticator-based 2FA requirement (Google Authenticator, Duo Mobile, LastPass Authenticator, or similar) — either by describing the enrollment step or by linking to the enrollment portal at passive.sdsc.edu.
   sources:
   - 'doc: https://www.sdsc.edu/systems/expanse/user_guide.html'
   - 'doc: https://access-ci.atlassian.net/wiki/spaces/ACCESSdocumentation/pages/467111296/Expanse+-+SDSC'
