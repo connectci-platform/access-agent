@@ -226,24 +226,24 @@
   ground_truth_stability: stable
   required_facts:
   - Answer is produced from documentation without calling any MCP tool.
-  - heading: 'Explore allocation properties:'
-    items:
-    - 400,000 ACCESS Credits
-    - Entry-level use cases (evaluation, grad-student projects, training, benchmarking)
-    - Lightweight eligibility-based review
-  - heading: 'Accelerate allocation properties:'
-    items:
-    - 3,000,000 ACCESS Credits
-    - Experienced users with mid-scale needs
-    - Up to 3-page proposal with panel merit review
-  - Both allow anytime requests and share the same duration rule (supporting-grant duration or 12 months, whichever is greater).
+  - Explore allocation provides up to 400,000 ACCESS Credits.
+  - Explore is intended for entry-level / small-scale uses (resource evaluation, graduate-student projects, small classes/training, benchmarking, code development).
+  - Explore review is lightweight — eligibility confirmation with a short proposal.
+  - Accelerate allocation provides up to 3,000,000 ACCESS Credits.
+  - Accelerate is intended for experienced users with mid-scale needs (consolidating multi-grant programs, collaborative projects, preparing for Maximize, gateways with growing communities).
+  - Accelerate review is panel merit review (a longer proposal — up to 10 pages).
+  - Both Explore and Accelerate accept requests anytime — multiple submissions permitted.
+  - Allocation duration aligns with a supporting grant when one is present, otherwise 12 months initially with the option to extend in 12-month increments up to 5 years.
   sources:
   - 'doc: https://allocations.access-ci.org/project-types'
   - 'doc: https://allocations.access-ci.org/prepare-requests'
+  - 'doc: https://allocations.access-ci.org/allocations-policy'
   authoring_notes:
-  - ACCESS has four project types (Explore, Discover, Accelerate, Maximize); Discover sits between the two named here at 1.5M credits with a 1-page proposal.
+  - ACCESS has four project types (Explore, Discover, Accelerate, Maximize); Discover sits between Explore and Accelerate at 1,500,000 credits with eligibility-confirmation review (3-page proposal).
   - |-
     If the agent invokes an MCP tool for this question, that's a mark-down — the tier definitions are static.
+  - |-
+    Verified 2026-04-29 against allocations.access-ci.org/project-types and allocations-policy. Earlier rubric incorrectly said Accelerate uses a "3-page proposal" — actual is up to 10 pages. Earlier rubric used heading+items dict structure (per routine: flattens into N redundant verdicts); replaced with atomic per-claim facts.
 
 - id: tc-rag-03
   question: How do I use Globus to transfer files between ACCESS resources?
