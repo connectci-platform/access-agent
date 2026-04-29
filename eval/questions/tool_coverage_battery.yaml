@@ -24,16 +24,16 @@
   ground_truth_stability: time_bound
   required_facts:
   - Answer names the ACCESS resources where PyTorch is currently installed per search_software (Anvil, Delta, DeltaAI at last refresh).
-  - Answer does not name resources that the tool did not return (e.g., Expanse, Bridges-2, Stampede3, Jetstream2).
+  - Answer does not falsely claim PyTorch is installed/cataloged on resources the tool did not return (e.g., Expanse, Bridges-2, Stampede3, Jetstream2). Honest qualifiers about installability via conda/containers are fine.
   sources:
   - 'tool: search_software(query=''pytorch'') at localhost:3004'
-  - 'doc: https://support.access-ci.org/software'
+  - 'doc: https://sds.access-ci.org/'
   authoring_notes:
   - F1's resource list is regenerated from search_software(query='pytorch') before each eval run.
   - |-
-    Snapshot at 2026-04-27: tool's fuzzy search returned three package names — 'pytorch' on Anvil (versions including 21.09-py3 / 21.06-py3 NGC builds), 'pytorch-conda' on Delta (v2.8), 'miniforge3_pytorch' on DeltaAI (v2.7.0, v2.5.0).
+    Snapshot at 2026-04-29: tool's fuzzy search returned three package names — 'pytorch' on Anvil (versions including 21.09-py3 / 21.06-py3 NGC builds), 'pytorch-conda' on Delta (v2.8), 'miniforge3_pytorch' on DeltaAI (v2.7.0, v2.5.0). MCP response now includes docs.see_all_url=https://sds.access-ci.org/.
   - |-
-    Resources not returned (Expanse, Bridges-2, etc.) likely support PyTorch via user-installed conda/containers but don't expose it as indexed site modules — a common false-positive for plausibility-only answers.
+    Resources not returned (Expanse, Bridges-2, etc.) likely support PyTorch via user-installed conda/containers but don't expose it as indexed site modules. PSC's own docs (psc.edu/resources/software/pytorch/) say PyTorch is on Bridges-2 — so the SDS catalog isn't exhaustive. F2 forbids false positives ("X has PyTorch installed") but allows correct qualifiers ("X supports PyTorch via conda").
 
 - id: tc-software-02
   question: What version of CUDA is available on Delta?
