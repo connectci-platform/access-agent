@@ -110,7 +110,8 @@
   - 'tool: search_nsf_awards(query=''cyberinfrastructure'') at localhost:3007'
   authoring_notes:
   - NSF index refreshes as awards post; F1 is graded against the live tool output at judge time, not a snapshot.
-  - 'Snapshot at 2026-04-27: tool returned 10 awards including HUGAI 2608884/2608885 (Human-Geo-AI), CHAI 2609071/2609072 (Hypergraph-based Analysis), Infrastructure for High-Performance Distributed (2609202), and others. NSF index refreshes as awards post.'
+  - 'Snapshot at 2026-04-29: tool returned 10 awards — HUGAI 2608884/2608885 (Human-Geo-AI; UConn / U Michigan), CHAI 2609071/2609072 (Hypergraph-based Analysis; UNT / Missouri S&T), Infrastructure for High-Performance Distributed 2609202/2609203 (Utah / OSU), CI PAOS 2554298/2554299 (AI and FAIR Data; OU Norman / UNT), PEARC 2026 Student 2621705 (UT Knoxville), DiffAI 2513797 (Rochester). NSF index refreshes as awards post.'
+  - search_nsf_awards response does not include docs.see_all_url as of 2026-04-29 — agent may legitimately link to NSF awards search (https://www.nsf.gov/awardsearch/) or skip a "see all" link.
 
 - id: tc-events-01
   question: What ACCESS events are happening in the next two weeks?
