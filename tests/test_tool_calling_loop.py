@@ -623,3 +623,122 @@ async def test_read_only_off_keeps_write_tools_in_loop_registry(monkeypatch, mix
         "report_security_incident",
     ):
         assert write_tool in tool_names, f"{write_tool} should be available when READ_ONLY=false"
+
+
+# ── Defensive paths in catalog parsing + tool-message handling ───────────────
+#
+# These cover the small graceful-degradation branches the loop relies on when
+# the MCP catalog is malformed or a tool returns non-JSON content. Easy to
+# test, real production-failure surface if any branch breaks.
+
+
+def test_catalog_skips_server_with_blank_name():
+    """A server entry missing its `server` name is skipped — caused by an upstream
+    catalog bug; downstream we just want to drop the entry without crashing."""
+    from src.agent.domains.tools import create_mcp_tools_from_catalog
+
+    catalog = {
+        "servers": [
+            {
+                "server": "",
+                "tools": [
+                    {
+                        "name": "should_be_dropped",
+                        "description": "x",
+                        "inputSchema": {"properties": {}, "required": []},
+                    }
+                ],
+            },
+            {
+                "server": "compute-resources",
+                "tools": [
+                    {
+                        "name": "search_resources",
+                        "description": "x",
+                        "inputSchema": {"properties": {}, "required": []},
+                    }
+                ],
+            },
+        ]
+    }
+    tool_names = {t.name for t in create_mcp_tools_from_catalog(catalog)}
+    assert "should_be_dropped" not in tool_names
+    assert "search_resources" in tool_names
+
+
+def test_catalog_skips_server_marked_unavailable():
+    """A server with explicit non-available status is skipped with a warning.
+    Without this, an outage on one MCP server would surface as broken tools
+    rather than a clean drop."""
+    from src.agent.domains.tools import create_mcp_tools_from_catalog
+
+    catalog = {
+        "servers": [
+            {
+                "server": "system-status",
+                "status": "down",
+                "tools": [
+                    {
+                        "name": "get_current_outages",
+                        "description": "x",
+                        "inputSchema": {"properties": {}, "required": []},
+                    }
+                ],
+            },
+            {
+                "server": "compute-resources",
+                "status": "available",
+                "tools": [
+                    {
+                        "name": "search_resources",
+                        "description": "x",
+                        "inputSchema": {"properties": {}, "required": []},
+                    }
+                ],
+            },
+        ]
+    }
+    tool_names = {t.name for t in create_mcp_tools_from_catalog(catalog)}
+    assert "get_current_outages" not in tool_names
+    assert "search_resources" in tool_names
+
+
+def test_parse_tool_message_falls_back_to_raw_when_content_not_json():
+    """When a tool returns a non-JSON string (plain text error, free-form
+    output), the parser must keep the raw text as `data` rather than crash.
+    Every non-JSON-returning tool would fail the loop without this."""
+    from src.agent.nodes.tool_calling_loop import _parse_tool_message
+
+    msg = ToolMessage(
+        content="Connection refused — upstream timeout",
+        tool_call_id="call_x",
+    )
+    result = _parse_tool_message(
+        msg=msg,
+        tc_id="call_x",
+        tool_name="search_resources",
+        server="compute-resources",
+        tool_args={"has_gpu": True},
+    )
+    assert result.success is True
+    assert result.data == "Connection refused — upstream timeout"
+    assert result.tool_name == "search_resources"
+
+
+def test_system_prompt_includes_classifier_hint_when_domain_provided():
+    """When the classifier identifies a specific domain, build_system_prompt
+    must include a 'Classifier hint' section. Covers the optional-section
+    branch in the prompt assembly."""
+    from src.agent.prompts.tool_calling_loop import build_system_prompt
+
+    prompt = build_system_prompt(domain_hint="jsm")
+    assert "Classifier hint" in prompt
+    assert "jsm" in prompt
+
+
+def test_format_rag_matches_returns_empty_string_for_empty_input():
+    """No matches → empty string (caller appends nothing). The function's
+    early-return path for the most-common no-RAG case."""
+    from src.agent.prompts.tool_calling_loop import format_rag_matches
+
+    assert format_rag_matches([]) == ""
