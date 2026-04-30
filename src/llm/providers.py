@@ -1,12 +1,73 @@
 """LLM provider abstraction supporting OpenAI, vLLM, and custom endpoints."""
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import BaseMessage
+from langchain_core.outputs import ChatResult
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
 from ..config import settings
+
+
+def _strip_think_block(content: str) -> str:
+    """Remove a leading reasoning trace terminated by ``</think>``.
+
+    Reasoning models (Qwen3, DeepSeek-R1, etc.) emit chain-of-thought inline
+    in ``content`` before the user-visible answer. Their docs say to strip
+    the trace before re-sending the assistant message in conversation
+    history — replaying the trace back at the model on subsequent turns is
+    out-of-distribution input. No-op when ``</think>`` is absent.
+    """
+    if "</think>" not in content:
+        return content
+    _, _, after = content.partition("</think>")
+    return after.lstrip()
+
+
+def _strip_generations(result: ChatResult) -> None:
+    """Strip ``</think>`` blocks from each generation's message in place."""
+    for gen in result.generations:
+        msg = getattr(gen, "message", None)
+        if msg is None:
+            continue
+        content = getattr(msg, "content", None)
+        if isinstance(content, str):
+            msg.content = _strip_think_block(content)
+
+
+class _StrippingChatOpenAI(ChatOpenAI):
+    """ChatOpenAI subclass that strips reasoning-model ``</think>`` blocks.
+
+    Used by ``OpenAICompatibleProvider`` so every response from a thinking
+    model (e.g. Qwen3 via UKY's vLLM endpoint) arrives with the reasoning
+    trace removed — keeping eval, telemetry, the loop's own message thread,
+    and the frontend on clean content.
+    """
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        result = super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+        _strip_generations(result)
+        return result
+
+    async def _agenerate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        result = await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+        _strip_generations(result)
+        return result
 
 
 class LLMProvider(ABC):
@@ -18,6 +79,7 @@ class LLMProvider(ABC):
         model_name: str | None = None,
         temperature: float = 0.1,
         max_tokens: int = 2000,
+        enable_thinking: bool | None = None,
     ) -> BaseChatModel:
         """Get a chat model instance.
 
@@ -25,6 +87,13 @@ class LLMProvider(ABC):
             model_name: Override the default model name.
             temperature: Sampling temperature.
             max_tokens: Maximum tokens in response.
+            enable_thinking: Optional override for reasoning-model thinking mode.
+                When set, the value is sent to the server as
+                ``chat_template_kwargs.enable_thinking`` in the request body.
+                When ``None`` (default), nothing is sent and the server uses
+                its own default. Only meaningful for reasoning models served
+                via OpenAI-compatible endpoints (e.g. Qwen3 on vLLM); ignored
+                by providers that don't support the parameter.
 
         Returns:
             A LangChain chat model instance.
@@ -43,7 +112,11 @@ class OpenAIProvider(LLMProvider):
         model_name: str | None = None,
         temperature: float = 0.1,
         max_tokens: int = 2000,
+        enable_thinking: bool | None = None,
     ) -> BaseChatModel:
+        # enable_thinking is a vLLM/Qwen concept; OpenAI's API doesn't honor it.
+        # Accepted for signature parity, silently ignored.
+        del enable_thinking
         return ChatOpenAI(
             model=model_name or self.default_model,
             api_key=self.api_key,
@@ -78,13 +151,19 @@ class OpenAICompatibleProvider(LLMProvider):
         model_name: str | None = None,
         temperature: float = 0.1,
         max_tokens: int = 2000,
+        enable_thinking: bool | None = None,
     ) -> BaseChatModel:
-        return ChatOpenAI(
+        extra_body: dict[str, Any] = {}
+        if enable_thinking is not None:
+            extra_body["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
+
+        return _StrippingChatOpenAI(
             model=model_name or self.default_model,
             api_key=self.api_key,
             base_url=self.base_url,
             temperature=temperature,
             max_completion_tokens=max_tokens,
+            extra_body=extra_body or None,
         )
 
 
@@ -135,6 +214,7 @@ def get_llm(
     model_name: str | None = None,
     temperature: float = 0.1,
     max_tokens: int = 2000,
+    enable_thinking: bool | None = None,
 ) -> BaseChatModel:
     """Get a configured LLM instance.
 
@@ -144,6 +224,10 @@ def get_llm(
         model_name: Override the default model name.
         temperature: Sampling temperature.
         max_tokens: Maximum tokens in response.
+        enable_thinking: Optional override for reasoning-model thinking mode.
+            See :meth:`LLMProvider.get_chat_model` for details. No call site
+            currently sets this; it is exposed for future fast-path
+            experiments where a node may want to opt out of reasoning.
 
     Returns:
         A LangChain chat model instance.
@@ -153,4 +237,5 @@ def get_llm(
         model_name=model_name,
         temperature=temperature,
         max_tokens=max_tokens,
+        enable_thinking=enable_thinking,
     )
