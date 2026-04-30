@@ -49,7 +49,6 @@ The `run` command's `--system` flag selects which pipeline scores the questions.
 |---|---|---|
 | `agent_full` *(default)* | Full agent graph with the tool-calling loop — the Phase-3 default path. | Standard evaluation; grand-prix; Phase-3 candidate in parity comparisons. |
 | `agent_full_legacy` | Full agent graph with the legacy `plan → execute → evaluate → recover → synthesize` chain. Forces `USE_TOOL_CALLING_LOOP=false` for the run. | Phase-3 parity baseline; debugging regressions introduced by the loop. |
-| `agent_rag_only` | Skips the agent entirely; serves the top RAG match as the answer. | Measures the RAG-only baseline. |
 | `raw_rag` | Queries UKY's `/ask` endpoint directly, no agent involvement. | Production-baseline comparisons (grand-prix). |
 
 **Note on grand-prix historical compatibility.** Prior to 2026-04-23, `agent_full` meant the legacy chain. After, it means the tool-calling loop. Grand-prix runs recorded before vs after this date are NOT apples-to-apples in the `agent_full` column — if you need to compare against pre-2026-04-23 grand-prix runs, use `--system agent_full_legacy` for re-runs.
@@ -62,7 +61,6 @@ Runs get semantic IDs of the form `{shortcode}-{YYYYMMDD}-{HHMMSS}-{hash6}`, whe
 |---|---|---|
 | `agent_full` | `loop` | `loop-20260423-143052-a1b2c3` |
 | `agent_full_legacy` | `chain` | `chain-20260423-143107-8d7e4f` |
-| `agent_rag_only` | `rag_only` | `rag_only-20260423-143122-3f91a8` |
 | `raw_rag` | `raw_rag` | `raw_rag-20260423-143135-77c4de` |
 
 The IDs are lex-sortable by timestamp, fit in the existing `String(36)` column (no migration), and make Argilla's "Eval Run ID" metadata filter self-describing. The 6-hex random suffix prevents collisions between same-second runs.
@@ -120,30 +118,13 @@ only — the tunnel target in `scripts/eval-tunnel-open` will need updating.
 Then from another terminal:
 
 ```bash
-# Full-capabilities run (what we want to ship)
 ./scripts/eval-prod run \
   --questions eval/questions/friendly_battery.json \
   --push-argilla
-
-# RAG-only baseline run (same agent, MCP capabilities disabled)
-./scripts/eval-prod --rag-only run \
-  --questions eval/questions/friendly_battery.json \
-  --push-argilla
-
-# Compare the two runs
-./scripts/eval-prod compare --run-a <rag_only_id> --run-b <full_caps_id>
 ```
 
-The `--rag-only` flag (which must appear **before** the eval subcommand)
-sets `ENABLED_CAPABILITIES=ask_question,ask_xdmod_question,ask_about_resource`
-so the agent runs with RAG backends only and no MCP tools. Both runs
-otherwise use the same agent binary, classifier, and synthesis layer — the
-only variable being tested is the value added by MCP tools.
-
-Results land in the prod Argilla dataset `eval-baseline-comparison`, which
-is kept separate from `eval-production` (the rolling production scoring
-dataset) so the one-time baseline evidence doesn't mix with ongoing
-quality tracking.
+Results land in the prod Argilla dataset configured by
+`ARGILLA_EVAL_DATASET` in `.env.eval.prod`.
 
 ### Safety checks
 
