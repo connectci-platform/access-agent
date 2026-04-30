@@ -38,12 +38,17 @@ def test_write_capability_ids_constant_matches_known_writes():
     """The WRITE_CAPABILITY_IDS set must list exactly the known write capabilities."""
     from src.agent.domains.capabilities import WRITE_CAPABILITY_IDS
 
-    assert WRITE_CAPABILITY_IDS == frozenset({
-        "manage_announcements",
-        "open_ticket",
-        "report_login_problem",
-        "report_security",
-    })
+    assert (
+        frozenset(
+            {
+                "manage_announcements",
+                "open_ticket",
+                "report_login_problem",
+                "report_security",
+            }
+        )
+        == WRITE_CAPABILITY_IDS
+    )
 
 
 def test_baseline_write_caps_enabled_without_read_only(monkeypatch, fresh_registry):
@@ -54,8 +59,12 @@ def test_baseline_write_caps_enabled_without_read_only(monkeypatch, fresh_regist
 
     registry = fresh_registry()
 
-    for cap_id in ("manage_announcements", "open_ticket",
-                   "report_login_problem", "report_security"):
+    for cap_id in (
+        "manage_announcements",
+        "open_ticket",
+        "report_login_problem",
+        "report_security",
+    ):
         assert registry.get_by_id(cap_id) is not None, f"{cap_id} should be enabled"
 
 
@@ -67,11 +76,13 @@ def test_read_only_disables_all_write_capabilities(monkeypatch, fresh_registry):
 
     registry = fresh_registry()
 
-    for cap_id in ("manage_announcements", "open_ticket",
-                   "report_login_problem", "report_security"):
-        assert registry.get_by_id(cap_id) is None, (
-            f"{cap_id} must be disabled when READ_ONLY=true"
-        )
+    for cap_id in (
+        "manage_announcements",
+        "open_ticket",
+        "report_login_problem",
+        "report_security",
+    ):
+        assert registry.get_by_id(cap_id) is None, f"{cap_id} must be disabled when READ_ONLY=true"
 
 
 def test_read_only_does_not_affect_read_capabilities(monkeypatch, fresh_registry):
@@ -83,8 +94,13 @@ def test_read_only_does_not_affect_read_capabilities(monkeypatch, fresh_registry
     registry = fresh_registry()
 
     # A sampling of read-only capabilities that should NOT be touched.
-    for cap_id in ("ask_question", "check_allocations", "search_software",
-                   "check_system_status", "browse_events"):
+    for cap_id in (
+        "ask_question",
+        "check_allocations",
+        "search_software",
+        "check_system_status",
+        "browse_events",
+    ):
         assert registry.get_by_id(cap_id) is not None, (
             f"{cap_id} is read-only and should stay enabled under READ_ONLY=true"
         )
@@ -119,6 +135,5 @@ def test_read_only_logged_at_startup(monkeypatch, fresh_registry, caplog):
         fresh_registry()
 
     assert any(
-        "READ_ONLY" in rec.message and "active" in rec.message.lower()
-        for rec in caplog.records
+        "READ_ONLY" in rec.message and "active" in rec.message.lower() for rec in caplog.records
     ), "Expected a WARNING-level log line announcing READ_ONLY=true at startup"

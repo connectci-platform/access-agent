@@ -1,7 +1,7 @@
 """Print eval run reports to the terminal."""
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from .rubric import DIMENSION_NAMES
@@ -169,7 +169,7 @@ def generate_comparison_report(  # noqa: PLR0912, PLR0915
     Returns:
         Markdown string.
     """
-    now = datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now(tz=UTC).strftime("%Y-%m-%d")
     lines = [
         f"# {title}",
         "",
@@ -206,23 +206,27 @@ def generate_comparison_report(  # noqa: PLR0912, PLR0915
     b_sys = run_pairs[0]["baseline"]["system"] if run_pairs else "baseline"
     c_sys = run_pairs[0]["candidate"]["system"] if run_pairs else "candidate"
 
-    lines.extend([
-        "## Overall",
-        "",
-        f"| Metric | {b_sys} | {c_sys} | Delta |",
-        "|--------|---------|---------|-------|",
-        f"| **Composite** | **{baseline_avg:.2f}** | **{candidate_avg:.2f}** | **{sign}{delta:.2f}** |",
-        f"| Questions scored | {total_q} | {total_q} | |",
-        "",
-    ])
+    lines.extend(
+        [
+            "## Overall",
+            "",
+            f"| Metric | {b_sys} | {c_sys} | Delta |",
+            "|--------|---------|---------|-------|",
+            f"| **Composite** | **{baseline_avg:.2f}** | **{candidate_avg:.2f}** | **{sign}{delta:.2f}** |",
+            f"| Questions scored | {total_q} | {total_q} | |",
+            "",
+        ]
+    )
 
     # Per-battery summary
-    lines.extend([
-        "## Per Battery",
-        "",
-        f"| Battery | {b_sys} | {c_sys} | Delta | Questions |",
-        f"|---------|---------|---------|-------|-----------|",
-    ])
+    lines.extend(
+        [
+            "## Per Battery",
+            "",
+            f"| Battery | {b_sys} | {c_sys} | Delta | Questions |",
+            "|---------|---------|---------|-------|-----------|",
+        ]
+    )
     for pair in run_pairs:
         b = pair["baseline"]
         c = pair["candidate"]
@@ -236,19 +240,25 @@ def generate_comparison_report(  # noqa: PLR0912, PLR0915
     lines.append("")
 
     # Per-dimension comparison (aggregated)
-    lines.extend([
-        "## Per Dimension",
-        "",
-        f"| Dimension | {b_sys} | {c_sys} | Delta |",
-        "|-----------|---------|---------|-------|",
-    ])
+    lines.extend(
+        [
+            "## Per Dimension",
+            "",
+            f"| Dimension | {b_sys} | {c_sys} | Delta |",
+            "|-----------|---------|---------|-------|",
+        ]
+    )
     for dim in DIMENSION_NAMES:
         b_vals = [
-            s[dim] for pair in run_pairs for s in pair["baseline"]["scores"]
+            s[dim]
+            for pair in run_pairs
+            for s in pair["baseline"]["scores"]
             if s.get(dim) is not None
         ]
         c_vals = [
-            s[dim] for pair in run_pairs for s in pair["candidate"]["scores"]
+            s[dim]
+            for pair in run_pairs
+            for s in pair["candidate"]["scores"]
             if s.get(dim) is not None
         ]
         b_avg = sum(b_vals) / len(b_vals) if b_vals else 0
@@ -261,18 +271,22 @@ def generate_comparison_report(  # noqa: PLR0912, PLR0915
     # Per-battery detail with question-level results
     for pair in run_pairs:
         battery_name = pair["battery"].replace("_battery", "").replace("_", " ")
-        lines.extend([
-            f"## {battery_name.title()} Battery — Question Detail",
-            "",
-        ])
+        lines.extend(
+            [
+                f"## {battery_name.title()} Battery — Question Detail",
+                "",
+            ]
+        )
 
         # Build lookup by question_id
         b_by_q = {s["question_id"]: s for s in pair["baseline"]["scores"]}
         c_by_q = {s["question_id"]: s for s in pair["candidate"]["scores"]}
-        all_qids = list(dict.fromkeys(
-            [s["question_id"] for s in pair["candidate"]["scores"]]
-            + [s["question_id"] for s in pair["baseline"]["scores"]]
-        ))
+        all_qids = list(
+            dict.fromkeys(
+                [s["question_id"] for s in pair["candidate"]["scores"]]
+                + [s["question_id"] for s in pair["baseline"]["scores"]]
+            )
+        )
 
         # Find questions where agent used tools
         tool_questions = []
@@ -290,7 +304,9 @@ def generate_comparison_report(  # noqa: PLR0912, PLR0915
 
             entry = {
                 "qid": qid,
-                "question": (c_score.get("question_text") or b_score.get("question_text", ""))[:100],
+                "question": (c_score.get("question_text") or b_score.get("question_text", ""))[
+                    :100
+                ],
                 "baseline_comp": bc,
                 "candidate_comp": cc,
                 "delta": d,
@@ -308,12 +324,14 @@ def generate_comparison_report(  # noqa: PLR0912, PLR0915
 
         # Tool usage summary
         if tool_questions:
-            lines.extend([
-                f"### Tool Usage ({len(tool_questions)}/{len(all_qids)} questions)",
-                "",
-                f"| Question | {b_sys} | {c_sys} | Delta | Tools |",
-                "|----------|---------|---------|-------|-------|",
-            ])
+            lines.extend(
+                [
+                    f"### Tool Usage ({len(tool_questions)}/{len(all_qids)} questions)",
+                    "",
+                    f"| Question | {b_sys} | {c_sys} | Delta | Tools |",
+                    "|----------|---------|---------|-------|-------|",
+                ]
+            )
             for e in sorted(tool_questions, key=lambda x: -x["delta"]):
                 s = "+" if e["delta"] > 0 else ""
                 tools_str = ", ".join(e["tools"][:3])
@@ -328,12 +346,14 @@ def generate_comparison_report(  # noqa: PLR0912, PLR0915
 
         # Agent wins
         if agent_wins:
-            lines.extend([
-                f"### Agent Wins ({len(agent_wins)} questions)",
-                "",
-                f"| Question | {b_sys} | {c_sys} | Delta |",
-                "|----------|---------|---------|-------|",
-            ])
+            lines.extend(
+                [
+                    f"### Agent Wins ({len(agent_wins)} questions)",
+                    "",
+                    f"| Question | {b_sys} | {c_sys} | Delta |",
+                    "|----------|---------|---------|-------|",
+                ]
+            )
             for e in sorted(agent_wins, key=lambda x: -x["delta"]):
                 lines.append(
                     f"| {e['qid']}: {e['question'][:70]} "
@@ -344,12 +364,14 @@ def generate_comparison_report(  # noqa: PLR0912, PLR0915
 
         # Agent losses
         if agent_losses:
-            lines.extend([
-                f"### Agent Losses ({len(agent_losses)} questions)",
-                "",
-                f"| Question | {b_sys} | {c_sys} | Delta |",
-                "|----------|---------|---------|-------|",
-            ])
+            lines.extend(
+                [
+                    f"### Agent Losses ({len(agent_losses)} questions)",
+                    "",
+                    f"| Question | {b_sys} | {c_sys} | Delta |",
+                    "|----------|---------|---------|-------|",
+                ]
+            )
             for e in sorted(agent_losses, key=lambda x: x["delta"]):
                 lines.append(
                     f"| {e['qid']}: {e['question'][:70]} "
