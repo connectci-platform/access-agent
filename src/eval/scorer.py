@@ -1,7 +1,7 @@
 """Orchestrate an eval run: load questions, run agent, judge answers, store results."""
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 from src.config import settings
 from src.tools import ToolRegistry, get_catalog_aggregator
@@ -10,19 +10,31 @@ from .db import EvalDB
 from .judge import Judge
 from .questions import load_questions
 from .rubric import DIMENSION_NAMES, compute_composite
-from .runner import get_git_info, run_question
+from .runner import SystemMode, gen_semantic_run_id, get_git_info, run_question
 
 logger = logging.getLogger(__name__)
 
 
 async def run_eval(  # noqa: PLR0915
     question_set_path: str,
+    system: SystemMode = "agent_full",
     database_url: str | None = None,
     judge_base_url: str | None = None,
     judge_api_key: str | None = None,
     judge_model: str | None = None,
     push_argilla: bool = False,
 ) -> dict[str, Any]:
+    # Override USE_TOOL_CALLING_LOOP based on --system choice (CLI is authoritative for eval runs).
+    # agent_full → loop (new default); agent_full_legacy → legacy plan→execute chain.
+    # raw_rag doesn't exercise the flag, so we force a predictable value for log clarity.
+    flag_value = system == "agent_full"
+    if flag_value != settings.USE_TOOL_CALLING_LOOP:
+        logger.info(
+            f"Overriding USE_TOOL_CALLING_LOOP from {settings.USE_TOOL_CALLING_LOOP} "
+            f"to {flag_value} for --system {system}"
+        )
+    settings.USE_TOOL_CALLING_LOOP = flag_value
+
     db_url = database_url or settings.DATABASE_URL
     j_base = judge_base_url or settings.EVAL_JUDGE_BASE_URL or None
     j_key = judge_api_key or settings.EVAL_JUDGE_API_KEY or settings.OPENAI_API_KEY
@@ -47,6 +59,7 @@ async def run_eval(  # noqa: PLR0915
     judge = Judge(base_url=j_base, api_key=j_key, model=j_model)
 
     run = db.create_run(
+        id=gen_semantic_run_id(system),
         run_type="pre_production",
         agent_commit=git_info.get("commit"),
         agent_branch=git_info.get("branch"),
@@ -55,14 +68,21 @@ async def run_eval(  # noqa: PLR0915
         judge_model=j_model,
         question_set=question_set_path,
         question_count=len(questions),
+        metadata_={"system": system},
     )
-    logger.info(f"Eval run {run.id} started ({len(questions)} questions)")
+    logger.info(f"Eval run {run.id} started ({len(questions)} questions, system={system})")
 
     all_scores: list[dict[str, int]] = []
     for i, q in enumerate(questions, 1):
         logger.info(f"[{i}/{len(questions)}] {q.question[:60]}...")
 
-        result = await run_question(q.id, q.question, registry.catalog)
+        result = await run_question(
+            q.id,
+            q.question,
+            registry.catalog,
+            system=system,
+            resource_context=q.metadata.get("resource"),
+        )
 
         if not result.success:
             db.add_score(
@@ -71,6 +91,7 @@ async def run_eval(  # noqa: PLR0915
                 source="skipped",
                 question_text=q.question,
                 answer_text=result.error or "Agent failed",
+                duration_ms=result.duration_ms,
                 justifications={"error": result.error},
             )
             continue
@@ -81,6 +102,7 @@ async def run_eval(  # noqa: PLR0915
             rag_context=result.rag_context,
             tool_results=result.tool_results,
             node_trace=result.node_trace,
+            required_facts=q.metadata.get("required_facts"),
         )
 
         if judge_result is None:
@@ -90,6 +112,7 @@ async def run_eval(  # noqa: PLR0915
                 source="judge_error",
                 question_text=q.question,
                 answer_text=result.answer,
+                duration_ms=result.duration_ms,
                 context={
                     "rag_context": result.rag_context,
                     "tool_results": result.tool_results,
@@ -108,6 +131,9 @@ async def run_eval(  # noqa: PLR0915
                 "rag_context": result.rag_context,
                 "tool_results": result.tool_results,
                 "node_trace": result.node_trace,
+                "required_facts": q.metadata.get("required_facts"),
+                "fact_verdicts": judge_result.fact_verdicts,
+                "ground_truth_stability": q.metadata.get("ground_truth_stability"),
             },
             context_completeness="full" if result.rag_context or result.tool_results else "partial",
             correctness=judge_result.scores["correctness"],
@@ -116,6 +142,7 @@ async def run_eval(  # noqa: PLR0915
             citation_quality=judge_result.scores["citation_quality"],
             hedging=judge_result.scores["hedging"],
             composite_score=judge_result.composite,
+            duration_ms=result.duration_ms,
             justifications=judge_result.justifications,
         )
         all_scores.append(judge_result.scores)
@@ -166,7 +193,13 @@ async def run_eval(  # noqa: PLR0915
                     node_trace=score_context.get("node_trace"),
                     run_id=str(run.id),
                     agent_branch=git_info.get("branch"),
+                    agent_commit=git_info.get("commit"),
                     judge_model=j_model,
+                    duration_ms=float(score.duration_ms) if score.duration_ms else None,
+                    question_set=cast("str | None", run.question_set),
+                    tool_count=cast("int | None", run.tool_catalog.get("total_tools"))
+                    if run.tool_catalog
+                    else None,
                 )
             )
 
@@ -181,6 +214,7 @@ async def run_eval(  # noqa: PLR0915
 
     summary = {
         "run_id": run.id,
+        "system": system,
         "questions": len(questions),
         "scored": len(all_scores),
         "skipped": len(questions) - len(all_scores),

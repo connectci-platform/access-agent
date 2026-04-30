@@ -1,0 +1,10 @@
+# CVE suppressions for `pip-audit`.
+# One GHSA ID per line. Blank lines and `#` comments are ignored.
+#
+# Only add an entry here after:
+#   1. Reading the CVE advisory.
+#   2. Confirming the attack path does not apply to our deployment.
+#   3. Documenting the reason in the commit message when you add the line.
+#
+# Reviewed in PRs like any other config change.
+# See: docs/superpowers/specs/2026-04-22-code-quality-guardrails-design.md §4

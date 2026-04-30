@@ -1,0 +1,1127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ACCESS-CI Eval Comparison Report</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --font: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Consolas, monospace;
+
+    --bg: #ffffff;
+    --panel: #ffffff;
+    --panel-alt: #f8f9fb;
+    --panel-inset: #f4f5f8;
+    --border: #e5e7eb;
+    --border-strong: #d1d5db;
+
+    --text: #111827;
+    --text-dim: #4b5563;
+    --text-muted: #6b7280;
+
+    --agent: #0f766e;
+    --agent-bg: #ecfdf5;
+    --raw: #6d28d9;
+    --raw-bg: #f5f3ff;
+
+    --good: #15803d;
+    --warn: #b45309;
+    --bad: #b91c1c;
+    --info: #1d4ed8;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: var(--bg); color: var(--text); }
+  body {
+    font-family: var(--font);
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    padding: 40px 24px 80px;
+  }
+  .wrap { max-width: 1800px; margin: 0 auto; }
+
+  /* Header */
+  header.top { border-bottom: 1px solid var(--border); padding-bottom: 20px; margin-bottom: 28px; }
+  header.top .eyebrow {
+    font-family: var(--mono); text-transform: uppercase;
+    letter-spacing: 0.08em; font-size: 11px;
+    color: var(--text-muted); margin-bottom: 8px;
+  }
+  header.top h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.01em; }
+  header.top .subtitle { color: var(--text-dim); margin-top: 6px; font-size: 15px; }
+  header.top .meta {
+    margin-top: 10px; display: flex; flex-wrap: wrap;
+    gap: 6px 20px; font-family: var(--mono); font-size: 12px; color: var(--text-muted);
+  }
+
+  /* Section label */
+  .section-label {
+    font-family: var(--mono); font-size: 12px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-muted);
+    padding-bottom: 8px; margin: 36px 0 14px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* Battery legend — what each battery contains and why */
+  .battery-legend {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+  @media (max-width: 900px) { .battery-legend { grid-template-columns: 1fr; } }
+  .blcard {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 16px;
+  }
+  .blcard .bl-head {
+    display: flex; align-items: baseline; gap: 10px;
+    margin-bottom: 6px;
+  }
+  .blcard .bl-name { font-weight: 600; font-size: 15px; }
+  .blcard .bl-count {
+    font-family: var(--mono); font-size: 11px;
+    color: var(--text-muted);
+    background: var(--panel-inset);
+    padding: 2px 7px; border-radius: 4px;
+  }
+  .blcard .bl-what {
+    color: var(--text-dim);
+    font-size: 13.5px;
+    margin-bottom: 6px;
+  }
+  .blcard .bl-why {
+    font-size: 12.5px;
+    color: var(--text-muted);
+    border-top: 1px dashed var(--border);
+    padding-top: 8px;
+    margin-top: 8px;
+  }
+  .blcard .bl-why strong { font-weight: 600; color: var(--text-dim); }
+
+  /* Comparison-judge narrative (run-level, one card per battery).
+     Sits at the end of the report as an AI-generated summary, not a lead. */
+  .compare-summary { display: grid; grid-template-columns: 1fr; gap: 12px; margin-bottom: 20px; }
+  .provenance {
+    font-size: 13px;
+    color: var(--text-muted);
+    font-style: italic;
+    line-height: 1.55;
+    margin-bottom: 14px;
+    padding: 10px 14px;
+    background: var(--panel-alt);
+    border-left: 3px solid var(--border);
+    border-radius: 3px;
+  }
+  .csc {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px 18px;
+    border-left: 3px solid var(--border);
+  }
+  .csc.agent { border-left-color: var(--agent); }
+  .csc.raw   { border-left-color: var(--raw); }
+  .csc.tie   { border-left-color: var(--text-muted); }
+  .csc-head {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .csc-battery {
+    font-weight: 600; font-size: 16px;
+    letter-spacing: -0.005em;
+  }
+  .csc-verdict {
+    font-family: var(--mono); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    padding: 4px 10px; border-radius: 3px; font-weight: 600;
+  }
+  .csc-verdict.agent { background: var(--agent-bg); color: var(--agent); }
+  .csc-verdict.raw { background: var(--raw-bg); color: var(--raw); }
+  .csc-verdict.tie { background: var(--panel-inset); color: var(--text-dim); }
+  .csc-tally {
+    font-family: var(--mono); font-size: 12px; color: var(--text-muted);
+    display: inline-flex; gap: 10px; align-items: center;
+    margin-left: auto;
+  }
+  .csc-tally .t-agent { color: var(--agent); font-weight: 600; }
+  .csc-tally .t-raw { color: var(--raw); font-weight: 600; }
+  .csc-tally .t-tie { color: var(--text-muted); font-weight: 600; }
+  .csc-why { color: var(--text); margin-bottom: 14px; line-height: 1.6; font-size: 15px; }
+  .csc-section { margin-top: 14px; font-size: 14px; }
+  .csc-label {
+    font-family: var(--mono); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-muted); font-weight: 600;
+    margin-bottom: 5px;
+  }
+  .csc-patterns ul { margin: 0 0 0 18px; padding: 0; }
+  .csc-patterns li { margin-bottom: 4px; color: var(--text-dim); }
+  .csc-calib { color: var(--text-dim); font-style: italic; }
+
+
+  /* Per-question comparison verdict (inside qrow body) */
+  .qverdict {
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--text-muted);
+    border-radius: 4px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+  }
+  .qverdict.agent { border-left-color: var(--agent); }
+  .qverdict.raw { border-left-color: var(--raw); }
+  .qverdict.tie { border-left-color: var(--text-muted); }
+  .qverdict-head { display: flex; gap: 10px; align-items: baseline; margin-bottom: 6px; }
+  .qverdict-label {
+    font-family: var(--mono); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-muted); font-weight: 600;
+  }
+  .qverdict-pill {
+    font-family: var(--mono); font-size: 11px;
+    padding: 2px 8px; border-radius: 3px; font-weight: 600;
+  }
+  .qverdict-pill.agent { background: var(--agent-bg); color: var(--agent); }
+  .qverdict-pill.raw { background: var(--raw-bg); color: var(--raw); }
+  .qverdict-pill.tie { background: var(--panel-inset); color: var(--text-dim); }
+  .qverdict-why { color: var(--text); line-height: 1.5; }
+
+  /* Required-facts grading (side-by-side per-fact verdicts) */
+  .facts-disclose { margin: 12px 0 0; }
+  .facts-disclose summary {
+    cursor: pointer; padding: 6px 10px; user-select: none;
+    background: var(--panel-inset); border: 1px solid var(--border);
+    border-radius: 4px; font-size: 13px; color: var(--text-dim);
+  }
+  .facts-disclose summary:hover { color: var(--text); }
+  .facts-disclose[open] summary { background: var(--panel-alt); }
+  .facts-summary-pill {
+    display: inline-block; margin-left: 8px; padding: 1px 6px;
+    border-radius: 3px; font-size: 11px; font-family: ui-monospace, monospace;
+  }
+  .facts-summary-pill.baseline { background: var(--raw-bg); color: var(--raw); }
+  .facts-summary-pill.candidate { background: var(--agent-bg); color: var(--agent); }
+  .facts-table {
+    width: 100%; border-collapse: collapse; margin-top: 8px;
+    font-size: 12px; background: var(--panel);
+  }
+  .facts-table thead th {
+    text-align: left; padding: 6px 10px;
+    background: var(--panel-alt); color: var(--text-dim);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--border);
+  }
+  .facts-table tbody td {
+    padding: 6px 10px; border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .facts-table .ft-id { font-family: ui-monospace, monospace; color: var(--text-dim); width: 32px; }
+  .facts-table .ft-text { color: var(--text); }
+  .facts-table .ft-verdict { width: 90px; white-space: nowrap; font-weight: 600; }
+  .verdict-yes     { color: #16a34a; }
+  .verdict-partial { color: #d97706; }
+  .verdict-no      { color: #dc2626; }
+  .verdict-none    { color: var(--text-muted); font-style: italic; }
+  .facts-table .ft-verdict .vglyph {
+    display: inline-block; width: 14px; text-align: center; margin-right: 4px;
+  }
+  .facts-table tbody tr:hover { background: var(--panel-inset); }
+
+  /* Filters — dropdowns are quieter at this width than a row of buttons */
+  .filters {
+    display: flex; flex-wrap: wrap; gap: 18px;
+    align-items: center;
+    padding: 10px 14px; margin-bottom: 16px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .filters .fgroup {
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .filters .flabel {
+    font-family: var(--mono); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+  .filters select {
+    font-family: var(--font); font-size: 13px;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 5px 28px 5px 10px;
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='none' stroke='%236b7280' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' d='M1 1l4 4 4-4'/></svg>");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    transition: border-color 0.12s ease;
+  }
+  .filters select:hover { border-color: var(--border-strong); }
+  .filters select:focus {
+    outline: none;
+    border-color: var(--text-dim);
+    box-shadow: 0 0 0 2px var(--panel-inset);
+  }
+  .filters input[type="search"] {
+    font-family: var(--font); font-size: 13px;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 5px 10px;
+    width: 220px;
+    transition: border-color 0.12s ease;
+  }
+  .filters input[type="search"]:hover { border-color: var(--border-strong); }
+  .filters input[type="search"]:focus {
+    outline: none;
+    border-color: var(--text-dim);
+    box-shadow: 0 0 0 2px var(--panel-inset);
+  }
+  .filters input[type="search"].regex-invalid {
+    border-color: var(--bad);
+  }
+  .filters .fhint {
+    font-family: var(--mono); font-size: 10px;
+    color: var(--text-muted);
+    padding: 2px 6px;
+    background: var(--panel-inset);
+    border-radius: 3px;
+  }
+  .filters .fhint.invalid { color: var(--bad); background: transparent; }
+  .filters .fcount {
+    margin-left: auto;
+    font-family: var(--mono); font-size: 11px; color: var(--text-muted);
+  }
+
+  /* Question rows */
+  .qrow {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 8px;
+    overflow: hidden;
+  }
+  .qrow-head {
+    display: grid;
+    grid-template-columns: 16px 104px 1fr 120px;
+    gap: 14px;
+    align-items: center;
+    padding: 12px 16px;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  .qrow-head:hover { background: var(--panel-alt); }
+  .qh-caret {
+    font-family: var(--mono); font-size: 11px;
+    color: var(--text-muted);
+    transition: transform 0.15s ease;
+  }
+  .qrow.open .qh-caret { transform: rotate(90deg); }
+  .qh-qid {
+    font-family: var(--mono); font-size: 12px;
+    color: var(--text-muted);
+    min-width: 100px;
+  }
+  .qh-q {
+    color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .qh-bpill {
+    font-family: var(--mono); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-muted);
+    background: var(--panel-inset);
+    padding: 3px 8px; border-radius: 3px;
+    text-align: center;
+  }
+
+  /* Nested AI-judge disclosure inside the expanded question body.
+     Second-level revelation: the viewer already opened the row to see the
+     data; this further step shows the AI's opinion only on request. */
+  details.judge-disclose {
+    margin-top: 14px;
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    background: var(--panel-alt);
+  }
+  details.judge-disclose[open] { background: var(--panel); }
+  details.judge-disclose > summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 10px 14px;
+    font-family: var(--mono); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-muted);
+    display: flex; align-items: center; gap: 10px;
+    user-select: none;
+  }
+  details.judge-disclose > summary::-webkit-details-marker { display: none; }
+  details.judge-disclose > summary::before {
+    content: '›';
+    display: inline-block;
+    transition: transform 0.15s ease;
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+  details.judge-disclose[open] > summary::before { transform: rotate(90deg); }
+  details.judge-disclose > summary:hover { color: var(--text-dim); }
+  details.judge-disclose .judge-body {
+    padding: 0 14px 14px;
+  }
+
+  .qrow-body {
+    display: none; padding: 0 16px 16px;
+    border-top: 1px solid var(--border);
+  }
+  .qrow.open .qrow-body { display: block; }
+  .qb-q {
+    padding: 14px 0 10px;
+    font-weight: 600;
+    font-size: 15px;
+  }
+
+  /* Agent execution trace — full width above the answer columns */
+  .trace {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    margin-bottom: 12px;
+  }
+  .trace-pair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+  @media (max-width: 900px) { .trace-pair { grid-template-columns: 1fr; } }
+  .trace-pair .trace {
+    margin-bottom: 0;
+    border-left: 3px solid;
+  }
+  .trace-pair .trace.baseline { border-left-color: var(--raw); }
+  .trace-pair .trace.candidate { border-left-color: var(--agent); }
+  .trace .trace-label {
+    font-family: var(--mono); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-muted);
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+  .trace .trace-path {
+    display: flex; flex-wrap: wrap;
+    align-items: center; gap: 6px;
+    font-family: var(--mono); font-size: 12px;
+  }
+  .trace .trace-node {
+    padding: 3px 9px;
+    border-radius: 3px;
+    background: var(--panel-inset);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+  }
+  .trace .trace-node.n-classify          { background: #eef2ff; color: #3730a3; border-color: #c7d2fe; }
+  .trace .trace-node.n-rag_answer        { background: var(--raw-bg); color: var(--raw); border-color: #ddd6fe; }
+  .trace .trace-node.n-plan              { background: #ecfeff; color: #0e7490; border-color: #a5f3fc; }
+  .trace .trace-node.n-execute           { background: var(--agent-bg); color: var(--agent); border-color: #a7f3d0; }
+  .trace .trace-node.n-tool_calling_loop { background: var(--agent-bg); color: var(--agent); border-color: #a7f3d0; }
+  .trace .trace-node.n-evaluate          { background: #fffbeb; color: var(--warn); border-color: #fde68a; }
+  .trace .trace-node.n-synthesize        { background: #fef2f2; color: var(--bad); border-color: #fecaca; }
+  .trace .trace-node.n-recover           { background: #fef2f2; color: var(--bad); border-color: #fecaca; }
+
+  /* Tool-call summary — per-question, above the execution trace */
+  .tool-summary {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+  @media (max-width: 900px) { .tool-summary { grid-template-columns: 1fr; } }
+  .tool-summary .ts-cell {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: 3px solid;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .tool-summary .ts-cell.baseline { border-left-color: var(--raw); }
+  .tool-summary .ts-cell.candidate { border-left-color: var(--agent); }
+  .tool-summary .ts-cell.diverged {
+    background: #fffbeb;
+    border-color: var(--warn);
+    border-left-width: 3px;
+  }
+  .tool-summary .ts-label {
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    font-size: 10px;
+    margin-right: 6px;
+  }
+  .tool-summary .ts-count {
+    font-weight: 600;
+    color: var(--text-dim);
+  }
+  .tool-summary .ts-count.zero {
+    color: var(--bad);
+  }
+  .tool-summary .ts-warn {
+    margin-left: 6px;
+    color: var(--warn);
+    font-weight: 600;
+  }
+  .tool-summary .tool-chip {
+    display: inline-block;
+    margin: 2px 3px 0 0;
+    padding: 1px 6px;
+    background: var(--panel-inset);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text-dim);
+    font-size: 10px;
+  }
+  .trace .trace-arrow {
+    color: var(--text-muted);
+    font-family: var(--mono); font-size: 12px;
+  }
+  .trace .trace-detail {
+    margin-top: 8px;
+    font-family: var(--mono); font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.55;
+  }
+  .trace .trace-detail .td-row { display: block; }
+  .trace .trace-detail code {
+    background: var(--panel-inset);
+    padding: 1px 5px; border-radius: 3px;
+    color: var(--text-dim);
+  }
+
+  .qb-pair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  @media (max-width: 900px) { .qb-pair { grid-template-columns: 1fr; } }
+  .qcol {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 16px;
+    background: var(--panel-alt);
+  }
+  .qcol.agent { border-left: 3px solid var(--agent); }
+  .qcol.raw   { border-left: 3px solid var(--raw); }
+  .qcol .qhead {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 10px;
+    font-family: var(--mono); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  .qcol.agent .qhead .sys { color: var(--agent); font-weight: 600; }
+  .qcol.raw   .qhead .sys { color: var(--raw);   font-weight: 600; }
+  .qcol .qhead .meta { color: var(--text-muted); }
+  .qcol .qtext {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 12px 14px;
+    font-size: 13.5px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+
+  /* Observations */
+  .observations {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 20px 24px;
+  }
+  .observations ul { list-style: none; padding: 0; margin: 0; }
+  .observations li {
+    padding-left: 16px; position: relative;
+    margin-bottom: 12px;
+    color: var(--text-dim);
+    font-size: 14px;
+  }
+  .observations li:last-child { margin-bottom: 0; }
+  .observations li::before {
+    content: ""; position: absolute; left: 0; top: 9px;
+    width: 5px; height: 5px; border-radius: 50%;
+    background: var(--text-muted);
+  }
+  .observations li strong { color: var(--text); font-weight: 600; }
+  .observations li code {
+    font-family: var(--mono); font-size: 12px;
+    background: var(--panel-inset); padding: 1px 6px; border-radius: 3px;
+  }
+
+  footer.foot {
+    margin-top: 60px; padding-top: 20px;
+    border-top: 1px solid var(--border);
+    font-family: var(--mono); font-size: 11px; color: var(--text-muted);
+  }
+  footer.foot code { background: var(--panel-inset); padding: 1px 5px; border-radius: 3px; }
+
+  a { color: var(--info); text-decoration: none; border-bottom: 1px dotted var(--info); }
+  a:hover { border-bottom-style: solid; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="eyebrow">Eval Report</div>
+  <h1>Production Baseline Comparison</h1>
+  <div class="subtitle" id="subtitle">—</div>
+  <div class="meta">
+    <span>Verdicts from pairwise comparison judge</span>
+    <span>Generated: <span id="gen-date">—</span></span>
+  </div>
+</header>
+
+<div class="section-label">Batteries</div>
+<div class="battery-legend" id="battery-legend"></div>
+
+<div class="section-label">Question-Level Results</div>
+<div class="filters" id="filters"></div>
+<div id="questions"></div>
+
+<div class="section-label" id="compare-summary-label" style="display:none">Analysis by AI Comparison Judge — per battery</div>
+<div class="provenance" id="compare-summary-provenance" style="display:none">
+  These summaries were written by an LLM ("comparison judge") that read both
+  system answers for every question in each battery and produced a verdict
+  with a narrative. They are a convenience, not ground truth. The data above —
+  questions, answers, and execution traces — is the evidence.
+</div>
+<div class="compare-summary" id="compare-summary"></div>
+
+<div class="section-label">Observations</div>
+<div class="observations"><ul id="observations"></ul></div>
+
+<footer class="foot">
+  <div id="run-ids"></div>
+</footer>
+
+</div>
+
+<script id="bundle" type="application/json">__BUNDLE_JSON__</script>
+<script>
+(function(){
+  const BUNDLE = JSON.parse(document.getElementById('bundle').textContent);
+  document.getElementById('gen-date').textContent = BUNDLE.generated_at;
+  document.getElementById('subtitle').textContent = BUNDLE.subtitle || '';
+  document.getElementById('observations').innerHTML = (BUNDLE.observations || [])
+    .map(o => `<li>${o.text}</li>`).join('');
+  document.getElementById('run-ids').innerHTML = 'Run IDs: ' + (BUNDLE.run_ids || [])
+    .map(r => `${r.battery} <code>${r.raw.slice(0,8)}</code> / <code>${r.agent.slice(0,8)}</code>`)
+    .join(' · ');
+
+  const BATTERY_LABELS = BUNDLE.battery_labels;
+  // Slot registry: A = baseline (purple), B = candidate (teal). Labels come
+  // from the bundle's `systems` map so "System A"/"System B" text from the
+  // compare-judge narrative can be rewritten to the human label, and so all
+  // UI pills/headers refer to each system by one consistent name.
+  const SYS = (BUNDLE.systems && BUNDLE.systems.A && BUNDLE.systems.B)
+    ? BUNDLE.systems
+    : {
+        A: { id: 'baseline',  label: 'Baseline',  css_class: 'raw',   slot: 'baseline' },
+        B: { id: 'candidate', label: 'Candidate', css_class: 'agent', slot: 'candidate' },
+      };
+
+  function esc(s) { return (s || '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+  function fmtSec(ms) { return (ms != null) ? (ms/1000).toFixed(1) + 's' : '—'; }
+  // Rewrite the compare-judge's "System A" / "System B" phrasing to the
+  // labeled system in that slot. Longer first so "System" doesn't collide.
+  function relabel(text) {
+    if (!text) return '';
+    return String(text)
+      .replace(/System B/g, SYS.B.label)
+      .replace(/System A/g, SYS.A.label);
+  }
+
+  function renderTraceContent(trace) {
+    if (!trace || !trace.length) return null;
+    const pathParts = [];
+    trace.forEach((step, i) => {
+      if (i > 0) pathParts.push('<span class="trace-arrow">→</span>');
+      const nodeCls = 'n-' + (step.node || '').replace(/[^a-z_]/gi, '');
+      pathParts.push(`<span class="trace-node ${nodeCls}">${esc(step.node)}</span>`);
+    });
+    const details = [];
+    const first = trace[0];
+    if (first && first.query_type) {
+      details.push(`<span class="td-row">classified as <code>${esc(first.query_type)}</code>${first.confidence ? ' (' + esc(first.confidence) + ' confidence)' : ''}${first.capability_id ? ' — capability <code>' + esc(first.capability_id) + '</code>' : ''}</span>`);
+    }
+    trace.forEach(step => {
+      if (step.node === 'rag_answer' && step.match_count != null) {
+        details.push(`<span class="td-row">rag: ${step.match_count} match${step.match_count === 1 ? '' : 'es'}${step.best_score != null ? ', best score ' + (+step.best_score).toFixed(2) : ''}</span>`);
+      }
+      if (step.node === 'plan' && step.tools && step.tools.length) {
+        details.push(`<span class="td-row">planned tools: ${step.tools.map(t => '<code>' + esc(t) + '</code>').join(', ')}</span>`);
+      }
+      if (step.node === 'execute' && step.tools_called) {
+        const failed = (step.failed || []).length;
+        details.push(`<span class="td-row">executed: ${step.tools_called.map(t => '<code>' + esc(t) + '</code>').join(', ')}${failed ? ' — ' + failed + ' failed' : ''}</span>`);
+      }
+      if (step.node === 'tool_calling_loop') {
+        const called = step.tools_called || [];
+        const madeCount = typeof step.tool_calls_made === 'number' ? step.tool_calls_made : called.length;
+        if (called.length) {
+          details.push(`<span class="td-row">tools called: ${called.map(t => '<code>' + esc(t) + '</code>').join(', ')}</span>`);
+        } else if (madeCount > 0) {
+          details.push(`<span class="td-row">tools called: ${madeCount} <em>(names not recorded in this run)</em></span>`);
+        } else {
+          details.push(`<span class="td-row">tools called: <em>none</em></span>`);
+        }
+      }
+      if (step.node === 'evaluate' && step.reason) {
+        details.push(`<span class="td-row">evaluate: ${esc(step.reason)}</span>`);
+      }
+    });
+    return {
+      path: pathParts,
+      details: details
+    };
+  }
+
+  function renderTrace(trace) {
+    if (!trace || !trace.length) return '';
+    const content = renderTraceContent(trace);
+    if (!content) return '';
+    return `
+      <div class="trace">
+        <div class="trace-label">Agent execution path</div>
+        <div class="trace-path">${content.path.join('')}</div>
+        ${content.details.length ? `<div class="trace-detail">${content.details.join('')}</div>` : ''}
+      </div>`;
+  }
+
+  // Extract the list of tools actually invoked from a node_trace.
+  // Looks at chain's `execute.tools_called` and loop's `tool_calling_loop.tools_called`.
+  // Falls back to the loop's `tool_calls_made` count when names aren't stored
+  // (older loop runs before we added tools_called to the trace step).
+  function toolsFromTrace(trace) {
+    if (!trace || !trace.length) return { names: null, count: 0 };
+    for (const step of trace) {
+      if (step.node === 'execute' && Array.isArray(step.tools_called)) {
+        return { names: step.tools_called, count: step.tools_called.length };
+      }
+      if (step.node === 'tool_calling_loop') {
+        if (Array.isArray(step.tools_called)) {
+          return { names: step.tools_called, count: step.tools_called.length };
+        }
+        if (typeof step.tool_calls_made === 'number') {
+          return { names: null, count: step.tool_calls_made };
+        }
+      }
+    }
+    return { names: null, count: 0 };
+  }
+
+  // Per-question tool-call summary. Renders both systems' counts + tool names
+  // side-by-side. Adds a `diverged` cue when one side called 0 tools and the
+  // other called ≥1, or when the count delta is ≥2 — Andrew's "the composite
+  // tied but tool-use differed" failure mode is exactly this divergence.
+  function renderToolSummaryPair(baselineTrace, candidateTrace) {
+    const a = toolsFromTrace(baselineTrace);
+    const b = toolsFromTrace(candidateTrace);
+    if (!a.count && !b.count && !a.names && !b.names) return '';
+
+    const strongDivergence = (a.count === 0) !== (b.count === 0);
+    const mildDivergence = Math.abs(a.count - b.count) >= 2;
+    const diverged = strongDivergence || mildDivergence;
+
+    function cellHtml(data, cls, label) {
+      const countCls = data.count === 0 ? 'zero' : '';
+      const warn = diverged ? `<span class="ts-warn" title="counts diverge between systems">⚠</span>` : '';
+      const chips = (data.names && data.names.length)
+        ? ' · ' + data.names.map(t => `<span class="tool-chip">${esc(t)}</span>`).join('')
+        : '';
+      return `<div class="ts-cell ${cls}${diverged ? ' diverged' : ''}">
+        <span class="ts-label">${esc(label)} tools</span>
+        <span class="ts-count ${countCls}">${data.count}</span>${warn}${chips}
+      </div>`;
+    }
+
+    return `<div class="tool-summary">
+      ${cellHtml(a, 'baseline', SYS.A.label)}
+      ${cellHtml(b, 'candidate', SYS.B.label)}
+    </div>`;
+  }
+
+  function renderTracePair(baselineTrace, candidateTrace) {
+    const baselineContent = renderTraceContent(baselineTrace);
+    const candidateContent = renderTraceContent(candidateTrace);
+    if (!baselineContent && !candidateContent) return '';
+    return `
+      <div class="trace-pair">
+        ${baselineContent ? `<div class="trace baseline">
+        <div class="trace-label">${esc(SYS.A.label + ' execution path')}</div>
+        <div class="trace-path">${baselineContent.path.join('')}</div>
+        ${baselineContent.details.length ? `<div class="trace-detail">${baselineContent.details.join('')}</div>` : ''}
+      </div>` : ''}
+        ${candidateContent ? `<div class="trace candidate">
+        <div class="trace-label">${esc(SYS.B.label + ' execution path')}</div>
+        <div class="trace-path">${candidateContent.path.join('')}</div>
+        ${candidateContent.details.length ? `<div class="trace-detail">${candidateContent.details.join('')}</div>` : ''}
+      </div>` : ''}
+      </div>`;
+  }
+
+  // ---- Compare-judge helpers ----
+  // Map a winner code ('A' | 'B' | 'tie') to the slot's CSS class.
+  function verdictKey(w) {
+    if (w === 'B') return SYS.B.css_class;
+    if (w === 'A') return SYS.A.css_class;
+    return 'tie';
+  }
+  // Margin qualifiers ("decisively"/"narrowly") are intentionally dropped —
+  // they're AI-estimated confidence, not grounded in the evidence the reader
+  // can see. Label is just winner or tie.
+  function verdictLabel(winner) {
+    if (winner === 'B') return `${SYS.B.label} wins`;
+    if (winner === 'A') return `${SYS.A.label} wins`;
+    return 'Tie';
+  }
+  function marginRank(cmp) {
+    if (!cmp) return -1;
+    if (cmp.margin === 'large') return 2;
+    if (cmp.margin === 'small') return 1;
+    return 0;
+  }
+  function tallyByWinner(pairs) {
+    const t = { B: 0, A: 0, tie: 0 };
+    pairs.forEach(p => {
+      const w = p.comparison && p.comparison.winner;
+      if (w === 'B') t.B++;
+      else if (w === 'A') t.A++;
+      else t.tie++;
+    });
+    return t;
+  }
+
+  // ---- Run-level comparison-judge narrative (one card per battery) ----
+  const comparisons = BUNDLE.comparisons || {};
+  const compareSummaryEl = document.getElementById('compare-summary');
+  const compareLabelEl = document.getElementById('compare-summary-label');
+  const comparisonBatteries = BUNDLE.battery_order.filter(b => comparisons[b] && comparisons[b].run_summary);
+  if (comparisonBatteries.length) {
+    compareLabelEl.style.display = '';
+    const provEl = document.getElementById('compare-summary-provenance');
+    if (provEl) provEl.style.display = '';
+    compareSummaryEl.innerHTML = comparisonBatteries.map(b => {
+      const entry = comparisons[b];
+      const summary = entry.run_summary || {};
+      const vKey = verdictKey(summary.winner);
+      const t = tallyByWinner((BUNDLE.all_pairs || []).filter(p => p.battery === b));
+      const total = t.B + t.A + t.tie;
+      const tallyHtml = total
+        ? `<span class="csc-tally">
+             <span class="t-agent">${esc(SYS.B.label)} ${t.B}</span>·
+             <span class="t-tie">Tie ${t.tie}</span>·
+             <span class="t-raw">${esc(SYS.A.label)} ${t.A}</span>
+             <span style="color:var(--text-muted)">of ${total}</span>
+           </span>`
+        : '';
+      const patternsHtml = (summary.patterns && summary.patterns.length)
+        ? `<div class="csc-section csc-patterns"><div class="csc-label">Patterns</div><ul>${summary.patterns.map(p => `<li>${esc(relabel(p))}</li>`).join('')}</ul></div>`
+        : '';
+      return `
+        <div class="csc ${vKey}">
+          <div class="csc-head">
+            <span class="csc-battery">${BATTERY_LABELS[b] || b}</span>
+            <span class="csc-verdict ${vKey}">${esc(verdictLabel(summary.winner))}</span>
+            ${tallyHtml}
+          </div>
+          ${summary.why ? `<div class="csc-why">${esc(relabel(summary.why))}</div>` : ''}
+          ${patternsHtml}
+        </div>`;
+    }).join('');
+  }
+
+  // ---- Battery legend (descriptions) ----
+  const legendEl = document.getElementById('battery-legend');
+  legendEl.innerHTML = BUNDLE.battery_order.map(b => {
+    const info = BUNDLE.battery_info[b];
+    return `
+      <div class="blcard">
+        <div class="bl-head">
+          <span class="bl-name">${info.name}</span>
+          <span class="bl-count">${info.count} questions</span>
+        </div>
+        <div class="bl-what">${info.what}</div>
+        <div class="bl-why"><strong>Why it exists:</strong> ${info.why}</div>
+      </div>`;
+  }).join('');
+
+  // ---- Filters + question list ----
+  let activeF = 'all';
+  let activeSort = 'battery';
+  let activeSearch = '';
+
+  // Build a match predicate from the search string.
+  // Syntax: plain substring (case-insensitive) by default. Wrap in /.../ to
+  // use regex; append /i for case-insensitive regex (default is sensitive
+  // when explicit slashes are used). Invalid regex → everything matches and
+  // the input gets the .regex-invalid style.
+  function makeMatcher(search) {
+    const trimmed = (search || '').trim();
+    if (!trimmed) return { test: () => true, valid: true, kind: 'empty' };
+    const m = trimmed.match(/^\/(.*)\/([gimsuy]*)$/);
+    if (m) {
+      try {
+        const re = new RegExp(m[1], m[2]);
+        return { test: s => re.test(s || ''), valid: true, kind: 'regex' };
+      } catch (err) {
+        return { test: () => true, valid: false, kind: 'regex' };
+      }
+    }
+    const lower = trimmed.toLowerCase();
+    return { test: s => (s || '').toLowerCase().includes(lower), valid: true, kind: 'substring' };
+  }
+  const all = BUNDLE.all_pairs;
+  const byBattery = {};
+  BUNDLE.battery_order.forEach(b => { byBattery[b] = all.filter(e => e.battery === b); });
+
+  const filtersEl = document.getElementById('filters');
+  const filterDefs = [
+    { key: 'all', label: `All (${all.length})` },
+    ...BUNDLE.battery_order.map(b => ({ key: b, label: `${BATTERY_LABELS[b]} (${byBattery[b].length})` })),
+  ];
+  const sortDefs = [
+    { key: 'battery', label: 'Battery + ID' },
+    { key: 'decisive', label: 'Most decisive verdicts first' },
+  ];
+
+  function renderFilters() {
+    const batteryOptions = filterDefs
+      .map(f => `<option value="${f.key}" ${activeF === f.key ? 'selected' : ''}>${esc(f.label)}</option>`)
+      .join('');
+    const sortOptions = sortDefs
+      .map(s => `<option value="${s.key}" ${activeSort === s.key ? 'selected' : ''}>${esc(s.label)}</option>`)
+      .join('');
+    filtersEl.innerHTML = `
+      <div class="fgroup">
+        <label class="flabel" for="filter-battery">Battery</label>
+        <select id="filter-battery">${batteryOptions}</select>
+      </div>
+      <div class="fgroup">
+        <label class="flabel" for="filter-sort">Sort</label>
+        <select id="filter-sort">${sortOptions}</select>
+      </div>
+      <div class="fgroup">
+        <label class="flabel" for="filter-search">Search</label>
+        <input id="filter-search" type="search" placeholder="text, or /regex/i"
+               value="${esc(activeSearch)}" autocomplete="off" spellcheck="false">
+        <span class="fhint" id="search-hint"></span>
+      </div>
+      <span class="fcount" id="fcount"></span>
+    `;
+    filtersEl.querySelector('#filter-battery').addEventListener('change', e => {
+      activeF = e.target.value; renderQuestions();
+    });
+    filtersEl.querySelector('#filter-sort').addEventListener('change', e => {
+      activeSort = e.target.value; renderQuestions();
+    });
+    const searchEl = filtersEl.querySelector('#filter-search');
+    searchEl.addEventListener('input', e => {
+      activeSearch = e.target.value;
+      renderQuestions();
+    });
+  }
+
+  // Flatten required_facts (mirror of src/eval/rubric.py:flatten_required_facts).
+  // String facts → one entry. {heading, items} dicts → one entry per item.
+  function flattenFacts(facts) {
+    if (!Array.isArray(facts)) return [];
+    const out = [];
+    let counter = 1;
+    for (const fact of facts) {
+      if (typeof fact === 'string') {
+        out.push({ id: 'F' + counter, text: fact });
+        counter++;
+      } else if (fact && typeof fact === 'object' && fact.heading && Array.isArray(fact.items)) {
+        const heading = String(fact.heading).replace(/:$/, '');
+        for (const item of fact.items) {
+          out.push({ id: 'F' + counter, text: heading + ': ' + String(item) });
+          counter++;
+        }
+      }
+    }
+    return out;
+  }
+
+  const VERDICT_GLYPH = { yes: '✓', partial: '~', no: '✗' };
+
+  function renderFactCell(verdict) {
+    if (!verdict) return `<span class="verdict-none">—</span>`;
+    const v = verdict.verdict || '';
+    const glyph = VERDICT_GLYPH[v] || '?';
+    const klass = 'verdict-' + (['yes','partial','no'].includes(v) ? v : 'none');
+    const titleAttr = verdict.justification ? ` title="${esc(verdict.justification)}"` : '';
+    return `<span class="${klass}"${titleAttr}><span class="vglyph">${glyph}</span>${esc(v)}</span>`;
+  }
+
+  function summarizeVerdicts(verdicts) {
+    const c = { yes: 0, partial: 0, no: 0 };
+    for (const v of (verdicts || [])) {
+      if (v && c[v.verdict] !== undefined) c[v.verdict]++;
+    }
+    return c;
+  }
+
+  function renderFactVerdicts(entry) {
+    if (!entry.required_facts || !entry.required_facts.length) return '';
+    const flat = flattenFacts(entry.required_facts);
+    if (!flat.length) return '';
+    const baseByFid = Object.fromEntries((entry.raw_rag.fact_verdicts || []).map(v => [v.id, v]));
+    const candByFid = Object.fromEntries((entry.agent_full.fact_verdicts || []).map(v => [v.id, v]));
+    const baseSum = summarizeVerdicts(entry.raw_rag.fact_verdicts);
+    const candSum = summarizeVerdicts(entry.agent_full.fact_verdicts);
+    const fmt = (s) => `${s.yes}✓ ${s.partial}~ ${s.no}✗`;
+    const rows = flat.map(f => `
+      <tr>
+        <td class="ft-id">${esc(f.id)}</td>
+        <td class="ft-text">${esc(f.text)}</td>
+        <td class="ft-verdict">${renderFactCell(baseByFid[f.id])}</td>
+        <td class="ft-verdict">${renderFactCell(candByFid[f.id])}</td>
+      </tr>`).join('');
+    return `
+      <details class="facts-disclose">
+        <summary>
+          Required facts (${flat.length})
+          <span class="facts-summary-pill baseline">${esc(SYS.A.label)}: ${fmt(baseSum)}</span>
+          <span class="facts-summary-pill candidate">${esc(SYS.B.label)}: ${fmt(candSum)}</span>
+        </summary>
+        <table class="facts-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Required fact</th>
+              <th>${esc(SYS.A.label)}</th>
+              <th>${esc(SYS.B.label)}</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </details>`;
+  }
+
+  function renderQuestions() {
+    const el = document.getElementById('questions');
+    let rows = activeF === 'all' ? all.slice() : all.filter(e => e.battery === activeF);
+    const matcher = makeMatcher(activeSearch);
+    if (activeSearch) rows = rows.filter(e => matcher.test(e.question) || matcher.test(e.qid));
+    if (activeSort === 'battery') {
+      rows.sort((a,b) => a.battery.localeCompare(b.battery) || (a.qid || '').localeCompare(b.qid || ''));
+    } else if (activeSort === 'decisive') {
+      // large-margin wins first (either side), then small, then ties
+      rows.sort((a,b) => marginRank(b.comparison) - marginRank(a.comparison)
+                        || a.battery.localeCompare(b.battery)
+                        || (a.qid || '').localeCompare(b.qid || ''));
+    }
+    document.getElementById('fcount').textContent = `${rows.length} shown`;
+
+    // Sync search hint + error state (input element is recreated on each
+    // renderFilters, so query it fresh here).
+    const searchEl = document.getElementById('filter-search');
+    const hintEl = document.getElementById('search-hint');
+    if (searchEl && hintEl) {
+      searchEl.classList.toggle('regex-invalid', !matcher.valid);
+      if (matcher.kind === 'empty') {
+        hintEl.textContent = '';
+        hintEl.classList.remove('invalid');
+      } else if (!matcher.valid) {
+        hintEl.textContent = 'invalid regex';
+        hintEl.classList.add('invalid');
+      } else {
+        hintEl.textContent = matcher.kind;
+        hintEl.classList.remove('invalid');
+      }
+    }
+
+    el.innerHTML = rows.map(e => {
+      const a = e.agent_full, r = e.raw_rag;
+      const cmp = e.comparison;
+      const vKey = cmp && cmp.winner ? verdictKey(cmp.winner) : 'none';
+      // The AI judge's per-question opinion lives under a second disclosure,
+      // after the raw answers — by design, so readers judge the data first.
+      let judgeDisclosure = '';
+      if (cmp && cmp.winner) {
+        judgeDisclosure = `
+          <details class="judge-disclose">
+            <summary>AI comparison judge's opinion on this question</summary>
+            <div class="judge-body">
+              <div class="qverdict ${vKey}">
+                <div class="qverdict-head">
+                  <span class="qverdict-label">Verdict</span>
+                  <span class="qverdict-pill ${vKey}">${esc(verdictLabel(cmp.winner))}</span>
+                </div>
+                ${cmp.why ? `<div class="qverdict-why">${esc(relabel(cmp.why))}</div>` : ''}
+              </div>
+            </div>
+          </details>`;
+      }
+      return `
+        <div class="qrow">
+          <div class="qrow-head">
+            <span class="qh-caret">›</span>
+            <span class="qh-qid">${e.qid}</span>
+            <span class="qh-q">${esc(e.question)}</span>
+            <span class="qh-bpill">${BATTERY_LABELS[e.battery]}</span>
+          </div>
+          <div class="qrow-body">
+            <div class="qb-q">${esc(e.question)}</div>
+            ${renderToolSummaryPair(r.node_trace, a.node_trace)}
+            ${renderTracePair(r.node_trace, a.node_trace)}
+            <div class="qb-pair">
+              <div class="qcol ${SYS.A.css_class}">
+                <div class="qhead">
+                  <span class="sys">${esc(SYS.A.label)}</span>
+                  <span class="meta">${fmtSec(r.duration_ms)}</span>
+                </div>
+                <div class="qtext">${esc(r.answer) || '<em>(no answer)</em>'}</div>
+              </div>
+              <div class="qcol ${SYS.B.css_class}">
+                <div class="qhead">
+                  <span class="sys">${esc(SYS.B.label)}</span>
+                  <span class="meta">${fmtSec(a.duration_ms)}</span>
+                </div>
+                <div class="qtext">${esc(a.answer) || '<em>(no answer)</em>'}</div>
+              </div>
+            </div>
+            ${renderFactVerdicts(e)}
+            ${judgeDisclosure}
+          </div>
+        </div>`;
+    }).join('');
+
+    el.querySelectorAll('.qrow-head').forEach(h => {
+      h.addEventListener('click', () => h.parentElement.classList.toggle('open'));
+    });
+  }
+
+  renderFilters();
+  renderQuestions();
+})();
+</script>
+</body>
+</html>

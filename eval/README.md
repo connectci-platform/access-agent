@@ -17,6 +17,54 @@ uv run python -m src.eval run --questions eval/questions/real_user_battery.json
 uv run python -m src.eval compare --run-a <run-id> --run-b <run-id>
 ```
 
+### Phase-3 parity check (tool-calling loop vs legacy chain)
+
+For regression-checking the Phase-3 loop against the legacy chain, use the curated smoke battery:
+
+```bash
+# Baseline — legacy plan→execute chain
+uv run python -m src.eval run \
+  --system agent_full_legacy \
+  --questions eval/questions/phase3_smoke_battery.json
+
+# Candidate — tool-calling loop (the new default)
+uv run python -m src.eval run \
+  --system agent_full \
+  --questions eval/questions/phase3_smoke_battery.json
+
+# Compare + render
+uv run python -m src.eval compare-judge \
+  --baseline <baseline-run-id> --candidate <candidate-run-id> \
+  -o comparisons/phase3-smoke.json
+uv run python -m src.eval html --from-json comparisons/phase3-smoke.json -o /tmp/phase3-smoke.html
+```
+
+Capture the run IDs that the `run` commands print — you need them for compare-judge.
+
+## Systems (`--system` choices)
+
+The `run` command's `--system` flag selects which pipeline scores the questions. All four systems write to the same `eval_runs` / `eval_scores` tables; system is captured in metadata so comparison reports can distinguish them.
+
+| System | What it runs | When to use |
+|---|---|---|
+| `agent_full` *(default)* | Full agent graph with the tool-calling loop — the Phase-3 default path. | Standard evaluation; grand-prix; Phase-3 candidate in parity comparisons. |
+| `agent_full_legacy` | Full agent graph with the legacy `plan → execute → evaluate → recover → synthesize` chain. Forces `USE_TOOL_CALLING_LOOP=false` for the run. | Phase-3 parity baseline; debugging regressions introduced by the loop. |
+| `raw_rag` | Queries UKY's `/ask` endpoint directly, no agent involvement. | Production-baseline comparisons (grand-prix). |
+
+**Note on grand-prix historical compatibility.** Prior to 2026-04-23, `agent_full` meant the legacy chain. After, it means the tool-calling loop. Grand-prix runs recorded before vs after this date are NOT apples-to-apples in the `agent_full` column — if you need to compare against pre-2026-04-23 grand-prix runs, use `--system agent_full_legacy` for re-runs.
+
+## Run IDs
+
+Runs get semantic IDs of the form `{shortcode}-{YYYYMMDD}-{HHMMSS}-{hash6}`, where `shortcode` reflects the pipeline architecture:
+
+| System | Shortcode | Example |
+|---|---|---|
+| `agent_full` | `loop` | `loop-20260423-143052-a1b2c3` |
+| `agent_full_legacy` | `chain` | `chain-20260423-143107-8d7e4f` |
+| `raw_rag` | `raw_rag` | `raw_rag-20260423-143135-77c4de` |
+
+The IDs are lex-sortable by timestamp, fit in the existing `String(36)` column (no migration), and make Argilla's "Eval Run ID" metadata filter self-describing. The 6-hex random suffix prevents collisions between same-second runs.
+
 ## Requirements
 
 - `OPENAI_API_KEY` set in `.env` (for the agent and the judge LLM)
@@ -70,30 +118,13 @@ only — the tunnel target in `scripts/eval-tunnel-open` will need updating.
 Then from another terminal:
 
 ```bash
-# Full-capabilities run (what we want to ship)
 ./scripts/eval-prod run \
   --questions eval/questions/friendly_battery.json \
   --push-argilla
-
-# RAG-only baseline run (same agent, MCP capabilities disabled)
-./scripts/eval-prod --rag-only run \
-  --questions eval/questions/friendly_battery.json \
-  --push-argilla
-
-# Compare the two runs
-./scripts/eval-prod compare --run-a <rag_only_id> --run-b <full_caps_id>
 ```
 
-The `--rag-only` flag (which must appear **before** the eval subcommand)
-sets `ENABLED_CAPABILITIES=ask_question,ask_xdmod_question,ask_about_resource`
-so the agent runs with RAG backends only and no MCP tools. Both runs
-otherwise use the same agent binary, classifier, and synthesis layer — the
-only variable being tested is the value added by MCP tools.
-
-Results land in the prod Argilla dataset `eval-baseline-comparison`, which
-is kept separate from `eval-production` (the rolling production scoring
-dataset) so the one-time baseline evidence doesn't mix with ongoing
-quality tracking.
+Results land in the prod Argilla dataset configured by
+`ARGILLA_EVAL_DATASET` in `.env.eval.prod`.
 
 ### Safety checks
 

@@ -1,4 +1,15 @@
-"""Execute node - parallel tool execution.
+"""Execute node — DEPRECATED: superseded by tool_calling_loop_node (Phase 3).
+
+This node runs only when USE_TOOL_CALLING_LOOP=false. The new path in
+src/agent/nodes/tool_calling_loop.py folds planning, execution, evaluation,
+and recovery into a single LLM-driven loop. See
+docs/superpowers/specs/2026-04-21-production-launch-hardening-design.md §Phase 3.
+
+Retained for rollback safety until the feature-flag cutover is complete.
+
+--- Original docstring below ---
+
+Execute node - parallel tool execution.
 
 This node executes the planned MCP tool calls, handling both parallel
 and sequential execution strategies with dependency resolution.
@@ -179,6 +190,7 @@ async def _execute_parallel(
                     success=False,
                     error=f"{type(result).__name__}: {result}",
                     duration_ms=0,
+                    arguments=tools[i].arguments,
                 )
             )
         else:
@@ -374,9 +386,15 @@ async def _execute_single_tool(
             data=result.data,
             error=result.error,
             duration_ms=result.duration_ms,
+            arguments=tool.arguments,
         )
 
 
+# DEPRECATED (Phase 3): used only by the legacy plan→execute path when
+# USE_TOOL_CALLING_LOOP=false. The new tool_calling_loop does not need
+# $step_N substitution — tool outputs flow via ToolMessage content and
+# the LLM reads actual values on subsequent turns. Delete alongside
+# the legacy path during the post-launch cleanup.
 def _resolve_parameters(
     arguments: dict[str, Any],
     previous_results: dict[str, ToolResult],
@@ -413,6 +431,11 @@ def _resolve_parameters(
     return resolved
 
 
+# DEPRECATED (Phase 3): used only by the legacy plan→execute path when
+# USE_TOOL_CALLING_LOOP=false. The new tool_calling_loop does not need
+# $step_N substitution — tool outputs flow via ToolMessage content and
+# the LLM reads actual values on subsequent turns. Delete alongside
+# the legacy path during the post-launch cleanup.
 def _resolve_reference(
     reference: str,
     previous_results: dict[str, ToolResult],

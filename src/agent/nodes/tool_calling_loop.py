@@ -1,0 +1,293 @@
+"""Tool-calling loop node — single-node replacement for plan+execute+evaluate+recover.
+
+Launched behind the USE_TOOL_CALLING_LOOP feature flag (launch Phase 3). When
+the flag is True, tool-using queries route here instead of the legacy chain.
+
+Approach: LangGraph's `create_react_agent` drives a turn-by-turn loop where the
+LLM selects tools, sees results as ToolMessages, and continues until it emits
+a non-tool-call response. Planning, execution, evaluation, and recovery all
+happen inside that loop — no separate nodes needed.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import TYPE_CHECKING, Any
+
+from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.errors import GraphRecursionError
+from langgraph.prebuilt import create_react_agent
+
+if TYPE_CHECKING:
+    from langchain_core.tools import BaseTool
+
+from ...config import settings
+from ...llm import get_llm
+from ...telemetry import get_tracer
+from ..domains.capabilities import WRITE_MCP_TOOL_NAMES
+from ..domains.tools import create_mcp_tools_from_catalog
+from ..prompts.tool_calling_loop import build_system_prompt, format_rag_matches
+from ..state import ToolResult
+
+logger = logging.getLogger(__name__)
+
+
+def _apply_read_only_filter(tools: list[BaseTool]) -> list[BaseTool]:
+    """Strip write-capable MCP tools when ``settings.READ_ONLY`` is True.
+
+    The legacy chain enforces READ_ONLY at the capability-registry level,
+    but this node builds tools directly from the MCP catalog. Applying the
+    same deny-list here keeps the audit's "READ_ONLY blocks all writes"
+    claim true on both code paths. See `docs/security/write-capability-audit.md`.
+    """
+    if not settings.READ_ONLY:
+        return tools
+    before = len(tools)
+    filtered = [t for t in tools if t.name not in WRITE_MCP_TOOL_NAMES]
+    removed = before - len(filtered)
+    if removed:
+        logger.info(
+            "READ_ONLY=true active in tool_calling_loop — removed %d "
+            "write-capable tool(s) from registry",
+            removed,
+        )
+    return filtered
+
+
+async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
+    """Run the single-node tool-calling loop.
+
+    Consumes:
+        state.messages: conversation history (HumanMessage / AIMessage / ToolMessage)
+        state.query: current user query (already present in messages[-1])
+        state.tool_catalog: dict describing MCP tools available to this request
+        state.acting_user: optional ACCESS ID for personalized tool calls
+        state.rag_matches: optional list of RAGMatch objects from rag_answer
+        state.query_classification: optional classifier output with .domain
+
+    Produces:
+        final_answer: LLM's final text response
+        messages: full loop message history (caller messages + tool calls + result messages + final)
+        tools_used: list of tool-name strings the loop actually invoked
+        node_trace: telemetry entry for this node
+    """
+    tracer = get_tracer("access-agent.nodes")
+
+    with tracer.start_as_current_span(
+        "agent.tool_calling_loop",
+        attributes={"agent.node": "tool_calling_loop"},
+    ) as span:
+        acting_user = state.get("acting_user")
+        rag_matches = state.get("rag_matches") or []
+        classification = state.get("query_classification")
+        domain_hint = classification.domain if classification else None
+        tool_catalog = state.get("tool_catalog") or {}
+
+        rag_context = format_rag_matches(rag_matches) if rag_matches else None
+        system_prompt = build_system_prompt(
+            rag_context=rag_context,
+            domain_hint=domain_hint,
+            acting_user=acting_user,
+        )
+
+        tools = _apply_read_only_filter(create_mcp_tools_from_catalog(tool_catalog, acting_user))
+
+        span.set_attribute("agent.tool_count", len(tools))
+        span.set_attribute("agent.has_rag_context", bool(rag_context))
+        span.set_attribute("agent.authenticated", bool(acting_user))
+
+        llm = get_llm()
+        agent = create_react_agent(
+            model=llm,
+            tools=tools,
+            prompt=system_prompt,
+        )
+
+        messages = list(state.get("messages", []))
+        logger.info(
+            "Running tool_calling_loop: %d tools, %d prior messages, "
+            "rag_context=%s, domain_hint=%s",
+            len(tools),
+            len(messages),
+            bool(rag_context),
+            domain_hint,
+        )
+
+        final_answer: str | None = None
+        recursion_limit_hit = False
+
+        # recursion_limit = 2 * max_tool_turns + 1; gives the LLM room for
+        # roughly 10 tool turns before LangGraph hard-stops.
+        recursion_limit = 25
+        try:
+            result = await agent.ainvoke(
+                {"messages": messages},
+                {"recursion_limit": recursion_limit},
+            )
+            result_messages = result.get("messages", [])
+        except GraphRecursionError:
+            # create_react_agent exhausted its recursion budget (e.g., the LLM
+            # kept requesting tool calls and never emitted a final answer).
+            # Return a user-facing apology rather than a 500 so the chatbot
+            # can render something useful.
+            recursion_limit_hit = True
+            logger.warning(
+                "tool_calling_loop hit GraphRecursionError: "
+                "tool_count=%d, recursion_limit=%d, messages_so_far=%d",
+                len(tools),
+                recursion_limit,
+                len(messages),
+            )
+            span.set_attribute("agent.recursion_limit_hit", True)
+            result_messages = list(messages)
+            final_answer = (
+                "I wasn't able to complete an answer for this query within "
+                "the allotted tool-turn budget. You can try rephrasing, or "
+                "open a support ticket at "
+                "https://support.access-ci.org/open-a-ticket."
+            )
+
+        if not recursion_limit_hit:
+            for msg in reversed(result_messages):
+                if isinstance(msg, AIMessage) and msg.content:
+                    # AIMessage.content can be str or list[str|dict] (multimodal);
+                    # the loop only emits string content for final answers.
+                    content = msg.content
+                    final_answer = content if isinstance(content, str) else str(content)
+                    break
+
+        tools_used: list[str] = []
+        for msg in result_messages:
+            if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+                for tc in msg.tool_calls:
+                    name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+                    if name and name not in tools_used:
+                        tools_used.append(name)
+
+        tool_result_count = sum(1 for m in result_messages if isinstance(m, ToolMessage))
+        tool_results, orphan_count = _build_tool_results(result_messages, tools)
+
+        answer_length = len(final_answer) if final_answer else 0
+        span.set_attribute("agent.answer_length", answer_length)
+        span.set_attribute("agent.tool_calls_made", len(tools_used))
+        span.set_attribute("agent.tool_results_received", tool_result_count)
+        if orphan_count > 0:
+            span.set_attribute("agent.tool_results_orphaned", orphan_count)
+
+        logger.info(
+            "tool_calling_loop complete: %d messages, %d tool calls, "
+            "%d tool results, answer_len=%d",
+            len(result_messages),
+            len(tools_used),
+            tool_result_count,
+            answer_length,
+        )
+
+        return {
+            "final_answer": final_answer,
+            "messages": result_messages,
+            "tools_used": tools_used,
+            "tool_results": tool_results,
+            "node_trace": [
+                {
+                    "node": "tool_calling_loop",
+                    "tool_count": len(tools),
+                    "tool_calls_made": len(tools_used),
+                    "tools_called": list(tools_used),
+                    "tool_results": tool_result_count,
+                    "answer_length": answer_length,
+                }
+            ],
+        }
+
+
+def _build_tool_results(
+    result_messages: list[Any],
+    tools: list[Any],
+) -> tuple[list[ToolResult], int]:
+    """Back-fill state.tool_results from a react-loop message thread.
+
+    Downstream consumers (eval scorer, observability, legacy node APIs) read
+    state.tool_results in the same shape plan+execute produced. The react
+    loop only emits ToolMessages, so we reconstruct ToolResult objects by
+    pairing each ToolMessage with its originating AIMessage tool_call (by
+    id) and parsing the JSON content MCPToolWrapper produced.
+
+    Orphan ToolMessages (no matching tool_call id) are dropped — we never
+    fabricate a ToolResult we can't anchor to an AIMessage call. The caller
+    still receives the orphan count so telemetry can surface these rare
+    cases (e.g., future LLM quirks where a ToolMessage appears without a
+    matching call).
+
+    duration_ms is left at 0 because the react loop doesn't track per-call
+    timing; the eval scorer doesn't depend on it.
+
+    Returns:
+        (tool_results, orphan_count) — the reconstructed ToolResult list and
+        the number of ToolMessages skipped because their tool_call_id had no
+        matching AIMessage tool_call.
+    """
+    tool_server_lookup: dict[str, str] = {
+        getattr(t, "name", ""): getattr(t, "tool_server", "") for t in tools
+    }
+
+    call_lookup: dict[str, tuple[str, dict[str, Any]]] = {}
+    for msg in result_messages:
+        if not (isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None)):
+            continue
+        for tc in msg.tool_calls:
+            tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+            tc_name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+            tc_args = tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
+            if tc_id and tc_name:
+                call_lookup[tc_id] = (tc_name, tc_args or {})
+
+    results: list[ToolResult] = []
+    orphan_count = 0
+    for msg in result_messages:
+        if not isinstance(msg, ToolMessage):
+            continue
+        tc_id = msg.tool_call_id
+        if not tc_id or tc_id not in call_lookup:
+            orphan_count += 1
+            continue
+        tool_name, tool_args = call_lookup[tc_id]
+        server = tool_server_lookup.get(tool_name, "")
+        results.append(_parse_tool_message(msg, tc_id, tool_name, server, tool_args))
+
+    return results, orphan_count
+
+
+def _parse_tool_message(
+    msg: ToolMessage,
+    tc_id: str,
+    tool_name: str,
+    server: str,
+    tool_args: dict[str, Any],
+) -> ToolResult:
+    """Build a ToolResult from a single ToolMessage + its originating call metadata."""
+    raw_content = msg.content if isinstance(msg.content, str) else str(msg.content)
+    try:
+        parsed: Any = json.loads(raw_content)
+    except (json.JSONDecodeError, TypeError):
+        parsed = raw_content
+
+    if isinstance(parsed, dict) and "error" in parsed:
+        return ToolResult(
+            step_id=tc_id,
+            tool_name=tool_name,
+            server=server,
+            success=False,
+            error=str(parsed["error"]),
+            arguments=tool_args,
+        )
+
+    return ToolResult(
+        step_id=tc_id,
+        tool_name=tool_name,
+        server=server,
+        success=True,
+        data=parsed,
+        arguments=tool_args,
+    )

@@ -1,0 +1,23 @@
+# Gitleaks configuration for access-agent.
+# Extends the default ruleset; documents deliberate fixtures that contain
+# non-real secrets used by tests.
+#
+# See: docs/superpowers/specs/2026-04-22-code-quality-guardrails-design.md §5
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Legitimate non-secret fixtures and test strings"
+paths = [
+  # .env.example contains Cloudflare Turnstile's published test credentials
+  # (documented at https://developers.cloudflare.com/turnstile/troubleshooting/testing/)
+  '''\.env\.example$''',
+]
+
+# Cloudflare Turnstile test keys — published by Cloudflare as fake values.
+# Allowlisting the specific values means accidental real keys are still caught.
+regexes = [
+  '''1x00000000000000000000AA''',
+  '''1x0000000000000000000000000000000AA''',
+]

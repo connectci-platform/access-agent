@@ -23,7 +23,7 @@ jobs:
         run: uv python install 3.13
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --extra dev --locked
 
       - name: Ruff lint
         run: uv run ruff check src/ tests/
@@ -34,7 +34,85 @@ jobs:
       - name: Mypy type check
         run: uv run mypy src/ --ignore-missing-imports
 
-      - name: Run tests
-        run: uv run pytest tests/ -x -q --ignore=tests/test_e2e.py --ignore=tests/test_classify.py
+      - name: Run tests with coverage (skip e2e, which runs nightly)
+        run: uv run pytest tests/ -x -q -m "not e2e" --cov=src --cov-report=xml --cov-report=term-missing
         env:
           DATABASE_URL: ""
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+
+      - name: Fetch main for diff
+        if: github.event_name == 'pull_request'
+        run: git fetch --no-tags --depth=200 origin main
+
+      - name: Coverage diff-gate (100% on changed lines)
+        if: >
+          github.event_name == 'pull_request' &&
+          !contains(github.event.pull_request.labels.*.name, 'coverage-override-approved')
+        run: uv run diff-cover coverage.xml --compare-branch=origin/main --fail-under=100
+
+      - name: Post coverage comment
+        if: github.event_name == 'pull_request'
+        uses: py-cov-action/python-coverage-comment-action@v3
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MINIMUM_GREEN: 80
+          MINIMUM_ORANGE: 60
+
+      - name: Dependency audit (surface findings as warnings)
+        run: |
+          IGNORE_ARGS=""
+          if [ -f .audit-ignore.txt ]; then
+            while IFS= read -r line; do
+              line="${line%%#*}"
+              line="$(echo "$line" | tr -d '[:space:]')"
+              [ -z "$line" ] && continue
+              IGNORE_ARGS="$IGNORE_ARGS --ignore-vuln $line"
+            done < .audit-ignore.txt
+          fi
+
+          uv run pip-audit --format json --vulnerability-service osv $IGNORE_ARGS > audit.json || true
+
+          # pip-audit prepends a human-readable status line before the JSON
+          # when vulnerabilities are found; strip any leading non-JSON lines.
+          sed -n '/^{/,$p' audit.json > audit.clean.json || true
+          mv audit.clean.json audit.json
+
+          jq -r '
+            .dependencies[]?
+            | . as $dep
+            | (.vulns // [])[]
+            | [($dep.name // "unknown"), (.id // "UNKNOWN"), (.description // "" | .[0:200])]
+            | @tsv
+          ' audit.json > audit.tsv
+
+          if [ ! -s audit.tsv ]; then
+            echo "No vulnerabilities found."
+            exit 0
+          fi
+
+          while IFS=$'\t' read -r pkg id desc; do
+            echo "::warning::pip-audit: $id in $pkg — $desc"
+          done < audit.tsv
+
+          COUNT=$(wc -l < audit.tsv)
+          echo "pip-audit surfaced $COUNT unsuppressed findings (warnings, not failures)."
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gitleaks scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml

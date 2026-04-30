@@ -1,4 +1,15 @@
-"""Recover node - LLM-driven error recovery.
+"""Recover node — DEPRECATED: superseded by tool_calling_loop_node (Phase 3).
+
+This node runs only when USE_TOOL_CALLING_LOOP=false. The new path in
+src/agent/nodes/tool_calling_loop.py folds planning, execution, evaluation,
+and recovery into a single LLM-driven loop. See
+docs/superpowers/specs/2026-04-21-production-launch-hardening-design.md §Phase 3.
+
+Retained for rollback safety until the feature-flag cutover is complete.
+
+--- Original docstring below ---
+
+Recover node - LLM-driven error recovery.
 
 This node analyzes tool execution failures and decides on recovery strategy:
 - fix_params: Retry with corrected parameters

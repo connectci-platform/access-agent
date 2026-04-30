@@ -1,0 +1,46 @@
+name: Nightly Live-Dep Tests
+
+on:
+  schedule:
+    - cron: '0 9 * * *'  # 09:00 UTC daily (05:00 ET)
+  workflow_dispatch:     # Manual trigger for debugging
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --extra dev --locked
+
+      - name: Run e2e tests
+        run: uv run pytest tests/ -m e2e -v
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ACCESS_AI_API_KEY: ${{ secrets.ACCESS_AI_API_KEY }}
+          MCP_CATALOG_PATH: mcp-tool-catalog.json
+          DATABASE_URL: ""
+
+      - name: Open issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const date = new Date().toISOString().split('T')[0];
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Nightly e2e failure — ${date}`,
+              body: `The nightly live-dep test run failed. See the workflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              labels: ['nightly-failure', 'bug']
+            });

@@ -5,6 +5,7 @@ The same rubric is used by both the LLM judge and human reviewers in Argilla.
 """
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -24,9 +25,9 @@ DIMENSIONS = [
     ),
     Dimension(
         name="completeness",
-        description="Does the answer address all parts of the question?",
-        low="Misses the main point",
-        high="Thoroughly covers the question",
+        description="Does the answer address all parts of the question with the most appropriate type of information? Specific data (resource names, version numbers, event dates, ticket confirmations) is more complete than general guidance when the question calls for specifics.",
+        low="Misses the main point, or gives only general guidance when specific data was needed",
+        high="Thoroughly covers the question with concrete, specific information",
     ),
     Dimension(
         name="relevance",
@@ -68,12 +69,36 @@ def compute_composite(
     return sum(scores[name] * w[name] for name in DIMENSION_NAMES)
 
 
+def flatten_required_facts(
+    facts: list[str | dict[str, Any]],
+) -> list[tuple[str, str]]:
+    """Flatten required_facts into [(id, text), ...] for prompt rendering.
+
+    Plain string facts stay as-is. {heading, items} dicts produce one entry
+    per item, with the heading prefixed for context. IDs are F1, F2, ...
+    in document order.
+    """
+    out: list[tuple[str, str]] = []
+    counter = 1
+    for fact in facts:
+        if isinstance(fact, str):
+            out.append((f"F{counter}", fact))
+            counter += 1
+        elif isinstance(fact, dict) and "heading" in fact and "items" in fact:
+            heading = str(fact["heading"]).rstrip(":")
+            for item in fact["items"]:
+                out.append((f"F{counter}", f"{heading}: {item}"))
+                counter += 1
+    return out
+
+
 def build_judge_prompt(
     query: str,
     answer: str,
     rag_context: str | None = None,
     tool_results: str | None = None,
     node_trace: str | None = None,
+    required_facts: list[str | dict[str, Any]] | None = None,
 ) -> str:
     """Build the LLM judge prompt with the rubric and context."""
     rubric_text = "\n".join(
@@ -90,7 +115,48 @@ def build_judge_prompt(
 
     context_text = "\n\n".join(context_sections) if context_sections else "No context available."
 
+    facts_section = ""
+    facts_response_schema = ""
+    if required_facts:
+        flat = flatten_required_facts(required_facts)
+        facts_lines = "\n".join(f"{fid}. {text}" for fid, text in flat)
+        facts_section = f"""
+
+## Required Facts
+
+A correct answer for this question must support each of the following claims. For each one, rate whether the agent's answer supports it:
+- "yes" — the answer states the claim AND the claim is supported by the Tool Results, RAG Documents, or well-known ACCESS-CI facts. A specific name or number stated only in the answer (not in the context) is not evidence — that is a hallucination, score it accordingly on the relevant fact.
+- "partial" — the answer touches on the claim but is incomplete, vague, imprecise, OR mixes a correct statement with hallucinated specifics
+- "no" — the answer omits or contradicts the claim. If the answer is silent on the claim, that is "no", not "yes" — do not infer support from absence of contradiction
+
+{facts_lines}
+"""
+        verdict_lines = ",\n    ".join(
+            f'{{"id": "{fid}", "verdict": "<yes|partial|no>", "justification": "<brief>"}}'
+            for fid, _ in flat
+        )
+        facts_response_schema = f""",
+  "required_facts": [
+    {verdict_lines}
+  ]"""
+
     return f"""You are evaluating the quality of an AI agent's answer to a user question.
+
+## Mission
+
+This agent supports researchers using ACCESS-CI (the US national cyberinfrastructure allocation system). Users ask about compute resources, software availability, allocations, system status, events, and how to get help. They need specific, current, actionable information — named resources, software versions, event dates, ticket confirmations, exact counts. Generic how-to guidance is less valuable than concrete data, because the user's goal is usually to DO something (run a job, request help, find a resource) not to read documentation.
+
+When the system takes an action on the user's behalf (creates a support ticket, looks up live allocation data), that is a meaningfully better outcome than pointing the user at a URL and asking them to do it themselves.
+
+## How to read the context sections
+
+You will see up to three kinds of context the agent had:
+
+- **RAG Documents Retrieved**: curated Q&A snippets from documentation. Static; not live. May be stale.
+- **Tool Results**: structured records of live tool calls, one record per call. Each record includes the tool name, the arguments the agent passed, whether the call succeeded, how long it took, an explicit `result_count` and `empty` flag, and the raw data. Use these to judge whether the agent called the right tool with the right arguments, whether the tool returned useful data, and whether the agent represented that data faithfully in its answer. An `empty: true` record means the tool returned no data on its own terms — not that there is no data on the topic anywhere.
+- **Agent Decision Trace**: the ordered list of graph nodes the agent went through (classify, plan, execute, evaluate, synthesize, etc.), with each node's key decisions.
+
+**Treat the context as your source of truth, not the answer.** The agent's answer is what you are grading. When the answer makes a specific factual claim — names a resource, group, person, software version, count, date, URL, ticket number — that claim must be supported either by the Tool Results, by the RAG Documents, or by widely known ACCESS-CI facts you are confident about. A specific name or number that appears only in the answer and nowhere in the context is unsupported, and should be treated as a hallucination. Penalize unsupported specifics in the relevant rubric dimensions and in the per-fact verdicts below.
 
 ## Scoring Rubric
 
@@ -103,8 +169,21 @@ Score each dimension from 1 (worst) to 5 (best):
 - Judge whether the agent accurately represented the information it HAD ACCESS TO.
 - If the source documents contain outdated information and the agent faithfully reported it, that is CORRECT (score 5 on correctness). Data quality is not the agent's fault.
 - If the agent added information not in the sources, that is a hallucination (score 1-2 on correctness).
-- CRITICAL: Tool Results are LIVE DATA from real-time APIs and are MORE CURRENT than RAG Documents. When tool results and RAG documents conflict (e.g., RAG says "there are upcoming webinars" but tool results show total: 0), the agent is CORRECT to trust the tool results. Score the agent based on whether it accurately represented the tool results, not the stale RAG data.
-- If tool results show 0 items/no results for something the user asked about, and the agent correctly reports that nothing was found, that is CORRECT — even if RAG documents suggest otherwise.
+- CRITICAL: Tool Results are LIVE DATA from real-time APIs and are MORE CURRENT than RAG Documents. When tool results return POSITIVE DATA that conflicts with RAG documents (e.g., tool says "Delta has 4 GPU nodes" but RAG says 8), the agent is CORRECT to trust the tool results. Score the agent based on whether it accurately represented the tool results.
+- HOWEVER: Tool results returning 0 items or empty results represent ABSENCE of data, not contradiction of other sources. Do not penalize an answer for relying on RAG documents just because a tool search returned no results — the search may not have matched, or the data may not be in that tool's scope. Only treat tool results as overriding RAG when the tool returns positive data that conflicts with the RAG answer.
+- If tool results show 0 items AND the RAG documents have relevant content, the agent is CORRECT to use the RAG content. Do not penalize this.
+
+## Completeness: Specificity and Action
+
+In judging completeness, you are looking for specific examples. Specific examples are concrete items like named resources (e.g., "Anvil", "Expanse", "Bridges-2"), specific software with versions (e.g., "Anaconda3 version 2020.11"), named events with dates, or exact counts and statistics. An answer that describes a category ("several resources support GPUs") without naming them is NOT specific. An answer that names them ("Anvil has NVIDIA A100s, Expanse has V100s, ACES has H100s") IS specific.
+
+You may find that an answer contains a list of examples. Count the specific, individually named items (not categories). If the answer lists 6 or more specific named items, completeness may be scored 5. If the answer lists fewer than 6 specific named items, score completeness no higher than 4. Do not count general categories or types of things (e.g., "workshops on AI, cybersecurity, and data management") — those are categories, not specific items.
+
+Apply these rules:
+- When the question asks for CURRENT or SPECIFIC information (e.g., "what events are coming up", "which resources have X installed", "show me allocation statistics") and the answer provides only general/static guidance without specific names, versions, dates, or counts, score completeness 3 or lower. A correct general answer to a specific question is incomplete.
+- When the question asks "which resources" or "where can I" and the answer does NOT include a list of specifically named resources, score completeness no higher than 3 — even if the general advice is correct.
+- When the system TAKES AN ACTION on behalf of the user (e.g., creates a support ticket, files a report) rather than merely suggesting the user take that action themselves, that is more complete. An answer that says "a ticket has been created (ticket ATS-12345)" is more complete than "you should open a ticket at this URL."
+- When the answer includes real-time data (live event listings, current software versions, system status) alongside documentation, it is more complete than documentation alone — the user gets both the how-to and the current state.
 
 ## User Question
 
@@ -116,7 +195,7 @@ Score each dimension from 1 (worst) to 5 (best):
 
 ## Context the Agent Had Access To
 
-{context_text}
+{context_text}{facts_section}
 
 ## Your Response
 
@@ -127,6 +206,6 @@ Return a JSON object with this exact structure (no other text):
   "completeness": {{"score": <1-5>, "justification": "<brief explanation>"}},
   "relevance": {{"score": <1-5>, "justification": "<brief explanation>"}},
   "citation_quality": {{"score": <1-5>, "justification": "<brief explanation>"}},
-  "hedging": {{"score": <1-5>, "justification": "<brief explanation>"}}
+  "hedging": {{"score": <1-5>, "justification": "<brief explanation>"}}{facts_response_schema}
 }}
 ```"""

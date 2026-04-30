@@ -83,6 +83,39 @@ _ATTRIBUTION_FALLBACK_ORDER: tuple[str, ...] = (
     "check_system_status",
 )
 
+# ── Write-capable capabilities ────────────────────────────────────────────
+
+# Capabilities whose backend performs writes (POST/PUT/DELETE) against an
+# external system. Source of truth for the READ_ONLY guard; enumerated in
+# docs/security/write-capability-audit.md. If a new write-capable capability
+# is added, it MUST be added here AND in the audit document.
+WRITE_CAPABILITY_IDS: frozenset[str] = frozenset(
+    {
+        "manage_announcements",  # announcements domain: create/update/delete
+        "open_ticket",  # jsm domain: create support ticket
+        "report_login_problem",  # jsm domain: create login-issue ticket
+        "report_security",  # jsm domain: create security-concern ticket
+    }
+)
+
+# MCP tool names corresponding to the write capabilities above. The legacy
+# chain enforces READ_ONLY by removing write capabilities from the registry,
+# but the tool_calling_loop builds tools directly from the MCP catalog and
+# never sees the registry — so it needs an explicit deny-list of MCP tool
+# names. Keep in sync with the capabilities above.
+WRITE_MCP_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        # announcements domain (manage_announcements)
+        "create_announcement",
+        "update_announcement",
+        "delete_announcement",
+        # jsm domain (open_ticket / report_login_problem / report_security)
+        "create_support_ticket",
+        "create_login_ticket",
+        "report_security_incident",
+    }
+)
+
 # ── Categories ────────────────────────────────────────────────────────────
 
 CATEGORIES: list[Category] = [
@@ -581,6 +614,16 @@ def _build_registry() -> CapabilityRegistry:
     disabled_set: set[str] = set()
     if settings.DISABLED_CAPABILITIES:
         disabled_set = {s.strip() for s in settings.DISABLED_CAPABILITIES.split(",") if s.strip()}
+
+    # Phase 1 safety guard: READ_ONLY forcibly adds every write capability to
+    # the disabled set. This runs BEFORE the filter loop, so the deny-wins
+    # semantics of the existing filter automatically picks it up.
+    if settings.READ_ONLY:
+        disabled_set = disabled_set | set(WRITE_CAPABILITY_IDS)
+        logger.warning(
+            "READ_ONLY=true active — write capabilities disabled: %s",
+            ", ".join(sorted(WRITE_CAPABILITY_IDS)),
+        )
 
     # Apply filter: allow-list first (if set), then deny-list always wins
     filtered: list[Capability] = []

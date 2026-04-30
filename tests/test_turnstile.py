@@ -25,8 +25,10 @@ def guard(_enable_turnstile):
 class TestTurnstileGuard:
     """Tests for TurnstileGuard session tracking."""
 
-    def test_disabled_when_no_secret_key(self):
+    def test_disabled_when_no_secret_key(self, monkeypatch):
         """When TURNSTILE_SECRET_KEY is empty, turnstile_enabled is False."""
+        # Isolate from any local .env TURNSTILE_SECRET_KEY the conftest may load.
+        monkeypatch.setattr(settings, "TURNSTILE_SECRET_KEY", "")
         assert settings.TURNSTILE_SECRET_KEY == ""
         assert settings.turnstile_enabled is False
 
