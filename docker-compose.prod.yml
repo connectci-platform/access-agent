@@ -41,13 +41,6 @@ services:
       - UKY_RAG_GENERAL_URL=${UKY_RAG_GENERAL_URL:-https://access-ai-grace1-external.ccs.uky.edu/access/chat/api/}
       - UKY_RAG_XDMOD_URL=${UKY_RAG_XDMOD_URL:-https://access-ai-grace1-external.ccs.uky.edu/access/xdmod/chat/api/}
       - UKY_RAG_TIMEOUT=${UKY_RAG_TIMEOUT:-60.0}
-      # pgvector Q&A service (fallback RAG)
-      # Use host.docker.internal for same-host Docker communication
-      - QA_SERVICE_URL=${QA_SERVICE_URL:-http://host.docker.internal:8001}
-      - RAG_TOP_K=${RAG_TOP_K:-3}
-      - RAG_THRESHOLD_STATIC=${RAG_THRESHOLD_STATIC:-0.85}
-      - RAG_THRESHOLD_COMBINED=${RAG_THRESHOLD_COMBINED:-0.75}
-      - RAG_THRESHOLD_FALLBACK=${RAG_THRESHOLD_FALLBACK:-0.65}
       - MCP_SERVER_HOST=${MCP_SERVER_HOST:-localhost}
       # MCP API key for servers requiring authentication (announcements, events, jsm)
       - MCP_API_KEY=${MCP_API_KEY:-}

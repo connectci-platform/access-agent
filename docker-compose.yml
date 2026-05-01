@@ -14,7 +14,6 @@ services:
       - FIREWORKS_MODEL=${FIREWORKS_MODEL:-}
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/langgraph
       - MCP_CATALOG_URL=http://n8n:5678/webhook/generate-mcp-catalog
-      - QA_SERVICE_URL=${QA_SERVICE_URL:-http://localhost:8001}
       # UKY document RAG
       - ACCESS_AI_API_KEY=${ACCESS_AI_API_KEY:-}
       # Drupal endpoint for resource group section cache

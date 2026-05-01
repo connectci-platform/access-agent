@@ -62,18 +62,6 @@ class Settings(BaseSettings):
     # Database (checkpointing)
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/langgraph"
 
-    # RAG Settings - using access-qa-service for verified Q&A retrieval
-    QA_SERVICE_URL: str = "http://localhost:8001"
-    RAG_TOP_K: int = 3
-
-    # Query-type-specific similarity thresholds
-    RAG_THRESHOLD_STATIC: float = 0.85  # High threshold for static queries (confident answers)
-    RAG_THRESHOLD_COMBINED: float = 0.75  # Moderate threshold for combined queries (augment tools)
-    RAG_THRESHOLD_FALLBACK: float = 0.65  # Lower threshold for fallback scenarios
-
-    # Legacy compatibility (uses static threshold)
-    RAG_SIMILARITY_THRESHOLD: float = 0.85
-
     # JWT Authentication (ES256 + JWKS)
     # Comma-separated list of "issuer=jwks_url" pairs.
     # Example: "https://support.access-ci.org=https://support.access-ci.org/.well-known/jwks.json"
@@ -122,11 +110,6 @@ class Settings(BaseSettings):
     # MCP Servers
     MCP_CATALOG_URL: str = "http://localhost:5678/webhook/generate-mcp-catalog"
     MCP_CATALOG_PATH: str | None = None
-
-    # Retry Settings
-    MAX_RETRIES_PER_TOOL: int = 2
-    MAX_RETRIES_TOTAL: int = 5
-    TIMEOUT_BUDGET_MS: int = 120000
 
     # Quality Loop
     MAX_QUALITY_ATTEMPTS: int = 3

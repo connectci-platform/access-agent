@@ -40,7 +40,6 @@ Query → Classify → Route
 
 - Python 3.11+
 - Access to MCP servers (or local catalog file)
-- Access to QA service (or skip RAG with `QA_SERVICE_URL=""`)
 - OpenAI API key
 
 ### Installation
@@ -92,9 +91,6 @@ Environment variables (see `.env.example`):
 | `LLM_PROVIDER` | openai, vllm, access_ai | openai |
 | `OPENAI_API_KEY` | OpenAI API key | - |
 | `OPENAI_MODEL` | Model name | gpt-4o |
-| `QA_SERVICE_URL` | RAG service URL | http://localhost:8001 |
-| `RAG_THRESHOLD_STATIC` | Similarity threshold for static queries | 0.85 |
-| `RAG_THRESHOLD_COMBINED` | Similarity threshold for combined queries | 0.75 |
 | `MCP_CATALOG_URL` | URL to fetch tool catalog | - |
 | `MCP_CATALOG_PATH` | Path to local catalog file | - |
 | `SYNTHESIS_TOKEN_BUDGET` | Max tokens for tool results before condensation | 80000 |
@@ -195,7 +191,7 @@ src/
 │       ├── recover.py   # Error recovery
 │       └── synthesize.py # Answer generation (RAG-aware, token budget)
 ├── services/
-│   └── qa_client.py     # HTTP client for QA service
+│   └── uky_client.py    # HTTP client for UKY RAG endpoints
 ├── tools/
 │   ├── mcp_client.py    # MCP HTTP client
 │   └── catalog_aggregator.py

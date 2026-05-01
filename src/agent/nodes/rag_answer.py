@@ -27,8 +27,6 @@ from langchain_core.messages import AIMessage
 from langgraph.config import get_stream_writer
 from opentelemetry.trace import Span
 
-from ...config import settings
-from ...services.qa_client import get_qa_client
 from ...services.uky_client import get_uky_client
 from ...telemetry import get_tracer
 from ..state import AgentState, RAGMatch
@@ -60,22 +58,6 @@ def process_citations(text: str) -> str:
         return f"[Source: {domain}/{entity_id}]"
 
     return CITATION_PATTERN.sub(replace_citation, text)
-
-
-def _get_threshold_for_query_type(query_type: str) -> float:
-    """Get the appropriate similarity threshold based on query type.
-
-    Args:
-        query_type: The classification (static, combined, dynamic).
-
-    Returns:
-        The similarity threshold to use.
-    """
-    if query_type == "static":
-        return settings.RAG_THRESHOLD_STATIC
-    if query_type == "combined":
-        return settings.RAG_THRESHOLD_COMBINED
-    return settings.RAG_THRESHOLD_FALLBACK
 
 
 def _rag_response_out_of_scope(result: dict[str, Any]) -> bool:
@@ -201,106 +183,6 @@ async def _ask_uky(
         return None
 
 
-async def _search_pgvector(
-    search_query: str,
-    query_type: str,
-    span: Span,
-) -> dict[str, object]:
-    """Search pgvector Q&A service (original logic, used as fallback).
-
-    Args:
-        search_query: The query to search.
-        query_type: Classification type (static/combined).
-        span: Active OpenTelemetry span.
-
-    Returns:
-        State update dict.
-    """
-    client = get_qa_client()
-    if not client.is_configured:
-        logger.warning("QA service not configured, falling back to tools")
-        span.set_attribute("rag.configured", False)
-        return {"rag_matches": [], "rag_used": False}
-
-    span.set_attribute("rag.configured", True)
-    span.set_attribute("rag.source", "pgvector")
-
-    threshold = _get_threshold_for_query_type(query_type)
-    span.set_attribute("rag.threshold", threshold)
-
-    try:
-        matches = await client.search(
-            query=search_query,
-            limit=settings.RAG_TOP_K,
-            threshold=threshold,
-        )
-
-        rag_matches = [
-            RAGMatch(
-                id=m.id,
-                question=m.question,
-                answer=m.answer,
-                domain=m.domain,
-                entity_id=m.entity_id,
-                similarity_score=m.similarity_score,
-                metadata=m.metadata,
-            )
-            for m in matches
-        ]
-
-        span.set_attribute("rag.matches_found", len(rag_matches))
-        if rag_matches:
-            span.set_attribute("rag.best_score", rag_matches[0].similarity_score)
-
-        if rag_matches:
-            best_match = rag_matches[0]
-            logger.info(
-                f"RAG found {len(rag_matches)} matches. Best: "
-                f"similarity={best_match.similarity_score:.3f}, "
-                f"question='{best_match.question[:50]}...'"
-            )
-
-            if query_type == "static" and best_match.similarity_score >= threshold:
-                answer = process_citations(best_match.answer)
-                span.set_attribute("rag.result", "direct_answer")
-                span.set_attribute("rag.answer_length", len(answer))
-                return {
-                    "final_answer": answer,
-                    "messages": [AIMessage(content=answer)],
-                    "tools_used": ["rag_retrieval"],
-                    "rag_matches": rag_matches,
-                    "rag_used": True,
-                }
-
-            if query_type == "combined":
-                logger.info(f"Combined query: Storing {len(rag_matches)} RAG matches for synthesis")
-                span.set_attribute("rag.result", "matches_for_synthesis")
-                return {
-                    "rag_matches": rag_matches,
-                    "rag_used": True,
-                }
-
-            logger.info(
-                f"Best match below threshold: {best_match.similarity_score:.3f} < {threshold}"
-            )
-            span.set_attribute("rag.result", "below_threshold")
-
-        else:
-            span.set_attribute("rag.result", "no_matches")
-
-        logger.info("No RAG match found above threshold")
-        return {
-            "rag_matches": rag_matches,
-            "rag_used": len(rag_matches) > 0,
-        }
-
-    except Exception as e:
-        logger.error(f"RAG lookup failed: {e}")
-        span.set_attribute("rag.result", "error")
-        span.set_attribute("rag.error", str(e)[:200])
-        return {"rag_matches": [], "rag_used": False}
-
-
 async def rag_answer_node(state: AgentState) -> dict[str, object]:
     """Retrieve answer from UKY document RAG.
 
@@ -349,11 +231,6 @@ async def rag_answer_node(state: AgentState) -> dict[str, object]:
         # Default to "general" endpoint when classifier sets rag_endpoint=null
         # (e.g., dynamic queries). UKY often has useful context even for
         # questions the classifier thinks are purely dynamic.
-        #
-        # pgvector Q&A pair fallback disabled (2026-03-23) — pairs were too
-        # narrow/thin vs UKY docs, and 0.85 threshold never matched real-user
-        # input. To re-enable for slam-dunk scenarios: call _search_pgvector()
-        # when result is None. The function and qa_client.py are intact.
         effective_endpoint = rag_endpoint or "general"
         resource_context = state.get("resource_context")
 

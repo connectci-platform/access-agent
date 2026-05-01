@@ -75,7 +75,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             trusted_issuers[issuer.strip()] = jwks_url
     configure_trusted_issuers(trusted_issuers, environment=settings.ENVIRONMENT)
 
-    logger.info(f"QA Service URL: {settings.QA_SERVICE_URL}")
     if settings.UKY_RAG_ENABLED:
         logger.info(f"UKY RAG enabled: general={settings.UKY_RAG_GENERAL_URL}")
         logger.info(f"UKY RAG enabled: xdmod={settings.UKY_RAG_XDMOD_URL}")

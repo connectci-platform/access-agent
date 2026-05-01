@@ -135,34 +135,6 @@ URL PRESERVATION (MANDATORY):
 
 {capabilities}"""
 
-# System prompt for RAG-only synthesis (when tools failed but RAG has data)
-RAG_ONLY_SYNTHESIS_PROMPT = """You are an ACCESS-CI documentation assistant. Your job is to answer user questions using verified documentation knowledge.
-
-## GUIDELINES
-
-1. Be concise and direct — answer the question first, then provide details
-2. Use the verified knowledge provided to give accurate information
-3. This information comes from human-verified ACCESS documentation — it is authoritative
-4. Format data clearly — use bullet points, tables, or lists where appropriate
-5. Do NOT add information from your own training data. Only use what is provided below.
-6. NEVER generate specific dates, event titles, names, or numbers that do not appear verbatim in the verified knowledge below. Before including any specific detail, verify it appears in the data below. If it doesn't, do not include it.
-7. If the knowledge starts with hedging language like "The provided documents do not contain..." — ignore that preamble and present the substantive content that follows
-8. If the knowledge doesn't fully answer the question, acknowledge what's missing and suggest the user visit access-ci.org or open a support ticket
-
-URL PRESERVATION (MANDATORY):
-8. You MUST include every URL that appears in the verified knowledge below. Do not summarize, omit, or replace any URL.
-9. Before finalizing your answer, re-read the verified knowledge and verify that every URL present appears in your answer. If any URL is missing, add it.
-
-## VERIFIED KNOWLEDGE (from ACCESS documentation)
-
-{rag_context}
-
-## ANSWER FORMAT
-
-Respond naturally as a helpful documentation assistant. Do not mention "verified knowledge" or internal system details — just answer the question as if you know this information.
-
-{capabilities}"""
-
 # System prompt for condensing large tool results
 CONDENSE_RESULTS_PROMPT = """You are a data extraction assistant. Your job is to extract information relevant to the user's question from large tool results.
 
@@ -636,54 +608,6 @@ async def _synthesize_tools_only(
 
     except Exception as e:
         logger.error(f"Tools-only synthesis failed: {e}")
-        return {
-            "final_answer": ("I encountered an error generating your answer. Please try again."),
-            "messages": [AIMessage(content="Error generating response.")],
-        }
-
-
-async def _synthesize_with_rag_only(
-    query: str,
-    rag_context: str,
-    authenticated: bool = False,
-) -> dict[str, Any]:
-    """Synthesize answer from RAG matches only (when tools failed).
-
-    Args:
-        query: The user's query.
-        rag_context: Formatted RAG matches.
-
-    Returns:
-        Dict with final_answer and messages.
-    """
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", RAG_ONLY_SYNTHESIS_PROMPT),
-            ("human", "{query}"),
-        ]
-    )
-
-    llm = get_llm(temperature=0.3, max_tokens=2000)
-
-    try:
-        response = await llm.ainvoke(
-            prompt.format_messages(
-                rag_context=rag_context,
-                query=query,
-                capabilities=_get_capabilities_text(authenticated),
-            )
-        )
-        answer = response.content
-
-        logger.info(f"Generated RAG-only answer: {len(answer)} characters")
-
-        return {
-            "final_answer": answer,
-            "messages": [AIMessage(content=answer)],
-        }
-
-    except Exception as e:
-        logger.error(f"RAG-only synthesis failed: {e}")
         return {
             "final_answer": ("I encountered an error generating your answer. Please try again."),
             "messages": [AIMessage(content="Error generating response.")],
