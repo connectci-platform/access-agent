@@ -59,7 +59,7 @@ def assert_config() -> None:
 
 async def call_with_thinking() -> None:
     print("\n[1/2] Default call (thinking on, expect reasoning to be stripped)")
-    llm = get_llm()
+    llm = get_llm(max_tokens=8000)
     assert isinstance(llm, _StrippingChatOpenAI), (
         f"Expected _StrippingChatOpenAI, got {type(llm).__name__}"
     )
@@ -75,7 +75,7 @@ async def call_with_thinking() -> None:
 
 async def call_without_thinking() -> None:
     print("\n[2/2] Call with enable_thinking=False (expect short answer, no reasoning trace)")
-    llm = get_llm(enable_thinking=False)
+    llm = get_llm(enable_thinking=False, max_tokens=8000)
     response = await llm.ainvoke([HumanMessage(content="In one sentence, what is ACCESS-CI?")])
     content = response.content if isinstance(response.content, str) else str(response.content)
     print(f"  response: {content!r}")
