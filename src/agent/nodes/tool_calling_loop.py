@@ -97,7 +97,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
         span.set_attribute("agent.has_rag_context", bool(rag_context))
         span.set_attribute("agent.authenticated", bool(acting_user))
 
-        llm = get_llm()
+        llm = get_llm(max_tokens=settings.MAX_TOKENS_LOOP)
         agent = create_react_agent(
             model=llm,
             tools=tools,

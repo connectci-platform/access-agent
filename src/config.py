@@ -114,6 +114,24 @@ class Settings(BaseSettings):
     # Quality Loop
     MAX_QUALITY_ATTEMPTS: int = 3
 
+    # Per-node max_tokens budgets (single source of truth).
+    # Reasoning models (Qwen3, Kimi, DeepSeek-R1) consume part of the budget on
+    # chain-of-thought before emitting user-visible content, so these defaults
+    # are sized larger than what a non-reasoning model strictly needs.
+    # Lowering them is safe for non-reasoning models; raising them is safe for
+    # any model assuming the server's max-context limit isn't hit.
+    MAX_TOKENS_LOOP: int = 6000  # tool_calling_loop react agent (was 2000)
+    MAX_TOKENS_DOMAIN_AGENT: int = 4000  # domain_agent react agent (was 2000)
+    MAX_TOKENS_SYNTH_CONDENSE: int = (
+        8000  # synthesize: condense large tool-result context (was 4000)
+    )
+    MAX_TOKENS_SYNTH_FINAL: int = (
+        3000  # synthesize: produce user-visible final answer (was 1500/2000)
+    )
+    MAX_TOKENS_PLAN: int = 3000  # plan node (was 1500)
+    MAX_TOKENS_EVALUATE: int = 1500  # evaluate node (was 500)
+    MAX_TOKENS_RECOVER: int = 1500  # recover node (was 500)
+
     # Content length limits for LLM processing
     # Modern LLMs have 128K+ context windows, so these can be generous
     MAX_TOOL_RESULT_LENGTH: int = 50000  # Max chars per tool result in evaluate

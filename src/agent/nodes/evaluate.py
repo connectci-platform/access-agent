@@ -146,7 +146,7 @@ async def evaluate_node(state: AgentState) -> dict[str, Any]:
     results_summary = _build_results_summary(tool_results)
 
     # Get LLM evaluation
-    llm = get_llm(temperature=0.1, max_tokens=500)
+    llm = get_llm(temperature=0.1, max_tokens=settings.MAX_TOKENS_EVALUATE)
     chain = EVALUATION_PROMPT | llm | JsonOutputParser()
 
     try:

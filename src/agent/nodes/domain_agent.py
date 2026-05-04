@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.config import get_stream_writer
 from langgraph.prebuilt import create_react_agent
 
+from ...config import settings
 from ...llm import get_llm
 from ...telemetry import get_tracer
 from ..domains.registry import get_domain_registry
@@ -155,7 +156,7 @@ async def domain_agent_node(state: AgentState) -> dict[str, Any]:
         llm = get_llm(
             model_name=config.model_name,
             temperature=config.temperature,
-            max_tokens=2000,
+            max_tokens=settings.MAX_TOKENS_DOMAIN_AGENT,
         )
 
         # Create and run react agent

@@ -23,6 +23,7 @@ from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.config import get_stream_writer
 
+from ...config import settings
 from ...llm import get_llm
 from ...telemetry import get_tracer
 from ...telemetry.spans import add_span_event
@@ -160,7 +161,7 @@ async def plan_node(state: AgentState) -> dict[str, Any]:  # noqa: PLR0915
         )
 
         # Get LLM and create chain
-        llm = get_llm(temperature=0.1, max_tokens=1500)
+        llm = get_llm(temperature=0.1, max_tokens=settings.MAX_TOKENS_PLAN)
         chain = prompt | llm | JsonOutputParser()
 
         try:

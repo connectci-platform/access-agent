@@ -229,7 +229,7 @@ async def _condense_tool_results(query: str, results_text: str) -> str:
     )
 
     # Use a faster model for condensation if available, with higher token limit
-    llm = get_llm(temperature=0, max_tokens=4000)
+    llm = get_llm(temperature=0, max_tokens=settings.MAX_TOKENS_SYNTH_CONDENSE)
 
     try:
         response = await llm.ainvoke(
@@ -483,7 +483,7 @@ suggest the user check the official ACCESS documentation at access-ci.org.""",
         ]
     )
 
-    llm = get_llm(temperature=0.3, max_tokens=1500)
+    llm = get_llm(temperature=0.3, max_tokens=settings.MAX_TOKENS_SYNTH_FINAL)
 
     try:
         response = await llm.ainvoke(prompt.format_messages(query=query))
@@ -538,7 +538,7 @@ async def _synthesize_combined(
         ]
     )
 
-    llm = get_llm(temperature=0.3, max_tokens=2000)
+    llm = get_llm(temperature=0.3, max_tokens=settings.MAX_TOKENS_SYNTH_FINAL)
 
     try:
         response = await llm.ainvoke(
@@ -587,7 +587,7 @@ async def _synthesize_tools_only(
         ]
     )
 
-    llm = get_llm(temperature=0.3, max_tokens=2000)
+    llm = get_llm(temperature=0.3, max_tokens=settings.MAX_TOKENS_SYNTH_FINAL)
 
     try:
         response = await llm.ainvoke(

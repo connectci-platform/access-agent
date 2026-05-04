@@ -24,6 +24,7 @@ from typing import Any
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
+from ...config import settings
 from ...llm import get_llm
 from ..state import AgentState, ToolCall
 
@@ -133,7 +134,7 @@ async def recover_node(state: AgentState) -> dict[str, Any]:
     available_tools = _get_available_tools(catalog, exclude=failed.tool_name)
 
     # Get LLM recovery decision
-    llm = get_llm(temperature=0.1, max_tokens=500)
+    llm = get_llm(temperature=0.1, max_tokens=settings.MAX_TOKENS_RECOVER)
     chain = RECOVERY_PROMPT | llm | JsonOutputParser()
 
     # Find the original tool call parameters
