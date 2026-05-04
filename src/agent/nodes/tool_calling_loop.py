@@ -27,10 +27,60 @@ from ...llm import get_llm
 from ...telemetry import get_tracer
 from ..domains.capabilities import WRITE_MCP_TOOL_NAMES
 from ..domains.tools import create_mcp_tools_from_catalog
+from ..prompts.no_classify import build_system_prompt_no_classify
 from ..prompts.tool_calling_loop import build_system_prompt, format_rag_matches
 from ..state import ToolResult
+from ..tools import search_access_documents
 
 logger = logging.getLogger(__name__)
+
+
+def _build_prompt_and_tools(
+    *,
+    tool_catalog: dict[str, Any],
+    acting_user: str | None,
+    rag_matches: list[Any],
+    domain_hint: str | None,
+    resource_context: str | None,
+) -> tuple[str, list[BaseTool], str | None]:
+    """Assemble the loop's system prompt and tool list for the active flag mode.
+
+    Two shapes:
+
+      - ``settings.USE_NO_CLASSIFY=True``: loop replaces classify, rag_answer,
+        and domain_agent. Tool list = MCP catalog + ``search_access_documents``.
+        Prompt is the no-classify variant (docs-as-tool framing,
+        announcements + JSM choreography appended).
+      - ``settings.USE_NO_CLASSIFY=False``: legacy ``USE_TOOL_CALLING_LOOP``
+        behavior. Tool list = MCP catalog only. Prompt is the classify-aware
+        variant: rag_matches are formatted as upstream context, classifier's
+        ``domain_hint`` is surfaced.
+
+    Returns ``(system_prompt, tools, rag_context_or_none)``. The third value
+    is exposed for span instrumentation (``agent.has_rag_context``).
+    """
+    mcp_tools = _apply_read_only_filter(create_mcp_tools_from_catalog(tool_catalog, acting_user))
+
+    if settings.USE_NO_CLASSIFY:
+        return (
+            build_system_prompt_no_classify(
+                acting_user=acting_user,
+                resource_context=resource_context,
+            ),
+            [*mcp_tools, search_access_documents],
+            None,
+        )
+
+    rag_context = format_rag_matches(rag_matches) if rag_matches else None
+    return (
+        build_system_prompt(
+            rag_context=rag_context,
+            domain_hint=domain_hint,
+            acting_user=acting_user,
+        ),
+        mcp_tools,
+        rag_context,
+    )
 
 
 def _apply_read_only_filter(tools: list[BaseTool]) -> list[BaseTool]:
@@ -79,23 +129,21 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
         attributes={"agent.node": "tool_calling_loop"},
     ) as span:
         acting_user = state.get("acting_user")
-        rag_matches = state.get("rag_matches") or []
         classification = state.get("query_classification")
         domain_hint = classification.domain if classification else None
-        tool_catalog = state.get("tool_catalog") or {}
 
-        rag_context = format_rag_matches(rag_matches) if rag_matches else None
-        system_prompt = build_system_prompt(
-            rag_context=rag_context,
-            domain_hint=domain_hint,
+        system_prompt, tools, rag_context = _build_prompt_and_tools(
+            tool_catalog=state.get("tool_catalog") or {},
             acting_user=acting_user,
+            rag_matches=state.get("rag_matches") or [],
+            domain_hint=domain_hint,
+            resource_context=state.get("resource_context"),
         )
-
-        tools = _apply_read_only_filter(create_mcp_tools_from_catalog(tool_catalog, acting_user))
 
         span.set_attribute("agent.tool_count", len(tools))
         span.set_attribute("agent.has_rag_context", bool(rag_context))
         span.set_attribute("agent.authenticated", bool(acting_user))
+        span.set_attribute("agent.no_classify", settings.USE_NO_CLASSIFY)
 
         llm = get_llm(max_tokens=settings.MAX_TOKENS_LOOP)
         agent = create_react_agent(

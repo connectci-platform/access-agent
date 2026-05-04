@@ -107,6 +107,21 @@ class Settings(BaseSettings):
     # in staging first, then production at cutover.
     USE_TOOL_CALLING_LOOP: bool = False
 
+    # USE_NO_CLASSIFY: when True, bypass classify and rag_answer entirely —
+    # START routes directly to tool_calling_loop. The loop receives the
+    # `search_access_documents` tool (a wrapper around uky_client.ask())
+    # alongside the MCP tools so it can choose when to consult docs versus
+    # call live tools, replacing what classify decided up-front. The
+    # workflow choreography that lived in domain_agent_node is folded into
+    # the loop's system prompt as instructions.
+    #
+    # Independent of USE_TOOL_CALLING_LOOP — this flag short-circuits the
+    # graph before either flag's routing logic applies. Old paths remain
+    # alive (classify, rag_answer, domain_agent, the legacy chain, the
+    # USE_TOOL_CALLING_LOOP-with-classify path) so we can flip back if
+    # the no-classify experiment underperforms in eval.
+    USE_NO_CLASSIFY: bool = False
+
     # MCP Servers
     MCP_CATALOG_URL: str = "http://localhost:5678/webhook/generate-mcp-catalog"
     MCP_CATALOG_PATH: str | None = None

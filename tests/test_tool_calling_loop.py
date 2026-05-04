@@ -488,6 +488,152 @@ async def test_route_by_classification_preserves_rag_and_plan_when_flag_off(monk
     assert route_by_classification(state) == "rag_and_plan"
 
 
+# ---------------------------------------------------------------------------
+# USE_NO_CLASSIFY master switch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_no_classify_graph_routes_start_directly_to_loop(monkeypatch):
+    """USE_NO_CLASSIFY=True: START → tool_calling_loop, no classify in between."""
+    from src.agent.graph import create_agent_graph
+
+    monkeypatch.setattr("src.config.settings.USE_NO_CLASSIFY", True)
+
+    graph = create_agent_graph().get_graph()
+    start_edges = [e for e in graph.edges if e.source == "__start__"]
+    assert len(start_edges) == 1
+    assert start_edges[0].target == "tool_calling_loop"
+
+
+@pytest.mark.asyncio
+async def test_no_classify_graph_loop_ends(monkeypatch):
+    """USE_NO_CLASSIFY=True: tool_calling_loop → END (no further routing)."""
+    from src.agent.graph import create_agent_graph
+
+    monkeypatch.setattr("src.config.settings.USE_NO_CLASSIFY", True)
+
+    graph = create_agent_graph().get_graph()
+    loop_edges = [e for e in graph.edges if e.source == "tool_calling_loop"]
+    assert len(loop_edges) == 1
+    assert loop_edges[0].target == "__end__"
+
+
+@pytest.mark.asyncio
+async def test_default_graph_routes_start_to_classify(monkeypatch):
+    """USE_NO_CLASSIFY=False (default): legacy path preserved, START → classify."""
+    from src.agent.graph import create_agent_graph
+
+    monkeypatch.setattr("src.config.settings.USE_NO_CLASSIFY", False)
+
+    graph = create_agent_graph().get_graph()
+    start_edges = [e for e in graph.edges if e.source == "__start__"]
+    assert len(start_edges) == 1
+    assert start_edges[0].target == "classify"
+
+
+@pytest.mark.asyncio
+async def test_no_classify_loop_appends_search_access_documents(base_state, monkeypatch):
+    """When USE_NO_CLASSIFY=True, the loop's tool list includes search_access_documents."""
+    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
+
+    monkeypatch.setattr("src.config.settings.USE_NO_CLASSIFY", True)
+
+    answer = AIMessage(content="ok")
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke.return_value = {"messages": [*base_state["messages"], answer]}
+
+    captured = {}
+
+    def capture(**kwargs):  # type: ignore[no-untyped-def]
+        captured["tools"] = kwargs.get("tools", [])
+        return mock_graph
+
+    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", side_effect=capture):
+        await tool_calling_loop_node(base_state)
+
+    tool_names = [t.name for t in captured["tools"]]
+    assert "search_access_documents" in tool_names
+
+
+@pytest.mark.asyncio
+async def test_no_classify_loop_omits_search_access_documents_when_off(base_state, monkeypatch):
+    """When USE_NO_CLASSIFY=False, the doc-search tool is NOT injected (legacy behavior)."""
+    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
+
+    monkeypatch.setattr("src.config.settings.USE_NO_CLASSIFY", False)
+
+    answer = AIMessage(content="ok")
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke.return_value = {"messages": [*base_state["messages"], answer]}
+
+    captured = {}
+
+    def capture(**kwargs):  # type: ignore[no-untyped-def]
+        captured["tools"] = kwargs.get("tools", [])
+        return mock_graph
+
+    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", side_effect=capture):
+        await tool_calling_loop_node(base_state)
+
+    tool_names = [t.name for t in captured["tools"]]
+    assert "search_access_documents" not in tool_names
+
+
+@pytest.mark.asyncio
+async def test_no_classify_loop_uses_no_classify_prompt(base_state, monkeypatch):
+    """The no-classify prompt frames docs as a tool, not a separate source."""
+    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
+
+    monkeypatch.setattr("src.config.settings.USE_NO_CLASSIFY", True)
+
+    answer = AIMessage(content="ok")
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke.return_value = {"messages": [*base_state["messages"], answer]}
+
+    captured = {}
+
+    def capture(**kwargs):  # type: ignore[no-untyped-def]
+        captured["prompt"] = kwargs.get("prompt", "")
+        return mock_graph
+
+    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", side_effect=capture):
+        await tool_calling_loop_node(base_state)
+
+    prompt = captured["prompt"]
+    # Smoke checks: doc-search is mentioned; announcements + JSM choreographies are present.
+    assert "search_access_documents" in prompt
+    assert "Announcements workflow" in prompt
+    assert "Support-ticket workflow" in prompt
+    # The "two complementary sources" framing must NOT carry over.
+    assert "two complementary sources" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_no_classify_prompt_includes_resource_context(base_state, monkeypatch):
+    """When the request has a resource_context, the prompt mentions the slug."""
+    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
+
+    monkeypatch.setattr("src.config.settings.USE_NO_CLASSIFY", True)
+
+    state = {**base_state, "resource_context": "delta"}
+    answer = AIMessage(content="ok")
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke.return_value = {"messages": [*state["messages"], answer]}
+
+    captured = {}
+
+    def capture(**kwargs):  # type: ignore[no-untyped-def]
+        captured["prompt"] = kwargs.get("prompt", "")
+        return mock_graph
+
+    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", side_effect=capture):
+        await tool_calling_loop_node(state)
+
+    assert "delta" in captured["prompt"]
+    assert "rp_name" in captured["prompt"]
+
+
 # ── READ_ONLY guard on the tool_calling_loop ─────────────────────────────────
 #
 # The legacy chain enforces READ_ONLY by removing write capabilities from the
