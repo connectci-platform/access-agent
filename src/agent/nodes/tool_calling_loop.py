@@ -16,6 +16,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.config import get_stream_writer
 from langgraph.errors import GraphRecursionError
 from langgraph.prebuilt import create_react_agent
 
@@ -105,6 +106,20 @@ def _apply_read_only_filter(tools: list[BaseTool]) -> list[BaseTool]:
     return filtered
 
 
+def _emit_status(message: str) -> None:
+    """Emit a status event to the SSE stream, no-op outside runnable context.
+
+    ``get_stream_writer()`` raises ``RuntimeError`` when called outside a
+    LangGraph runnable (eg. direct invocation in tests). Wrapping here keeps
+    the call sites compact and lets tests exercise the node directly.
+    """
+    try:
+        writer = get_stream_writer()
+    except RuntimeError:
+        return
+    writer({"type": "status", "message": message})
+
+
 async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
     """Run the single-node tool-calling loop.
 
@@ -123,6 +138,10 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
         node_trace: telemetry entry for this node
     """
     tracer = get_tracer("access-agent.nodes")
+
+    # Visible status for the user; the no-classify path has no other emitters
+    # between node entry and the final answer.
+    _emit_status("Processing query...")
 
     with tracer.start_as_current_span(
         "agent.tool_calling_loop",

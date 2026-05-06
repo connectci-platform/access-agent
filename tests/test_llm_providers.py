@@ -91,6 +91,16 @@ class TestOpenAICompatibleProviderEnableThinking:
         model = provider.get_chat_model()
         assert isinstance(model, _StrippingChatOpenAI)
 
+    def test_streaming_disabled_so_strip_is_not_bypassed(self):
+        # streaming=False forces requests through _agenerate, where our subclass
+        # strips </think> blocks. With streaming on, BaseChatModel routes via
+        # _astream and the strip is bypassed (regression caught 2026-05-06).
+        provider = OpenAICompatibleProvider(
+            base_url="http://example/v1", api_key="k", default_model="m"
+        )
+        model = provider.get_chat_model()
+        assert model.streaming is False
+
 
 class TestOpenAIProviderIgnoresEnableThinking:
     def test_enable_thinking_does_not_raise(self):

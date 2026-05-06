@@ -12,6 +12,18 @@ services:
       - STATIC_LLM_PROVIDER=${STATIC_LLM_PROVIDER:-}
       - FIREWORKS_API_KEY=${FIREWORKS_API_KEY:-}
       - FIREWORKS_MODEL=${FIREWORKS_MODEL:-}
+      # vLLM (UKY Qwen) — required when LLM_PROVIDER=vllm
+      - VLLM_BASE_URL=${VLLM_BASE_URL:-}
+      - VLLM_API_KEY=${VLLM_API_KEY:-}
+      - VLLM_MODEL_NAME=${VLLM_MODEL_NAME:-}
+      # UKY document RAG endpoints
+      - UKY_RAG_ENABLED=${UKY_RAG_ENABLED:-false}
+      - UKY_RAG_GENERAL_URL=${UKY_RAG_GENERAL_URL:-}
+      - UKY_RAG_XDMOD_URL=${UKY_RAG_XDMOD_URL:-}
+      - UKY_RAG_TIMEOUT=${UKY_RAG_TIMEOUT:-60.0}
+      # pgvector QA service + MCP host (for tool calls)
+      - QA_SERVICE_URL=${QA_SERVICE_URL:-}
+      - MCP_SERVER_HOST=${MCP_SERVER_HOST:-host.docker.internal}
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/langgraph
       - MCP_CATALOG_URL=http://n8n:5678/webhook/generate-mcp-catalog
       # UKY document RAG
@@ -34,6 +46,9 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-https://api.honeycomb.io}
       - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
       - HONEYCOMB_DATASET=${HONEYCOMB_DATASET:-access-ci}
+      # Architecture flags
+      - USE_TOOL_CALLING_LOOP=${USE_TOOL_CALLING_LOOP:-true}
+      - USE_NO_CLASSIFY=${USE_NO_CLASSIFY:-false}
     extra_hosts:
       # Resolve DDEV site from within container for JWKS endpoint access
       - "accessmatch.ddev.site:host-gateway"

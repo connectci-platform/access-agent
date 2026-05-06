@@ -164,6 +164,12 @@ class OpenAICompatibleProvider(LLMProvider):
             temperature=temperature,
             max_completion_tokens=max_tokens,
             extra_body=extra_body or None,
+            # Force non-streaming so requests route through _agenerate (which our
+            # subclass overrides to strip </think> blocks). With streaming on,
+            # BaseChatModel._agenerate_with_cache routes through _astream and
+            # the strip is bypassed. No consumer surfaces token streaming today;
+            # revisit if a future consumer wants chunk-level events.
+            streaming=False,
         )
 
 
