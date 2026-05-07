@@ -1,5 +1,22 @@
 # ACCESS Documentation Agent (LangGraph)
 
+> **⚠️ ARCHIVE BRANCH — `archive/legacy-chain`**
+>
+> Frozen snapshot of the **legacy chain** world (classify → rag_answer →
+> plan → execute → evaluate → recover → synthesize), preserved as a
+> head-to-head eval comparator against `feat/looping-thinking-agent`.
+>
+> - **Do not merge.** Do not pull from `main`.
+> - `USE_TOOL_CALLING_LOOP` and `USE_NO_CLASSIFY` are hardcoded `False` at
+>   every use site so env vars (and the eval scorer override) cannot flip
+>   behavior. The flags themselves remain in `config.py` only because
+>   removing them would touch unrelated tests.
+> - Tests that monkeypatch either flag to `True` will fail on this branch
+>   by design — neither flag is load-bearing here. Run evals here, not the
+>   test suite.
+> - Once the no-classify branch is merged and the comparison is no longer
+>   useful, this branch can be deleted.
+
 A LangGraph-powered documentation agent for ACCESS-CI with RAG-primary architecture.
 
 ## Architecture

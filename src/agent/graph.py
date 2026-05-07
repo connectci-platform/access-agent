@@ -29,7 +29,6 @@ if TYPE_CHECKING:
 
 from langgraph.graph import END, START, StateGraph
 
-from ..config import settings
 from ..telemetry import get_tracer
 from .edges.routing import (
     should_execute_tools,
@@ -73,10 +72,9 @@ def route_by_classification(
     Returns:
         "rag_answer" for static/domain, "rag_and_plan" for combined/dynamic.
     """
-    # Phase 3 tool_calling_loop handles combined/dynamic cases inline using
-    # RAG context from state, so when the flag is on we always go through
-    # rag_answer first. rag_and_plan becomes unreachable in that mode.
-    if settings.USE_TOOL_CALLING_LOOP:
+    # ARCHIVE BRANCH: hardcoded False so this branch always runs the chain.
+    # See README.md.
+    if False:
         logger.info(
             "USE_TOOL_CALLING_LOOP=true: routing to rag_answer "
             "(tool_calling_loop will consume RAG context + dispatch tools)"
@@ -186,11 +184,9 @@ def route_after_rag(
     Returns:
         Next node: "end", "plan", "tool_calling_loop", or "domain_agent".
     """
-    # Determines whether tool-using branches go to the new single-node
-    # loop (Phase 3) or the legacy chain.
-    tool_path: Literal["plan", "tool_calling_loop"] = (
-        "tool_calling_loop" if settings.USE_TOOL_CALLING_LOOP else "plan"
-    )
+    # ARCHIVE BRANCH: hardcoded "plan" so this branch always runs the chain.
+    # See README.md.
+    tool_path: Literal["plan", "tool_calling_loop"] = "plan"
 
     classification = state.get("query_classification")
     query_type = classification.query_type if classification else "static"
@@ -287,13 +283,8 @@ def _build_graph_structure(
     builder.add_node("tool_calling_loop", tool_calling_loop_node)  # type: ignore[type-var]
 
     # Add edges
-    # Master switch: when USE_NO_CLASSIFY=true, START goes directly to the
-    # loop, bypassing classify, rag_answer, rag_and_plan, and domain_agent
-    # entirely. The loop's own logic (in tool_calling_loop_node) appends
-    # search_access_documents and switches to a no-classify-aware system
-    # prompt. The legacy nodes are still registered (for the non-flag path
-    # to keep working), they just become unreachable in this mode.
-    if settings.USE_NO_CLASSIFY:
+    # ARCHIVE BRANCH: USE_NO_CLASSIFY hardcoded False — see README.md.
+    if False:
         builder.add_edge(START, "tool_calling_loop")
         # Skip the rest of the routing setup — under USE_NO_CLASSIFY the
         # only reachable edges are START → tool_calling_loop → END.
