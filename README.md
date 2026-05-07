@@ -5,15 +5,21 @@ A LangGraph-powered documentation agent for ACCESS-CI with RAG-primary architect
 ## Architecture
 
 ```
-Query → Classify → Route
-                    ├─ Static/Combined → RAG (QA Service) → [tools if needed] → Synthesize
-                    └─ Dynamic → Plan → Execute (MCP Tools) → Synthesize
+Query → tool_calling_loop → Answer
 ```
 
-**RAG-Primary Design:**
-- **Static queries**: Answered directly from verified Q&A pairs (87% accuracy vs 58% with fine-tuning)
-- **Dynamic queries**: Real-time data from MCP tools (allocations, system status, etc.)
-- **Combined queries**: RAG knowledge + tool results synthesized together
+Single-node design. The LLM inside the loop sees the full MCP catalog
+plus a `search_access_documents` tool wrapping ACCESS-CI documentation
+retrieval, and decides on each turn whether to look something up, call
+a live tool, or emit a final answer. No upstream classifier, no domain
+router, no separate plan→execute→synthesize chain.
+
+- **Documentation questions**: the LLM calls `search_access_documents`,
+  reads the result, decides whether to follow up.
+- **Live data**: the LLM calls the relevant MCP tool (allocations,
+  system status, events, etc.) directly.
+- **Mixed**: the LLM interleaves doc lookups and tool calls inside one
+  loop, synthesizing across both as it goes.
 
 ## Components
 
@@ -93,32 +99,7 @@ Environment variables (see `.env.example`):
 | `OPENAI_MODEL` | Model name | gpt-4o |
 | `MCP_CATALOG_URL` | URL to fetch tool catalog | - |
 | `MCP_CATALOG_PATH` | Path to local catalog file | - |
-| `SYNTHESIS_TOKEN_BUDGET` | Max tokens for tool results before condensation | 80000 |
-
-## Query Classification
-
-The agent classifies queries into three types:
-
-| Type | Description | Path |
-|------|-------------|------|
-| **static** | Factual questions about resources | RAG only |
-| **dynamic** | User-specific or real-time data | MCP tools only |
-| **combined** | Both static knowledge + live data | RAG + MCP tools |
-
-Examples:
-- Static: "What GPUs does Delta have?" → RAG
-- Dynamic: "What are my current allocations?" → MCP tools
-- Combined: "What GPUs does Delta have and is it operational?" → RAG + tools
-
-### Query Expansion
-
-The classifier also expands follow-up queries by resolving pronouns and references from conversation history:
-
-```
-User: "What GPUs does Delta have?"
-Agent: "Delta has NVIDIA A100 GPUs..."
-User: "What about Expanse?"  →  Expanded to: "What GPUs does Expanse have?"
-```
+| `MAX_TOKENS_LOOP` | max_tokens for the react agent inside the loop | 6000 |
 
 ## Development
 
@@ -160,10 +141,10 @@ OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic xxx
 
 ### What's Traced
 
-- **Agent flow**: classify → rag_answer → plan → execute → synthesize
+- **Agent flow**: the `tool_calling_loop` span captures one execution
 - **LLM calls**: Model, tokens (input/output/cached), latency (via `opentelemetry-instrumentation-langchain`)
 - **MCP tool calls**: Server, tool name, arguments, results
-- **RAG lookups**: Query, matches, similarity scores
+- **Doc retrieval**: `search_access_documents` calls (query, matches)
 
 ### Viewing Traces
 
@@ -180,16 +161,14 @@ src/
 ├── main.py              # FastAPI entry point
 ├── config.py            # Environment configuration
 ├── agent/
-│   ├── graph.py         # LangGraph definition
-│   ├── state.py         # State schema (includes RAGMatch)
-│   └── nodes/
-│       ├── classify.py  # Query classification
-│       ├── rag_answer.py # RAG retrieval from QA service
-│       ├── plan.py      # Tool selection
-│       ├── execute.py   # MCP tool execution
-│       ├── evaluate.py  # Result quality check
-│       ├── recover.py   # Error recovery
-│       └── synthesize.py # Answer generation (RAG-aware, token budget)
+│   ├── graph.py         # LangGraph definition (single-node loop)
+│   ├── state.py         # State schema
+│   ├── nodes/
+│   │   └── tool_calling_loop.py  # The only node — react-style tool loop
+│   ├── prompts/
+│   │   └── no_classify.py        # System prompt for the loop
+│   └── tools/
+│       └── access_documents.py   # search_access_documents — doc-retrieval tool
 ├── services/
 │   └── uky_client.py    # HTTP client for UKY RAG endpoints
 ├── tools/
