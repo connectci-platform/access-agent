@@ -1,12 +1,10 @@
-"""Tool-calling loop node — single-node replacement for plan+execute+evaluate+recover.
+"""Tool-calling loop node — the only node in the agent graph.
 
-Launched behind the USE_TOOL_CALLING_LOOP feature flag (launch Phase 3). When
-the flag is True, tool-using queries route here instead of the legacy chain.
-
-Approach: LangGraph's `create_react_agent` drives a turn-by-turn loop where the
-LLM selects tools, sees results as ToolMessages, and continues until it emits
-a non-tool-call response. Planning, execution, evaluation, and recovery all
-happen inside that loop — no separate nodes needed.
+LangGraph's ``create_react_agent`` drives a turn-by-turn loop where the LLM
+selects tools, sees results as ToolMessages, and continues until it emits a
+non-tool-call response. The system prompt instructs the LLM to call
+``search_access_documents`` for documentation-style questions; live data
+flows from the MCP catalog tools.
 """
 
 from __future__ import annotations
@@ -29,7 +27,6 @@ from ...telemetry import get_tracer
 from ..domains.capabilities import WRITE_MCP_TOOL_NAMES
 from ..domains.tools import create_mcp_tools_from_catalog
 from ..prompts.no_classify import build_system_prompt_no_classify
-from ..prompts.tool_calling_loop import build_system_prompt, format_rag_matches
 from ..state import ToolResult
 from ..tools import search_access_documents
 
@@ -40,57 +37,26 @@ def _build_prompt_and_tools(
     *,
     tool_catalog: dict[str, Any],
     acting_user: str | None,
-    rag_matches: list[Any],
-    domain_hint: str | None,
     resource_context: str | None,
-) -> tuple[str, list[BaseTool], str | None]:
-    """Assemble the loop's system prompt and tool list for the active flag mode.
+) -> tuple[str, list[BaseTool]]:
+    """Assemble the loop's system prompt and tool list.
 
-    Two shapes:
-
-      - ``settings.USE_NO_CLASSIFY=True``: loop replaces classify, rag_answer,
-        and domain_agent. Tool list = MCP catalog + ``search_access_documents``.
-        Prompt is the no-classify variant (docs-as-tool framing,
-        announcements + JSM choreography appended).
-      - ``settings.USE_NO_CLASSIFY=False``: legacy ``USE_TOOL_CALLING_LOOP``
-        behavior. Tool list = MCP catalog only. Prompt is the classify-aware
-        variant: rag_matches are formatted as upstream context, classifier's
-        ``domain_hint`` is surfaced.
-
-    Returns ``(system_prompt, tools, rag_context_or_none)``. The third value
-    is exposed for span instrumentation (``agent.has_rag_context``).
+    Tool list = MCP catalog (read-only-filtered) + ``search_access_documents``.
+    Prompt is the no-classify variant (docs-as-tool framing, announcements +
+    JSM choreography appended).
     """
     mcp_tools = _apply_read_only_filter(create_mcp_tools_from_catalog(tool_catalog, acting_user))
-
-    if settings.USE_NO_CLASSIFY:
-        return (
-            build_system_prompt_no_classify(
-                acting_user=acting_user,
-                resource_context=resource_context,
-            ),
-            [*mcp_tools, search_access_documents],
-            None,
-        )
-
-    rag_context = format_rag_matches(rag_matches) if rag_matches else None
-    return (
-        build_system_prompt(
-            rag_context=rag_context,
-            domain_hint=domain_hint,
-            acting_user=acting_user,
-        ),
-        mcp_tools,
-        rag_context,
+    prompt = build_system_prompt_no_classify(
+        acting_user=acting_user,
+        resource_context=resource_context,
     )
+    return prompt, [*mcp_tools, search_access_documents]
 
 
 def _apply_read_only_filter(tools: list[BaseTool]) -> list[BaseTool]:
     """Strip write-capable MCP tools when ``settings.READ_ONLY`` is True.
 
-    The legacy chain enforces READ_ONLY at the capability-registry level,
-    but this node builds tools directly from the MCP catalog. Applying the
-    same deny-list here keeps the audit's "READ_ONLY blocks all writes"
-    claim true on both code paths. See `docs/security/write-capability-audit.md`.
+    See `docs/security/write-capability-audit.md`.
     """
     if not settings.READ_ONLY:
         return tools
@@ -121,15 +87,14 @@ def _emit_status(message: str) -> None:
 
 
 async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
-    """Run the single-node tool-calling loop.
+    """Run the tool-calling loop.
 
     Consumes:
         state.messages: conversation history (HumanMessage / AIMessage / ToolMessage)
         state.query: current user query (already present in messages[-1])
         state.tool_catalog: dict describing MCP tools available to this request
         state.acting_user: optional ACCESS ID for personalized tool calls
-        state.rag_matches: optional list of RAGMatch objects from rag_answer
-        state.query_classification: optional classifier output with .domain
+        state.resource_context: optional RP slug for resource-scoped queries
 
     Produces:
         final_answer: LLM's final text response
@@ -139,8 +104,6 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
     """
     tracer = get_tracer("access-agent.nodes")
 
-    # Visible status for the user; the no-classify path has no other emitters
-    # between node entry and the final answer.
     _emit_status("Processing query...")
 
     with tracer.start_as_current_span(
@@ -148,21 +111,15 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
         attributes={"agent.node": "tool_calling_loop"},
     ) as span:
         acting_user = state.get("acting_user")
-        classification = state.get("query_classification")
-        domain_hint = classification.domain if classification else None
 
-        system_prompt, tools, rag_context = _build_prompt_and_tools(
+        system_prompt, tools = _build_prompt_and_tools(
             tool_catalog=state.get("tool_catalog") or {},
             acting_user=acting_user,
-            rag_matches=state.get("rag_matches") or [],
-            domain_hint=domain_hint,
             resource_context=state.get("resource_context"),
         )
 
         span.set_attribute("agent.tool_count", len(tools))
-        span.set_attribute("agent.has_rag_context", bool(rag_context))
         span.set_attribute("agent.authenticated", bool(acting_user))
-        span.set_attribute("agent.no_classify", settings.USE_NO_CLASSIFY)
 
         llm = get_llm(max_tokens=settings.MAX_TOKENS_LOOP)
         agent = create_react_agent(
@@ -173,12 +130,9 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
 
         messages = list(state.get("messages", []))
         logger.info(
-            "Running tool_calling_loop: %d tools, %d prior messages, "
-            "rag_context=%s, domain_hint=%s",
+            "Running tool_calling_loop: %d tools, %d prior messages",
             len(tools),
             len(messages),
-            bool(rag_context),
-            domain_hint,
         )
 
         final_answer: str | None = None
@@ -275,11 +229,11 @@ def _build_tool_results(
 ) -> tuple[list[ToolResult], int]:
     """Back-fill state.tool_results from a react-loop message thread.
 
-    Downstream consumers (eval scorer, observability, legacy node APIs) read
-    state.tool_results in the same shape plan+execute produced. The react
-    loop only emits ToolMessages, so we reconstruct ToolResult objects by
-    pairing each ToolMessage with its originating AIMessage tool_call (by
-    id) and parsing the JSON content MCPToolWrapper produced.
+    Downstream consumers (eval scorer, observability) read state.tool_results
+    in a structured form. The react loop only emits ToolMessages, so we
+    reconstruct ToolResult objects by pairing each ToolMessage with its
+    originating AIMessage tool_call (by id) and parsing the JSON content
+    MCPToolWrapper produced.
 
     Orphan ToolMessages (no matching tool_call id) are dropped — we never
     fabricate a ToolResult we can't anchor to an AIMessage call. The caller

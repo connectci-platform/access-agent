@@ -200,41 +200,6 @@ async def test_system_prompt_includes_acting_user_when_authenticated(base_state)
 
 
 @pytest.mark.asyncio
-async def test_system_prompt_includes_rag_context_when_present(base_state):
-    """When rag_matches is non-empty, the system prompt should embed them."""
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-    from src.agent.state import RAGMatch
-
-    state = {
-        **base_state,
-        "rag_matches": [
-            RAGMatch(
-                id="rag_001",
-                question="What GPUs exist?",
-                answer="Delta has NVIDIA A100s.",
-                domain="compute-resources",
-                entity_id="delta",
-                similarity_score=0.92,
-            )
-        ],
-    }
-    answer = AIMessage(content="ok")
-    mock_graph = AsyncMock()
-    mock_graph.ainvoke.return_value = {"messages": [*state["messages"], answer]}
-
-    captured_prompt = {}
-
-    def capture_prompt(**kwargs):  # type: ignore[no-untyped-def]
-        captured_prompt["prompt"] = kwargs.get("prompt")
-        return mock_graph
-
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", side_effect=capture_prompt):
-        await tool_calling_loop_node(state)
-
-    assert "Delta has NVIDIA A100s" in captured_prompt["prompt"]
-
-
-@pytest.mark.asyncio
 async def test_tool_results_backfilled_from_messages(base_state):
     """Loop must populate state.tool_results from ToolMessage content for eval-scorer parity."""
     from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
@@ -404,13 +369,13 @@ async def test_orphan_tool_messages_are_counted(base_state):
 
 
 # ---------------------------------------------------------------------------
-# Task 5: graph routing with the USE_TOOL_CALLING_LOOP feature flag
+# Graph wiring
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_graph_registers_tool_calling_loop_node():
-    """The tool_calling_loop node is registered regardless of flag state."""
+    """The tool_calling_loop node is registered as the only node."""
     from src.agent.graph import create_agent_graph
 
     graph = create_agent_graph()
@@ -419,86 +384,9 @@ async def test_graph_registers_tool_calling_loop_node():
 
 
 @pytest.mark.asyncio
-async def test_route_after_rag_uses_tool_calling_loop_when_flag_on(monkeypatch):
-    """With flag on, route_after_rag returns tool_calling_loop where it would have returned plan."""
-    from src.agent.graph import route_after_rag
-
-    monkeypatch.setattr("src.config.settings.USE_TOOL_CALLING_LOOP", True)
-
-    # No classification, no final_answer: hits the "no UKY match, fall back" branch
-    state = {"query_classification": None, "final_answer": None}
-    assert route_after_rag(state) == "tool_calling_loop"
-
-
-@pytest.mark.asyncio
-async def test_route_after_rag_preserves_plan_when_flag_off(monkeypatch):
-    """With flag off (default), route_after_rag returns plan as before."""
-    from src.agent.graph import route_after_rag
-
-    monkeypatch.setattr("src.config.settings.USE_TOOL_CALLING_LOOP", False)
-
-    state = {"query_classification": None, "final_answer": None}
-    assert route_after_rag(state) == "plan"
-
-
-@pytest.mark.asyncio
-async def test_route_after_rag_still_ends_on_confident_static_when_flag_on(monkeypatch):
-    """Flag doesn't change the 'confident RAG → END' decision."""
-    from src.agent.graph import route_after_rag
-
-    monkeypatch.setattr("src.config.settings.USE_TOOL_CALLING_LOOP", True)
-
-    # final_answer present, non-deflection (no hedge phrases): static/end
-    state = {
-        "query_classification": None,
-        "final_answer": (
-            "ACCESS has multiple GPU resources. "
-            "See https://access-ci.org/resources for the full list."
-        ),
-    }
-    assert route_after_rag(state) == "end"
-
-
-@pytest.mark.asyncio
-async def test_route_by_classification_forces_rag_answer_when_flag_on(monkeypatch):
-    """With flag on, combined/dynamic queries route to rag_answer so the loop can consume RAG context."""
-    from src.agent.graph import route_by_classification
-    from src.agent.state import QueryClassification
-
-    monkeypatch.setattr("src.config.settings.USE_TOOL_CALLING_LOOP", True)
-
-    # Combined query that would normally go to rag_and_plan
-    state = {
-        "query_classification": QueryClassification(query_type="combined"),
-    }
-    assert route_by_classification(state) == "rag_answer"
-
-
-@pytest.mark.asyncio
-async def test_route_by_classification_preserves_rag_and_plan_when_flag_off(monkeypatch):
-    """Default path unchanged: combined/dynamic → rag_and_plan."""
-    from src.agent.graph import route_by_classification
-    from src.agent.state import QueryClassification
-
-    monkeypatch.setattr("src.config.settings.USE_TOOL_CALLING_LOOP", False)
-
-    state = {
-        "query_classification": QueryClassification(query_type="combined"),
-    }
-    assert route_by_classification(state) == "rag_and_plan"
-
-
-# ---------------------------------------------------------------------------
-# USE_NO_CLASSIFY master switch
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_no_classify_graph_routes_start_directly_to_loop(monkeypatch):
-    """USE_NO_CLASSIFY=True: START → tool_calling_loop, no classify in between."""
+async def test_graph_routes_start_directly_to_loop():
+    """START → tool_calling_loop is the only edge from __start__."""
     from src.agent.graph import create_agent_graph
-
-    monkeypatch.setattr("src.config.settings.USE_NO_CLASSIFY", True)
 
     graph = create_agent_graph().get_graph()
     start_edges = [e for e in graph.edges if e.source == "__start__"]
@@ -507,11 +395,9 @@ async def test_no_classify_graph_routes_start_directly_to_loop(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_no_classify_graph_loop_ends(monkeypatch):
-    """USE_NO_CLASSIFY=True: tool_calling_loop → END (no further routing)."""
+async def test_graph_loop_ends():
+    """tool_calling_loop → END is the only edge from the loop."""
     from src.agent.graph import create_agent_graph
-
-    monkeypatch.setattr("src.config.settings.USE_NO_CLASSIFY", True)
 
     graph = create_agent_graph().get_graph()
     loop_edges = [e for e in graph.edges if e.source == "tool_calling_loop"]
@@ -519,25 +405,15 @@ async def test_no_classify_graph_loop_ends(monkeypatch):
     assert loop_edges[0].target == "__end__"
 
 
-@pytest.mark.asyncio
-async def test_default_graph_routes_start_to_classify(monkeypatch):
-    """USE_NO_CLASSIFY=False (default): legacy path preserved, START → classify."""
-    from src.agent.graph import create_agent_graph
-
-    monkeypatch.setattr("src.config.settings.USE_NO_CLASSIFY", False)
-
-    graph = create_agent_graph().get_graph()
-    start_edges = [e for e in graph.edges if e.source == "__start__"]
-    assert len(start_edges) == 1
-    assert start_edges[0].target == "classify"
+# ---------------------------------------------------------------------------
+# Loop assembly: tools + prompt
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_no_classify_loop_appends_search_access_documents(base_state, monkeypatch):
-    """When USE_NO_CLASSIFY=True, the loop's tool list includes search_access_documents."""
+async def test_loop_appends_search_access_documents(base_state):
+    """The loop's tool list includes search_access_documents alongside the MCP catalog."""
     from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
-    monkeypatch.setattr("src.config.settings.USE_NO_CLASSIFY", True)
 
     answer = AIMessage(content="ok")
     mock_graph = AsyncMock()
@@ -557,35 +433,9 @@ async def test_no_classify_loop_appends_search_access_documents(base_state, monk
 
 
 @pytest.mark.asyncio
-async def test_no_classify_loop_omits_search_access_documents_when_off(base_state, monkeypatch):
-    """When USE_NO_CLASSIFY=False, the doc-search tool is NOT injected (legacy behavior)."""
+async def test_loop_uses_no_classify_prompt(base_state):
+    """Prompt frames docs as a tool, includes announcements + JSM choreographies."""
     from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
-    monkeypatch.setattr("src.config.settings.USE_NO_CLASSIFY", False)
-
-    answer = AIMessage(content="ok")
-    mock_graph = AsyncMock()
-    mock_graph.ainvoke.return_value = {"messages": [*base_state["messages"], answer]}
-
-    captured = {}
-
-    def capture(**kwargs):  # type: ignore[no-untyped-def]
-        captured["tools"] = kwargs.get("tools", [])
-        return mock_graph
-
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", side_effect=capture):
-        await tool_calling_loop_node(base_state)
-
-    tool_names = [t.name for t in captured["tools"]]
-    assert "search_access_documents" not in tool_names
-
-
-@pytest.mark.asyncio
-async def test_no_classify_loop_uses_no_classify_prompt(base_state, monkeypatch):
-    """The no-classify prompt frames docs as a tool, not a separate source."""
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
-    monkeypatch.setattr("src.config.settings.USE_NO_CLASSIFY", True)
 
     answer = AIMessage(content="ok")
     mock_graph = AsyncMock()
@@ -601,20 +451,15 @@ async def test_no_classify_loop_uses_no_classify_prompt(base_state, monkeypatch)
         await tool_calling_loop_node(base_state)
 
     prompt = captured["prompt"]
-    # Smoke checks: doc-search is mentioned; announcements + JSM choreographies are present.
     assert "search_access_documents" in prompt
     assert "Announcements workflow" in prompt
     assert "Support-ticket workflow" in prompt
-    # The "two complementary sources" framing must NOT carry over.
-    assert "two complementary sources" not in prompt
 
 
 @pytest.mark.asyncio
-async def test_no_classify_prompt_includes_resource_context(base_state, monkeypatch):
+async def test_prompt_includes_resource_context(base_state):
     """When the request has a resource_context, the prompt mentions the slug."""
     from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
-    monkeypatch.setattr("src.config.settings.USE_NO_CLASSIFY", True)
 
     state = {**base_state, "resource_context": "delta"}
     answer = AIMessage(content="ok")
@@ -869,22 +714,3 @@ def test_parse_tool_message_falls_back_to_raw_when_content_not_json():
     assert result.success is True
     assert result.data == "Connection refused — upstream timeout"
     assert result.tool_name == "search_resources"
-
-
-def test_system_prompt_includes_classifier_hint_when_domain_provided():
-    """When the classifier identifies a specific domain, build_system_prompt
-    must include a 'Classifier hint' section. Covers the optional-section
-    branch in the prompt assembly."""
-    from src.agent.prompts.tool_calling_loop import build_system_prompt
-
-    prompt = build_system_prompt(domain_hint="jsm")
-    assert "Classifier hint" in prompt
-    assert "jsm" in prompt
-
-
-def test_format_rag_matches_returns_empty_string_for_empty_input():
-    """No matches → empty string (caller appends nothing). The function's
-    early-return path for the most-common no-RAG case."""
-    from src.agent.prompts.tool_calling_loop import format_rag_matches
-
-    assert format_rag_matches([]) == ""

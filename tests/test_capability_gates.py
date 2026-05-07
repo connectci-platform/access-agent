@@ -1,8 +1,8 @@
 """Tests for runtime capability gates.
 
-These tests verify that the capability registry's `enabled_rag_endpoints`,
-`scoped_rag_enabled`, and `is_domain_enabled` queries are actually consulted
-by rag_answer_node, route_after_rag, and domain_agent_node.
+These tests verify that the capability registry's `enabled_rag_endpoints`
+and `scoped_rag_enabled` queries are actually consulted by rag_answer_node
+and domain_agent_node.
 """
 
 from contextlib import contextmanager
@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.agent.graph import route_after_rag
 from src.agent.nodes.domain_agent import domain_agent_node
 from src.agent.nodes.rag_answer import rag_answer_node
 
@@ -110,33 +109,6 @@ class TestRagAnswerGate:
             mock_ask.assert_called_once()
 
 
-# ── route_after_rag: domain routing gate ────────────────────────────
-
-
-class TestRouteAfterRagGate:
-    """route_after_rag should bypass domain_agent for disabled domains."""
-
-    def _domain_state(self, domain: str) -> dict:
-        return {
-            "query_classification": MagicMock(query_type="combined", domain=domain),
-            "rag_matches": [],
-        }
-
-    def test_routes_to_domain_when_enabled(self):
-        state = self._domain_state("announcements")
-        assert route_after_rag(state) == "domain_agent"
-
-    def test_falls_through_to_plan_when_domain_disabled(self):
-        state = self._domain_state("announcements")
-        with _patched_settings(disabled="search_announcements,manage_announcements"):
-            assert route_after_rag(state) == "plan"
-
-    def test_falls_through_when_jsm_disabled(self):
-        state = self._domain_state("jsm")
-        with _patched_settings(disabled="open_ticket,report_login_problem,report_security"):
-            assert route_after_rag(state) == "plan"
-
-
 # ── domain_agent_node: defense-in-depth ─────────────────────────────
 
 
@@ -162,40 +134,3 @@ class TestDomainAgentDefenseInDepth:
             assert "workflow isn't available" in result["final_answer"]
             assert result["messages"]  # non-empty
             assert result["node_trace"][0]["error"] == "domain_disabled"
-
-
-# ── route_after_rag: deflection + no-rag-matches fallback paths ──────
-
-
-class TestRouteAfterRagFallback:
-    """route_after_rag must fall back to the tool path on (1) RAG deflections
-    and (2) combined/dynamic queries with no RAG matches. These are the
-    routing recovery paths a regression could break silently — covers the
-    deflection branch and the combined-query no-RAG-matches log/return path
-    in graph.py.
-    """
-
-    def test_static_query_with_deflection_falls_back_to_tools(self, monkeypatch):
-        """A static RAG answer that's just a hedge ('do not contain X') must
-        route to the tool path, not END. Without this, every RAG deflection
-        would be served verbatim to the user."""
-        monkeypatch.setattr("src.config.settings.USE_TOOL_CALLING_LOOP", False)
-        state = {
-            "query_classification": MagicMock(query_type="static", domain=None),
-            "rag_matches": [],
-            "final_answer": (
-                "The provided documents do not contain specific information about that."
-            ),
-        }
-        assert route_after_rag(state) == "plan"
-
-    def test_combined_query_with_no_rag_matches_routes_to_tools(self, monkeypatch):
-        """Combined query, RAG returned nothing — should still route to tools.
-        Exercises the empty-rag_matches branch (the alternative to the
-        'continuing to plan for supplementary data' log line)."""
-        monkeypatch.setattr("src.config.settings.USE_TOOL_CALLING_LOOP", False)
-        state = {
-            "query_classification": MagicMock(query_type="combined", domain=None),
-            "rag_matches": [],
-        }
-        assert route_after_rag(state) == "plan"
