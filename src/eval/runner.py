@@ -12,14 +12,13 @@ from src.services.uky_client import get_uky_client
 
 logger = logging.getLogger(__name__)
 
-SystemMode = Literal["agent_full", "agent_full_legacy", "raw_rag"]
+SystemMode = Literal["agent_full", "raw_rag"]
 
 # Mapping from SystemMode to short architectural names used in run IDs.
 # These describe the pipeline architecture, not the user-facing system choice,
 # so the IDs stay meaningful in Argilla's "Eval Run ID" filter and psql output.
 SYSTEM_SHORTCODES: dict[SystemMode, str] = {
     "agent_full": "loop",
-    "agent_full_legacy": "chain",
     "raw_rag": "raw_rag",
 }
 
@@ -186,7 +185,7 @@ async def run_question(
     try:
         if system == "raw_rag":
             result = await _run_raw_rag(question_id, question_text, resource_context)
-        else:  # agent_full or agent_full_legacy — same code path, different USE_TOOL_CALLING_LOOP state
+        else:  # agent_full
             result = await _run_agent(
                 question_id,
                 question_text,

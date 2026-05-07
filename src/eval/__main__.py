@@ -419,13 +419,11 @@ def main() -> None:  # noqa: PLR0915  # CLI dispatcher, statements not meaningfu
     run_parser = subparsers.add_parser("run", help="Run pre-production eval")
     run_parser.add_argument(
         "--system",
-        choices=["agent_full", "agent_full_legacy", "raw_rag"],
+        choices=["agent_full", "raw_rag"],
         default="agent_full",
         help=(
             "System to evaluate: "
-            "agent_full (default, tool-calling loop — the new Phase-3 path), "
-            "agent_full_legacy (old plan→execute→evaluate→recover→synthesize chain, "
-            "for parity comparison), "
+            "agent_full (default, tool-calling loop — the production path), "
             "raw_rag (UKY /ask, no agent)."
         ),
     )
@@ -603,11 +601,11 @@ def main() -> None:  # noqa: PLR0915  # CLI dispatcher, statements not meaningfu
     )
     html_parser.add_argument(
         "--preset",
-        choices=["grand-prix", "phase3-parity"],
+        choices=["grand-prix"],
         default="grand-prix",
         help=(
-            "Narrative prose preset: 'grand-prix' (default — raw_rag vs agent_full "
-            "production-baseline comparison) or 'phase3-parity' (loop vs legacy chain)."
+            "Narrative prose preset: 'grand-prix' (raw_rag vs agent_full "
+            "production-baseline comparison)."
         ),
     )
 

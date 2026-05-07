@@ -1,27 +1,15 @@
-"""System prompt assembly for the no-classify path of `tool_calling_loop`.
+"""System prompt assembly for the `tool_calling_loop`.
 
-When `settings.USE_NO_CLASSIFY=True`, START routes directly to the loop;
-classify and rag_answer don't run, so:
+START routes directly to the loop; there is no classifier and no
+domain router. So:
 
-  - There is no upstream documentation context to weave in. The loop must
-    decide for itself when to consult docs by calling
-    `search_access_documents`.
-  - There is no upstream domain routing decision. The loop sees announcements
-    + JSM tools mixed into its catalog and picks them up based on user
-    intent. The choreographies that used to live in `domain_agent_node`
-    (announcements preview/confirm/create, JSM field-gather) are appended
-    to this prompt.
-
-The opening section is deliberately rewritten to reframe documentation as
-*just another tool* rather than as a separate "source" — keeping the
-existing SYSTEM_IDENTITY framing would push the LLM to assume an upstream
-RAG layer it doesn't have, which is the failure mode we're actively
-trying to avoid.
-
-The second half (tool-pattern guidance, list-summarization rules,
-query_relevance metadata interpretation, link-surfacing guidance) is
-shared with the classify path's `SYSTEM_IDENTITY` and copied here
-verbatim — both worlds need it identically.
+  - The loop must decide for itself when to consult docs by calling
+    `search_access_documents` — there is no upstream documentation
+    retrieval step.
+  - The loop sees announcements + JSM tools mixed into its catalog and
+    picks them up based on user intent. Per-domain choreographies
+    (announcements preview/confirm/create, JSM field-gather) are
+    appended to this prompt.
 """
 
 from __future__ import annotations

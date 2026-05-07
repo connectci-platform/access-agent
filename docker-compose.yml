@@ -46,9 +46,6 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-https://api.honeycomb.io}
       - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
       - HONEYCOMB_DATASET=${HONEYCOMB_DATASET:-access-ci}
-      # Architecture flags
-      - USE_TOOL_CALLING_LOOP=${USE_TOOL_CALLING_LOOP:-true}
-      - USE_NO_CLASSIFY=${USE_NO_CLASSIFY:-false}
     extra_hosts:
       # Resolve DDEV site from within container for JWKS endpoint access
       - "accessmatch.ddev.site:host-gateway"

@@ -99,63 +99,15 @@ class Settings(BaseSettings):
     # inadvertent writes would be unacceptable. Overrides nothing else.
     READ_ONLY: bool = False
 
-    # USE_TOOL_CALLING_LOOP: when True, routes tool-using queries through the
-    # single-node `tool_calling_loop` (LLM-driven react-style loop) instead of
-    # the legacy plan → execute → evaluate → recover → synthesize chain. The
-    # old path remains functional when False so we can A/B them in Phase 7
-    # evidence collection. Default False during development; flipped True
-    # in staging first, then production at cutover.
-    USE_TOOL_CALLING_LOOP: bool = False
-
-    # USE_NO_CLASSIFY: when True, bypass classify and rag_answer entirely —
-    # START routes directly to tool_calling_loop. The loop receives the
-    # `search_access_documents` tool (a wrapper around uky_client.ask())
-    # alongside the MCP tools so it can choose when to consult docs versus
-    # call live tools, replacing what classify decided up-front. The
-    # workflow choreography that lived in domain_agent_node is folded into
-    # the loop's system prompt as instructions.
-    #
-    # Independent of USE_TOOL_CALLING_LOOP — this flag short-circuits the
-    # graph before either flag's routing logic applies. Old paths remain
-    # alive (classify, rag_answer, domain_agent, the legacy chain, the
-    # USE_TOOL_CALLING_LOOP-with-classify path) so we can flip back if
-    # the no-classify experiment underperforms in eval.
-    USE_NO_CLASSIFY: bool = False
-
     # MCP Servers
     MCP_CATALOG_URL: str = "http://localhost:5678/webhook/generate-mcp-catalog"
     MCP_CATALOG_PATH: str | None = None
 
-    # Quality Loop
-    MAX_QUALITY_ATTEMPTS: int = 3
-
-    # Per-node max_tokens budgets (single source of truth).
-    # Reasoning models (Qwen3, Kimi, DeepSeek-R1) consume part of the budget on
-    # chain-of-thought before emitting user-visible content, so these defaults
-    # are sized larger than what a non-reasoning model strictly needs.
-    # Lowering them is safe for non-reasoning models; raising them is safe for
-    # any model assuming the server's max-context limit isn't hit.
-    MAX_TOKENS_LOOP: int = 6000  # tool_calling_loop react agent (was 2000)
-    MAX_TOKENS_DOMAIN_AGENT: int = 4000  # domain_agent react agent (was 2000)
-    MAX_TOKENS_SYNTH_CONDENSE: int = (
-        8000  # synthesize: condense large tool-result context (was 4000)
-    )
-    MAX_TOKENS_SYNTH_FINAL: int = (
-        3000  # synthesize: produce user-visible final answer (was 1500/2000)
-    )
-    MAX_TOKENS_PLAN: int = 3000  # plan node (was 1500)
-    MAX_TOKENS_EVALUATE: int = 1500  # evaluate node (was 500)
-    MAX_TOKENS_RECOVER: int = 1500  # recover node (was 500)
-
-    # Content length limits for LLM processing
-    # Modern LLMs have 128K+ context windows, so these can be generous
-    MAX_TOOL_RESULT_LENGTH: int = 50000  # Max chars per tool result in evaluate
-    MAX_SINGLE_RESULT_LENGTH: int = 20000  # Max chars for a single result before truncating
-
-    # Token budget for synthesis - tool results exceeding this will be condensed first
-    # Default 80K leaves room for prompts and response within gpt-4o's 128K limit
-    # For smaller models (e.g., Mistral-7B with 32K), set to ~20000
-    SYNTHESIS_TOKEN_BUDGET: int = 80000
+    # max_tokens budget for the tool_calling_loop's react agent. Reasoning
+    # models (Qwen3, Kimi, DeepSeek-R1) consume part of the budget on
+    # chain-of-thought before emitting user-visible content, so this default
+    # is sized larger than what a non-reasoning model strictly needs.
+    MAX_TOKENS_LOOP: int = 6000
 
     # MCP Server base host (configurable, defaults to production IP)
     MCP_SERVER_HOST: str = "localhost"

@@ -5,10 +5,9 @@ what the reader should take away, and so on. The numbers and per-question
 data come from Postgres; the prose comes from here.
 
 Prose is organized by **preset**. A preset bundles the subtitle, per-battery
-descriptions, and observation bullets appropriate to one kind of comparison
-(e.g. raw_rag vs agent_full, or legacy-chain vs tool-calling-loop). Use the
-`--preset` CLI flag to pick the right one; fall back to `grand-prix` for
-historical compatibility.
+descriptions, and observation bullets appropriate to one kind of comparison.
+Use the `--preset` CLI flag to pick the right one; fall back to `grand-prix`
+for historical compatibility.
 
 Edit freely — the report runner just interpolates these values into the
 template. See README.md in this directory for the full list of knobs.
@@ -55,7 +54,6 @@ BATTERY_ORDER: list[str] = [
 SYSTEM_LABELS: dict[str, str] = {
     "raw_rag": "Raw RAG",
     "agent_full": "Agent",
-    "agent_full_legacy": "Agent (legacy chain)",
 }
 
 
@@ -166,75 +164,6 @@ PRESETS: dict[str, Preset] = {
                 ),
             },
         ],
-    ),
-    "phase3-parity": Preset(
-        report_subtitle=(
-            "Legacy plan→execute chain vs tool-calling loop — pairwise verdicts from the AI "
-            "compare-judge for the Phase 3 parity check."
-        ),
-        battery_info={
-            "phase3_smoke_battery": {
-                "name": "Phase 3 Smoke Battery",
-                "count": 40,
-                "what": (
-                    "40 curated questions across 7 coverage categories (static-confident, "
-                    "static-deflection, combined-simple, multi-tool, pure-mcp, error-prone, "
-                    "domain-routed) — designed to exercise every path where the tool-calling "
-                    "loop's behavior could differ from the legacy "
-                    "plan→execute→evaluate→recover→synthesize chain."
-                ),
-                "why": (
-                    "Regression-check the new single-node loop against the legacy chain before "
-                    "flipping USE_TOOL_CALLING_LOOP=true in production."
-                ),
-            },
-            "friendly_battery": {
-                "name": "Friendly Battery",
-                "count": 50,
-                "what": (
-                    "Clean, well-documented questions with unambiguous right answers. "
-                    "Legacy and loop should agree on the overwhelming majority."
-                ),
-                "why": (
-                    "Parity check on the easy path — any divergence here is noteworthy because "
-                    "the correct behavior is well-defined."
-                ),
-            },
-            "real_user_battery": {
-                "name": "Real User Battery",
-                "count": 50,
-                "what": (
-                    "Actual queries pulled from real users: messy phrasing, typos, terse "
-                    "fragments, multi-part asks."
-                ),
-                "why": (
-                    "Parity on the hard path — ambiguous or underspecified questions can expose "
-                    "differences in how each implementation handles uncertainty and tool choice."
-                ),
-            },
-            "combined_battery": {
-                "name": "Combined Battery",
-                "count": 30,
-                "what": (
-                    "Questions designed to require multiple tools or data sources in one answer."
-                ),
-                "why": (
-                    "Multi-tool orchestration is the most likely site of divergence — the loop "
-                    "picks tools sequentially inside one node, the legacy chain plans them "
-                    "up front."
-                ),
-            },
-            "mcp_coverage_battery": {
-                "name": "MCP Coverage Battery",
-                "count": 21,
-                "what": ("One question per MCP tool, crafted to trigger that tool and no other."),
-                "why": (
-                    "Verifies every tool is wired into both implementations and produces "
-                    "equivalent output."
-                ),
-            },
-        },
-        observations=[],  # Data speaks for itself on parity runs; no editorial framing.
     ),
 }
 
