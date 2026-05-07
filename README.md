@@ -1,5 +1,19 @@
 # ACCESS Documentation Agent (LangGraph)
 
+> **⚠️ ARCHIVE BRANCH — `archive/classify-then-loop`**
+>
+> Frozen snapshot of the **classify-then-loop** world, preserved as a head-to-head
+> eval comparator against `feat/looping-thinking-agent` (the no-classify successor).
+>
+> - **Do not merge.** Do not pull from `main`.
+> - `USE_NO_CLASSIFY` is hardcoded to `False` at every use site so env vars cannot
+>   flip behavior. The flag itself remains in `config.py` only because removing it
+>   would touch unrelated tests.
+> - Tests that monkeypatch `USE_NO_CLASSIFY=True` will fail on this branch by
+>   design — the flag is no longer load-bearing. Run evals here, not the test suite.
+> - Once the no-classify branch is merged and the comparison is no longer useful,
+>   this branch can be deleted.
+
 A LangGraph-powered documentation agent for ACCESS-CI with RAG-primary architecture.
 
 ## Architecture

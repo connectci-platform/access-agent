@@ -62,7 +62,8 @@ def _build_prompt_and_tools(
     """
     mcp_tools = _apply_read_only_filter(create_mcp_tools_from_catalog(tool_catalog, acting_user))
 
-    if settings.USE_NO_CLASSIFY:
+    # ARCHIVE BRANCH: hardcoded False — see README.md.
+    if False:
         return (
             build_system_prompt_no_classify(
                 acting_user=acting_user,
@@ -162,7 +163,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
         span.set_attribute("agent.tool_count", len(tools))
         span.set_attribute("agent.has_rag_context", bool(rag_context))
         span.set_attribute("agent.authenticated", bool(acting_user))
-        span.set_attribute("agent.no_classify", settings.USE_NO_CLASSIFY)
+        span.set_attribute("agent.no_classify", False)
 
         llm = get_llm(max_tokens=settings.MAX_TOKENS_LOOP)
         agent = create_react_agent(

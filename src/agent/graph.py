@@ -287,13 +287,9 @@ def _build_graph_structure(
     builder.add_node("tool_calling_loop", tool_calling_loop_node)  # type: ignore[type-var]
 
     # Add edges
-    # Master switch: when USE_NO_CLASSIFY=true, START goes directly to the
-    # loop, bypassing classify, rag_answer, rag_and_plan, and domain_agent
-    # entirely. The loop's own logic (in tool_calling_loop_node) appends
-    # search_access_documents and switches to a no-classify-aware system
-    # prompt. The legacy nodes are still registered (for the non-flag path
-    # to keep working), they just become unreachable in this mode.
-    if settings.USE_NO_CLASSIFY:
+    # ARCHIVE BRANCH: USE_NO_CLASSIFY hardcoded False so env vars cannot
+    # flip this branch into the no-classify world. See README.md.
+    if False:
         builder.add_edge(START, "tool_calling_loop")
         # Skip the rest of the routing setup — under USE_NO_CLASSIFY the
         # only reachable edges are START → tool_calling_loop → END.
