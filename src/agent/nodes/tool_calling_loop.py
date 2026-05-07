@@ -11,14 +11,18 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.config import get_stream_writer
 from langgraph.errors import GraphRecursionError
 from langgraph.prebuilt import create_react_agent
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from langchain_core.tools import BaseTool
 
 from ...config import settings
@@ -72,18 +76,67 @@ def _apply_read_only_filter(tools: list[BaseTool]) -> list[BaseTool]:
     return filtered
 
 
-def _emit_status(message: str) -> None:
-    """Emit a status event to the SSE stream, no-op outside runnable context.
+StatusWriter = Callable[[dict[str, Any]], None]
+
+
+def _resolve_status_writer() -> StatusWriter | None:
+    """Return the LangGraph stream writer, or ``None`` outside a runnable.
 
     ``get_stream_writer()`` raises ``RuntimeError`` when called outside a
-    LangGraph runnable (eg. direct invocation in tests). Wrapping here keeps
-    the call sites compact and lets tests exercise the node directly.
+    LangGraph runnable (eg. direct invocation in tests). The ``None`` form
+    lets call sites stay compact and lets tests exercise the node directly.
     """
     try:
-        writer = get_stream_writer()
+        return get_stream_writer()
     except RuntimeError:
-        return
-    writer({"type": "status", "message": message})
+        return None
+
+
+def _emit_status(message: str) -> None:
+    """Emit a status event to the SSE stream, no-op outside runnable context."""
+    writer = _resolve_status_writer()
+    if writer is not None:
+        writer({"type": "status", "message": message})
+
+
+class _ToolStatusEmitter(AsyncCallbackHandler):
+    """Callback handler that emits a status event each time a tool starts.
+
+    Registered via ``config["callbacks"]`` on the agent invocation, so the
+    react loop fires ``on_tool_start`` for every tool the LLM invokes —
+    including parallel calls within a single turn. The writer is captured
+    at node entry rather than re-resolved on each event, because callback
+    handlers may run on a task that doesn't share the node's contextvar
+    snapshot (no langgraph runnable context = ``get_stream_writer`` would
+    raise).
+    """
+
+    def __init__(self, writer: StatusWriter | None) -> None:
+        super().__init__()
+        self._writer = writer
+
+    async def on_tool_start(
+        self,
+        serialized: dict[str, Any],
+        input_str: str,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        inputs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        # Unused today, kept in the signature to document LangChain's
+        # on_tool_start contract — `run_id` is the correlation key for any
+        # future on_tool_end pairing or LangSmith tracing.
+        del input_str, run_id, parent_run_id, tags, metadata, inputs, kwargs
+        if self._writer is None:
+            return
+        name = serialized.get("name") if serialized else None
+        if not name:
+            return
+        self._writer({"type": "status", "message": f"Calling {name}..."})
 
 
 async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
@@ -104,7 +157,9 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
     """
     tracer = get_tracer("access-agent.nodes")
 
-    _emit_status("Processing query...")
+    status_writer = _resolve_status_writer()
+    if status_writer is not None:
+        status_writer({"type": "status", "message": "Processing query..."})
 
     with tracer.start_as_current_span(
         "agent.tool_calling_loop",
@@ -141,10 +196,14 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
         # recursion_limit = 2 * max_tool_turns + 1; gives the LLM room for
         # roughly 10 tool turns before LangGraph hard-stops.
         recursion_limit = 25
+        tool_status_emitter = _ToolStatusEmitter(status_writer)
         try:
             result = await agent.ainvoke(
                 {"messages": messages},
-                {"recursion_limit": recursion_limit},
+                {
+                    "recursion_limit": recursion_limit,
+                    "callbacks": [tool_status_emitter],
+                },
             )
             result_messages = result.get("messages", [])
         except GraphRecursionError:

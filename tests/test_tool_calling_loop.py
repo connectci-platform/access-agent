@@ -714,3 +714,89 @@ def test_parse_tool_message_falls_back_to_raw_when_content_not_json():
     assert result.success is True
     assert result.data == "Connection refused — upstream timeout"
     assert result.tool_name == "search_resources"
+
+
+# ── Per-tool status events ───────────────────────────────────────────────────
+#
+# The status bubble in the chatbot is fed by status events written through the
+# LangGraph stream writer. Originally only one event ("Processing query...")
+# fired at node entry, leaving the bubble frozen for the rest of the turn. We
+# now register an AsyncCallbackHandler with the agent so each tool's start
+# fires an additional status event ("Calling X...").
+
+
+class TestToolStatusEmitter:
+    @pytest.mark.asyncio
+    async def test_emits_status_for_each_tool_start(self):
+        """A handler with a real writer emits one event per tool start."""
+        from uuid import uuid4
+
+        from src.agent.nodes.tool_calling_loop import _ToolStatusEmitter
+
+        events: list[dict] = []
+        emitter = _ToolStatusEmitter(events.append)
+
+        await emitter.on_tool_start({"name": "search_announcements"}, "{}", run_id=uuid4())
+        await emitter.on_tool_start({"name": "search_access_documents"}, "{}", run_id=uuid4())
+
+        assert events == [
+            {"type": "status", "message": "Calling search_announcements..."},
+            {"type": "status", "message": "Calling search_access_documents..."},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_no_op_without_writer(self):
+        """Outside a runnable context the writer is None — handler stays silent."""
+        from uuid import uuid4
+
+        from src.agent.nodes.tool_calling_loop import _ToolStatusEmitter
+
+        emitter = _ToolStatusEmitter(None)
+        # Must not raise.
+        await emitter.on_tool_start({"name": "search_announcements"}, "{}", run_id=uuid4())
+
+    @pytest.mark.asyncio
+    async def test_skips_when_serialized_missing_name(self):
+        """Defensive: if the framework hands us serialized={} we skip rather
+        than emit "Calling None..."."""
+        from uuid import uuid4
+
+        from src.agent.nodes.tool_calling_loop import _ToolStatusEmitter
+
+        events: list[dict] = []
+        emitter = _ToolStatusEmitter(events.append)
+
+        await emitter.on_tool_start({}, "{}", run_id=uuid4())
+        await emitter.on_tool_start({"name": ""}, "{}", run_id=uuid4())
+
+        assert events == []
+
+
+@pytest.mark.asyncio
+async def test_node_passes_status_emitter_via_callbacks(base_state):
+    """The node registers a _ToolStatusEmitter on the agent invocation so the
+    react loop fires our on_tool_start callback for every tool it runs."""
+    from src.agent.nodes.tool_calling_loop import (
+        _ToolStatusEmitter,
+        tool_calling_loop_node,
+    )
+
+    final = AIMessage(content="ok")
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke.return_value = {"messages": [*base_state["messages"], final]}
+
+    captured = {}
+
+    async def capture_ainvoke(state_arg, config):
+        captured["config"] = config
+        return {"messages": [*base_state["messages"], final]}
+
+    mock_graph.ainvoke.side_effect = capture_ainvoke
+
+    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+        await tool_calling_loop_node(base_state)
+
+    callbacks = captured["config"].get("callbacks", [])
+    assert any(isinstance(cb, _ToolStatusEmitter) for cb in callbacks), (
+        f"Expected _ToolStatusEmitter in callbacks, got: {callbacks}"
+    )
