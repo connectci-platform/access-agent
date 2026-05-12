@@ -15,6 +15,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import SummarizationMiddleware
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.config import get_stream_writer
@@ -181,6 +182,13 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
             model=llm,
             tools=tools,
             system_prompt=system_prompt,
+            middleware=[
+                SummarizationMiddleware(
+                    model=llm,
+                    trigger=("tokens", settings.SUMMARIZATION_TRIGGER_TOKENS),
+                    keep=("messages", settings.SUMMARIZATION_KEEP_MESSAGES),
+                ),
+            ],
         )
 
         messages = list(state.get("messages", []))

@@ -109,6 +109,14 @@ class Settings(BaseSettings):
     # is sized larger than what a non-reasoning model strictly needs.
     MAX_TOKENS_LOOP: int = 6000
 
+    # SummarizationMiddleware thresholds. Fire summarization when the
+    # accumulated message tokens crosses SUMMARIZATION_TRIGGER_TOKENS, then
+    # keep the most recent SUMMARIZATION_KEEP_MESSAGES verbatim. The default
+    # 24k trigger leaves ~8k of headroom in Qwen's 32k context for the
+    # current-turn input + output. Both are tunable per deployment / model.
+    SUMMARIZATION_TRIGGER_TOKENS: int = 24000
+    SUMMARIZATION_KEEP_MESSAGES: int = 20
+
     # MCP Server base host (configurable, defaults to production IP)
     MCP_SERVER_HOST: str = "localhost"
 
