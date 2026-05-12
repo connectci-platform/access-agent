@@ -3,7 +3,7 @@
     "id": "tc-status-01",
     "question": "Are any ACCESS resources currently down or in maintenance?",
     "capability_area": "system_status",
-    "battery": "no_classify_smoke",
+    "battery": "loop_smoke",
     "expected_tool": "get_infrastructure_news",
     "ground_truth_stability": "time_bound",
     "required_facts": [
@@ -26,7 +26,7 @@
     "id": "tc-software-01",
     "question": "Which ACCESS resources have PyTorch available?",
     "capability_area": "software_discovery",
-    "battery": "no_classify_smoke",
+    "battery": "loop_smoke",
     "expected_tool": "search_software",
     "ground_truth_stability": "time_bound",
     "required_facts": [
@@ -48,7 +48,7 @@
     "id": "comb-011",
     "question": "Compare Python availability across Expanse, Delta, and Anvil",
     "capability_area": "software_cross_resource",
-    "battery": "no_classify_smoke",
+    "battery": "loop_smoke",
     "expected_type": "dynamic",
     "expected_tools": [
       "compare_software_availability"
@@ -59,7 +59,7 @@
     "id": "tc-allocations-01",
     "question": "What are the most common allocation types and fields of science in current ACCESS projects?",
     "capability_area": "allocations",
-    "battery": "no_classify_smoke",
+    "battery": "loop_smoke",
     "expected_tool": "get_allocation_statistics",
     "ground_truth_stability": "time_bound",
     "required_facts": [
@@ -84,7 +84,7 @@
     "id": "tc-allocations-02",
     "question": "Search for ACCESS projects on Delta related to climate modeling.",
     "capability_area": "allocations",
-    "battery": "no_classify_smoke",
+    "battery": "loop_smoke",
     "expected_tool": "search_projects",
     "ground_truth_stability": "time_bound",
     "required_facts": [
@@ -108,7 +108,7 @@
     "id": "tc-nsf-01",
     "question": "What are some recent NSF awards related to cyberinfrastructure?",
     "capability_area": "nsf_awards",
-    "battery": "no_classify_smoke",
+    "battery": "loop_smoke",
     "expected_tool": "search_nsf_awards",
     "ground_truth_stability": "time_bound",
     "required_facts": [
@@ -129,7 +129,7 @@
     "id": "tc-events-01",
     "question": "What ACCESS events are happening in the next two weeks?",
     "capability_area": "events",
-    "battery": "no_classify_smoke",
+    "battery": "loop_smoke",
     "expected_tool": "search_events",
     "ground_truth_stability": "time_bound",
     "required_facts": [
@@ -153,7 +153,7 @@
     "id": "tc-affinity-01",
     "question": "Are there ACCESS affinity groups for researchers using GPUs?",
     "capability_area": "affinity_groups",
-    "battery": "no_classify_smoke",
+    "battery": "loop_smoke",
     "expected_tool": "search_affinity_groups",
     "ground_truth_stability": "time_bound",
     "required_facts": [
@@ -178,7 +178,7 @@
     "id": "tc-announce-01",
     "question": "What are the most recent ACCESS announcements about Expanse?",
     "capability_area": "announcements",
-    "battery": "no_classify_smoke",
+    "battery": "loop_smoke",
     "expected_tool": "search_announcements",
     "ground_truth_stability": "time_bound",
     "required_facts": [
@@ -199,7 +199,7 @@
     "id": "tc-xdmod-01",
     "question": "What types of usage data and metrics can I explore in XDMoD?",
     "capability_area": "xdmod",
-    "battery": "no_classify_smoke",
+    "battery": "loop_smoke",
     "expected_tool": "describe_realms",
     "ground_truth_stability": "stable",
     "required_facts": [
@@ -228,7 +228,7 @@
     "id": "tc-rag-01",
     "question": "How do I set up SSH keys to log into Expanse?",
     "capability_area": "expanse",
-    "battery": "no_classify_smoke",
+    "battery": "loop_smoke",
     "expected_tool": null,
     "ground_truth_stability": "stable",
     "required_facts": [
@@ -253,7 +253,7 @@
     "id": "tc-rag-02",
     "question": "What's the difference between an Explore allocation and an Accelerate allocation?",
     "capability_area": "allocations",
-    "battery": "no_classify_smoke",
+    "battery": "loop_smoke",
     "expected_tool": null,
     "ground_truth_stability": "stable",
     "required_facts": [
@@ -283,7 +283,7 @@
     "id": "tc-rag-03",
     "question": "How do I use Globus to transfer files between ACCESS resources?",
     "capability_area": "file_transfer",
-    "battery": "no_classify_smoke",
+    "battery": "loop_smoke",
     "expected_tool": null,
     "ground_truth_stability": "stable",
     "required_facts": [
@@ -312,7 +312,7 @@
     "id": "tc-rag-04",
     "question": "Who is eligible to apply for an ACCESS allocation?",
     "capability_area": "allocations",
-    "battery": "no_classify_smoke",
+    "battery": "loop_smoke",
     "expected_tool": null,
     "ground_truth_stability": "stable",
     "required_facts": [
@@ -342,14 +342,14 @@
     "id": "friendly-029",
     "question": "What happens to unused allocation credits at the end of an allocation period?",
     "capability_area": "allocations",
-    "battery": "no_classify_smoke",
+    "battery": "loop_smoke",
     "source_battery": "friendly"
   },
   {
     "id": "friendly-001",
     "question": "How do I log in to Expanse using SSH and set up two-factor authentication?",
     "capability_area": "expanse",
-    "battery": "no_classify_smoke",
+    "battery": "loop_smoke",
     "resource": "expanse",
     "source_battery": "friendly"
   },
@@ -357,7 +357,7 @@
     "id": "comb-013",
     "question": "Is there any maintenance planned for Delta, and if not, how do I submit a GPU job there?",
     "capability_area": "combined_rag_tools",
-    "battery": "no_classify_smoke",
+    "battery": "loop_smoke",
     "expected_type": "combined",
     "expected_tools": [
       "get_infrastructure_news"
@@ -368,7 +368,7 @@
     "id": "comb-027",
     "question": "I got an allocation approved but dont know how to log in or what software is there",
     "capability_area": "messy_combined",
-    "battery": "no_classify_smoke",
+    "battery": "loop_smoke",
     "expected_type": "combined",
     "expected_tools": [
       "search_software"
@@ -379,7 +379,7 @@
     "id": "comb-022",
     "question": "my job keeps failing on anvil, are there any outages? also what gpu types do they have",
     "capability_area": "messy_combined",
-    "battery": "no_classify_smoke",
+    "battery": "loop_smoke",
     "expected_type": "combined",
     "expected_tools": [
       "get_infrastructure_news",
@@ -391,14 +391,14 @@
     "id": "real-050",
     "question": "Can i get help with my software codes?",
     "capability_area": "general_access",
-    "battery": "no_classify_smoke",
+    "battery": "loop_smoke",
     "source_battery": "real_user"
   },
   {
     "id": "real-022",
     "question": "I had a runaway instance on JetStream2. The compute resources stayed active after they were supposed to shut down. This fully depleated my usage credits.",
     "capability_area": "jetstream2",
-    "battery": "no_classify_smoke",
+    "battery": "loop_smoke",
     "resource": "jetstream2",
     "source_battery": "real_user"
   }
