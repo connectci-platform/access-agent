@@ -166,7 +166,7 @@ src/
 │   ├── nodes/
 │   │   └── tool_calling_loop.py  # The only node — react-style tool loop
 │   ├── prompts/
-│   │   └── no_classify.py        # System prompt for the loop
+│   │   └── system_prompt.py     # System prompt for the loop
 │   └── tools/
 │       └── access_documents.py   # search_access_documents — doc-retrieval tool
 ├── services/

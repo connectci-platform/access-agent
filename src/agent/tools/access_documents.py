@@ -1,8 +1,7 @@
-"""Doc-search tool for the no-classify tool_calling_loop.
+"""Doc-search tool for the tool_calling_loop.
 
 Wraps `uky_client.ask()` as a LangChain tool so the loop can decide for
-itself when to consult ACCESS-CI's documentation RAG. Subsumes two jobs
-the legacy `classify` node used to do up-front:
+itself when to consult ACCESS-CI's documentation RAG. Two responsibilities:
 
   1. Picking between the general and XDMoD RAG endpoints — exposed as the
      `source` parameter; tool description guides the LLM on when each

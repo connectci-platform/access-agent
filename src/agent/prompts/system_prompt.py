@@ -1,22 +1,18 @@
 """System prompt assembly for the `tool_calling_loop`.
 
-START routes directly to the loop; there is no classifier and no
-domain router. So:
-
-  - The loop must decide for itself when to consult docs by calling
-    `search_access_documents` — there is no upstream documentation
-    retrieval step.
-  - The loop sees announcements + JSM tools mixed into its catalog and
-    picks them up based on user intent. Per-domain choreographies
-    (announcements preview/confirm/create, JSM field-gather) are
-    appended to this prompt.
+START routes directly to the loop. The loop is the only execution
+path: it decides for itself when to consult docs by calling
+`search_access_documents`, and it sees announcements + JSM tools
+mixed into its catalog and picks them up based on user intent.
+Per-domain choreographies (announcements preview/confirm/create,
+JSM field-gather) are appended to this prompt.
 """
 
 from __future__ import annotations
 
 # Opening — describes the job, no implementation history. Default workflow:
 # docs first, then enrich with MCP, then synthesize.
-SYSTEM_IDENTITY_NO_CLASSIFY = """You are the ACCESS-CI assistant. You help US researchers \
+SYSTEM_IDENTITY = """You are the ACCESS-CI assistant. You help US researchers \
 understand and use ACCESS-CI — a federally funded program that allocates \
 computing resources (supercomputers, cloud, storage) to researchers.
 
@@ -163,8 +159,8 @@ content. Surface it whenever it's present."""
 
 
 # Choreography sections — folded in from the domain configs. Trimmed to
-# remove the "you are logged in as {acting_user}" preamble (the no-classify
-# prompt has its own acting-user section) and tightened to focus on the
+# remove the "you are logged in as {acting_user}" preamble (this prompt
+# has its own acting-user section) and tightened to focus on the
 # workflow steps the loop must follow when the relevant tools are called.
 
 ANNOUNCEMENTS_WORKFLOWS_SECTION = """## Announcements workflow (when the user asks to create, update, or delete)
@@ -258,11 +254,11 @@ says "I need help" or similar, ask what they need help with before \
 jumping to ticket creation."""
 
 
-def build_system_prompt_no_classify(
+def build_system_prompt(
     acting_user: str | None = None,
     resource_context: str | None = None,
 ) -> str:
-    """Assemble the no-classify loop's system prompt.
+    """Assemble the tool-calling loop's system prompt.
 
     Args:
         acting_user: ACCESS ID of the authenticated requester. Surfaced
@@ -274,9 +270,9 @@ def build_system_prompt_no_classify(
             `search_access_documents` and to MCP tools that accept it.
 
     Returns:
-        Complete system prompt string for the no-classify loop.
+        Complete system prompt string for the tool-calling loop.
     """
-    sections: list[str] = [SYSTEM_IDENTITY_NO_CLASSIFY]
+    sections: list[str] = [SYSTEM_IDENTITY]
 
     if acting_user:
         sections.append(

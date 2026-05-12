@@ -433,7 +433,7 @@ async def test_loop_appends_search_access_documents(base_state):
 
 
 @pytest.mark.asyncio
-async def test_loop_uses_no_classify_prompt(base_state):
+async def test_loop_uses_system_prompt(base_state):
     """Prompt frames docs as a tool, includes announcements + JSM choreographies."""
     from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
 
