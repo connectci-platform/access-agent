@@ -1,6 +1,6 @@
 """Tests for tool_calling_loop_node (launch Phase 3).
 
-Strategy: mock the LLM + tools at the create_react_agent boundary so the
+Strategy: mock the LLM + tools at the create_agent boundary so the
 node's orchestration logic is tested without live API calls. Covers:
 
 1. Basic flow: query in → LLM picks no tools → direct answer out.
@@ -64,7 +64,7 @@ async def test_direct_answer_no_tools_called(base_state):
 
     final_message = AIMessage(content="ACCESS has several GPU resources: Delta, FASTER, ...")
 
-    # Mock create_react_agent to return a compiled-graph-like object whose
+    # Mock create_agent to return a compiled-graph-like object whose
     # ainvoke returns the expected messages structure.
     mock_graph = AsyncMock()
     mock_graph.ainvoke.return_value = {
@@ -74,7 +74,7 @@ async def test_direct_answer_no_tools_called(base_state):
         ]
     }
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
         result = await tool_calling_loop_node(base_state)
 
     assert result["final_answer"] == final_message.content
@@ -102,7 +102,7 @@ async def test_single_tool_call_then_answer(base_state):
         "messages": [*base_state["messages"], tool_call_msg, tool_result_msg, final_msg]
     }
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
         result = await tool_calling_loop_node(base_state)
 
     assert result["final_answer"] == final_msg.content
@@ -132,7 +132,7 @@ async def test_tool_failure_is_recovered_or_reported(base_state):
         "messages": [*base_state["messages"], tool_call, failure, recovery_answer]
     }
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
         result = await tool_calling_loop_node(base_state)
 
     assert result["final_answer"] == recovery_answer.content
@@ -151,7 +151,7 @@ async def test_empty_tool_catalog_still_produces_answer(base_state):
     mock_graph = AsyncMock()
     mock_graph.ainvoke.return_value = {"messages": [*state["messages"], answer]}
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
         result = await tool_calling_loop_node(state)
 
     assert result["final_answer"] == answer.content
@@ -167,7 +167,7 @@ async def test_messages_are_accumulated_not_replaced(base_state):
     mock_graph = AsyncMock()
     mock_graph.ainvoke.return_value = {"messages": [*base_state["messages"], final]}
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
         result = await tool_calling_loop_node(base_state)
 
     # The original HumanMessage must still be present
@@ -190,10 +190,10 @@ async def test_system_prompt_includes_acting_user_when_authenticated(base_state)
     captured_prompt = {}
 
     def capture_prompt(**kwargs):  # type: ignore[no-untyped-def]
-        captured_prompt["prompt"] = kwargs.get("prompt")
+        captured_prompt["prompt"] = kwargs.get("system_prompt")
         return mock_graph
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", side_effect=capture_prompt):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture_prompt):
         await tool_calling_loop_node(state)
 
     assert "jsmith@access-ci.org" in captured_prompt["prompt"]
@@ -234,7 +234,7 @@ async def test_tool_results_backfilled_from_messages(base_state):
         ]
     }
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
         result = await tool_calling_loop_node(base_state)
 
     tool_results = result["tool_results"]
@@ -281,7 +281,7 @@ async def test_final_answer_is_none_when_no_ai_message_content(base_state):
         "messages": [*base_state["messages"], tool_call, tool_result]
     }
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
         result = await tool_calling_loop_node(base_state)
 
     assert result["final_answer"] is None
@@ -291,7 +291,7 @@ async def test_final_answer_is_none_when_no_ai_message_content(base_state):
 
 @pytest.mark.asyncio
 async def test_recursion_limit_error_produces_graceful_response(base_state):
-    """GraphRecursionError from create_react_agent is caught and converted to
+    """GraphRecursionError from create_agent is caught and converted to
     a user-facing apology pointing at the support ticket path. The original
     input messages are preserved so the caller sees at minimum their query."""
     from langgraph.errors import GraphRecursionError
@@ -301,7 +301,7 @@ async def test_recursion_limit_error_produces_graceful_response(base_state):
     mock_graph = AsyncMock()
     mock_graph.ainvoke.side_effect = GraphRecursionError("test recursion limit")
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
         # Must NOT re-raise
         result = await tool_calling_loop_node(base_state)
 
@@ -353,7 +353,7 @@ async def test_orphan_tool_messages_are_counted(base_state):
     mock_graph = AsyncMock()
     mock_graph.ainvoke.return_value = {"messages": messages}
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
         result = await tool_calling_loop_node(base_state)
 
     # Orphan excluded from tool_results — consistent with existing behavior
@@ -425,7 +425,7 @@ async def test_loop_appends_search_access_documents(base_state):
         captured["tools"] = kwargs.get("tools", [])
         return mock_graph
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", side_effect=capture):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture):
         await tool_calling_loop_node(base_state)
 
     tool_names = [t.name for t in captured["tools"]]
@@ -444,10 +444,10 @@ async def test_loop_uses_system_prompt(base_state):
     captured = {}
 
     def capture(**kwargs):  # type: ignore[no-untyped-def]
-        captured["prompt"] = kwargs.get("prompt", "")
+        captured["prompt"] = kwargs.get("system_prompt", "")
         return mock_graph
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", side_effect=capture):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture):
         await tool_calling_loop_node(base_state)
 
     prompt = captured["prompt"]
@@ -469,10 +469,10 @@ async def test_prompt_includes_resource_context(base_state):
     captured = {}
 
     def capture(**kwargs):  # type: ignore[no-untyped-def]
-        captured["prompt"] = kwargs.get("prompt", "")
+        captured["prompt"] = kwargs.get("system_prompt", "")
         return mock_graph
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", side_effect=capture):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture):
         await tool_calling_loop_node(state)
 
     assert "delta" in captured["prompt"]
@@ -550,7 +550,7 @@ def mixed_catalog_state(base_state):
 
 
 def _capture_tools_kwarg(mock_graph):
-    """Helper: returns a side_effect callable that records `tools` from create_react_agent."""
+    """Helper: returns a side_effect callable that records `tools` from create_agent."""
     captured: dict = {}
 
     def _capture(**kwargs):  # type: ignore[no-untyped-def]
@@ -562,7 +562,7 @@ def _capture_tools_kwarg(mock_graph):
 
 @pytest.mark.asyncio
 async def test_read_only_strips_write_tools_from_loop_registry(monkeypatch, mixed_catalog_state):
-    """With READ_ONLY=true, no MCP tool name in WRITE_MCP_TOOL_NAMES reaches create_react_agent."""
+    """With READ_ONLY=true, no MCP tool name in WRITE_MCP_TOOL_NAMES reaches create_agent."""
     from src.agent.domains.capabilities import WRITE_MCP_TOOL_NAMES
     from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
 
@@ -574,7 +574,7 @@ async def test_read_only_strips_write_tools_from_loop_registry(monkeypatch, mixe
     }
     capture, captured = _capture_tools_kwarg(mock_graph)
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", side_effect=capture):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture):
         await tool_calling_loop_node(mixed_catalog_state)
 
     tool_names = {t.name for t in captured["tools"]}
@@ -600,7 +600,7 @@ async def test_read_only_off_keeps_write_tools_in_loop_registry(monkeypatch, mix
     }
     capture, captured = _capture_tools_kwarg(mock_graph)
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", side_effect=capture):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture):
         await tool_calling_loop_node(mixed_catalog_state)
 
     tool_names = {t.name for t in captured["tools"]}
@@ -793,7 +793,7 @@ async def test_node_passes_status_emitter_via_callbacks(base_state):
 
     mock_graph.ainvoke.side_effect = capture_ainvoke
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
         await tool_calling_loop_node(base_state)
 
     callbacks = captured["config"].get("callbacks", [])

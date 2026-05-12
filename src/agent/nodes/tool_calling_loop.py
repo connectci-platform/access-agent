@@ -1,6 +1,6 @@
 """Tool-calling loop node — the only node in the agent graph.
 
-LangGraph's ``create_react_agent`` drives a turn-by-turn loop where the LLM
+LangChain's ``create_agent`` drives a turn-by-turn loop where the LLM
 selects tools, sees results as ToolMessages, and continues until it emits a
 non-tool-call response. The system prompt instructs the LLM to call
 ``search_access_documents`` for documentation-style questions; live data
@@ -14,11 +14,12 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from langchain.agents import create_agent
+from langchain.agents.middleware import SummarizationMiddleware
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.config import get_stream_writer
 from langgraph.errors import GraphRecursionError
-from langgraph.prebuilt import create_react_agent
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -177,10 +178,17 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
         span.set_attribute("agent.authenticated", bool(acting_user))
 
         llm = get_llm(max_tokens=settings.MAX_TOKENS_LOOP)
-        agent = create_react_agent(
+        agent = create_agent(
             model=llm,
             tools=tools,
-            prompt=system_prompt,
+            system_prompt=system_prompt,
+            middleware=[
+                SummarizationMiddleware(
+                    model=llm,
+                    trigger=("tokens", settings.SUMMARIZATION_TRIGGER_TOKENS),
+                    keep=("tokens", settings.SUMMARIZATION_KEEP_TOKENS),
+                ),
+            ],
         )
 
         messages = list(state.get("messages", []))
@@ -207,7 +215,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
             )
             result_messages = result.get("messages", [])
         except GraphRecursionError:
-            # create_react_agent exhausted its recursion budget (e.g., the LLM
+            # create_agent exhausted its recursion budget (e.g., the LLM
             # kept requesting tool calls and never emitted a final answer).
             # Return a user-facing apology rather than a 500 so the chatbot
             # can render something useful.
