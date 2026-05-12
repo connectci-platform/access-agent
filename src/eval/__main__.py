@@ -32,6 +32,19 @@ def _handle_run(args: argparse.Namespace) -> None:
     print_run_summary(summary)
 
 
+def _handle_multiturn(args: argparse.Namespace) -> None:
+    from .multiturn import print_summary, run_battery
+
+    results = asyncio.run(
+        run_battery(
+            battery_path=args.threads,
+            acting_user=args.acting_user,
+            resource_context=args.resource,
+        )
+    )
+    print_summary(results)
+
+
 def _handle_compare(args: argparse.Namespace) -> None:
     from src.config import settings
 
@@ -609,6 +622,29 @@ def main() -> None:  # noqa: PLR0915  # CLI dispatcher, statements not meaningfu
         ),
     )
 
+    multiturn_parser = subparsers.add_parser(
+        "multiturn",
+        help=(
+            "Run a multi-turn thread battery (exercises context-management / "
+            "SummarizationMiddleware; not exercised by single-turn eval)"
+        ),
+    )
+    multiturn_parser.add_argument(
+        "--threads",
+        required=True,
+        help="Path to multi-turn battery JSON",
+    )
+    multiturn_parser.add_argument(
+        "--acting-user",
+        default=None,
+        help="Optional ACCESS ID for authenticated calls during the thread",
+    )
+    multiturn_parser.add_argument(
+        "--resource",
+        default=None,
+        help="Optional RP slug applied as resource_context for the thread",
+    )
+
     # Production scoring is deferred — requires on-premise LLM or updated privacy policy
     # to send real user queries to a judge. See spec: docs/superpowers/specs/2026-03-31-eval-pipeline-design.md
     subparsers.add_parser(
@@ -632,6 +668,7 @@ def main() -> None:  # noqa: PLR0915  # CLI dispatcher, statements not meaningfu
         "ask": _handle_ask,
         "html": _handle_html,
         "score-production": _handle_score_production,
+        "multiturn": _handle_multiturn,
     }
 
     handler = handlers.get(args.command)

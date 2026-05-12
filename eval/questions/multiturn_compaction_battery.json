@@ -1,0 +1,40 @@
+[
+  {
+    "thread_id": "compaction-tool-heavy-01",
+    "description": "Eight tool-heavy questions in one session — designed to accumulate enough tool-result payload (large JSON from search_software, get_allocation_statistics, list_all_software, search_events, etc.) to exercise SummarizationMiddleware once it crosses the configured token threshold. Includes a follow-up turn (turn 7) that intentionally references an earlier resource to test whether the agent can still answer correctly after compaction.",
+    "questions": [
+      {
+        "turn_id": "t1",
+        "question": "Which ACCESS resources have PyTorch installed, and what versions are available on each?"
+      },
+      {
+        "turn_id": "t2",
+        "question": "What are the most common allocation types and fields of science in current ACCESS projects?"
+      },
+      {
+        "turn_id": "t3",
+        "question": "What ACCESS training events and webinars are coming up in the next month?"
+      },
+      {
+        "turn_id": "t4",
+        "question": "Are any ACCESS resources currently in maintenance or experiencing outages?"
+      },
+      {
+        "turn_id": "t5",
+        "question": "Find ACCESS affinity groups about AI and machine learning."
+      },
+      {
+        "turn_id": "t6",
+        "question": "What software is installed on Anvil? Give me a comprehensive list."
+      },
+      {
+        "turn_id": "t7",
+        "question": "How does that compare to Delta? What software does Delta have that Anvil doesn't?"
+      },
+      {
+        "turn_id": "t8",
+        "question": "Find ACCESS allocations related to climate modeling or atmospheric science."
+      }
+    ]
+  }
+]
