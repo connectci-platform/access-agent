@@ -109,13 +109,27 @@ class Settings(BaseSettings):
     # is sized larger than what a non-reasoning model strictly needs.
     MAX_TOKENS_LOOP: int = 6000
 
-    # SummarizationMiddleware thresholds. Fire summarization when the
-    # accumulated message tokens crosses SUMMARIZATION_TRIGGER_TOKENS, then
-    # keep the most recent SUMMARIZATION_KEEP_MESSAGES verbatim. The default
-    # 24k trigger leaves ~8k of headroom in Qwen's 32k context for the
-    # current-turn input + output. Both are tunable per deployment / model.
+    # SummarizationMiddleware thresholds.
+    #
+    # Fire summarization when accumulated message tokens cross
+    # SUMMARIZATION_TRIGGER_TOKENS, then preserve only the most recent
+    # SUMMARIZATION_KEEP_TOKENS worth of messages verbatim — everything
+    # older gets summarized into a single note.
+    #
+    # KEEP must be a TOKEN budget, not a message count: in tool-heavy agents
+    # a single ToolMessage (e.g. list_all_software for Anvil) can be 30k+
+    # tokens by itself. With keep=("messages", 20), three such results
+    # within the last 20 messages would pin the keep-window at ~70k tokens
+    # and post-compaction state could still overflow the model context.
+    # With keep=("tokens", N) the window itself is bounded — giant tool
+    # results either fit within the budget or get summarized too.
+    #
+    # Sizing: trigger should be ~2-3x keep so there's room to grow between
+    # compactions. Total post-compaction state ≈ SUMMARIZATION_KEEP_TOKENS
+    # + ~500 token summary; budget the rest of the model context for
+    # system prompt + tool schemas + new-turn growth.
     SUMMARIZATION_TRIGGER_TOKENS: int = 24000
-    SUMMARIZATION_KEEP_MESSAGES: int = 20
+    SUMMARIZATION_KEEP_TOKENS: int = 8000
 
     # MCP Server base host (configurable, defaults to production IP)
     MCP_SERVER_HOST: str = "localhost"

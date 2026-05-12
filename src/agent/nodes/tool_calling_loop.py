@@ -186,7 +186,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
                 SummarizationMiddleware(
                     model=llm,
                     trigger=("tokens", settings.SUMMARIZATION_TRIGGER_TOKENS),
-                    keep=("messages", settings.SUMMARIZATION_KEEP_MESSAGES),
+                    keep=("tokens", settings.SUMMARIZATION_KEEP_TOKENS),
                 ),
             ],
         )

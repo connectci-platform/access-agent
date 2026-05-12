@@ -1,6 +1,6 @@
 [
   {
-    "thread_id": "compaction-tool-heavy-01",
+    "thread_id": "compaction-tool-heavy-02-keep-tokens",
     "description": "Eight tool-heavy questions in one session — designed to accumulate enough tool-result payload (large JSON from search_software, get_allocation_statistics, list_all_software, search_events, etc.) to exercise SummarizationMiddleware once it crosses the configured token threshold. Includes a follow-up turn (turn 7) that intentionally references an earlier resource to test whether the agent can still answer correctly after compaction.",
     "questions": [
       {
