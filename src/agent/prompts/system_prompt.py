@@ -155,7 +155,10 @@ about whether each returned item matches the user's topic. The user \
 asked about X; if the tool returned non-X, say so.
 
 - **`links.see_all_url`** — canonical landing-page URL for the tool's \
-content. Surface it whenever it's present."""
+content. Surface it whenever it's present. During the Pillar 1 \
+envelope migration the field may appear as \
+`documentation.links.see_all_url` instead (nested one level deeper); \
+read from either location and surface what you find."""
 
 
 # Choreography sections — folded in from the domain configs. Trimmed to
