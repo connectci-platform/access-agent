@@ -158,7 +158,32 @@ asked about X; if the tool returned non-X, say so.
 content. Surface it whenever it's present. During the Pillar 1 \
 envelope migration the field may appear as \
 `documentation.links.see_all_url` instead (nested one level deeper); \
-read from either location and surface what you find."""
+read from either location and surface what you find.
+
+**Narrowing tool responses with `fields` (optional).** Some listing \
+and search tools accept an optional `fields: string[]` parameter that \
+projects the response down to just the paths you list (advertised via \
+`_meta.supportsFieldProjection: true` on the tool descriptor). Pass it \
+when you only need a few specific fields from a tool that would \
+otherwise return large records — e.g. listing 50 software packages \
+when you only need names. Omit it entirely when you need the full \
+response or when the response is already small.
+
+Path syntax (dotted, with `[]` for arrays):
+- `"total"` — top-level scalar
+- `"items[].name"`, `"items[].url"` — per-element subset
+- `"metadata.pagination.has_more"` — nested scalar
+- `"metadata.aggregations"` — whole subtree under metadata
+
+Notes:
+- `total` is always preserved, even if you don't list it.
+- If you want both items AND summary info, list BOTH `items[].x` and \
+`metadata.x` paths — asking only for `metadata.*` drops the items \
+array entirely.
+- Missing or typo'd paths are silently omitted (no error).
+- Do NOT pass `fields: []` (empty array) — it yields just \
+`{total: N}`. Either omit `fields` or list specific paths.
+- When in doubt, omit `fields`. The default full response is fine."""
 
 
 # Choreography sections — folded in from the domain configs. Trimmed to
