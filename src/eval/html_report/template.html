@@ -68,44 +68,6 @@
     border-bottom: 1px solid var(--border);
   }
 
-  /* Battery legend — what each battery contains and why */
-  .battery-legend {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 10px;
-  }
-  @media (max-width: 900px) { .battery-legend { grid-template-columns: 1fr; } }
-  .blcard {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 14px 16px;
-  }
-  .blcard .bl-head {
-    display: flex; align-items: baseline; gap: 10px;
-    margin-bottom: 6px;
-  }
-  .blcard .bl-name { font-weight: 600; font-size: 15px; }
-  .blcard .bl-count {
-    font-family: var(--mono); font-size: 11px;
-    color: var(--text-muted);
-    background: var(--panel-inset);
-    padding: 2px 7px; border-radius: 4px;
-  }
-  .blcard .bl-what {
-    color: var(--text-dim);
-    font-size: 13.5px;
-    margin-bottom: 6px;
-  }
-  .blcard .bl-why {
-    font-size: 12.5px;
-    color: var(--text-muted);
-    border-top: 1px dashed var(--border);
-    padding-top: 8px;
-    margin-top: 8px;
-  }
-  .blcard .bl-why strong { font-weight: 600; color: var(--text-dim); }
-
   /* Per-question comparison analysis (inside qrow body) */
   .qverdict {
     background: var(--panel-alt);
@@ -489,13 +451,10 @@
   <h1>Production Baseline Comparison</h1>
   <div class="subtitle" id="subtitle">—</div>
   <div class="meta">
-    <span>Verdicts from pairwise comparison judge</span>
+    <span id="battery-name">—</span>
     <span>Generated: <span id="gen-date">—</span></span>
   </div>
 </header>
-
-<div class="section-label">Batteries</div>
-<div class="battery-legend" id="battery-legend"></div>
 
 <div class="section-label">Question-Level Results</div>
 <div class="filters" id="filters"></div>
@@ -685,20 +644,11 @@
   // report shows per-question evidence (answers, traces, required-facts
   // checks) plus a per-question synthesized analysis only.
 
-  // ---- Battery legend (descriptions) ----
-  const legendEl = document.getElementById('battery-legend');
-  legendEl.innerHTML = BUNDLE.battery_order.map(b => {
-    const info = BUNDLE.battery_info[b];
-    return `
-      <div class="blcard">
-        <div class="bl-head">
-          <span class="bl-name">${info.name}</span>
-          <span class="bl-count">${info.count} questions</span>
-        </div>
-        <div class="bl-what">${info.what}</div>
-        <div class="bl-why"><strong>Why it exists:</strong> ${info.why}</div>
-      </div>`;
-  }).join('');
+  // ---- Battery name in the header ----
+  document.getElementById('battery-name').textContent =
+    'Battery: ' + BUNDLE.battery_order
+      .map(b => (BATTERY_LABELS[b] || b).replace(/ Battery$/, ''))
+      .join(', ');
 
   // ---- Filters + question list ----
   let activeF = 'all';
@@ -736,7 +686,7 @@
   ];
   const sortDefs = [
     { key: 'battery', label: 'Battery + ID' },
-    { key: 'decisive', label: 'Most decisive verdicts first' },
+    { key: 'decisive', label: 'Largest differences first' },
   ];
 
   function renderFilters() {
