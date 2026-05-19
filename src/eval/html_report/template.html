@@ -771,18 +771,23 @@
     const baselineContent = renderTraceContent(baselineTrace);
     const candidateContent = renderTraceContent(candidateTrace);
     if (!baselineContent && !candidateContent) return '';
-    return `
-      <div class="trace-pair">
-        ${baselineContent ? `<div class="trace baseline">
+    // Each cell must always occupy its grid column so the candidate trace
+    // stays on the right even when the baseline (raw_rag) has no trace —
+    // an absent cell would let the candidate collapse into the left column.
+    const baselineCell = baselineContent ? `<div class="trace baseline">
         <div class="trace-label">${esc(SYS.A.label + ' execution path')}</div>
         <div class="trace-path">${baselineContent.path.join('')}</div>
         ${baselineContent.details.length ? `<div class="trace-detail">${baselineContent.details.join('')}</div>` : ''}
-      </div>` : ''}
-        ${candidateContent ? `<div class="trace candidate">
+      </div>` : '<div></div>';
+    const candidateCell = candidateContent ? `<div class="trace candidate">
         <div class="trace-label">${esc(SYS.B.label + ' execution path')}</div>
         <div class="trace-path">${candidateContent.path.join('')}</div>
         ${candidateContent.details.length ? `<div class="trace-detail">${candidateContent.details.join('')}</div>` : ''}
-      </div>` : ''}
+      </div>` : '<div></div>';
+    return `
+      <div class="trace-pair">
+        ${baselineCell}
+        ${candidateCell}
       </div>`;
   }
 
