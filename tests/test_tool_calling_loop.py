@@ -722,13 +722,39 @@ def test_parse_tool_message_falls_back_to_raw_when_content_not_json():
 # LangGraph stream writer. Originally only one event ("Processing query...")
 # fired at node entry, leaving the bubble frozen for the rest of the turn. We
 # now register an AsyncCallbackHandler with the agent so each tool's start
-# fires an additional status event ("Calling X...").
+# fires an additional status event, worded for humans via _friendly_tool_status.
+
+
+class TestFriendlyToolStatus:
+    """Raw tool names are mapped to human-readable bubble text."""
+
+    def test_verb_subject_tools(self):
+        from src.agent.nodes.tool_calling_loop import _friendly_tool_status
+
+        assert _friendly_tool_status("search_announcements") == "Searching announcements..."
+        assert _friendly_tool_status("get_compute_resource") == "Looking up compute resource..."
+        assert _friendly_tool_status("create_support_ticket") == "Preparing support ticket..."
+
+    def test_overrides_win_over_generic_form(self):
+        from src.agent.nodes.tool_calling_loop import _friendly_tool_status
+
+        assert (
+            _friendly_tool_status("search_access_documents") == "Searching ACCESS documentation..."
+        )
+        assert _friendly_tool_status("search_nsf_awards") == "Searching NSF awards..."
+
+    def test_unknown_verb_falls_back_cleanly(self):
+        from src.agent.nodes.tool_calling_loop import _friendly_tool_status
+
+        # No recognised verb — still produces readable text, no crash.
+        assert _friendly_tool_status("frobnicate_widgets") == "Working on frobnicate widgets..."
+        assert _friendly_tool_status("standalone") == "Working on standalone..."
 
 
 class TestToolStatusEmitter:
     @pytest.mark.asyncio
     async def test_emits_status_for_each_tool_start(self):
-        """A handler with a real writer emits one event per tool start."""
+        """A handler with a real writer emits one human-worded event per tool."""
         from uuid import uuid4
 
         from src.agent.nodes.tool_calling_loop import _ToolStatusEmitter
@@ -740,8 +766,8 @@ class TestToolStatusEmitter:
         await emitter.on_tool_start({"name": "search_access_documents"}, "{}", run_id=uuid4())
 
         assert events == [
-            {"type": "status", "message": "Calling search_announcements..."},
-            {"type": "status", "message": "Calling search_access_documents..."},
+            {"type": "status", "message": "Searching announcements..."},
+            {"type": "status", "message": "Searching ACCESS documentation..."},
         ]
 
     @pytest.mark.asyncio

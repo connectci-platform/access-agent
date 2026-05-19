@@ -141,6 +141,44 @@ def _emit_status(message: str) -> None:
         writer({"type": "status", "message": message})
 
 
+# Status-bubble wording. Raw tool names (`search_software`, `get_compute_resource`)
+# would otherwise surface verbatim in the chat UI. The first token of a tool name
+# is its verb; the rest is the subject — a verb→phrase table plus a few overrides
+# turns any MCP tool name into a human phrase without an exhaustive list.
+_STATUS_VERB_PHRASES = {
+    "get": "Looking up",
+    "list": "Looking up",
+    "search": "Searching",
+    "check": "Checking",
+    "describe": "Looking up",
+    "execute": "Running",
+    "analyze": "Analyzing",
+    "compare": "Comparing",
+    "recommend": "Finding",
+    "create": "Preparing",
+    "report": "Reporting",
+    "delete": "Removing",
+}
+
+# Overrides where the generic verb+subject form reads poorly.
+_STATUS_TOOL_OVERRIDES = {
+    "search_access_documents": "Searching ACCESS documentation...",
+    "search_nsf_awards": "Searching NSF awards...",
+}
+
+
+def _friendly_tool_status(name: str) -> str:
+    """Turn a raw tool name into a human-readable status-bubble message."""
+    override = _STATUS_TOOL_OVERRIDES.get(name)
+    if override:
+        return override
+    verb, _, rest = name.partition("_")
+    phrase = _STATUS_VERB_PHRASES.get(verb)
+    if phrase and rest:
+        return f"{phrase} {rest.replace('_', ' ')}..."
+    return f"Working on {name.replace('_', ' ')}..."
+
+
 class _ToolStatusEmitter(AsyncCallbackHandler):
     """Callback handler that emits a status event each time a tool starts.
 
@@ -178,7 +216,7 @@ class _ToolStatusEmitter(AsyncCallbackHandler):
         name = serialized.get("name") if serialized else None
         if not name:
             return
-        self._writer({"type": "status", "message": f"Calling {name}..."})
+        self._writer({"type": "status", "message": _friendly_tool_status(name)})
 
 
 async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
