@@ -121,49 +121,10 @@ PRESETS: dict[str, Preset] = {
                 ),
             },
         },
-        observations=[
-            {
-                "text": (
-                    "<strong>Agent matches or beats raw RAG on every battery.</strong> "
-                    "Most divergences are small; the ties are dominated by questions where both "
-                    "systems produce an acceptable paraphrase of the same underlying "
-                    "documentation."
-                ),
-            },
-            {
-                "text": (
-                    "<strong>Agent's largest margin is on the Combined battery,</strong> "
-                    "where questions require synthesizing multiple live data sources in a single "
-                    "answer — the shape raw RAG structurally can't handle."
-                ),
-            },
-            {
-                "text": (
-                    "<strong>One known regression: <code>mcp-cov-010</code> (webinar "
-                    "question).</strong> "
-                    "The agent correctly routed to the events MCP tool but mishandled an empty "
-                    'result — it asserted "no upcoming webinars" instead of falling back to '
-                    "static documentation. Fix is on a branch "
-                    "(<code>fix/synthesis-empty-tool-defers-to-rag</code>)."
-                ),
-            },
-            {
-                "text": (
-                    "<strong>Agent is slower</strong> because it runs plan → tool-selection → "
-                    "tool-execution → synth per query. The gap widens on multi-tool questions. "
-                    "Target is sub-5s for single-tool queries."
-                ),
-            },
-            {
-                "text": (
-                    "<strong>Verdicts come from a pairwise comparison judge,</strong> not from "
-                    "individual per-answer scores. The comparison judge sees both answers side "
-                    "by side and picks a winner with a margin and a why — that's the narrative "
-                    "surfaced in this report. Next calibration step: push disputed verdicts to "
-                    "Argilla for human review."
-                ),
-            },
-        ],
+        # Observations intentionally empty — the report presents evidence
+        # (answers, traces, required-facts checks) and lets the reader draw
+        # conclusions. No editorialized summary bullets.
+        observations=[],
     ),
 }
 

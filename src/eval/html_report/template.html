@@ -470,32 +470,6 @@
     word-wrap: break-word;
   }
 
-  /* Observations */
-  .observations {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 20px 24px;
-  }
-  .observations ul { list-style: none; padding: 0; margin: 0; }
-  .observations li {
-    padding-left: 16px; position: relative;
-    margin-bottom: 12px;
-    color: var(--text-dim);
-    font-size: 14px;
-  }
-  .observations li:last-child { margin-bottom: 0; }
-  .observations li::before {
-    content: ""; position: absolute; left: 0; top: 9px;
-    width: 5px; height: 5px; border-radius: 50%;
-    background: var(--text-muted);
-  }
-  .observations li strong { color: var(--text); font-weight: 600; }
-  .observations li code {
-    font-family: var(--mono); font-size: 12px;
-    background: var(--panel-inset); padding: 1px 6px; border-radius: 3px;
-  }
-
   footer.foot {
     margin-top: 60px; padding-top: 20px;
     border-top: 1px solid var(--border);
@@ -527,9 +501,6 @@
 <div class="filters" id="filters"></div>
 <div id="questions"></div>
 
-<div class="section-label">Observations</div>
-<div class="observations"><ul id="observations"></ul></div>
-
 <footer class="foot">
   <div id="run-ids"></div>
 </footer>
@@ -542,8 +513,6 @@
   const BUNDLE = JSON.parse(document.getElementById('bundle').textContent);
   document.getElementById('gen-date').textContent = BUNDLE.generated_at;
   document.getElementById('subtitle').textContent = BUNDLE.subtitle || '';
-  document.getElementById('observations').innerHTML = (BUNDLE.observations || [])
-    .map(o => `<li>${o.text}</li>`).join('');
   document.getElementById('run-ids').innerHTML = 'Run IDs: ' + (BUNDLE.run_ids || [])
     .map(r => `${r.battery} <code>${r.raw.slice(0,8)}</code> / <code>${r.agent.slice(0,8)}</code>`)
     .join(' · ');
