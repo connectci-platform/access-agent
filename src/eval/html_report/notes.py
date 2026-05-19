@@ -71,10 +71,7 @@ def label_for_system(system_id: str | None) -> str:
 
 PRESETS: dict[str, Preset] = {
     "grand-prix": Preset(
-        report_subtitle=(
-            "Raw UKY RAG vs. full ACCESS agent — pairwise verdicts from the "
-            "comparison judge across four question batteries."
-        ),
+        report_subtitle="Raw UKY RAG vs full ACCESS agent",
         battery_info={
             "friendly_battery": {
                 "name": "Friendly Battery",
