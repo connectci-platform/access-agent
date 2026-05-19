@@ -7,6 +7,9 @@ services:
       - "8000:8000"
     environment:
       - ENVIRONMENT=docker
+      # Pillar 3 — when true, tool_calling_loop registers only the three
+      # discovery meta-tools and the LLM dispatches through them.
+      - USE_TOOL_DISCOVERY=${USE_TOOL_DISCOVERY:-false}
       - LLM_PROVIDER=${LLM_PROVIDER:-openai}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - STATIC_LLM_PROVIDER=${STATIC_LLM_PROVIDER:-}
