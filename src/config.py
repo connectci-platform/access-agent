@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     UKY_RAG_TIMEOUT: float = 60.0
     UKY_RAG_ENABLED: bool = True
 
+    # UKY chat-mcp endpoint: returns retrieval chunks (top_documents) so the
+    # agent synthesizes from raw excerpts instead of consuming UKY's own
+    # synthesis. Separate URL + API key from the legacy /ask endpoint.
+    UKY_CHATMCP_URL: str = "https://access-ai-grace1-external.ccs.uky.edu/access/chat-mcp/api/"
+    UKY_CHATMCP_API_KEY: str = ""
+
     @property
     def uky_rag_api_key_resolved(self) -> str:
         """Resolve UKY RAG API key, falling back to ACCESS_AI_API_KEY."""

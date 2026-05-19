@@ -10,9 +10,11 @@ itself when to consult ACCESS-CI's documentation RAG. Two responsibilities:
      parameter, surfaced from `state.resource_context` by the loop node
      before assembling tools.
 
-When `/retrieve` ships, the body of `_search_access_documents` swaps to
-that endpoint; the tool's outward parameter shape stays close to the
-same so the loop's prompt and any downstream consumers don't churn.
+The general corpus is served by UKY's chat-mcp endpoint, which returns
+raw retrieval chunks (`top_documents`). The tool hands those chunks to
+the loop so the LLM synthesizes and cites them itself, rather than
+consuming UKY's own synthesis. XDMoD still uses the legacy synthesis
+endpoint. The tool's outward parameter shape is unchanged.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from typing import Literal
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from ...services.uky_client import get_uky_client
+from ...services.uky_client import UKYChunk, get_uky_client
 
 logger = logging.getLogger(__name__)
 
@@ -63,38 +65,74 @@ class _SearchAccessDocumentsArgs(BaseModel):
     )
 
 
+_UNAVAILABLE = (
+    "Documentation search is currently unavailable. "
+    "Try answering from your other tools or tell the user the doc "
+    "search is offline."
+)
+
+
+def _format_chunks(query: str, chunks: list[UKYChunk]) -> str:
+    """Render retrieval chunks into text the loop's LLM can synthesize from."""
+    if not chunks:
+        return (
+            "Documentation search returned no excerpts for that query. "
+            "Try rephrasing or call a different tool."
+        )
+    parts = [
+        f'Retrieved {len(chunks)} documentation excerpt(s) for "{query}". '
+        "Synthesize an answer from these excerpts and cite the source URLs. "
+        "If none are actually relevant to the question, say so plainly."
+    ]
+    for chunk in chunks:
+        source = chunk.url or "(no source URL)"
+        parts.append(f"[{chunk.rank}] source: {source}\n{chunk.text.strip()}")
+    return "\n\n".join(parts)
+
+
 async def _search_access_documents(
     query: str,
     source: Literal["general", "xdmod"] = "general",
     rp_name: str | None = None,
 ) -> str:
-    """Search the ACCESS-CI documentation RAG and return the response text."""
+    """Search the ACCESS-CI documentation RAG.
+
+    The general corpus is retrieved as raw chunks from UKY's chat-mcp
+    endpoint and returned for the loop's LLM to synthesize and cite. XDMoD
+    questions still use the legacy synthesis endpoint (chat-mcp is
+    general-corpus only).
+    """
     client = get_uky_client()
-    if not client.is_configured:
-        logger.warning(
-            "search_access_documents called but UKY RAG client is not "
-            "configured (UKY_RAG_ENABLED=False or no API key)"
-        )
-        return (
-            "Documentation search is currently unavailable. "
-            "Try answering from your other tools or tell the user the doc "
-            "search is offline."
+
+    # XDMoD: legacy synthesis endpoint.
+    if source == "xdmod":
+        if not client.is_configured:
+            logger.warning("search_access_documents (xdmod) called but UKY RAG is not configured")
+            return _UNAVAILABLE
+        try:
+            result = await client.ask(query=query, endpoint_type="xdmod", rp_name=rp_name)
+        except Exception as exc:
+            logger.warning("search_access_documents (xdmod) failed: %s", exc)
+            return f"Documentation search failed: {exc}. Try another approach."
+        return result.response or (
+            "Documentation search returned no content for that query. "
+            "Try rephrasing or call a different tool."
         )
 
-    try:
-        result = await client.ask(
-            query=query,
-            endpoint_type=source,
-            rp_name=rp_name,
+    # General: chunk retrieval via chat-mcp; the agent synthesizes itself.
+    if not client.is_chatmcp_configured:
+        logger.warning(
+            "search_access_documents called but chat-mcp is not configured "
+            "(UKY_RAG_ENABLED=False or no UKY_CHATMCP_API_KEY)"
         )
+        return _UNAVAILABLE
+    try:
+        retrieval = await client.retrieve(query=query, rp_name=rp_name)
     except Exception as exc:
-        logger.warning("search_access_documents failed: %s", exc)
+        logger.warning("search_access_documents (chat-mcp) failed: %s", exc)
         return f"Documentation search failed: {exc}. Try another approach."
 
-    return result.response or (
-        "Documentation search returned no content for that query. "
-        "Try rephrasing or call a different tool."
-    )
+    return _format_chunks(query, retrieval.chunks)
 
 
 search_access_documents = StructuredTool.from_function(
