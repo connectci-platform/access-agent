@@ -448,7 +448,7 @@
 
 <header class="top">
   <div class="eyebrow">Eval Report</div>
-  <h1>Production Baseline Comparison</h1>
+  <h1 id="report-title">Production Baseline Comparison</h1>
   <div class="subtitle" id="subtitle">—</div>
   <div class="meta">
     <span id="battery-name">—</span>
@@ -471,6 +471,7 @@
 (function(){
   const BUNDLE = JSON.parse(document.getElementById('bundle').textContent);
   document.getElementById('gen-date').textContent = BUNDLE.generated_at;
+  if (BUNDLE.title) document.getElementById('report-title').textContent = BUNDLE.title;
   document.getElementById('subtitle').textContent = BUNDLE.subtitle || '';
   document.getElementById('run-ids').innerHTML = 'Run IDs: ' + (BUNDLE.run_ids || [])
     .map(r => `${r.battery} <code>${r.raw.slice(0,8)}</code> / <code>${r.agent.slice(0,8)}</code>`)

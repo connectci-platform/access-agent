@@ -385,6 +385,10 @@ def _handle_html(args: argparse.Namespace) -> None:
             json_paths=json_paths,
             output_path=output_path,
             preset=args.preset,
+            title=args.title,
+            subtitle=args.subtitle,
+            label_a=args.label_a,
+            label_b=args.label_b,
         )
         print(
             f"Wrote {output_path} ({len(bundle['all_pairs'])} pairs "
@@ -406,6 +410,10 @@ def _handle_html(args: argparse.Namespace) -> None:
         on_date=on_date,
         question_sets=question_sets,
         preset=args.preset,
+        title=args.title,
+        subtitle=args.subtitle,
+        label_a=args.label_a,
+        label_b=args.label_b,
     )
     print(f"Wrote {output_path} ({len(bundle['all_pairs'])} question pairs)")
 
@@ -619,6 +627,42 @@ def main() -> None:  # noqa: PLR0915  # CLI dispatcher, statements not meaningfu
         help=(
             "Narrative prose preset: 'grand-prix' (raw_rag vs agent_full "
             "production-baseline comparison)."
+        ),
+    )
+    html_parser.add_argument(
+        "--title",
+        default=None,
+        help=(
+            "Override the report's main heading (the <h1>). Default: "
+            "'Production Baseline Comparison'. Use for ad-hoc comparisons "
+            "that don't match an existing preset."
+        ),
+    )
+    html_parser.add_argument(
+        "--subtitle",
+        default=None,
+        help=(
+            "Override the subtitle under the main heading. Default: taken "
+            "from the active preset (e.g., 'Raw UKY RAG vs full ACCESS "
+            "agent' for grand-prix)."
+        ),
+    )
+    html_parser.add_argument(
+        "--label-a",
+        default=None,
+        help=(
+            "Override the column label for the baseline (A) system. "
+            "Default: derived from the system ID (e.g., 'Raw RAG', "
+            "'Agent'). Useful when both runs share a system ID (e.g., "
+            "two agent_full runs in an agent-vs-agent comparison)."
+        ),
+    )
+    html_parser.add_argument(
+        "--label-b",
+        default=None,
+        help=(
+            "Override the column label for the candidate (B) system. "
+            "Default: derived from the system ID."
         ),
     )
 
