@@ -50,10 +50,13 @@ class Settings(BaseSettings):
     UKY_RAG_TIMEOUT: float = 60.0
     UKY_RAG_ENABLED: bool = True
 
-    # UKY chat-mcp endpoint: returns retrieval chunks (top_documents) so the
-    # agent synthesizes from raw excerpts instead of consuming UKY's own
-    # synthesis. Separate URL + API key from the legacy /ask endpoint.
-    UKY_CHATMCP_URL: str = "https://access-ai-grace1-external.ccs.uky.edu/access/chat-mcp/api/"
+    # UKY chat-mcp retrieve-docs endpoint: returns ranked chunks without
+    # UKY-side synthesis, so the agent synthesizes from raw excerpts.
+    # The sibling /api/ endpoint also returns chunks but additionally
+    # spends UKY compute on a synthesized response we discard.
+    UKY_CHATMCP_URL: str = (
+        "https://access-ai-grace1-external.ccs.uky.edu/access/chat-mcp/api/retrieve-docs"
+    )
     UKY_CHATMCP_API_KEY: str = ""
 
     @property

@@ -10,11 +10,11 @@ itself when to consult ACCESS-CI's documentation RAG. Two responsibilities:
      parameter, surfaced from `state.resource_context` by the loop node
      before assembling tools.
 
-The general corpus is served by UKY's chat-mcp endpoint, which returns
-raw retrieval chunks (`top_documents`). The tool hands those chunks to
-the loop so the LLM synthesizes and cites them itself, rather than
-consuming UKY's own synthesis. XDMoD still uses the legacy synthesis
-endpoint. The tool's outward parameter shape is unchanged.
+The general corpus is served by UKY's chat-mcp `/api/retrieve-docs`
+endpoint, which returns ranked chunks (`documents`) with no UKY-side
+synthesis spent. The tool hands those chunks to the loop so the LLM
+synthesizes and cites them itself. XDMoD still uses the legacy
+synthesis endpoint. The tool's outward parameter shape is unchanged.
 """
 
 from __future__ import annotations

@@ -30,10 +30,9 @@ class UKYResponse(BaseModel):
 
 
 class UKYChunk(BaseModel):
-    """A single retrieval chunk from the chat-mcp endpoint's top_documents."""
+    """A single retrieval chunk from the chat-mcp endpoint."""
 
     rank: int = 0
-    score: float = 0.0
     text: str = ""
     url: str = ""
 
@@ -259,15 +258,17 @@ class UKYClient:
                 response.raise_for_status()
                 data = response.json()
 
-                raw_docs = data.get("top_documents") or []
+                # `/api/retrieve-docs` returns `documents`; the legacy `/api/`
+                # synthesis endpoint returned `top_documents`. Accept both so a
+                # URL revert via env var doesn't silently zero-out retrieval.
+                raw_docs = data.get("documents") or data.get("top_documents") or []
                 chunks = [
                     UKYChunk(
-                        rank=doc.get("rank", 0),
-                        score=doc.get("score", 0.0),
+                        rank=doc.get("rank", i + 1),
                         text=doc.get("text", ""),
                         url=doc.get("url", ""),
                     )
-                    for doc in raw_docs
+                    for i, doc in enumerate(raw_docs)
                 ]
                 span.set_attribute("uky_rag.chunk_count", len(chunks))
 
