@@ -67,10 +67,11 @@ class TestStripThinkBlock:
         assert _strip_think_block("") == ""
 
     def test_strips_at_first_close_tag_when_multiple(self):
-        # Defensive: model emits two `</think>` tags; we cut at the first.
-        # Anything between the first and second close tag is treated as answer.
+        # Multiple </think> tags: the paired block is stripped first by
+        # regex, then the bare </think> partition drops everything before
+        # it. Net: only the final answer survives.
         raw = "<think>outer reasoning</think>middle</think>final answer"
-        assert _strip_think_block(raw) == "middle</think>final answer"
+        assert _strip_think_block(raw) == "final answer"
 
     def test_strips_when_close_tag_at_start(self):
         # Bare close tag with no open is treated as a degenerate trace.
@@ -81,33 +82,42 @@ class TestStripThinkBlock:
         raw = "<think>thinking...</think>\n\nLine 1\n\nLine 2"
         assert _strip_think_block(raw) == "Line 1\n\nLine 2"
 
-    def test_prose_mentioning_close_tag_is_not_stripped(self):
-        # The user asked what </think> means. The model's prose contains
-        # `</think>` mid-message but the message does not open with a
-        # think tag — leave it intact.
-        raw = "The closing tag is `</think>`, used to terminate reasoning."
-        assert _strip_think_block(raw) == raw
+    def test_qwen_no_open_tag_stream_shape(self):
+        # On UKY's vLLM the chat template consumes the opening <think>,
+        # so the visible content is [reasoning prose]</think>[answer]
+        # with no leading <think>. The reasoning prose must be stripped.
+        raw = (
+            "The user is asking about Anvil. From the documentation I can "
+            "see it supports Python via modules. Let me confirm and then "
+            "explain.\n</think>\n\nAnvil supports Python via the python "
+            "and Anaconda modules."
+        )
+        out = _strip_think_block(raw)
+        assert "</think>" not in out
+        assert "The user is asking" not in out
+        assert out.startswith("Anvil supports Python")
 
     def test_truncated_mid_think_returns_empty(self):
-        # max_tokens cut the reasoning off before `</think>` was emitted.
-        # Never leak the buffered chain-of-thought.
+        # max_tokens cut the reasoning off before `</think>` was emitted,
+        # and a <think> open tag was present. Never leak the buffered CoT.
         raw = "<think>I should consider every possibility before answering, starting with"
         assert _strip_think_block(raw) == ""
 
     def test_strips_think_block_with_preamble(self):
-        # Qwen sometimes emits a brief preamble (e.g. "Let me check…") before
-        # opening the reasoning trace. The preamble must stay; the trace must go.
+        # Some templates emit a brief preamble before opening the think
+        # tag. The paired-block regex removes the trace; the preamble stays.
         raw = "Let me check: <think>reasoning here</think>The actual answer."
         assert _strip_think_block(raw) == "Let me check: The actual answer."
 
     def test_strips_multiple_paired_blocks(self):
-        # Some models emit more than one think block (e.g. an empty stub
-        # followed by the real reasoning). All paired blocks should be removed.
+        # Some models emit more than one paired block (e.g. an empty stub
+        # followed by real reasoning). All paired blocks should be removed.
         raw = "<think></think><think>real reasoning</think>The answer."
         assert _strip_think_block(raw) == "The answer."
 
     def test_truncated_mid_think_with_preamble_drops_from_open(self):
-        # Preamble before the open tag is kept; the truncated trace is dropped.
+        # Preamble before an unpaired <think> open is kept; the truncated
+        # trace from the open tag onward is dropped.
         raw = "Looking this up: <think>I should consider"
         assert _strip_think_block(raw) == "Looking this up:"
 
@@ -204,6 +214,7 @@ class TestStrippingChatOpenAIAstream:
 
     @pytest.mark.asyncio
     async def test_cuts_at_first_close_tag_when_multiple(self) -> None:
+        # Paired block stripped, then bare </think> partition drops "middle".
         provider = OpenAICompatibleProvider(
             base_url="http://example/v1", api_key="k", default_model="m"
         )
@@ -211,7 +222,33 @@ class TestStrippingChatOpenAIAstream:
         fixture = [_chunk("<think>outer reasoning</think>middle</think>final answer")]
         with patch.object(ChatOpenAI, "_astream", _fake_astream_factory(fixture)):
             chunks = await _collect_astream(model)
-        assert _aggregate_text(chunks) == "middle</think>final answer"
+        assert _aggregate_text(chunks) == "final answer"
+
+    @pytest.mark.asyncio
+    async def test_qwen_no_open_tag_stream_shape(self) -> None:
+        # Production reality: UKY vLLM emits reasoning prose then </think>
+        # then the answer, with no leading <think>. Multiple chunks of
+        # reasoning text must all be buffered (dropped), and only the
+        # post-</think> answer streams out.
+        provider = OpenAICompatibleProvider(
+            base_url="http://example/v1", api_key="k", default_model="m"
+        )
+        model = cast("_StrippingChatOpenAI", provider.get_chat_model())
+        fixture = [
+            _chunk("The user is asking about Anvil. "),
+            _chunk("From the documentation I can see "),
+            _chunk("it supports Python via modules. "),
+            _chunk("Let me confirm and then explain."),
+            _chunk("\n</think>\n\n"),
+            _chunk("Anvil supports Python via the python and Anaconda modules."),
+        ]
+        with patch.object(ChatOpenAI, "_astream", _fake_astream_factory(fixture)):
+            chunks = await _collect_astream(model)
+        text = _aggregate_text(chunks)
+        assert "</think>" not in text
+        assert "The user is asking" not in text
+        assert "From the documentation" not in text
+        assert text == "Anvil supports Python via the python and Anaconda modules."
 
     @pytest.mark.asyncio
     async def test_strips_think_block_with_preamble_in_stream(self) -> None:
