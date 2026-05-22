@@ -112,15 +112,6 @@ class Settings(BaseSettings):
     MCP_CATALOG_URL: str = "http://localhost:5678/webhook/generate-mcp-catalog"
     MCP_CATALOG_PATH: str | None = None
 
-    # USE_TOOL_DISCOVERY: when True, the tool_calling_loop registers only the
-    # three discovery meta-tools (list_capabilities, describe_tools, execute_tool)
-    # at loop entry instead of the full ~24-tool catalog. The LLM discovers
-    # and dispatches through discovery's progressive-disclosure surface.
-    # See access-mcp/docs/2026-05-12-tool-catalog-architecture.md §Pillar 3.
-    # USE_TOOL_DISCOVERY=false is the verified off-ramp — behavior should be
-    # identical to today's flat-catalog setup.
-    USE_TOOL_DISCOVERY: bool = False
-
     # max_tokens budget for the tool_calling_loop's react agent. Reasoning
     # models (Qwen3, Kimi, DeepSeek-R1) consume part of the budget on
     # chain-of-thought before emitting user-visible content, so this default
@@ -192,7 +183,6 @@ class Settings(BaseSettings):
                 "xdmod": "http://mcp-xdmod:3000",
                 "xdmod-data": "http://mcp-xdmod-data:3000",
                 "jsm": "http://mcp-jsm:3000",
-                "discovery": "http://mcp-discovery:3000",
             }
         if self.ENVIRONMENT == "production":
             # Production MCP servers at 45.79.215.140
@@ -209,7 +199,6 @@ class Settings(BaseSettings):
                 "xdmod": f"http://{host}:3005",
                 "xdmod-data": f"http://{host}:3008",
                 "jsm": f"http://{host}:3012",
-                "discovery": f"http://{host}:3001",
             }
         # Local development uses localhost with same port mapping
         return {
@@ -224,7 +213,6 @@ class Settings(BaseSettings):
             "xdmod": "http://localhost:3005",
             "xdmod-data": "http://localhost:3008",
             "jsm": "http://localhost:3012",
-            "discovery": "http://localhost:3001",
         }
 
     # Servers that require API key authentication for tool calls

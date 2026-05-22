@@ -49,54 +49,13 @@ def _build_prompt_and_tools(
     Tool list = MCP catalog (read-only-filtered) + ``search_access_documents``.
     Prompt is the loop's system prompt (docs-as-tool framing, announcements +
     JSM choreography appended).
-
-    When ``settings.USE_TOOL_DISCOVERY`` is True the MCP catalog is filtered
-    down to the discovery server's three meta-tools (list_capabilities,
-    describe_tools, execute_tool). The LLM dispatches through those instead
-    of registering ~24 tool schemas at loop entry. See Pillar 3 in
-    `access-mcp/docs/2026-05-12-tool-catalog-architecture.md`.
     """
-    catalog_for_tools = (
-        _filter_to_discovery_server(tool_catalog) if settings.USE_TOOL_DISCOVERY else tool_catalog
-    )
-    mcp_tools = _apply_read_only_filter(
-        create_mcp_tools_from_catalog(catalog_for_tools, acting_user)
-    )
+    mcp_tools = _apply_read_only_filter(create_mcp_tools_from_catalog(tool_catalog, acting_user))
     prompt = build_system_prompt(
         acting_user=acting_user,
         resource_context=resource_context,
-        use_tool_discovery=settings.USE_TOOL_DISCOVERY,
     )
     return prompt, [*mcp_tools, search_access_documents]
-
-
-def _filter_to_discovery_server(tool_catalog: dict[str, Any]) -> dict[str, Any]:
-    """Return a catalog containing only the discovery server's tools.
-
-    Preserves the original catalog's `quick_lookup` shape so downstream
-    consumers don't see a half-populated dict — only entries referring to
-    discovery's tools survive.
-    """
-    servers = tool_catalog.get("servers", []) or []
-    discovery_servers = [s for s in servers if s.get("server") == "discovery"]
-    if not discovery_servers:
-        logger.warning(
-            "USE_TOOL_DISCOVERY=true but no 'discovery' server in catalog. "
-            "The loop will run with zero MCP tools — verify the discovery "
-            "MCP server is reachable and its tools are introspected into "
-            "the catalog at startup."
-        )
-        return {"servers": [], "quick_lookup": {}}
-
-    discovery_tool_names = {
-        tool.get("name") for s in discovery_servers for tool in s.get("tools", [])
-    }
-    quick_lookup = {
-        name: meta
-        for name, meta in (tool_catalog.get("quick_lookup") or {}).items()
-        if name in discovery_tool_names
-    }
-    return {"servers": discovery_servers, "quick_lookup": quick_lookup}
 
 
 def _apply_read_only_filter(tools: list[BaseTool]) -> list[BaseTool]:

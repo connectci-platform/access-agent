@@ -330,36 +330,9 @@ says "I need help" or similar, ask what they need help with before \
 jumping to ticket creation."""
 
 
-TOOL_DISCOVERY_SECTION = """## Tool discovery (meta-tool mode)
-
-Instead of seeing every MCP tool registered up-front, you have three \
-meta-tools that expose the catalog progressively. Use them to find and \
-invoke the right underlying tool.
-
-- `list_capabilities(query?, category?, limit?)` — browse what's \
-available. Returns tool names + one-line summaries + server tags. No \
-schemas. Pass `query` (keyword filter) or `category` (server name like \
-'events' or 'system-status') when you know what you're after.
-- `describe_tools(names)` — full JSON schemas + example invocations \
-for the named tools. Call this before invoking a tool you haven't seen \
-before so you know its parameters.
-- `execute_tool(name, args, fields?)` — invoke a tool. Pass the tool \
-name, its arguments object, and an optional `fields` projection at the \
-**top level** (not inside `args`). The projection is forwarded to the \
-underlying tool's response shaper.
-
-Typical flow: `list_capabilities` → `describe_tools(["candidate"])` → \
-`execute_tool("candidate", {...})`. If a workflow section below names a \
-specific tool (e.g. `search_announcements`, `create_ticket`), look up \
-its schema via `describe_tools` first, then invoke through \
-`execute_tool`. The workflow choreographies are unchanged — only the \
-invocation pathway shifts."""
-
-
 def build_system_prompt(
     acting_user: str | None = None,
     resource_context: str | None = None,
-    use_tool_discovery: bool = False,
 ) -> str:
     """Assemble the tool-calling loop's system prompt.
 
@@ -371,18 +344,11 @@ def build_system_prompt(
             present, surfaces a hint that resource-scoped questions
             should pass `rp_name=<resource_context>` to
             `search_access_documents` and to MCP tools that accept it.
-        use_tool_discovery: When True, inject the Pillar 3 meta-tool
-            section that teaches list_capabilities/describe_tools/
-            execute_tool. The loop registers only those three tools in
-            this mode (see tool_calling_loop._filter_to_discovery_server).
 
     Returns:
         Complete system prompt string for the tool-calling loop.
     """
     sections: list[str] = [SYSTEM_IDENTITY]
-
-    if use_tool_discovery:
-        sections.append(TOOL_DISCOVERY_SECTION)
 
     if acting_user:
         sections.append(
