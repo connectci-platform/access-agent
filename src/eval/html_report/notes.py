@@ -5,10 +5,9 @@ what the reader should take away, and so on. The numbers and per-question
 data come from Postgres; the prose comes from here.
 
 Prose is organized by **preset**. A preset bundles the subtitle, per-battery
-descriptions, and observation bullets appropriate to one kind of comparison
-(e.g. raw_rag vs agent_full, or legacy-chain vs tool-calling-loop). Use the
-`--preset` CLI flag to pick the right one; fall back to `grand-prix` for
-historical compatibility.
+descriptions, and observation bullets appropriate to one kind of comparison.
+Use the `--preset` CLI flag to pick the right one; fall back to `grand-prix`
+for historical compatibility.
 
 Edit freely — the report runner just interpolates these values into the
 template. See README.md in this directory for the full list of knobs.
@@ -55,7 +54,6 @@ BATTERY_ORDER: list[str] = [
 SYSTEM_LABELS: dict[str, str] = {
     "raw_rag": "Raw RAG",
     "agent_full": "Agent",
-    "agent_full_legacy": "Agent (legacy chain)",
 }
 
 
@@ -73,10 +71,7 @@ def label_for_system(system_id: str | None) -> str:
 
 PRESETS: dict[str, Preset] = {
     "grand-prix": Preset(
-        report_subtitle=(
-            "Raw UKY RAG vs. full ACCESS agent — pairwise verdicts from the "
-            "comparison judge across four question batteries."
-        ),
+        report_subtitle="Raw UKY RAG vs full ACCESS agent",
         battery_info={
             "friendly_battery": {
                 "name": "Friendly Battery",
@@ -123,118 +118,10 @@ PRESETS: dict[str, Preset] = {
                 ),
             },
         },
-        observations=[
-            {
-                "text": (
-                    "<strong>Agent matches or beats raw RAG on every battery.</strong> "
-                    "Most divergences are small; the ties are dominated by questions where both "
-                    "systems produce an acceptable paraphrase of the same underlying "
-                    "documentation."
-                ),
-            },
-            {
-                "text": (
-                    "<strong>Agent's largest margin is on the Combined battery,</strong> "
-                    "where questions require synthesizing multiple live data sources in a single "
-                    "answer — the shape raw RAG structurally can't handle."
-                ),
-            },
-            {
-                "text": (
-                    "<strong>One known regression: <code>mcp-cov-010</code> (webinar "
-                    "question).</strong> "
-                    "The agent correctly routed to the events MCP tool but mishandled an empty "
-                    'result — it asserted "no upcoming webinars" instead of falling back to '
-                    "static documentation. Fix is on a branch "
-                    "(<code>fix/synthesis-empty-tool-defers-to-rag</code>)."
-                ),
-            },
-            {
-                "text": (
-                    "<strong>Agent is slower</strong> because it runs plan → tool-selection → "
-                    "tool-execution → synth per query. The gap widens on multi-tool questions. "
-                    "Target is sub-5s for single-tool queries."
-                ),
-            },
-            {
-                "text": (
-                    "<strong>Verdicts come from a pairwise comparison judge,</strong> not from "
-                    "individual per-answer scores. The comparison judge sees both answers side "
-                    "by side and picks a winner with a margin and a why — that's the narrative "
-                    "surfaced in this report. Next calibration step: push disputed verdicts to "
-                    "Argilla for human review."
-                ),
-            },
-        ],
-    ),
-    "phase3-parity": Preset(
-        report_subtitle=(
-            "Legacy plan→execute chain vs tool-calling loop — pairwise verdicts from the AI "
-            "compare-judge for the Phase 3 parity check."
-        ),
-        battery_info={
-            "phase3_smoke_battery": {
-                "name": "Phase 3 Smoke Battery",
-                "count": 40,
-                "what": (
-                    "40 curated questions across 7 coverage categories (static-confident, "
-                    "static-deflection, combined-simple, multi-tool, pure-mcp, error-prone, "
-                    "domain-routed) — designed to exercise every path where the tool-calling "
-                    "loop's behavior could differ from the legacy "
-                    "plan→execute→evaluate→recover→synthesize chain."
-                ),
-                "why": (
-                    "Regression-check the new single-node loop against the legacy chain before "
-                    "flipping USE_TOOL_CALLING_LOOP=true in production."
-                ),
-            },
-            "friendly_battery": {
-                "name": "Friendly Battery",
-                "count": 50,
-                "what": (
-                    "Clean, well-documented questions with unambiguous right answers. "
-                    "Legacy and loop should agree on the overwhelming majority."
-                ),
-                "why": (
-                    "Parity check on the easy path — any divergence here is noteworthy because "
-                    "the correct behavior is well-defined."
-                ),
-            },
-            "real_user_battery": {
-                "name": "Real User Battery",
-                "count": 50,
-                "what": (
-                    "Actual queries pulled from real users: messy phrasing, typos, terse "
-                    "fragments, multi-part asks."
-                ),
-                "why": (
-                    "Parity on the hard path — ambiguous or underspecified questions can expose "
-                    "differences in how each implementation handles uncertainty and tool choice."
-                ),
-            },
-            "combined_battery": {
-                "name": "Combined Battery",
-                "count": 30,
-                "what": (
-                    "Questions designed to require multiple tools or data sources in one answer."
-                ),
-                "why": (
-                    "Multi-tool orchestration is the most likely site of divergence — the loop "
-                    "picks tools sequentially inside one node, the legacy chain plans them "
-                    "up front."
-                ),
-            },
-            "mcp_coverage_battery": {
-                "name": "MCP Coverage Battery",
-                "count": 21,
-                "what": ("One question per MCP tool, crafted to trigger that tool and no other."),
-                "why": (
-                    "Verifies every tool is wired into both implementations and produces "
-                    "equivalent output."
-                ),
-            },
-        },
-        observations=[],  # Data speaks for itself on parity runs; no editorial framing.
+        # Observations intentionally empty — the report presents evidence
+        # (answers, traces, required-facts checks) and lets the reader draw
+        # conclusions. No editorialized summary bullets.
+        observations=[],
     ),
 }
 

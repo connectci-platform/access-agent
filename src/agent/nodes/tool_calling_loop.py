@@ -1,25 +1,29 @@
-"""Tool-calling loop node — single-node replacement for plan+execute+evaluate+recover.
+"""Tool-calling loop node — the only node in the agent graph.
 
-Launched behind the USE_TOOL_CALLING_LOOP feature flag (launch Phase 3). When
-the flag is True, tool-using queries route here instead of the legacy chain.
-
-Approach: LangGraph's `create_react_agent` drives a turn-by-turn loop where the
-LLM selects tools, sees results as ToolMessages, and continues until it emits
-a non-tool-call response. Planning, execution, evaluation, and recovery all
-happen inside that loop — no separate nodes needed.
+LangChain's ``create_agent`` drives a turn-by-turn loop where the LLM
+selects tools, sees results as ToolMessages, and continues until it emits a
+non-tool-call response. The system prompt instructs the LLM to call
+``search_access_documents`` for documentation-style questions; live data
+flows from the MCP catalog tools.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from langchain.agents import create_agent
+from langchain.agents.middleware import SummarizationMiddleware
+from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.config import get_stream_writer
 from langgraph.errors import GraphRecursionError
-from langgraph.prebuilt import create_react_agent
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from langchain_core.tools import BaseTool
 
 from ...config import settings
@@ -27,19 +31,37 @@ from ...llm import get_llm
 from ...telemetry import get_tracer
 from ..domains.capabilities import WRITE_MCP_TOOL_NAMES
 from ..domains.tools import create_mcp_tools_from_catalog
-from ..prompts.tool_calling_loop import build_system_prompt, format_rag_matches
+from ..prompts.system_prompt import build_system_prompt
 from ..state import ToolResult
+from ..tools import search_access_documents
 
 logger = logging.getLogger(__name__)
+
+
+def _build_prompt_and_tools(
+    *,
+    tool_catalog: dict[str, Any],
+    acting_user: str | None,
+    resource_context: str | None,
+) -> tuple[str, list[BaseTool]]:
+    """Assemble the loop's system prompt and tool list.
+
+    Tool list = MCP catalog (read-only-filtered) + ``search_access_documents``.
+    Prompt is the loop's system prompt (docs-as-tool framing, announcements +
+    JSM choreography appended).
+    """
+    mcp_tools = _apply_read_only_filter(create_mcp_tools_from_catalog(tool_catalog, acting_user))
+    prompt = build_system_prompt(
+        acting_user=acting_user,
+        resource_context=resource_context,
+    )
+    return prompt, [*mcp_tools, search_access_documents]
 
 
 def _apply_read_only_filter(tools: list[BaseTool]) -> list[BaseTool]:
     """Strip write-capable MCP tools when ``settings.READ_ONLY`` is True.
 
-    The legacy chain enforces READ_ONLY at the capability-registry level,
-    but this node builds tools directly from the MCP catalog. Applying the
-    same deny-list here keeps the audit's "READ_ONLY blocks all writes"
-    claim true on both code paths. See `docs/security/write-capability-audit.md`.
+    See `docs/security/write-capability-audit.md`.
     """
     if not settings.READ_ONLY:
         return tools
@@ -55,16 +77,136 @@ def _apply_read_only_filter(tools: list[BaseTool]) -> list[BaseTool]:
     return filtered
 
 
+StatusWriter = Callable[[dict[str, Any]], None]
+
+
+def _resolve_status_writer() -> StatusWriter | None:
+    """Return the LangGraph stream writer, or ``None`` outside a runnable.
+
+    ``get_stream_writer()`` raises ``RuntimeError`` when called outside a
+    LangGraph runnable (eg. direct invocation in tests). The ``None`` form
+    lets call sites stay compact and lets tests exercise the node directly.
+    """
+    try:
+        return get_stream_writer()
+    except RuntimeError:
+        return None
+
+
+def _emit_status(message: str) -> None:
+    """Emit a status event to the SSE stream, no-op outside runnable context."""
+    writer = _resolve_status_writer()
+    if writer is not None:
+        writer({"type": "status", "message": message})
+
+
+# Status-bubble wording. Raw tool names (`search_software`, `get_compute_resource`)
+# would otherwise surface verbatim in the chat UI. The first token of a tool name
+# is its verb; the rest is the subject — a verb→phrase table plus a few overrides
+# turns any MCP tool name into a human phrase without an exhaustive list.
+_STATUS_VERB_PHRASES = {
+    "get": "Looking up",
+    "list": "Looking up",
+    "search": "Searching",
+    "check": "Checking",
+    "describe": "Looking up",
+    "execute": "Running",
+    "analyze": "Analyzing",
+    "compare": "Comparing",
+    "recommend": "Finding",
+    "create": "Preparing",
+    "report": "Reporting",
+    "delete": "Removing",
+}
+
+# Overrides where the generic verb+subject form reads poorly.
+_STATUS_TOOL_OVERRIDES = {
+    "search_access_documents": "Searching ACCESS documentation...",
+    "search_nsf_awards": "Searching NSF awards...",
+}
+
+
+def _friendly_tool_status(name: str) -> str:
+    """Turn a raw tool name into a human-readable status-bubble message."""
+    override = _STATUS_TOOL_OVERRIDES.get(name)
+    if override:
+        return override
+    verb, _, rest = name.partition("_")
+    phrase = _STATUS_VERB_PHRASES.get(verb)
+    if phrase and rest:
+        return f"{phrase} {rest.replace('_', ' ')}..."
+    return f"Working on {name.replace('_', ' ')}..."
+
+
+def _coerce_content_to_text(content: Any) -> str:
+    """Render AIMessage.content as a single string.
+
+    Providers that emit content blocks (Anthropic-style) return a list of
+    dicts like ``[{"type": "text", "text": "..."}]``; ``str()`` on that list
+    produces Python repr, not the user-facing answer.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+        return "".join(parts)
+    return str(content)
+
+
+class _ToolStatusEmitter(AsyncCallbackHandler):
+    """Callback handler that emits a status event each time a tool starts.
+
+    Registered via ``config["callbacks"]`` on the agent invocation, so the
+    react loop fires ``on_tool_start`` for every tool the LLM invokes —
+    including parallel calls within a single turn. The writer is captured
+    at node entry rather than re-resolved on each event, because callback
+    handlers may run on a task that doesn't share the node's contextvar
+    snapshot (no langgraph runnable context = ``get_stream_writer`` would
+    raise).
+    """
+
+    def __init__(self, writer: StatusWriter | None) -> None:
+        super().__init__()
+        self._writer = writer
+
+    async def on_tool_start(
+        self,
+        serialized: dict[str, Any],
+        input_str: str,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        inputs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        # Unused today, kept in the signature to document LangChain's
+        # on_tool_start contract — `run_id` is the correlation key for any
+        # future on_tool_end pairing or LangSmith tracing.
+        del input_str, run_id, parent_run_id, tags, metadata, inputs, kwargs
+        if self._writer is None:
+            return
+        name = serialized.get("name") if serialized else None
+        if not name:
+            return
+        self._writer({"type": "status", "message": _friendly_tool_status(name)})
+
+
 async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
-    """Run the single-node tool-calling loop.
+    """Run the tool-calling loop.
 
     Consumes:
         state.messages: conversation history (HumanMessage / AIMessage / ToolMessage)
         state.query: current user query (already present in messages[-1])
         state.tool_catalog: dict describing MCP tools available to this request
         state.acting_user: optional ACCESS ID for personalized tool calls
-        state.rag_matches: optional list of RAGMatch objects from rag_answer
-        state.query_classification: optional classifier output with .domain
+        state.resource_context: optional RP slug for resource-scoped queries
 
     Produces:
         final_answer: LLM's final text response
@@ -74,44 +216,44 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
     """
     tracer = get_tracer("access-agent.nodes")
 
+    status_writer = _resolve_status_writer()
+    if status_writer is not None:
+        status_writer({"type": "status", "message": "Processing query..."})
+
     with tracer.start_as_current_span(
         "agent.tool_calling_loop",
         attributes={"agent.node": "tool_calling_loop"},
     ) as span:
         acting_user = state.get("acting_user")
-        rag_matches = state.get("rag_matches") or []
-        classification = state.get("query_classification")
-        domain_hint = classification.domain if classification else None
-        tool_catalog = state.get("tool_catalog") or {}
 
-        rag_context = format_rag_matches(rag_matches) if rag_matches else None
-        system_prompt = build_system_prompt(
-            rag_context=rag_context,
-            domain_hint=domain_hint,
+        system_prompt, tools = _build_prompt_and_tools(
+            tool_catalog=state.get("tool_catalog") or {},
             acting_user=acting_user,
+            resource_context=state.get("resource_context"),
         )
 
-        tools = _apply_read_only_filter(create_mcp_tools_from_catalog(tool_catalog, acting_user))
-
         span.set_attribute("agent.tool_count", len(tools))
-        span.set_attribute("agent.has_rag_context", bool(rag_context))
         span.set_attribute("agent.authenticated", bool(acting_user))
 
-        llm = get_llm()
-        agent = create_react_agent(
+        llm = get_llm(max_tokens=settings.MAX_TOKENS_LOOP)
+        agent = create_agent(
             model=llm,
             tools=tools,
-            prompt=system_prompt,
+            system_prompt=system_prompt,
+            middleware=[
+                SummarizationMiddleware(
+                    model=llm,
+                    trigger=("tokens", settings.SUMMARIZATION_TRIGGER_TOKENS),
+                    keep=("tokens", settings.SUMMARIZATION_KEEP_TOKENS),
+                ),
+            ],
         )
 
         messages = list(state.get("messages", []))
         logger.info(
-            "Running tool_calling_loop: %d tools, %d prior messages, "
-            "rag_context=%s, domain_hint=%s",
+            "Running tool_calling_loop: %d tools, %d prior messages",
             len(tools),
             len(messages),
-            bool(rag_context),
-            domain_hint,
         )
 
         final_answer: str | None = None
@@ -120,14 +262,18 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
         # recursion_limit = 2 * max_tool_turns + 1; gives the LLM room for
         # roughly 10 tool turns before LangGraph hard-stops.
         recursion_limit = 25
+        tool_status_emitter = _ToolStatusEmitter(status_writer)
         try:
             result = await agent.ainvoke(
                 {"messages": messages},
-                {"recursion_limit": recursion_limit},
+                {
+                    "recursion_limit": recursion_limit,
+                    "callbacks": [tool_status_emitter],
+                },
             )
             result_messages = result.get("messages", [])
         except GraphRecursionError:
-            # create_react_agent exhausted its recursion budget (e.g., the LLM
+            # create_agent exhausted its recursion budget (e.g., the LLM
             # kept requesting tool calls and never emitted a final answer).
             # Return a user-facing apology rather than a 500 so the chatbot
             # can render something useful.
@@ -151,10 +297,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
         if not recursion_limit_hit:
             for msg in reversed(result_messages):
                 if isinstance(msg, AIMessage) and msg.content:
-                    # AIMessage.content can be str or list[str|dict] (multimodal);
-                    # the loop only emits string content for final answers.
-                    content = msg.content
-                    final_answer = content if isinstance(content, str) else str(content)
+                    final_answer = _coerce_content_to_text(msg.content)
                     break
 
         tools_used: list[str] = []
@@ -208,11 +351,11 @@ def _build_tool_results(
 ) -> tuple[list[ToolResult], int]:
     """Back-fill state.tool_results from a react-loop message thread.
 
-    Downstream consumers (eval scorer, observability, legacy node APIs) read
-    state.tool_results in the same shape plan+execute produced. The react
-    loop only emits ToolMessages, so we reconstruct ToolResult objects by
-    pairing each ToolMessage with its originating AIMessage tool_call (by
-    id) and parsing the JSON content MCPToolWrapper produced.
+    Downstream consumers (eval scorer, observability) read state.tool_results
+    in a structured form. The react loop only emits ToolMessages, so we
+    reconstruct ToolResult objects by pairing each ToolMessage with its
+    originating AIMessage tool_call (by id) and parsing the JSON content
+    MCPToolWrapper produced.
 
     Orphan ToolMessages (no matching tool_call id) are dropped — we never
     fabricate a ToolResult we can't anchor to an AIMessage call. The caller

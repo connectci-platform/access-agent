@@ -16,6 +16,27 @@ if env_path.exists():
                 os.environ.setdefault(key.strip(), value.strip())
 
 
+@pytest.fixture(autouse=True)
+def _reset_async_singletons():
+    """Drop module-global cached httpx clients between tests.
+
+    ``uky_client._client`` and ``mcp_client._shared_client`` each cache an
+    ``httpx.AsyncClient`` bound to whichever event loop was live when it was
+    first created. pytest-asyncio gives each test a fresh function-scoped
+    loop, so a client created in one test is reused in the next against a
+    closed loop -- surfacing as ``RuntimeError: Event loop is closed``.
+    ``is_closed`` does not catch this (a dead loop does not close the
+    client), so resetting the globals is the reliable fix: each test
+    rebuilds its client on its own loop.
+    """
+    yield
+    from src.services import uky_client
+    from src.tools import mcp_client
+
+    uky_client._client = None
+    mcp_client._shared_client = None
+
+
 @pytest.fixture
 def sample_catalog():
     """Sample MCP tool catalog for testing."""

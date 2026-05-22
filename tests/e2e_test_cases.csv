@@ -1,8 +1,8 @@
 description,query,expected_tool,must_contain,must_not_contain
-Current outages query,What are the current outages in ACCESS?,get_infrastructure_news,duo|identity,invalid|parameter
-Planned outages query,What are the planned outages in ACCESS?,get_infrastructure_news,jetstream|delta|aces,invalid|parameter
+Current outages query,What are the current outages in ACCESS?,get_infrastructure_news,outage|operational,invalid|parameter
+Planned outages query,What are the planned outages in ACCESS?,get_infrastructure_news,outage|planned|maintenance,invalid|parameter
 Scheduled maintenance query,Is there any scheduled maintenance coming up?,get_infrastructure_news,january|maintenance,invalid|parameter
-Scheduled maintenance alt query,Show me scheduled maintenance,get_infrastructure_news,jetstream|delta|aces,invalid|parameter
+Scheduled maintenance alt query,Show me scheduled maintenance,get_infrastructure_news,maintenance|scheduled|outage,invalid|parameter
 Resource-specific outage query,Are there any outages affecting Delta?,get_infrastructure_news,delta,invalid|parameter
 Past outages query,What outages happened last month?,get_infrastructure_news,,invalid|parameter
 GPU resources query,What GPU resources are available on ACCESS?,search_resources,anvil|bridges|delta|aces,invalid|parameter

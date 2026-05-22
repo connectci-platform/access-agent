@@ -1,6 +1,6 @@
 """Tests for tool_calling_loop_node (launch Phase 3).
 
-Strategy: mock the LLM + tools at the create_react_agent boundary so the
+Strategy: mock the LLM + tools at the create_agent boundary so the
 node's orchestration logic is tested without live API calls. Covers:
 
 1. Basic flow: query in → LLM picks no tools → direct answer out.
@@ -64,7 +64,7 @@ async def test_direct_answer_no_tools_called(base_state):
 
     final_message = AIMessage(content="ACCESS has several GPU resources: Delta, FASTER, ...")
 
-    # Mock create_react_agent to return a compiled-graph-like object whose
+    # Mock create_agent to return a compiled-graph-like object whose
     # ainvoke returns the expected messages structure.
     mock_graph = AsyncMock()
     mock_graph.ainvoke.return_value = {
@@ -74,7 +74,7 @@ async def test_direct_answer_no_tools_called(base_state):
         ]
     }
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
         result = await tool_calling_loop_node(base_state)
 
     assert result["final_answer"] == final_message.content
@@ -102,7 +102,7 @@ async def test_single_tool_call_then_answer(base_state):
         "messages": [*base_state["messages"], tool_call_msg, tool_result_msg, final_msg]
     }
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
         result = await tool_calling_loop_node(base_state)
 
     assert result["final_answer"] == final_msg.content
@@ -132,7 +132,7 @@ async def test_tool_failure_is_recovered_or_reported(base_state):
         "messages": [*base_state["messages"], tool_call, failure, recovery_answer]
     }
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
         result = await tool_calling_loop_node(base_state)
 
     assert result["final_answer"] == recovery_answer.content
@@ -151,7 +151,7 @@ async def test_empty_tool_catalog_still_produces_answer(base_state):
     mock_graph = AsyncMock()
     mock_graph.ainvoke.return_value = {"messages": [*state["messages"], answer]}
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
         result = await tool_calling_loop_node(state)
 
     assert result["final_answer"] == answer.content
@@ -167,7 +167,7 @@ async def test_messages_are_accumulated_not_replaced(base_state):
     mock_graph = AsyncMock()
     mock_graph.ainvoke.return_value = {"messages": [*base_state["messages"], final]}
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
         result = await tool_calling_loop_node(base_state)
 
     # The original HumanMessage must still be present
@@ -190,48 +190,13 @@ async def test_system_prompt_includes_acting_user_when_authenticated(base_state)
     captured_prompt = {}
 
     def capture_prompt(**kwargs):  # type: ignore[no-untyped-def]
-        captured_prompt["prompt"] = kwargs.get("prompt")
+        captured_prompt["prompt"] = kwargs.get("system_prompt")
         return mock_graph
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", side_effect=capture_prompt):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture_prompt):
         await tool_calling_loop_node(state)
 
     assert "jsmith@access-ci.org" in captured_prompt["prompt"]
-
-
-@pytest.mark.asyncio
-async def test_system_prompt_includes_rag_context_when_present(base_state):
-    """When rag_matches is non-empty, the system prompt should embed them."""
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-    from src.agent.state import RAGMatch
-
-    state = {
-        **base_state,
-        "rag_matches": [
-            RAGMatch(
-                id="rag_001",
-                question="What GPUs exist?",
-                answer="Delta has NVIDIA A100s.",
-                domain="compute-resources",
-                entity_id="delta",
-                similarity_score=0.92,
-            )
-        ],
-    }
-    answer = AIMessage(content="ok")
-    mock_graph = AsyncMock()
-    mock_graph.ainvoke.return_value = {"messages": [*state["messages"], answer]}
-
-    captured_prompt = {}
-
-    def capture_prompt(**kwargs):  # type: ignore[no-untyped-def]
-        captured_prompt["prompt"] = kwargs.get("prompt")
-        return mock_graph
-
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", side_effect=capture_prompt):
-        await tool_calling_loop_node(state)
-
-    assert "Delta has NVIDIA A100s" in captured_prompt["prompt"]
 
 
 @pytest.mark.asyncio
@@ -269,7 +234,7 @@ async def test_tool_results_backfilled_from_messages(base_state):
         ]
     }
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
         result = await tool_calling_loop_node(base_state)
 
     tool_results = result["tool_results"]
@@ -316,7 +281,7 @@ async def test_final_answer_is_none_when_no_ai_message_content(base_state):
         "messages": [*base_state["messages"], tool_call, tool_result]
     }
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
         result = await tool_calling_loop_node(base_state)
 
     assert result["final_answer"] is None
@@ -326,7 +291,7 @@ async def test_final_answer_is_none_when_no_ai_message_content(base_state):
 
 @pytest.mark.asyncio
 async def test_recursion_limit_error_produces_graceful_response(base_state):
-    """GraphRecursionError from create_react_agent is caught and converted to
+    """GraphRecursionError from create_agent is caught and converted to
     a user-facing apology pointing at the support ticket path. The original
     input messages are preserved so the caller sees at minimum their query."""
     from langgraph.errors import GraphRecursionError
@@ -336,7 +301,7 @@ async def test_recursion_limit_error_produces_graceful_response(base_state):
     mock_graph = AsyncMock()
     mock_graph.ainvoke.side_effect = GraphRecursionError("test recursion limit")
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
         # Must NOT re-raise
         result = await tool_calling_loop_node(base_state)
 
@@ -388,7 +353,7 @@ async def test_orphan_tool_messages_are_counted(base_state):
     mock_graph = AsyncMock()
     mock_graph.ainvoke.return_value = {"messages": messages}
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", return_value=mock_graph):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
         result = await tool_calling_loop_node(base_state)
 
     # Orphan excluded from tool_results — consistent with existing behavior
@@ -404,13 +369,13 @@ async def test_orphan_tool_messages_are_counted(base_state):
 
 
 # ---------------------------------------------------------------------------
-# Task 5: graph routing with the USE_TOOL_CALLING_LOOP feature flag
+# Graph wiring
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_graph_registers_tool_calling_loop_node():
-    """The tool_calling_loop node is registered regardless of flag state."""
+    """The tool_calling_loop node is registered as the only node."""
     from src.agent.graph import create_agent_graph
 
     graph = create_agent_graph()
@@ -419,73 +384,99 @@ async def test_graph_registers_tool_calling_loop_node():
 
 
 @pytest.mark.asyncio
-async def test_route_after_rag_uses_tool_calling_loop_when_flag_on(monkeypatch):
-    """With flag on, route_after_rag returns tool_calling_loop where it would have returned plan."""
-    from src.agent.graph import route_after_rag
+async def test_graph_routes_start_directly_to_loop():
+    """START → tool_calling_loop is the only edge from __start__."""
+    from src.agent.graph import create_agent_graph
 
-    monkeypatch.setattr("src.config.settings.USE_TOOL_CALLING_LOOP", True)
-
-    # No classification, no final_answer: hits the "no UKY match, fall back" branch
-    state = {"query_classification": None, "final_answer": None}
-    assert route_after_rag(state) == "tool_calling_loop"
-
-
-@pytest.mark.asyncio
-async def test_route_after_rag_preserves_plan_when_flag_off(monkeypatch):
-    """With flag off (default), route_after_rag returns plan as before."""
-    from src.agent.graph import route_after_rag
-
-    monkeypatch.setattr("src.config.settings.USE_TOOL_CALLING_LOOP", False)
-
-    state = {"query_classification": None, "final_answer": None}
-    assert route_after_rag(state) == "plan"
+    graph = create_agent_graph().get_graph()
+    start_edges = [e for e in graph.edges if e.source == "__start__"]
+    assert len(start_edges) == 1
+    assert start_edges[0].target == "tool_calling_loop"
 
 
 @pytest.mark.asyncio
-async def test_route_after_rag_still_ends_on_confident_static_when_flag_on(monkeypatch):
-    """Flag doesn't change the 'confident RAG → END' decision."""
-    from src.agent.graph import route_after_rag
+async def test_graph_loop_ends():
+    """tool_calling_loop → END is the only edge from the loop."""
+    from src.agent.graph import create_agent_graph
 
-    monkeypatch.setattr("src.config.settings.USE_TOOL_CALLING_LOOP", True)
+    graph = create_agent_graph().get_graph()
+    loop_edges = [e for e in graph.edges if e.source == "tool_calling_loop"]
+    assert len(loop_edges) == 1
+    assert loop_edges[0].target == "__end__"
 
-    # final_answer present, non-deflection (no hedge phrases): static/end
-    state = {
-        "query_classification": None,
-        "final_answer": (
-            "ACCESS has multiple GPU resources. "
-            "See https://access-ci.org/resources for the full list."
-        ),
-    }
-    assert route_after_rag(state) == "end"
+
+# ---------------------------------------------------------------------------
+# Loop assembly: tools + prompt
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_route_by_classification_forces_rag_answer_when_flag_on(monkeypatch):
-    """With flag on, combined/dynamic queries route to rag_answer so the loop can consume RAG context."""
-    from src.agent.graph import route_by_classification
-    from src.agent.state import QueryClassification
+async def test_loop_appends_search_access_documents(base_state):
+    """The loop's tool list includes search_access_documents alongside the MCP catalog."""
+    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
 
-    monkeypatch.setattr("src.config.settings.USE_TOOL_CALLING_LOOP", True)
+    answer = AIMessage(content="ok")
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke.return_value = {"messages": [*base_state["messages"], answer]}
 
-    # Combined query that would normally go to rag_and_plan
-    state = {
-        "query_classification": QueryClassification(query_type="combined"),
-    }
-    assert route_by_classification(state) == "rag_answer"
+    captured = {}
+
+    def capture(**kwargs):  # type: ignore[no-untyped-def]
+        captured["tools"] = kwargs.get("tools", [])
+        return mock_graph
+
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture):
+        await tool_calling_loop_node(base_state)
+
+    tool_names = [t.name for t in captured["tools"]]
+    assert "search_access_documents" in tool_names
 
 
 @pytest.mark.asyncio
-async def test_route_by_classification_preserves_rag_and_plan_when_flag_off(monkeypatch):
-    """Default path unchanged: combined/dynamic → rag_and_plan."""
-    from src.agent.graph import route_by_classification
-    from src.agent.state import QueryClassification
+async def test_loop_uses_system_prompt(base_state):
+    """Prompt frames docs as a tool, includes announcements + JSM choreographies."""
+    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
 
-    monkeypatch.setattr("src.config.settings.USE_TOOL_CALLING_LOOP", False)
+    answer = AIMessage(content="ok")
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke.return_value = {"messages": [*base_state["messages"], answer]}
 
-    state = {
-        "query_classification": QueryClassification(query_type="combined"),
-    }
-    assert route_by_classification(state) == "rag_and_plan"
+    captured = {}
+
+    def capture(**kwargs):  # type: ignore[no-untyped-def]
+        captured["prompt"] = kwargs.get("system_prompt", "")
+        return mock_graph
+
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture):
+        await tool_calling_loop_node(base_state)
+
+    prompt = captured["prompt"]
+    assert "search_access_documents" in prompt
+    assert "Announcements workflow" in prompt
+    assert "Support-ticket workflow" in prompt
+
+
+@pytest.mark.asyncio
+async def test_prompt_includes_resource_context(base_state):
+    """When the request has a resource_context, the prompt mentions the slug."""
+    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
+
+    state = {**base_state, "resource_context": "delta"}
+    answer = AIMessage(content="ok")
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke.return_value = {"messages": [*state["messages"], answer]}
+
+    captured = {}
+
+    def capture(**kwargs):  # type: ignore[no-untyped-def]
+        captured["prompt"] = kwargs.get("system_prompt", "")
+        return mock_graph
+
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture):
+        await tool_calling_loop_node(state)
+
+    assert "delta" in captured["prompt"]
+    assert "rp_name" in captured["prompt"]
 
 
 # ── READ_ONLY guard on the tool_calling_loop ─────────────────────────────────
@@ -559,7 +550,7 @@ def mixed_catalog_state(base_state):
 
 
 def _capture_tools_kwarg(mock_graph):
-    """Helper: returns a side_effect callable that records `tools` from create_react_agent."""
+    """Helper: returns a side_effect callable that records `tools` from create_agent."""
     captured: dict = {}
 
     def _capture(**kwargs):  # type: ignore[no-untyped-def]
@@ -571,7 +562,7 @@ def _capture_tools_kwarg(mock_graph):
 
 @pytest.mark.asyncio
 async def test_read_only_strips_write_tools_from_loop_registry(monkeypatch, mixed_catalog_state):
-    """With READ_ONLY=true, no MCP tool name in WRITE_MCP_TOOL_NAMES reaches create_react_agent."""
+    """With READ_ONLY=true, no MCP tool name in WRITE_MCP_TOOL_NAMES reaches create_agent."""
     from src.agent.domains.capabilities import WRITE_MCP_TOOL_NAMES
     from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
 
@@ -583,7 +574,7 @@ async def test_read_only_strips_write_tools_from_loop_registry(monkeypatch, mixe
     }
     capture, captured = _capture_tools_kwarg(mock_graph)
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", side_effect=capture):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture):
         await tool_calling_loop_node(mixed_catalog_state)
 
     tool_names = {t.name for t in captured["tools"]}
@@ -609,7 +600,7 @@ async def test_read_only_off_keeps_write_tools_in_loop_registry(monkeypatch, mix
     }
     capture, captured = _capture_tools_kwarg(mock_graph)
 
-    with patch("src.agent.nodes.tool_calling_loop.create_react_agent", side_effect=capture):
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture):
         await tool_calling_loop_node(mixed_catalog_state)
 
     tool_names = {t.name for t in captured["tools"]}
@@ -725,20 +716,113 @@ def test_parse_tool_message_falls_back_to_raw_when_content_not_json():
     assert result.tool_name == "search_resources"
 
 
-def test_system_prompt_includes_classifier_hint_when_domain_provided():
-    """When the classifier identifies a specific domain, build_system_prompt
-    must include a 'Classifier hint' section. Covers the optional-section
-    branch in the prompt assembly."""
-    from src.agent.prompts.tool_calling_loop import build_system_prompt
-
-    prompt = build_system_prompt(domain_hint="jsm")
-    assert "Classifier hint" in prompt
-    assert "jsm" in prompt
+# ── Per-tool status events ───────────────────────────────────────────────────
+#
+# The status bubble in the chatbot is fed by status events written through the
+# LangGraph stream writer. Originally only one event ("Processing query...")
+# fired at node entry, leaving the bubble frozen for the rest of the turn. We
+# now register an AsyncCallbackHandler with the agent so each tool's start
+# fires an additional status event, worded for humans via _friendly_tool_status.
 
 
-def test_format_rag_matches_returns_empty_string_for_empty_input():
-    """No matches → empty string (caller appends nothing). The function's
-    early-return path for the most-common no-RAG case."""
-    from src.agent.prompts.tool_calling_loop import format_rag_matches
+class TestFriendlyToolStatus:
+    """Raw tool names are mapped to human-readable bubble text."""
 
-    assert format_rag_matches([]) == ""
+    def test_verb_subject_tools(self):
+        from src.agent.nodes.tool_calling_loop import _friendly_tool_status
+
+        assert _friendly_tool_status("search_announcements") == "Searching announcements..."
+        assert _friendly_tool_status("get_compute_resource") == "Looking up compute resource..."
+        assert _friendly_tool_status("create_support_ticket") == "Preparing support ticket..."
+
+    def test_overrides_win_over_generic_form(self):
+        from src.agent.nodes.tool_calling_loop import _friendly_tool_status
+
+        assert (
+            _friendly_tool_status("search_access_documents") == "Searching ACCESS documentation..."
+        )
+        assert _friendly_tool_status("search_nsf_awards") == "Searching NSF awards..."
+
+    def test_unknown_verb_falls_back_cleanly(self):
+        from src.agent.nodes.tool_calling_loop import _friendly_tool_status
+
+        # No recognised verb — still produces readable text, no crash.
+        assert _friendly_tool_status("frobnicate_widgets") == "Working on frobnicate widgets..."
+        assert _friendly_tool_status("standalone") == "Working on standalone..."
+
+
+class TestToolStatusEmitter:
+    @pytest.mark.asyncio
+    async def test_emits_status_for_each_tool_start(self):
+        """A handler with a real writer emits one human-worded event per tool."""
+        from uuid import uuid4
+
+        from src.agent.nodes.tool_calling_loop import _ToolStatusEmitter
+
+        events: list[dict] = []
+        emitter = _ToolStatusEmitter(events.append)
+
+        await emitter.on_tool_start({"name": "search_announcements"}, "{}", run_id=uuid4())
+        await emitter.on_tool_start({"name": "search_access_documents"}, "{}", run_id=uuid4())
+
+        assert events == [
+            {"type": "status", "message": "Searching announcements..."},
+            {"type": "status", "message": "Searching ACCESS documentation..."},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_no_op_without_writer(self):
+        """Outside a runnable context the writer is None — handler stays silent."""
+        from uuid import uuid4
+
+        from src.agent.nodes.tool_calling_loop import _ToolStatusEmitter
+
+        emitter = _ToolStatusEmitter(None)
+        # Must not raise.
+        await emitter.on_tool_start({"name": "search_announcements"}, "{}", run_id=uuid4())
+
+    @pytest.mark.asyncio
+    async def test_skips_when_serialized_missing_name(self):
+        """Defensive: if the framework hands us serialized={} we skip rather
+        than emit "Calling None..."."""
+        from uuid import uuid4
+
+        from src.agent.nodes.tool_calling_loop import _ToolStatusEmitter
+
+        events: list[dict] = []
+        emitter = _ToolStatusEmitter(events.append)
+
+        await emitter.on_tool_start({}, "{}", run_id=uuid4())
+        await emitter.on_tool_start({"name": ""}, "{}", run_id=uuid4())
+
+        assert events == []
+
+
+@pytest.mark.asyncio
+async def test_node_passes_status_emitter_via_callbacks(base_state):
+    """The node registers a _ToolStatusEmitter on the agent invocation so the
+    react loop fires our on_tool_start callback for every tool it runs."""
+    from src.agent.nodes.tool_calling_loop import (
+        _ToolStatusEmitter,
+        tool_calling_loop_node,
+    )
+
+    final = AIMessage(content="ok")
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke.return_value = {"messages": [*base_state["messages"], final]}
+
+    captured = {}
+
+    async def capture_ainvoke(state_arg, config):
+        captured["config"] = config
+        return {"messages": [*base_state["messages"], final]}
+
+    mock_graph.ainvoke.side_effect = capture_ainvoke
+
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
+        await tool_calling_loop_node(base_state)
+
+    callbacks = captured["config"].get("callbacks", [])
+    assert any(isinstance(cb, _ToolStatusEmitter) for cb in callbacks), (
+        f"Expected _ToolStatusEmitter in callbacks, got: {callbacks}"
+    )

@@ -51,17 +51,23 @@ SYSTEMS = ("raw_rag", "agent_full")
 # `.qh-verdict.agent` / `.qh-verdict.raw` CSS rules. Keeping the CSS names
 # fixed to the slot — not the system ID — means we can swap systems in and
 # out of slots without rewriting the template.
-def _make_systems(baseline_id: str, candidate_id: str) -> dict[str, dict[str, str]]:
+def _make_systems(
+    baseline_id: str,
+    candidate_id: str,
+    *,
+    label_a: str | None = None,
+    label_b: str | None = None,
+) -> dict[str, dict[str, str]]:
     return {
         "A": {
             "id": baseline_id,
-            "label": label_for_system(baseline_id),
+            "label": label_a or label_for_system(baseline_id),
             "css_class": "raw",
             "slot": "baseline",
         },
         "B": {
             "id": candidate_id,
-            "label": label_for_system(candidate_id),
+            "label": label_b or label_for_system(candidate_id),
             "css_class": "agent",
             "slot": "candidate",
         },
@@ -216,11 +222,21 @@ def assemble_bundle(
     durations: dict[tuple[str, str], float],
     *,
     preset: str = "grand-prix",
+    title: str | None = None,
+    subtitle: str | None = None,
+    label_a: str | None = None,
+    label_b: str | None = None,
 ) -> dict[str, Any]:
     """Fold per-run scores into the shape the template expects.
 
     `preset` controls the editorial prose (subtitle, per-battery descriptions,
     observations). Defaults to ``"grand-prix"`` for backward compatibility.
+
+    `title`, `subtitle`, `label_a`, `label_b` are optional ad-hoc overrides
+    for the report header and column labels — use when running a comparison
+    that doesn't match an existing preset (e.g., agent-vs-agent for a
+    hardening or prompt change). Each overrides the preset's value when set;
+    leaving them None preserves backward compatibility.
     """
     preset_obj = get_preset(preset)
     battery_info_src = preset_obj.battery_info
@@ -277,7 +293,8 @@ def assemble_bundle(
 
     return {
         "generated_at": datetime.now(UTC).date().isoformat(),
-        "subtitle": preset_obj.report_subtitle,
+        "title": title,
+        "subtitle": subtitle or preset_obj.report_subtitle,
         "battery_order": battery_order_out,
         "battery_labels": battery_labels,
         "battery_info": battery_info_out,
@@ -285,7 +302,7 @@ def assemble_bundle(
         "all_pairs": all_pairs,
         "observations": preset_obj.observations,
         "run_ids": run_ids_out,
-        "systems": _make_systems("raw_rag", "agent_full"),
+        "systems": _make_systems("raw_rag", "agent_full", label_a=label_a, label_b=label_b),
     }
 
 
@@ -370,6 +387,10 @@ def assemble_bundle_from_json(
     json_paths: list[Path],
     *,
     preset: str = "grand-prix",
+    title: str | None = None,
+    subtitle: str | None = None,
+    label_a: str | None = None,
+    label_b: str | None = None,
 ) -> dict[str, Any]:
     """Build the same shape bundle that assemble_bundle() produces, but from
     one or more compare-judge JSON artifacts instead of from Postgres.
@@ -382,6 +403,12 @@ def assemble_bundle_from_json(
 
     `preset` controls the editorial prose (subtitle, per-battery descriptions,
     observations). Defaults to ``"grand-prix"`` for backward compatibility.
+
+    `title`, `subtitle`, `label_a`, `label_b` override the report header and
+    column labels for ad-hoc comparisons that don't match an existing preset
+    (e.g., agent-vs-agent for a hardening or prompt change). Useful when
+    both runs share a `system` ID (so derived labels would collide) or when
+    the preset's subtitle is wrong for this comparison.
     """
     preset_obj = get_preset(preset)
     battery_info_src = preset_obj.battery_info
@@ -491,7 +518,8 @@ def assemble_bundle_from_json(
 
     return {
         "generated_at": datetime.now(UTC).date().isoformat(),
-        "subtitle": preset_obj.report_subtitle,
+        "title": title,
+        "subtitle": subtitle or preset_obj.report_subtitle,
         "battery_order": battery_order_out,
         "battery_labels": battery_labels,
         "battery_info": battery_info_out,
@@ -500,7 +528,12 @@ def assemble_bundle_from_json(
         "observations": preset_obj.observations,
         "run_ids": run_ids_out,
         "comparisons": comparisons_by_battery,  # new — compare-judge narrative per battery
-        "systems": _make_systems(slot_a_id or "raw_rag", slot_b_id or "agent_full"),
+        "systems": _make_systems(
+            slot_a_id or "raw_rag",
+            slot_b_id or "agent_full",
+            label_a=label_a,
+            label_b=label_b,
+        ),
         "source": "compare_judge_json",  # marker for debugging / future template logic
     }
 
@@ -510,13 +543,25 @@ def build_report_from_json(
     output_path: Path,
     *,
     preset: str = "grand-prix",
+    title: str | None = None,
+    subtitle: str | None = None,
+    label_a: str | None = None,
+    label_b: str | None = None,
 ) -> dict[str, Any]:
     """End-to-end for the JSON-backed path: parse JSONs → bundle → render → write.
 
     `preset` controls the editorial prose. Defaults to ``"grand-prix"`` for
-    backward compatibility.
+    backward compatibility. `title`, `subtitle`, `label_a`, `label_b`
+    override the report header and column labels for ad-hoc comparisons.
     """
-    bundle = assemble_bundle_from_json(json_paths, preset=preset)
+    bundle = assemble_bundle_from_json(
+        json_paths,
+        preset=preset,
+        title=title,
+        subtitle=subtitle,
+        label_a=label_a,
+        label_b=label_b,
+    )
     if not bundle["all_pairs"]:
         raise RuntimeError(
             "No question pairs found in the supplied JSON(s). "
@@ -551,11 +596,17 @@ def build_report(
     on_date: date | None = None,
     question_sets: list[str] | None = None,
     preset: str = "grand-prix",
+    title: str | None = None,
+    subtitle: str | None = None,
+    label_a: str | None = None,
+    label_b: str | None = None,
 ) -> dict[str, Any]:
     """End-to-end: pick runs → fetch → assemble → render → write.
 
     `preset` controls the editorial prose. Defaults to ``"grand-prix"`` for
-    backward compatibility. Returns the bundle (handy for tests / scripting).
+    backward compatibility. `title`, `subtitle`, `label_a`, `label_b`
+    override the report header and column labels for ad-hoc comparisons.
+    Returns the bundle (handy for tests / scripting).
     """
     refs = pick_run_ids(database_url, on_date=on_date, question_sets=question_sets)
     if not refs:
@@ -566,7 +617,16 @@ def build_report(
 
     scores = fetch_scores(database_url, refs)
     durations = _fetch_durations(database_url, [r.id for r in refs])
-    bundle = assemble_bundle(refs, scores, durations, preset=preset)
+    bundle = assemble_bundle(
+        refs,
+        scores,
+        durations,
+        preset=preset,
+        title=title,
+        subtitle=subtitle,
+        label_a=label_a,
+        label_b=label_b,
+    )
     html = render_html(bundle)
     output_path.write_text(html)
     logger.info(

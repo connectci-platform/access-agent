@@ -1,0 +1,5 @@
+[
+  {"id": "probe-001-multitool", "question": "Which ACCESS resources have GPUs, and what training events are coming up next month?", "capability_area": "parallel_tool_probe", "battery": "parallel_probe_2026_05_07"},
+  {"id": "probe-002-jsm-imperative", "question": "Please file a support ticket: I can't log in to JetStream2 with my ACCESS credentials.", "capability_area": "jsm_decision", "battery": "parallel_probe_2026_05_07"},
+  {"id": "probe-003-doc-baseline", "question": "How do I request an ACCESS allocation?", "capability_area": "doc_search", "battery": "parallel_probe_2026_05_07"}
+]

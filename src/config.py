@@ -50,6 +50,15 @@ class Settings(BaseSettings):
     UKY_RAG_TIMEOUT: float = 60.0
     UKY_RAG_ENABLED: bool = True
 
+    # UKY chat-mcp retrieve-docs endpoint: returns ranked chunks without
+    # UKY-side synthesis, so the agent synthesizes from raw excerpts.
+    # The sibling /api/ endpoint also returns chunks but additionally
+    # spends UKY compute on a synthesized response we discard.
+    UKY_CHATMCP_URL: str = (
+        "https://access-ai-grace1-external.ccs.uky.edu/access/chat-mcp/api/retrieve-docs"
+    )
+    UKY_CHATMCP_API_KEY: str = ""
+
     @property
     def uky_rag_api_key_resolved(self) -> str:
         """Resolve UKY RAG API key, falling back to ACCESS_AI_API_KEY."""
@@ -57,22 +66,10 @@ class Settings(BaseSettings):
 
     # Resource Provider section cache
     RP_CACHE_TTL_SECONDS: int = 1800  # 30 minutes
-    DRUPAL_RESOURCE_GROUPS_URL: str = "https://support.access-ci.org/api/resource-groups"
+    DRUPAL_RESOURCE_GROUPS_URL: str = "https://support.access-ci.org/api/1.0/resource-groups"
 
     # Database (checkpointing)
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/langgraph"
-
-    # RAG Settings - using access-qa-service for verified Q&A retrieval
-    QA_SERVICE_URL: str = "http://localhost:8001"
-    RAG_TOP_K: int = 3
-
-    # Query-type-specific similarity thresholds
-    RAG_THRESHOLD_STATIC: float = 0.85  # High threshold for static queries (confident answers)
-    RAG_THRESHOLD_COMBINED: float = 0.75  # Moderate threshold for combined queries (augment tools)
-    RAG_THRESHOLD_FALLBACK: float = 0.65  # Lower threshold for fallback scenarios
-
-    # Legacy compatibility (uses static threshold)
-    RAG_SIMILARITY_THRESHOLD: float = 0.85
 
     # JWT Authentication (ES256 + JWKS)
     # Comma-separated list of "issuer=jwks_url" pairs.
@@ -111,35 +108,37 @@ class Settings(BaseSettings):
     # inadvertent writes would be unacceptable. Overrides nothing else.
     READ_ONLY: bool = False
 
-    # USE_TOOL_CALLING_LOOP: when True, routes tool-using queries through the
-    # single-node `tool_calling_loop` (LLM-driven react-style loop) instead of
-    # the legacy plan → execute → evaluate → recover → synthesize chain. The
-    # old path remains functional when False so we can A/B them in Phase 7
-    # evidence collection. Default False during development; flipped True
-    # in staging first, then production at cutover.
-    USE_TOOL_CALLING_LOOP: bool = False
-
     # MCP Servers
     MCP_CATALOG_URL: str = "http://localhost:5678/webhook/generate-mcp-catalog"
     MCP_CATALOG_PATH: str | None = None
 
-    # Retry Settings
-    MAX_RETRIES_PER_TOOL: int = 2
-    MAX_RETRIES_TOTAL: int = 5
-    TIMEOUT_BUDGET_MS: int = 120000
+    # max_tokens budget for the tool_calling_loop's react agent. Reasoning
+    # models (Qwen3, Kimi, DeepSeek-R1) consume part of the budget on
+    # chain-of-thought before emitting user-visible content, so this default
+    # is sized larger than what a non-reasoning model strictly needs.
+    MAX_TOKENS_LOOP: int = 6000
 
-    # Quality Loop
-    MAX_QUALITY_ATTEMPTS: int = 3
-
-    # Content length limits for LLM processing
-    # Modern LLMs have 128K+ context windows, so these can be generous
-    MAX_TOOL_RESULT_LENGTH: int = 50000  # Max chars per tool result in evaluate
-    MAX_SINGLE_RESULT_LENGTH: int = 20000  # Max chars for a single result before truncating
-
-    # Token budget for synthesis - tool results exceeding this will be condensed first
-    # Default 80K leaves room for prompts and response within gpt-4o's 128K limit
-    # For smaller models (e.g., Mistral-7B with 32K), set to ~20000
-    SYNTHESIS_TOKEN_BUDGET: int = 80000
+    # SummarizationMiddleware thresholds.
+    #
+    # Fire summarization when accumulated message tokens cross
+    # SUMMARIZATION_TRIGGER_TOKENS, then preserve only the most recent
+    # SUMMARIZATION_KEEP_TOKENS worth of messages verbatim — everything
+    # older gets summarized into a single note.
+    #
+    # KEEP must be a TOKEN budget, not a message count: in tool-heavy agents
+    # a single ToolMessage (e.g. list_all_software for Anvil) can be 30k+
+    # tokens by itself. With keep=("messages", 20), three such results
+    # within the last 20 messages would pin the keep-window at ~70k tokens
+    # and post-compaction state could still overflow the model context.
+    # With keep=("tokens", N) the window itself is bounded — giant tool
+    # results either fit within the budget or get summarized too.
+    #
+    # Sizing: trigger should be ~2-3x keep so there's room to grow between
+    # compactions. Total post-compaction state ≈ SUMMARIZATION_KEEP_TOKENS
+    # + ~500 token summary; budget the rest of the model context for
+    # system prompt + tool schemas + new-turn growth.
+    SUMMARIZATION_TRIGGER_TOKENS: int = 24000
+    SUMMARIZATION_KEEP_TOKENS: int = 8000
 
     # MCP Server base host (configurable, defaults to production IP)
     MCP_SERVER_HOST: str = "localhost"

@@ -1,12 +1,271 @@
 """LLM provider abstraction supporting OpenAI, vLLM, and custom endpoints."""
 
+import re
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator, Iterator
+from typing import Any
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessageChunk, BaseMessage
+from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
 from ..config import settings
+
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+# Non-greedy paired-block match. DOTALL so newlines inside the trace match.
+_PAIRED_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def _strip_think_block(content: str) -> str:
+    """Strip reasoning trace from reasoning-model output.
+
+    On UKY's vLLM the opening ``<think>`` is consumed by the Qwen chat
+    template, so the visible stream is shaped ``[reasoning prose]</think>
+    [answer]`` — no leading ``<think>`` tag. Defensive coverage is also
+    needed for models that DO emit paired ``<think>...</think>`` blocks
+    (e.g. mid-answer reflections) and for the truncation case.
+
+    Order matters:
+
+    1. Strip any properly-paired ``<think>...</think>`` blocks (handles
+       models that emit the open tag, or a paired block mid-answer).
+    2. If an unpaired ``<think>`` remains, drop everything from there to
+       end of content (truncated mid-reasoning).
+    3. After (1) and (2), if a bare ``</think>`` remains, partition at
+       the first occurrence and return what's after — that's the Qwen
+       no-open-tag shape, and it's the most common case in production.
+    4. Otherwise content is already a plain answer; return as-is.
+
+    Trade-off: a user who asks about the literal ``</think>`` token and
+    gets a response quoting it will see the prose before ``</think>``
+    stripped. This false positive is rare in ACCESS-CI question-answering
+    vs the 100% true-positive rate of stripping reasoning traces on
+    every Qwen response.
+    """
+    content = _PAIRED_THINK_RE.sub("", content)
+    open_idx = content.find(_THINK_OPEN)
+    if open_idx != -1:
+        content = content[:open_idx]
+    if _THINK_CLOSE in content:
+        _, _, after = content.partition(_THINK_CLOSE)
+        return after.lstrip()
+    return content.strip()
+
+
+def _strip_generations(result: ChatResult) -> None:
+    """Strip ``</think>`` blocks from each generation's message in place."""
+    for gen in result.generations:
+        msg = getattr(gen, "message", None)
+        if msg is None:
+            continue
+        content = getattr(msg, "content", None)
+        if isinstance(content, str):
+            msg.content = _strip_think_block(content)
+
+
+class _ThinkStripState:
+    """Cross-chunk state machine for stripping reasoning traces.
+
+    Mirrors :func:`_strip_think_block` for the streaming path. Buffers
+    incoming chunks until either:
+
+    - A paired ``<think>...</think>`` block can be removed via regex
+      (rare in Qwen stream but defensive for models that emit the open
+      tag, or paired blocks mid-answer).
+    - A bare ``</think>`` arrives signaling end of the Qwen-shape
+      reasoning trace.
+
+    Once a close has been processed, ``seen_close`` flips to True and
+    subsequent chunks pass through unchanged. Truncation handling lives
+    in :meth:`flush` — an unpaired ``<think>`` tail is dropped before
+    the buffered remainder (if any) is emitted, covering the
+    truncation-with-preamble case while still letting non-reasoning
+    streams flush their content.
+    """
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._seen_close = False
+
+    @property
+    def seen_close(self) -> bool:
+        return self._seen_close
+
+    def feed(self, content: str) -> str | None:
+        """Feed one chunk's text; return what should be emitted now."""
+        if self._seen_close:
+            return content
+        self._buffer += content
+        # Strip paired <think>...</think> blocks first.
+        new_buffer, n_subs = _PAIRED_THINK_RE.subn("", self._buffer)
+        has_close = _THINK_CLOSE in new_buffer
+        if n_subs == 0 and not has_close:
+            # No reasoning-done signal yet — keep buffering.
+            return None
+        self._seen_close = True
+        self._buffer = ""
+        if has_close:
+            # Bare </think> remains (Qwen no-open-tag case) — partition.
+            _, _, after = new_buffer.partition(_THINK_CLOSE)
+            return after.lstrip() or None
+        # Only paired blocks were present. ``lstrip`` only — a trailing
+        # space here connects to the next chunk; ``strip`` would eat it.
+        return new_buffer.lstrip() or None
+
+    def flush(self) -> str | None:
+        """End-of-stream: emit remaining safe content.
+
+        - Already closed → nothing more to emit.
+        - No close ever arrived → defer to :func:`_strip_think_block`
+          which handles the truncation case (drops any unpaired
+          ``<think>`` tail) and the non-reasoning fall-through (the
+          buffer IS the answer; emit it). Full ``strip`` is fine here
+          — we're at end-of-stream, no more chunks to connect to.
+        """
+        if self._seen_close:
+            return None
+        result = _strip_think_block(self._buffer)
+        self._buffer = ""
+        return result or None
+
+
+def _replace_chunk_content(chunk: ChatGenerationChunk, new_content: str) -> ChatGenerationChunk:
+    """Return a chunk with text content replaced; tool-call deltas et al preserved."""
+    msg = chunk.message
+    new_msg = AIMessageChunk(
+        content=new_content,
+        additional_kwargs=dict(getattr(msg, "additional_kwargs", {}) or {}),
+        response_metadata=dict(getattr(msg, "response_metadata", {}) or {}),
+        tool_call_chunks=list(getattr(msg, "tool_call_chunks", []) or []),
+        usage_metadata=getattr(msg, "usage_metadata", None),
+        id=getattr(msg, "id", None),
+    )
+    return ChatGenerationChunk(
+        message=new_msg,
+        generation_info=chunk.generation_info,
+    )
+
+
+def _chunk_carries_non_text_payload(chunk: ChatGenerationChunk) -> bool:
+    """True if the chunk has tool-call deltas or extra_kwargs we must not drop."""
+    msg = chunk.message
+    if getattr(msg, "tool_call_chunks", None):
+        return True
+    return bool(getattr(msg, "additional_kwargs", None))
+
+
+class _StrippingChatOpenAI(ChatOpenAI):
+    """ChatOpenAI subclass that strips reasoning-model ``</think>`` blocks.
+
+    Used by ``OpenAICompatibleProvider`` so every response from a thinking
+    model (e.g. Qwen3 via UKY's vLLM endpoint) arrives with the reasoning
+    trace removed — keeping eval, telemetry, the loop's own message thread,
+    and the frontend on clean content.
+
+    Three paths are overridden so the strip fires regardless of how
+    ``BaseChatModel`` decides to serve the request:
+
+    * ``_generate`` / ``_agenerate`` — non-streaming path (sync / async).
+    * ``_astream`` — streaming path. With ``streaming=True``,
+      ``BaseChatModel._agenerate_with_cache`` routes directly through
+      ``_astream`` and bypasses ``_agenerate``; aggregated chunks then become
+      the result of ``ainvoke``. Stripping at the chunk level keeps both
+      streaming consumers and ``ainvoke`` callers seeing clean content.
+    """
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        result = super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+        _strip_generations(result)
+        return result
+
+    async def _agenerate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        result = await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+        _strip_generations(result)
+        return result
+
+    def _stream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> Iterator[ChatGenerationChunk]:
+        state = _ThinkStripState()
+        for chunk in super()._stream(messages, stop=stop, run_manager=run_manager, **kwargs):
+            yield from _apply_strip_to_chunk(chunk, state)
+        tail = _flush_strip_state(state)
+        if tail is not None:
+            yield tail
+
+    async def _astream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        state = _ThinkStripState()
+        async for chunk in super()._astream(messages, stop=stop, run_manager=run_manager, **kwargs):
+            for out in _apply_strip_to_chunk(chunk, state):
+                yield out
+        tail = _flush_strip_state(state)
+        if tail is not None:
+            yield tail
+
+
+def _apply_strip_to_chunk(
+    chunk: ChatGenerationChunk,
+    state: _ThinkStripState,
+) -> list[ChatGenerationChunk]:
+    """Apply the cross-chunk strip state to one chunk; return chunks to yield.
+
+    Returns 0 or 1 chunks. Drops content-only chunks that fall inside a
+    reasoning trace; preserves chunks that carry tool-call deltas or other
+    non-text payloads (with their text emptied if still buffered).
+
+    Once the state machine has consumed the first ``</think>`` (or a
+    paired ``<think>...</think>`` block), subsequent chunks pass through
+    unchanged — Qwen emits one reasoning trace per response, no more.
+    """
+    msg = chunk.message
+    raw = msg.content if isinstance(msg.content, str) else ""
+
+    if state.seen_close:
+        return [chunk]
+
+    if not raw:
+        # Tool-call-only chunks (empty content) pass through unchanged.
+        return [chunk]
+
+    emit = state.feed(raw)
+    if emit is None:
+        if _chunk_carries_non_text_payload(chunk):
+            return [_replace_chunk_content(chunk, "")]
+        return []
+    return [_replace_chunk_content(chunk, emit)]
+
+
+def _flush_strip_state(state: _ThinkStripState) -> ChatGenerationChunk | None:
+    """Emit a final chunk if the stream ended without ever seeing ``</think>``."""
+    leftover = state.flush()
+    if leftover is None:
+        return None
+    return ChatGenerationChunk(message=AIMessageChunk(content=leftover))
 
 
 class LLMProvider(ABC):
@@ -18,6 +277,7 @@ class LLMProvider(ABC):
         model_name: str | None = None,
         temperature: float = 0.1,
         max_tokens: int = 2000,
+        enable_thinking: bool | None = None,
     ) -> BaseChatModel:
         """Get a chat model instance.
 
@@ -25,6 +285,13 @@ class LLMProvider(ABC):
             model_name: Override the default model name.
             temperature: Sampling temperature.
             max_tokens: Maximum tokens in response.
+            enable_thinking: Optional override for reasoning-model thinking mode.
+                When set, the value is sent to the server as
+                ``chat_template_kwargs.enable_thinking`` in the request body.
+                When ``None`` (default), nothing is sent and the server uses
+                its own default. Only meaningful for reasoning models served
+                via OpenAI-compatible endpoints (e.g. Qwen3 on vLLM); ignored
+                by providers that don't support the parameter.
 
         Returns:
             A LangChain chat model instance.
@@ -43,7 +310,11 @@ class OpenAIProvider(LLMProvider):
         model_name: str | None = None,
         temperature: float = 0.1,
         max_tokens: int = 2000,
+        enable_thinking: bool | None = None,
     ) -> BaseChatModel:
+        # enable_thinking is a vLLM/Qwen concept; OpenAI's API doesn't honor it.
+        # Accepted for signature parity, silently ignored.
+        del enable_thinking
         return ChatOpenAI(
             model=model_name or self.default_model,
             api_key=self.api_key,
@@ -78,13 +349,19 @@ class OpenAICompatibleProvider(LLMProvider):
         model_name: str | None = None,
         temperature: float = 0.1,
         max_tokens: int = 2000,
+        enable_thinking: bool | None = None,
     ) -> BaseChatModel:
-        return ChatOpenAI(
+        extra_body: dict[str, Any] = {}
+        if enable_thinking is not None:
+            extra_body["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
+
+        return _StrippingChatOpenAI(
             model=model_name or self.default_model,
             api_key=self.api_key,
             base_url=self.base_url,
             temperature=temperature,
             max_completion_tokens=max_tokens,
+            extra_body=extra_body or None,
         )
 
 
@@ -135,6 +412,7 @@ def get_llm(
     model_name: str | None = None,
     temperature: float = 0.1,
     max_tokens: int = 2000,
+    enable_thinking: bool | None = None,
 ) -> BaseChatModel:
     """Get a configured LLM instance.
 
@@ -144,6 +422,10 @@ def get_llm(
         model_name: Override the default model name.
         temperature: Sampling temperature.
         max_tokens: Maximum tokens in response.
+        enable_thinking: Optional override for reasoning-model thinking mode.
+            See :meth:`LLMProvider.get_chat_model` for details. No call site
+            currently sets this; it is exposed for future fast-path
+            experiments where a node may want to opt out of reasoning.
 
     Returns:
         A LangChain chat model instance.
@@ -153,4 +435,5 @@ def get_llm(
         model_name=model_name,
         temperature=temperature,
         max_tokens=max_tokens,
+        enable_thinking=enable_thinking,
     )

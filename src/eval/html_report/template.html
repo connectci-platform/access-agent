@@ -68,106 +68,7 @@
     border-bottom: 1px solid var(--border);
   }
 
-  /* Battery legend — what each battery contains and why */
-  .battery-legend {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 10px;
-  }
-  @media (max-width: 900px) { .battery-legend { grid-template-columns: 1fr; } }
-  .blcard {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 14px 16px;
-  }
-  .blcard .bl-head {
-    display: flex; align-items: baseline; gap: 10px;
-    margin-bottom: 6px;
-  }
-  .blcard .bl-name { font-weight: 600; font-size: 15px; }
-  .blcard .bl-count {
-    font-family: var(--mono); font-size: 11px;
-    color: var(--text-muted);
-    background: var(--panel-inset);
-    padding: 2px 7px; border-radius: 4px;
-  }
-  .blcard .bl-what {
-    color: var(--text-dim);
-    font-size: 13.5px;
-    margin-bottom: 6px;
-  }
-  .blcard .bl-why {
-    font-size: 12.5px;
-    color: var(--text-muted);
-    border-top: 1px dashed var(--border);
-    padding-top: 8px;
-    margin-top: 8px;
-  }
-  .blcard .bl-why strong { font-weight: 600; color: var(--text-dim); }
-
-  /* Comparison-judge narrative (run-level, one card per battery).
-     Sits at the end of the report as an AI-generated summary, not a lead. */
-  .compare-summary { display: grid; grid-template-columns: 1fr; gap: 12px; margin-bottom: 20px; }
-  .provenance {
-    font-size: 13px;
-    color: var(--text-muted);
-    font-style: italic;
-    line-height: 1.55;
-    margin-bottom: 14px;
-    padding: 10px 14px;
-    background: var(--panel-alt);
-    border-left: 3px solid var(--border);
-    border-radius: 3px;
-  }
-  .csc {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 16px 18px;
-    border-left: 3px solid var(--border);
-  }
-  .csc.agent { border-left-color: var(--agent); }
-  .csc.raw   { border-left-color: var(--raw); }
-  .csc.tie   { border-left-color: var(--text-muted); }
-  .csc-head {
-    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-    margin-bottom: 10px;
-  }
-  .csc-battery {
-    font-weight: 600; font-size: 16px;
-    letter-spacing: -0.005em;
-  }
-  .csc-verdict {
-    font-family: var(--mono); font-size: 11px;
-    text-transform: uppercase; letter-spacing: 0.06em;
-    padding: 4px 10px; border-radius: 3px; font-weight: 600;
-  }
-  .csc-verdict.agent { background: var(--agent-bg); color: var(--agent); }
-  .csc-verdict.raw { background: var(--raw-bg); color: var(--raw); }
-  .csc-verdict.tie { background: var(--panel-inset); color: var(--text-dim); }
-  .csc-tally {
-    font-family: var(--mono); font-size: 12px; color: var(--text-muted);
-    display: inline-flex; gap: 10px; align-items: center;
-    margin-left: auto;
-  }
-  .csc-tally .t-agent { color: var(--agent); font-weight: 600; }
-  .csc-tally .t-raw { color: var(--raw); font-weight: 600; }
-  .csc-tally .t-tie { color: var(--text-muted); font-weight: 600; }
-  .csc-why { color: var(--text); margin-bottom: 14px; line-height: 1.6; font-size: 15px; }
-  .csc-section { margin-top: 14px; font-size: 14px; }
-  .csc-label {
-    font-family: var(--mono); font-size: 10px;
-    text-transform: uppercase; letter-spacing: 0.06em;
-    color: var(--text-muted); font-weight: 600;
-    margin-bottom: 5px;
-  }
-  .csc-patterns ul { margin: 0 0 0 18px; padding: 0; }
-  .csc-patterns li { margin-bottom: 4px; color: var(--text-dim); }
-  .csc-calib { color: var(--text-dim); font-style: italic; }
-
-
-  /* Per-question comparison verdict (inside qrow body) */
+  /* Per-question comparison analysis (inside qrow body) */
   .qverdict {
     background: var(--panel-alt);
     border: 1px solid var(--border);
@@ -176,22 +77,6 @@
     padding: 10px 12px;
     margin-bottom: 12px;
   }
-  .qverdict.agent { border-left-color: var(--agent); }
-  .qverdict.raw { border-left-color: var(--raw); }
-  .qverdict.tie { border-left-color: var(--text-muted); }
-  .qverdict-head { display: flex; gap: 10px; align-items: baseline; margin-bottom: 6px; }
-  .qverdict-label {
-    font-family: var(--mono); font-size: 10px;
-    text-transform: uppercase; letter-spacing: 0.06em;
-    color: var(--text-muted); font-weight: 600;
-  }
-  .qverdict-pill {
-    font-family: var(--mono); font-size: 11px;
-    padding: 2px 8px; border-radius: 3px; font-weight: 600;
-  }
-  .qverdict-pill.agent { background: var(--agent-bg); color: var(--agent); }
-  .qverdict-pill.raw { background: var(--raw-bg); color: var(--raw); }
-  .qverdict-pill.tie { background: var(--panel-inset); color: var(--text-dim); }
   .qverdict-why { color: var(--text); line-height: 1.5; }
 
   /* Required-facts grading (side-by-side per-fact verdicts) */
@@ -547,32 +432,6 @@
     word-wrap: break-word;
   }
 
-  /* Observations */
-  .observations {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 20px 24px;
-  }
-  .observations ul { list-style: none; padding: 0; margin: 0; }
-  .observations li {
-    padding-left: 16px; position: relative;
-    margin-bottom: 12px;
-    color: var(--text-dim);
-    font-size: 14px;
-  }
-  .observations li:last-child { margin-bottom: 0; }
-  .observations li::before {
-    content: ""; position: absolute; left: 0; top: 9px;
-    width: 5px; height: 5px; border-radius: 50%;
-    background: var(--text-muted);
-  }
-  .observations li strong { color: var(--text); font-weight: 600; }
-  .observations li code {
-    font-family: var(--mono); font-size: 12px;
-    background: var(--panel-inset); padding: 1px 6px; border-radius: 3px;
-  }
-
   footer.foot {
     margin-top: 60px; padding-top: 20px;
     border-top: 1px solid var(--border);
@@ -589,32 +448,17 @@
 
 <header class="top">
   <div class="eyebrow">Eval Report</div>
-  <h1>Production Baseline Comparison</h1>
+  <h1 id="report-title">Production Baseline Comparison</h1>
   <div class="subtitle" id="subtitle">—</div>
   <div class="meta">
-    <span>Verdicts from pairwise comparison judge</span>
+    <span id="battery-name">—</span>
     <span>Generated: <span id="gen-date">—</span></span>
   </div>
 </header>
 
-<div class="section-label">Batteries</div>
-<div class="battery-legend" id="battery-legend"></div>
-
 <div class="section-label">Question-Level Results</div>
 <div class="filters" id="filters"></div>
 <div id="questions"></div>
-
-<div class="section-label" id="compare-summary-label" style="display:none">Analysis by AI Comparison Judge — per battery</div>
-<div class="provenance" id="compare-summary-provenance" style="display:none">
-  These summaries were written by an LLM ("comparison judge") that read both
-  system answers for every question in each battery and produced a verdict
-  with a narrative. They are a convenience, not ground truth. The data above —
-  questions, answers, and execution traces — is the evidence.
-</div>
-<div class="compare-summary" id="compare-summary"></div>
-
-<div class="section-label">Observations</div>
-<div class="observations"><ul id="observations"></ul></div>
 
 <footer class="foot">
   <div id="run-ids"></div>
@@ -627,9 +471,8 @@
 (function(){
   const BUNDLE = JSON.parse(document.getElementById('bundle').textContent);
   document.getElementById('gen-date').textContent = BUNDLE.generated_at;
+  if (BUNDLE.title) document.getElementById('report-title').textContent = BUNDLE.title;
   document.getElementById('subtitle').textContent = BUNDLE.subtitle || '';
-  document.getElementById('observations').innerHTML = (BUNDLE.observations || [])
-    .map(o => `<li>${o.text}</li>`).join('');
   document.getElementById('run-ids').innerHTML = 'Run IDs: ' + (BUNDLE.run_ids || [])
     .map(r => `${r.battery} <code>${r.raw.slice(0,8)}</code> / <code>${r.agent.slice(0,8)}</code>`)
     .join(' · ');
@@ -771,106 +614,42 @@
     const baselineContent = renderTraceContent(baselineTrace);
     const candidateContent = renderTraceContent(candidateTrace);
     if (!baselineContent && !candidateContent) return '';
-    return `
-      <div class="trace-pair">
-        ${baselineContent ? `<div class="trace baseline">
+    // Each cell must always occupy its grid column so the candidate trace
+    // stays on the right even when the baseline (raw_rag) has no trace —
+    // an absent cell would let the candidate collapse into the left column.
+    const baselineCell = baselineContent ? `<div class="trace baseline">
         <div class="trace-label">${esc(SYS.A.label + ' execution path')}</div>
         <div class="trace-path">${baselineContent.path.join('')}</div>
         ${baselineContent.details.length ? `<div class="trace-detail">${baselineContent.details.join('')}</div>` : ''}
-      </div>` : ''}
-        ${candidateContent ? `<div class="trace candidate">
+      </div>` : '<div></div>';
+    const candidateCell = candidateContent ? `<div class="trace candidate">
         <div class="trace-label">${esc(SYS.B.label + ' execution path')}</div>
         <div class="trace-path">${candidateContent.path.join('')}</div>
         ${candidateContent.details.length ? `<div class="trace-detail">${candidateContent.details.join('')}</div>` : ''}
-      </div>` : ''}
+      </div>` : '<div></div>';
+    return `
+      <div class="trace-pair">
+        ${baselineCell}
+        ${candidateCell}
       </div>`;
   }
 
   // ---- Compare-judge helpers ----
-  // Map a winner code ('A' | 'B' | 'tie') to the slot's CSS class.
-  function verdictKey(w) {
-    if (w === 'B') return SYS.B.css_class;
-    if (w === 'A') return SYS.A.css_class;
-    return 'tie';
-  }
-  // Margin qualifiers ("decisively"/"narrowly") are intentionally dropped —
-  // they're AI-estimated confidence, not grounded in the evidence the reader
-  // can see. Label is just winner or tie.
-  function verdictLabel(winner) {
-    if (winner === 'B') return `${SYS.B.label} wins`;
-    if (winner === 'A') return `${SYS.A.label} wins`;
-    return 'Tie';
-  }
   function marginRank(cmp) {
     if (!cmp) return -1;
     if (cmp.margin === 'large') return 2;
     if (cmp.margin === 'small') return 1;
     return 0;
   }
-  function tallyByWinner(pairs) {
-    const t = { B: 0, A: 0, tie: 0 };
-    pairs.forEach(p => {
-      const w = p.comparison && p.comparison.winner;
-      if (w === 'B') t.B++;
-      else if (w === 'A') t.A++;
-      else t.tie++;
-    });
-    return t;
-  }
+  // The per-battery run-level AI-judge narrative is removed by design — the
+  // report shows per-question evidence (answers, traces, required-facts
+  // checks) plus a per-question synthesized analysis only.
 
-  // ---- Run-level comparison-judge narrative (one card per battery) ----
-  const comparisons = BUNDLE.comparisons || {};
-  const compareSummaryEl = document.getElementById('compare-summary');
-  const compareLabelEl = document.getElementById('compare-summary-label');
-  const comparisonBatteries = BUNDLE.battery_order.filter(b => comparisons[b] && comparisons[b].run_summary);
-  if (comparisonBatteries.length) {
-    compareLabelEl.style.display = '';
-    const provEl = document.getElementById('compare-summary-provenance');
-    if (provEl) provEl.style.display = '';
-    compareSummaryEl.innerHTML = comparisonBatteries.map(b => {
-      const entry = comparisons[b];
-      const summary = entry.run_summary || {};
-      const vKey = verdictKey(summary.winner);
-      const t = tallyByWinner((BUNDLE.all_pairs || []).filter(p => p.battery === b));
-      const total = t.B + t.A + t.tie;
-      const tallyHtml = total
-        ? `<span class="csc-tally">
-             <span class="t-agent">${esc(SYS.B.label)} ${t.B}</span>·
-             <span class="t-tie">Tie ${t.tie}</span>·
-             <span class="t-raw">${esc(SYS.A.label)} ${t.A}</span>
-             <span style="color:var(--text-muted)">of ${total}</span>
-           </span>`
-        : '';
-      const patternsHtml = (summary.patterns && summary.patterns.length)
-        ? `<div class="csc-section csc-patterns"><div class="csc-label">Patterns</div><ul>${summary.patterns.map(p => `<li>${esc(relabel(p))}</li>`).join('')}</ul></div>`
-        : '';
-      return `
-        <div class="csc ${vKey}">
-          <div class="csc-head">
-            <span class="csc-battery">${BATTERY_LABELS[b] || b}</span>
-            <span class="csc-verdict ${vKey}">${esc(verdictLabel(summary.winner))}</span>
-            ${tallyHtml}
-          </div>
-          ${summary.why ? `<div class="csc-why">${esc(relabel(summary.why))}</div>` : ''}
-          ${patternsHtml}
-        </div>`;
-    }).join('');
-  }
-
-  // ---- Battery legend (descriptions) ----
-  const legendEl = document.getElementById('battery-legend');
-  legendEl.innerHTML = BUNDLE.battery_order.map(b => {
-    const info = BUNDLE.battery_info[b];
-    return `
-      <div class="blcard">
-        <div class="bl-head">
-          <span class="bl-name">${info.name}</span>
-          <span class="bl-count">${info.count} questions</span>
-        </div>
-        <div class="bl-what">${info.what}</div>
-        <div class="bl-why"><strong>Why it exists:</strong> ${info.why}</div>
-      </div>`;
-  }).join('');
+  // ---- Battery name in the header ----
+  document.getElementById('battery-name').textContent =
+    'Battery: ' + BUNDLE.battery_order
+      .map(b => (BATTERY_LABELS[b] || b).replace(/ Battery$/, ''))
+      .join(', ');
 
   // ---- Filters + question list ----
   let activeF = 'all';
@@ -908,7 +687,7 @@
   ];
   const sortDefs = [
     { key: 'battery', label: 'Battery + ID' },
-    { key: 'decisive', label: 'Most decisive verdicts first' },
+    { key: 'decisive', label: 'Largest differences first' },
   ];
 
   function renderFilters() {
@@ -1061,21 +840,16 @@
     el.innerHTML = rows.map(e => {
       const a = e.agent_full, r = e.raw_rag;
       const cmp = e.comparison;
-      const vKey = cmp && cmp.winner ? verdictKey(cmp.winner) : 'none';
-      // The AI judge's per-question opinion lives under a second disclosure,
+      // The AI judge's per-question analysis lives under a second disclosure,
       // after the raw answers — by design, so readers judge the data first.
       let judgeDisclosure = '';
-      if (cmp && cmp.winner) {
+      if (cmp && cmp.why) {
         judgeDisclosure = `
           <details class="judge-disclose">
-            <summary>AI comparison judge's opinion on this question</summary>
+            <summary>AI comparison judge's analysis of this question</summary>
             <div class="judge-body">
-              <div class="qverdict ${vKey}">
-                <div class="qverdict-head">
-                  <span class="qverdict-label">Verdict</span>
-                  <span class="qverdict-pill ${vKey}">${esc(verdictLabel(cmp.winner))}</span>
-                </div>
-                ${cmp.why ? `<div class="qverdict-why">${esc(relabel(cmp.why))}</div>` : ''}
+              <div class="qverdict">
+                <div class="qverdict-why">${esc(relabel(cmp.why))}</div>
               </div>
             </div>
           </details>`;

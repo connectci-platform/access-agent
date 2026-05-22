@@ -130,48 +130,17 @@ class QueryAnalysis(BaseModel):
     )
 
 
-class QualityEvaluation(BaseModel):
-    """LLM evaluation of result quality (for future quality loop).
-
-    Used to determine if tool results adequately answer the query
-    or if retry with different approach is needed.
-    """
-
-    is_helpful: bool = Field(description="Whether results answer the question")
-    confidence: Literal["high", "medium", "low"] = Field(default="medium")
-    reason: str = Field(default="", description="Explanation of evaluation")
-    missing_information: str | None = Field(
-        default=None,
-        description="What information is still needed",
-    )
-
-
-class RetryContext(BaseModel):
-    """Context for retry logic (for future error recovery).
-
-    Tracks retry attempts and history for error recovery.
-    """
-
-    max_retries_per_tool: int = 2
-    max_retries_total: int = 5
-    current_total_retries: int = 0
-    timeout_budget_ms: int = 120000
-    start_time_ms: int = 0
-    history: list[dict[str, str | int]] = Field(default_factory=list)
-
-
 class AgentState(TypedDict):
     """Main state schema for the ACCESS Documentation Agent.
 
-    This TypedDict flows through all LangGraph nodes, with each node
-    reading from and writing to specific fields.
+    Flows through the LangGraph nodes (today: one node — the tool_calling_loop).
+    The loop reads inputs, writes tool_results / tools_used / node_trace as it
+    runs tools, and writes final_answer at the end.
 
-    Node responsibilities:
-    - classify: Reads query; writes query_classification
-    - rag_answer: Reads query; writes rag_matches, final_answer (for static queries)
-    - plan: Reads query, tool_catalog, messages, rag_matches; writes query_analysis, planned_tools
-    - execute: Reads planned_tools; writes tool_results, tools_used
-    - synthesize: Reads query, tool_results, rag_matches, messages; writes final_answer, messages
+    Some fields below are read by downstream consumers (API response metadata,
+    telemetry spans, eval judge context) but are no longer written by any node
+    on the current path. They survive here for compatibility with those
+    consumers; removing them requires updating the consumers too.
     """
 
     # Conversation memory (accumulates across checkpoints via add_messages reducer)
@@ -187,40 +156,39 @@ class AgentState(TypedDict):
     ]
     resource_context: Annotated[str | None, "RP slug for resource-scoped queries (e.g. 'delta')"]
 
-    # Classification fields (set by classify node)
+    # Read by api/routes.py for response metadata; not written on the current path.
     query_classification: Annotated[QueryClassification | None, "Query type classification"]
 
-    # RAG fields (set by rag_answer node)
+    # Read by eval/runner.py for judge context; not written on the current path.
     rag_matches: Annotated[list[RAGMatch], "Matches from RAG/Q&A service"]
-    rag_used: Annotated[bool, "Whether RAG provided or augmented the answer"]
 
-    # Planning fields (set by plan node)
+    # Read by api/routes.py for response metadata; not written on the current path.
     query_analysis: Annotated[QueryAnalysis | None, "LLM analysis of user intent"]
+
+    # Read by telemetry/spans.py for span attributes; not written on the current path.
     planned_tools: Annotated[list[ToolCall], "Tools selected for execution"]
+
+    # Read by api/routes.py for response metadata; not written on the current path.
     execution_strategy: Literal["sequential", "parallel", "mixed"]
 
-    # Execution fields (set by execute node)
+    # Loop populates these as it calls tools.
     tool_results: Annotated[list[ToolResult], "Results from tool execution"]
-    tools_used: Annotated[list[str], "Names of tools that succeeded"]
-
-    # Quality fields (for quality loop)
-    quality_evaluation: Annotated[QualityEvaluation | None, "Result quality assessment"]
-    attempt_number: int
-    max_attempts: int
-
-    # Retry fields (for future error recovery)
-    retry_context: Annotated[RetryContext | None, "Retry tracking context"]
+    tools_used: Annotated[
+        list[str],
+        "Names of tools the loop attempted (success or failure); inspect tool_results[].success for outcome",
+    ]
 
     # Tracing (accumulated by every node via operator.add reducer)
     node_trace: Annotated[list[dict[str, Any]], operator.add]
 
-    # Domain agent fields (set by domain_agent node)
+    # Read by api/routes.py; the loop does not write it, so reads default to None
+    # (treated as "completed") — see is_complete() in routes.py.
     domain_completed: Annotated[
         bool | None,
-        "Whether the domain agent called a tool (True) or is still gathering info (False)",
+        "Domain-agent completion flag; legacy — no node writes this on the current path",
     ]
 
-    # Output fields (set by synthesize node)
+    # Output (set by the loop at end of run).
     final_answer: Annotated[str | None, "Final answer to return to user"]
 
 
@@ -231,7 +199,6 @@ def create_initial_state(
     tool_catalog: ToolCatalog,
     acting_user: str | None = None,
     resource_context: str | None = None,
-    max_attempts: int = 3,
 ) -> AgentState:
     """Create the initial state for a new query.
 
@@ -242,46 +209,33 @@ def create_initial_state(
         tool_catalog: The MCP tool catalog.
         acting_user: ACCESS ID of user performing action (e.g., jsmith@access-ci.org).
         resource_context: RP slug for resource-scoped queries (e.g. 'delta').
-        max_attempts: Maximum quality loop attempts.
 
     Returns:
         An initialized AgentState ready for the graph.
     """
-    import time
-
     return AgentState(
         # Conversation memory - add the user's query as a message
         # The add_messages reducer will accumulate this with previous messages
         messages=[HumanMessage(content=query)],
-        # Input
+        # Inputs
         query=query,
         session_id=session_id,
         question_id=question_id,
         tool_catalog=tool_catalog,
         acting_user=acting_user,
         resource_context=resource_context,
-        # Classification
+        # Read by consumers but not written on the current path — initialize empty/None.
         query_classification=None,
-        # RAG
         rag_matches=[],
-        rag_used=False,
-        # Planning
         query_analysis=None,
         planned_tools=[],
         execution_strategy="parallel",
-        # Execution
+        # Written by the loop as it runs.
         tool_results=[],
         tools_used=[],
-        # Quality
-        quality_evaluation=None,
-        attempt_number=0,
-        max_attempts=max_attempts,
-        # Retry
-        retry_context=RetryContext(start_time_ms=int(time.time() * 1000)),
-        # Domain agent
-        domain_completed=None,
-        # Tracing
         node_trace=[],
-        # Output
+        # Legacy domain-agent flag; the loop does not write it.
+        domain_completed=None,
+        # Output.
         final_answer=None,
     )

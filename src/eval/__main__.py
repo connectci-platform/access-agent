@@ -32,6 +32,19 @@ def _handle_run(args: argparse.Namespace) -> None:
     print_run_summary(summary)
 
 
+def _handle_multiturn(args: argparse.Namespace) -> None:
+    from .multiturn import print_summary, run_battery
+
+    results = asyncio.run(
+        run_battery(
+            battery_path=args.threads,
+            acting_user=args.acting_user,
+            resource_context=args.resource,
+        )
+    )
+    print_summary(results)
+
+
 def _handle_compare(args: argparse.Namespace) -> None:
     from src.config import settings
 
@@ -372,6 +385,10 @@ def _handle_html(args: argparse.Namespace) -> None:
             json_paths=json_paths,
             output_path=output_path,
             preset=args.preset,
+            title=args.title,
+            subtitle=args.subtitle,
+            label_a=args.label_a,
+            label_b=args.label_b,
         )
         print(
             f"Wrote {output_path} ({len(bundle['all_pairs'])} pairs "
@@ -393,6 +410,10 @@ def _handle_html(args: argparse.Namespace) -> None:
         on_date=on_date,
         question_sets=question_sets,
         preset=args.preset,
+        title=args.title,
+        subtitle=args.subtitle,
+        label_a=args.label_a,
+        label_b=args.label_b,
     )
     print(f"Wrote {output_path} ({len(bundle['all_pairs'])} question pairs)")
 
@@ -419,13 +440,11 @@ def main() -> None:  # noqa: PLR0915  # CLI dispatcher, statements not meaningfu
     run_parser = subparsers.add_parser("run", help="Run pre-production eval")
     run_parser.add_argument(
         "--system",
-        choices=["agent_full", "agent_full_legacy", "raw_rag"],
+        choices=["agent_full", "raw_rag"],
         default="agent_full",
         help=(
             "System to evaluate: "
-            "agent_full (default, tool-calling loop — the new Phase-3 path), "
-            "agent_full_legacy (old plan→execute→evaluate→recover→synthesize chain, "
-            "for parity comparison), "
+            "agent_full (default, tool-calling loop — the production path), "
             "raw_rag (UKY /ask, no agent)."
         ),
     )
@@ -603,12 +622,71 @@ def main() -> None:  # noqa: PLR0915  # CLI dispatcher, statements not meaningfu
     )
     html_parser.add_argument(
         "--preset",
-        choices=["grand-prix", "phase3-parity"],
+        choices=["grand-prix"],
         default="grand-prix",
         help=(
-            "Narrative prose preset: 'grand-prix' (default — raw_rag vs agent_full "
-            "production-baseline comparison) or 'phase3-parity' (loop vs legacy chain)."
+            "Narrative prose preset: 'grand-prix' (raw_rag vs agent_full "
+            "production-baseline comparison)."
         ),
+    )
+    html_parser.add_argument(
+        "--title",
+        default=None,
+        help=(
+            "Override the report's main heading (the <h1>). Default: "
+            "'Production Baseline Comparison'. Use for ad-hoc comparisons "
+            "that don't match an existing preset."
+        ),
+    )
+    html_parser.add_argument(
+        "--subtitle",
+        default=None,
+        help=(
+            "Override the subtitle under the main heading. Default: taken "
+            "from the active preset (e.g., 'Raw UKY RAG vs full ACCESS "
+            "agent' for grand-prix)."
+        ),
+    )
+    html_parser.add_argument(
+        "--label-a",
+        default=None,
+        help=(
+            "Override the column label for the baseline (A) system. "
+            "Default: derived from the system ID (e.g., 'Raw RAG', "
+            "'Agent'). Useful when both runs share a system ID (e.g., "
+            "two agent_full runs in an agent-vs-agent comparison)."
+        ),
+    )
+    html_parser.add_argument(
+        "--label-b",
+        default=None,
+        help=(
+            "Override the column label for the candidate (B) system. "
+            "Default: derived from the system ID."
+        ),
+    )
+
+    multiturn_parser = subparsers.add_parser(
+        "multiturn",
+        help=(
+            "Run a multi-turn thread battery (exercises context-management / "
+            "SummarizationMiddleware; not exercised by single-turn eval)"
+        ),
+    )
+    multiturn_parser.add_argument(
+        "--threads",
+        required=True,
+        help="Path to multi-turn battery JSON",
+    )
+    multiturn_parser.add_argument(
+        "--acting-user",
+        default=None,
+        help="Optional ACCESS ID for authenticated calls during the thread",
+    )
+    multiturn_parser.add_argument(
+        "--resource",
+        default=None,
+        help="Optional RP slug applied as resource_context for the thread",
     )
 
     # Production scoring is deferred — requires on-premise LLM or updated privacy policy
@@ -634,6 +712,7 @@ def main() -> None:  # noqa: PLR0915  # CLI dispatcher, statements not meaningfu
         "ask": _handle_ask,
         "html": _handle_html,
         "score-production": _handle_score_production,
+        "multiturn": _handle_multiturn,
     }
 
     handler = handlers.get(args.command)

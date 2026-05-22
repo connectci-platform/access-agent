@@ -66,6 +66,42 @@ immutable `<deploy-id>--*.netlify.app` URL.
 You should never need to edit `builder.py` for a cosmetic change, and you
 should never need to edit `template.html` for a prose change.
 
+### Ad-hoc title / subtitle / column labels (no code change)
+
+For one-off comparisons that don't match an existing preset — e.g.
+agent-vs-agent for a hardening or prompt change, where both runs are
+tagged `system=agent_full` and the preset's subtitle is wrong — pass
+these flags to `python -m src.eval html`:
+
+| Flag | Overrides | Default |
+|---|---|---|
+| `--title "..."` | the `<h1>` heading | `"Production Baseline Comparison"` |
+| `--subtitle "..."` | the subtitle line | preset's `report_subtitle` |
+| `--label-a "..."` | column A (baseline) label | `label_for_system(baseline_id)` |
+| `--label-b "..."` | column B (candidate) label | `label_for_system(candidate_id)` |
+
+Example for an agent-vs-agent hardening comparison:
+
+```bash
+python -m src.eval html \
+  --from-json comparisons/safety_hardening.json \
+  --title "Safety Hardening Comparison" \
+  --subtitle "ACCESS agent pre-hardening vs post-hardening" \
+  --label-a "Pre-hardening" \
+  --label-b "Post-hardening" \
+  -o /tmp/report.html
+```
+
+When to use these vs. adding a preset:
+- **Flags** for one-off comparisons whose narrative prose doesn't need to
+  be reused. The flags only affect the header/labels; battery
+  descriptions and observations still come from the active `--preset`.
+- **A new preset in `notes.py`** when the same comparison shape will be
+  re-run (different dates, different batteries) and deserves its own
+  battery descriptions and observations text. Add a `PresetSpec` entry
+  to `PRESETS` and extend the `--preset` `choices=` list in
+  `__main__.py`.
+
 ---
 
 ## File map
