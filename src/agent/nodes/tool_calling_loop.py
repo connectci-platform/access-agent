@@ -179,6 +179,26 @@ def _friendly_tool_status(name: str) -> str:
     return f"Working on {name.replace('_', ' ')}..."
 
 
+def _coerce_content_to_text(content: Any) -> str:
+    """Render AIMessage.content as a single string.
+
+    Providers that emit content blocks (Anthropic-style) return a list of
+    dicts like ``[{"type": "text", "text": "..."}]``; ``str()`` on that list
+    produces Python repr, not the user-facing answer.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+        return "".join(parts)
+    return str(content)
+
+
 class _ToolStatusEmitter(AsyncCallbackHandler):
     """Callback handler that emits a status event each time a tool starts.
 
@@ -318,10 +338,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
         if not recursion_limit_hit:
             for msg in reversed(result_messages):
                 if isinstance(msg, AIMessage) and msg.content:
-                    # AIMessage.content can be str or list[str|dict] (multimodal);
-                    # the loop only emits string content for final answers.
-                    content = msg.content
-                    final_answer = content if isinstance(content, str) else str(content)
+                    final_answer = _coerce_content_to_text(msg.content)
                     break
 
         tools_used: list[str] = []

@@ -226,13 +226,13 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
             elif stream_type == "messages":
                 # LLM token chunks — tuple of (message, metadata)
                 msg, metadata = chunk
-                # Only stream incremental tokens from the synthesize node.
+                # Only stream incremental tokens from the tool_calling_loop node.
                 # LangGraph's messages stream emits both AIMessageChunk (tokens)
                 # and AIMessage (complete messages added to state). We only want
                 # the chunks to avoid duplicating the full response.
                 if (
                     isinstance(msg, AIMessageChunk)
-                    and metadata.get("langgraph_node") == "synthesize"
+                    and metadata.get("langgraph_node") == "tool_calling_loop"
                     and msg.content
                 ):
                     yield _format_sse_event("token", {"content": msg.content})
@@ -274,7 +274,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
         rating_target: str | None
         if not is_final:
             rating_target = None
-        elif "uky_rag_retrieval" in tools_used:
+        elif tools_used == ["search_access_documents"]:
             rating_target = "uky_rag"
         else:
             rating_target = "agent"

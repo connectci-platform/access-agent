@@ -41,6 +41,9 @@ services:
       - UKY_RAG_GENERAL_URL=${UKY_RAG_GENERAL_URL:-https://access-ai-grace1-external.ccs.uky.edu/access/chat/api/}
       - UKY_RAG_XDMOD_URL=${UKY_RAG_XDMOD_URL:-https://access-ai-grace1-external.ccs.uky.edu/access/xdmod/chat/api/}
       - UKY_RAG_TIMEOUT=${UKY_RAG_TIMEOUT:-60.0}
+      # UKY chat-mcp endpoint for general-corpus chunk retrieval (search_access_documents)
+      - UKY_CHATMCP_URL=${UKY_CHATMCP_URL:-https://access-ai-grace1-external.ccs.uky.edu/access/chat-mcp/api/retrieve-docs}
+      - UKY_CHATMCP_API_KEY=${UKY_CHATMCP_API_KEY:-}
       - MCP_SERVER_HOST=${MCP_SERVER_HOST:-localhost}
       # MCP API key for servers requiring authentication (announcements, events, jsm)
       - MCP_API_KEY=${MCP_API_KEY:-}
