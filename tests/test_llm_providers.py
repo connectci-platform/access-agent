@@ -94,6 +94,23 @@ class TestStripThinkBlock:
         raw = "<think>I should consider every possibility before answering, starting with"
         assert _strip_think_block(raw) == ""
 
+    def test_strips_think_block_with_preamble(self):
+        # Qwen sometimes emits a brief preamble (e.g. "Let me check…") before
+        # opening the reasoning trace. The preamble must stay; the trace must go.
+        raw = "Let me check: <think>reasoning here</think>The actual answer."
+        assert _strip_think_block(raw) == "Let me check: The actual answer."
+
+    def test_strips_multiple_paired_blocks(self):
+        # Some models emit more than one think block (e.g. an empty stub
+        # followed by the real reasoning). All paired blocks should be removed.
+        raw = "<think></think><think>real reasoning</think>The answer."
+        assert _strip_think_block(raw) == "The answer."
+
+    def test_truncated_mid_think_with_preamble_drops_from_open(self):
+        # Preamble before the open tag is kept; the truncated trace is dropped.
+        raw = "Looking this up: <think>I should consider"
+        assert _strip_think_block(raw) == "Looking this up:"
+
 
 class TestStripGenerations:
     def test_strips_each_generation_message(self):
@@ -195,6 +212,47 @@ class TestStrippingChatOpenAIAstream:
         with patch.object(ChatOpenAI, "_astream", _fake_astream_factory(fixture)):
             chunks = await _collect_astream(model)
         assert _aggregate_text(chunks) == "middle</think>final answer"
+
+    @pytest.mark.asyncio
+    async def test_strips_think_block_with_preamble_in_stream(self) -> None:
+        # Regression for the Qwen-emits-preamble-before-open case that leaked
+        # </think> into production responses. Preamble chunks must pass
+        # through; the trace between paired tags must be hidden.
+        provider = OpenAICompatibleProvider(
+            base_url="http://example/v1", api_key="k", default_model="m"
+        )
+        model = cast("_StrippingChatOpenAI", provider.get_chat_model())
+        fixture = [
+            _chunk("Let me check: "),
+            _chunk("<think>reasoning"),
+            _chunk(" continues</think>"),
+            _chunk("The actual answer."),
+        ]
+        with patch.object(ChatOpenAI, "_astream", _fake_astream_factory(fixture)):
+            chunks = await _collect_astream(model)
+        text = _aggregate_text(chunks)
+        assert "</think>" not in text
+        assert "reasoning" not in text
+        assert text == "Let me check: The actual answer."
+
+    @pytest.mark.asyncio
+    async def test_truncated_mid_think_in_stream_drops_buffer(self) -> None:
+        # max_tokens cuts mid-reasoning. Preamble must still emit; the
+        # truncated trace must not.
+        provider = OpenAICompatibleProvider(
+            base_url="http://example/v1", api_key="k", default_model="m"
+        )
+        model = cast("_StrippingChatOpenAI", provider.get_chat_model())
+        fixture = [
+            _chunk("Looking up: "),
+            _chunk("<think>I should consider every"),
+            # stream ends mid-think — no </think>
+        ]
+        with patch.object(ChatOpenAI, "_astream", _fake_astream_factory(fixture)):
+            chunks = await _collect_astream(model)
+        text = _aggregate_text(chunks)
+        assert "consider" not in text
+        assert text.rstrip() == "Looking up:"
 
     @pytest.mark.asyncio
     async def test_no_think_block_emits_buffer_at_end(self) -> None:

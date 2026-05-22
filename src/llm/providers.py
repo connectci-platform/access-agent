@@ -1,5 +1,6 @@
 """LLM provider abstraction supporting OpenAI, vLLM, and custom endpoints."""
 
+import re
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
@@ -14,32 +15,41 @@ from ..config import settings
 
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
+# Non-greedy paired-block match. DOTALL so newlines inside the trace match.
+_PAIRED_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
 def _strip_think_block(content: str) -> str:
-    """Remove a leading ``<think>...</think>`` reasoning trace.
+    """Remove ``<think>...</think>`` reasoning traces from anywhere in content.
 
     Reasoning models (Qwen3, DeepSeek-R1, etc.) emit chain-of-thought inline
-    in ``content`` before the user-visible answer. Their docs say to strip
-    the trace before re-sending the assistant message in conversation
-    history — replaying the trace back at the model on subsequent turns is
-    out-of-distribution input.
+    in ``content``. Their docs say to strip the trace before re-sending the
+    assistant message in conversation history — replaying the trace back at
+    the model on subsequent turns is out-of-distribution input.
 
-    Anchored at the start: only strips when the message opens with
-    ``<think>`` or ``</think>``. Prose that merely mentions ``</think>``
-    later in the response (e.g. the user asked what the tag means) is
-    left intact.
+    Behavior:
 
-    Truncated mid-trace (no closing tag) returns empty rather than
-    leaking the reasoning content.
+    - Properly-paired ``<think>...</think>`` blocks are removed wherever
+      they appear (multiple blocks supported; non-greedy). Models sometimes
+      emit a brief preamble before opening the think block — that preamble
+      stays.
+    - Unpaired ``<think>`` open with no closing tag (model hit ``max_tokens``
+      mid-reasoning) → drop everything from that point onward; never leak
+      the buffered CoT.
+    - Bare ``</think>`` at the very start of content (degenerate Qwen case
+      when reasoning is enabled but the body opens with the close tag) →
+      drop the tag, keep what follows.
+    - Unpaired ``</think>`` mid-prose with no matching open is treated as
+      prose (the user may have asked what the tag means) and left alone.
     """
-    stripped = content.lstrip()
-    if not stripped.startswith((_THINK_OPEN, _THINK_CLOSE)):
-        return content
-    if _THINK_CLOSE not in content:
-        return ""
-    _, _, after = content.partition(_THINK_CLOSE)
-    return after.lstrip()
+    out = _PAIRED_THINK_RE.sub("", content)
+    open_idx = out.find(_THINK_OPEN)
+    if open_idx != -1:
+        out = out[:open_idx]
+    lstripped = out.lstrip()
+    if lstripped.startswith(_THINK_CLOSE):
+        out = lstripped[len(_THINK_CLOSE) :]
+    return out.strip()
 
 
 def _strip_generations(result: ChatResult) -> None:
@@ -54,82 +64,103 @@ def _strip_generations(result: ChatResult) -> None:
 
 
 class _ThinkStripState:
-    """Cross-chunk state machine for stripping a leading ``<think>...</think>`` block.
+    """Cross-chunk state machine for stripping ``<think>...</think>`` blocks.
 
-    Reasoning-model output arrives as a stream of text chunks where the
-    ``<think>...</think>`` reasoning trace may span multiple chunks (and the
-    closing tag itself may be split across two chunks). This holds the buffer
-    and decides — once we've accumulated enough text — whether the message
-    opens with ``<think>`` (strip mode) or doesn't (passthrough mode).
+    Reasoning-model output arrives as a stream of text chunks; the
+    ``<think>...</think>`` trace may span chunks, and either tag may be
+    split across two chunks. This buffers a short tail (``len(tag) - 1``)
+    so split tags reassemble before we look for them, and it tracks an
+    "are we currently inside a think block" mode that flips on each
+    ``<think>`` / ``</think>`` boundary found in the stream.
 
-    The "did we see the open tag" check is what makes the truncated-mid-think
-    case safe: if the model hits ``max_tokens`` before emitting ``</think>``,
-    ``flush()`` returns ``None`` rather than handing the buffered reasoning
-    trace back as the user-visible answer.
+    Unlike a "decide at start" scheme, this matches think blocks wherever
+    they occur — including models that emit a brief preamble before
+    opening the reasoning trace. Truncated mid-think (close never arrives)
+    means ``flush()`` drops the buffer rather than leaking the CoT.
     """
 
     def __init__(self) -> None:
         self._buffer = ""
-        self._seen_open: bool | None = None  # None = not yet decided
-        self._seen_close = False
+        self._inside_think = False
+        self._first_decision_pending = True
 
     @property
     def seen_close(self) -> bool:
-        return self._seen_close
+        # Legacy property: True once we've left the first think block or
+        # decided this stream has no think block. Retained for external
+        # readers (test_llm_providers.py uses it).
+        return not self._inside_think and not self._first_decision_pending
 
     def feed(self, content: str) -> str | None:
-        """Feed one chunk's text content; return what should be emitted now.
+        """Feed one chunk's text; return what should be emitted now.
 
-        - ``None`` → suppress this chunk entirely (we're still buffering).
-        - ``str``  → emit this text (post-``</think>`` remainder, or a
-          buffered prefix once we've decided the message isn't a think block).
-
-        Once a decision is made (close tag seen, or content confirmed not to
-        open with ``<think>``) subsequent calls passthrough the input.
+        - ``None`` → emit nothing (still inside a think block, or buffering
+          a possible split tag).
+        - ``str`` → emit this text.
         """
-        if self._seen_close:
-            return content
         self._buffer += content
-        if self._seen_open is None:
-            stripped = self._buffer.lstrip()
-            if not stripped:
-                return None
-            if stripped.startswith((_THINK_OPEN, _THINK_CLOSE)):
-                self._seen_open = True
-            elif len(stripped) >= len(_THINK_OPEN):
-                # Enough content to know we're not opening with <think>;
-                # flush what we've buffered and passthrough from now on.
-                self._seen_open = False
-                self._seen_close = True
-                buffered = self._buffer
-                self._buffer = ""
-                return buffered
+        return self._consume()
+
+    def _consume(self) -> str | None:
+        emit: list[str] = []
+        while True:
+            if not self._inside_think:
+                # Special case at stream start: a bare ``</think>`` with no
+                # matching open is the Qwen degenerate-trace case — drop it.
+                if self._first_decision_pending:
+                    stripped = self._buffer.lstrip()
+                    if not stripped:
+                        return "".join(emit) if emit else None
+                    if stripped.startswith(_THINK_CLOSE):
+                        ws = len(self._buffer) - len(stripped)
+                        self._buffer = self._buffer[ws + len(_THINK_CLOSE) :]
+                        self._first_decision_pending = False
+                        continue
+                    if len(stripped) < len(_THINK_CLOSE):
+                        # Need more chars to know if it's a bare close tag.
+                        return "".join(emit) if emit else None
+                    self._first_decision_pending = False
+                # Look for the next ``<think>`` to enter strip mode.
+                open_idx = self._buffer.find(_THINK_OPEN)
+                if open_idx == -1:
+                    # Keep a tail in case ``<think>`` is split across chunks.
+                    keep = min(len(self._buffer), len(_THINK_OPEN) - 1)
+                    safe_end = len(self._buffer) - keep
+                    safe = self._buffer[:safe_end]
+                    self._buffer = self._buffer[safe_end:]
+                    if safe:
+                        emit.append(safe)
+                    return "".join(emit) if emit else None
+                # Found ``<think>``. Emit everything before it; enter strip.
+                if open_idx > 0:
+                    emit.append(self._buffer[:open_idx])
+                self._buffer = self._buffer[open_idx + len(_THINK_OPEN) :]
+                self._inside_think = True
             else:
-                return None
-        # _seen_open is True: we're inside a think block; watch for close.
-        if _THINK_CLOSE not in self._buffer:
-            return None
-        _, _, after = self._buffer.partition(_THINK_CLOSE)
-        self._seen_close = True
-        self._buffer = ""
-        return after.lstrip()
+                # Inside a think block — look for the matching close.
+                close_idx = self._buffer.find(_THINK_CLOSE)
+                if close_idx == -1:
+                    # Keep a tail in case ``</think>`` is split across chunks.
+                    keep = min(len(self._buffer), len(_THINK_CLOSE) - 1)
+                    self._buffer = self._buffer[-keep:] if keep else ""
+                    return "".join(emit) if emit else None
+                # Found close; drop reasoning, exit strip mode.
+                self._buffer = self._buffer[close_idx + len(_THINK_CLOSE) :]
+                self._inside_think = False
 
     def flush(self) -> str | None:
         """End-of-stream: never leak buffered chain-of-thought.
 
-        - Already decided / closed → nothing more to emit.
-        - Saw ``<think>`` open but never ``</think>`` close (truncated
-          mid-reasoning by ``max_tokens``) → drop the buffer.
-        - Never reached a decision (content too short to tell) → buffer
-          is the entire (tiny) answer; emit it.
+        - Inside a think block (no close ever arrived) → drop buffer.
+        - Outside → flush remaining buffer (may be a partial tag prefix
+          that turned out to be regular content).
         """
-        if self._seen_close:
+        if self._inside_think:
+            self._buffer = ""
             return None
-        leftover = self._buffer
+        result = self._buffer
         self._buffer = ""
-        if self._seen_open:
-            return None
-        return leftover or None
+        return result or None
 
 
 def _replace_chunk_content(chunk: ChatGenerationChunk, new_content: str) -> ChatGenerationChunk:
@@ -234,17 +265,20 @@ def _apply_strip_to_chunk(
 ) -> list[ChatGenerationChunk]:
     """Apply the cross-chunk strip state to one chunk; return chunks to yield.
 
-    Returns 0 or 1 chunks. Drops content-only chunks that fall inside the
+    Returns 0 or 1 chunks. Drops content-only chunks that fall inside a
     reasoning trace; preserves chunks that carry tool-call deltas or other
-    non-text payloads (with their text emptied if still pre-``</think>``).
+    non-text payloads (with their text emptied if still buffered).
+
+    Every text-bearing chunk is fed through the state machine — there is
+    no "we already saw a close tag" short-circuit, because a model can
+    open a *new* ``<think>`` block after closing a previous one (and Qwen
+    sometimes does, e.g. an empty stub followed by the real trace).
     """
     msg = chunk.message
     raw = msg.content if isinstance(msg.content, str) else ""
 
-    if state.seen_close:
-        return [chunk]
-
     if not raw:
+        # Tool-call-only chunks (empty content) pass through unchanged.
         return [chunk]
 
     emit = state.feed(raw)
