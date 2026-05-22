@@ -102,19 +102,26 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Add CORS middleware
-# In production, restrict to specific origins; in dev, allow all
+# Add CORS middleware.
+# Production: allow all access-ci.org subdomains and any accessmatch Pantheon
+# environment (dev, test, live, md-* multidevs). accessmatch is the only
+# Drupal-multisite tenant that loads the chatbot today; other tenants are
+# deliberately excluded. Setting ALLOWED_ORIGINS to a non-empty value
+# overrides both the explicit list and the regex with the env-provided list.
+allowed_origin_regex: str | None = None
 if settings.ENVIRONMENT == "production":
     if settings.ALLOWED_ORIGINS:
         allowed_origins = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",")]
     else:
-        allowed_origins = [
-            "https://support.access-ci.org",
-            "https://allocations.access-ci.org",
-            "https://operations.access-ci.org",
-            "https://metrics.access-ci.org",
-            "https://access-ci.org",
-        ]
+        allowed_origins = []
+        allowed_origin_regex = (
+            r"https://"
+            r"(?:"
+            r"(?:[a-z0-9-]+\.)?access-ci\.org"
+            r"|"
+            r"[a-z0-9-]+-accessmatch\.pantheonsite\.io"
+            r")"
+        )
 elif settings.ALLOWED_ORIGINS:
     allowed_origins = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",")]
 else:
@@ -128,6 +135,7 @@ else:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
+    allow_origin_regex=allowed_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
