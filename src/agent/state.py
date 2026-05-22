@@ -173,7 +173,10 @@ class AgentState(TypedDict):
 
     # Loop populates these as it calls tools.
     tool_results: Annotated[list[ToolResult], "Results from tool execution"]
-    tools_used: Annotated[list[str], "Names of tools that succeeded"]
+    tools_used: Annotated[
+        list[str],
+        "Names of tools the loop attempted (success or failure); inspect tool_results[].success for outcome",
+    ]
 
     # Tracing (accumulated by every node via operator.add reducer)
     node_trace: Annotated[list[dict[str, Any]], operator.add]

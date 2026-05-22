@@ -63,7 +63,11 @@ class UKYClient:
         self._general_url = general_url or settings.UKY_RAG_GENERAL_URL
         self._xdmod_url = xdmod_url or settings.UKY_RAG_XDMOD_URL
         self._chatmcp_url = settings.UKY_CHATMCP_URL
-        self._chatmcp_api_key = settings.UKY_CHATMCP_API_KEY
+        # chat-mcp lives on the same UKY host as the legacy /api/ endpoint
+        # and accepts the same shared credential. Fall back through the same
+        # chain so a single ACCESS_AI_API_KEY (the documented credential)
+        # configures both endpoints without an extra env var.
+        self._chatmcp_api_key = settings.UKY_CHATMCP_API_KEY or settings.uky_rag_api_key_resolved
         self._timeout = timeout or settings.UKY_RAG_TIMEOUT
         self._client: httpx.AsyncClient | None = None
 
@@ -261,7 +265,13 @@ class UKYClient:
                 # `/api/retrieve-docs` returns `documents`; the legacy `/api/`
                 # synthesis endpoint returned `top_documents`. Accept both so a
                 # URL revert via env var doesn't silently zero-out retrieval.
-                raw_docs = data.get("documents") or data.get("top_documents") or []
+                # Key-presence (not truthiness) keeps an explicit empty
+                # `documents: []` from falling through to a stale
+                # `top_documents` in a transitional dual-key response.
+                if "documents" in data:
+                    raw_docs = data.get("documents") or []
+                else:
+                    raw_docs = data.get("top_documents") or []
                 chunks = [
                     UKYChunk(
                         rank=doc.get("rank", i + 1),

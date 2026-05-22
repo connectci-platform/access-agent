@@ -26,6 +26,7 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from ...services.uky_client import UKYChunk, get_uky_client
+from ..domains.capabilities import get_capability_registry
 
 logger = logging.getLogger(__name__)
 
@@ -101,11 +102,29 @@ async def _search_access_documents(
     endpoint and returned for the loop's LLM to synthesize and cite. XDMoD
     questions still use the legacy synthesis endpoint (chat-mcp is
     general-corpus only).
+
+    The capability registry (driven by ``DISABLED_CAPABILITIES``) decides
+    which RAG endpoints are reachable. An operator can disable the XDMoD
+    or general endpoints via env without having to remove the tool — the
+    LLM still sees the tool but disabled sources surface _UNAVAILABLE.
+    Resource-scoping (``rp_name``) is similarly gated by
+    ``scoped_rag_enabled``.
     """
     client = get_uky_client()
+    registry = get_capability_registry()
+    enabled_endpoints = registry.enabled_rag_endpoints()
+
+    # Honor capability-registry gating: drop rp_name if scoped RAG is
+    # disabled, even though the endpoint itself may still be enabled.
+    if rp_name and not registry.scoped_rag_enabled():
+        logger.info("search_access_documents: dropping rp_name=%s (scoped RAG disabled)", rp_name)
+        rp_name = None
 
     # XDMoD: legacy synthesis endpoint.
     if source == "xdmod":
+        if "xdmod" not in enabled_endpoints:
+            logger.info("search_access_documents (xdmod) disabled by capability registry")
+            return _UNAVAILABLE
         if not client.is_configured:
             logger.warning("search_access_documents (xdmod) called but UKY RAG is not configured")
             return _UNAVAILABLE
@@ -120,6 +139,9 @@ async def _search_access_documents(
         )
 
     # General: chunk retrieval via chat-mcp; the agent synthesizes itself.
+    if "general" not in enabled_endpoints:
+        logger.info("search_access_documents (general) disabled by capability registry")
+        return _UNAVAILABLE
     if not client.is_chatmcp_configured:
         logger.warning(
             "search_access_documents called but chat-mcp is not configured "

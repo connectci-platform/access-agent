@@ -56,7 +56,7 @@ def _aggregate_text(chunks: list[ChatGenerationChunk]) -> str:
 
 class TestStripThinkBlock:
     def test_strips_leading_think_block(self):
-        raw = "I should look up X.\n</think>\n\nThe answer is foo."
+        raw = "<think>I should look up X.</think>\n\nThe answer is foo."
         assert _strip_think_block(raw) == "The answer is foo."
 
     def test_no_think_tag_returns_unchanged(self):
@@ -69,24 +69,38 @@ class TestStripThinkBlock:
     def test_strips_at_first_close_tag_when_multiple(self):
         # Defensive: model emits two `</think>` tags; we cut at the first.
         # Anything between the first and second close tag is treated as answer.
-        raw = "outer reasoning</think>middle</think>final answer"
+        raw = "<think>outer reasoning</think>middle</think>final answer"
         assert _strip_think_block(raw) == "middle</think>final answer"
 
     def test_strips_when_close_tag_at_start(self):
+        # Bare close tag with no open is treated as a degenerate trace.
         raw = "</think>just the answer"
         assert _strip_think_block(raw) == "just the answer"
 
     def test_preserves_internal_whitespace_after_strip(self):
-        raw = "thinking...</think>\n\nLine 1\n\nLine 2"
+        raw = "<think>thinking...</think>\n\nLine 1\n\nLine 2"
         assert _strip_think_block(raw) == "Line 1\n\nLine 2"
+
+    def test_prose_mentioning_close_tag_is_not_stripped(self):
+        # The user asked what </think> means. The model's prose contains
+        # `</think>` mid-message but the message does not open with a
+        # think tag — leave it intact.
+        raw = "The closing tag is `</think>`, used to terminate reasoning."
+        assert _strip_think_block(raw) == raw
+
+    def test_truncated_mid_think_returns_empty(self):
+        # max_tokens cut the reasoning off before `</think>` was emitted.
+        # Never leak the buffered chain-of-thought.
+        raw = "<think>I should consider every possibility before answering, starting with"
+        assert _strip_think_block(raw) == ""
 
 
 class TestStripGenerations:
     def test_strips_each_generation_message(self):
         result = ChatResult(
             generations=[
-                ChatGeneration(message=AIMessage(content="reason A</think>answer A")),
-                ChatGeneration(message=AIMessage(content="reason B</think>answer B")),
+                ChatGeneration(message=AIMessage(content="<think>reason A</think>answer A")),
+                ChatGeneration(message=AIMessage(content="<think>reason B</think>answer B")),
             ]
         )
         _strip_generations(result)
@@ -177,7 +191,7 @@ class TestStrippingChatOpenAIAstream:
             base_url="http://example/v1", api_key="k", default_model="m"
         )
         model = cast("_StrippingChatOpenAI", provider.get_chat_model())
-        fixture = [_chunk("outer reasoning</think>middle</think>final answer")]
+        fixture = [_chunk("<think>outer reasoning</think>middle</think>final answer")]
         with patch.object(ChatOpenAI, "_astream", _fake_astream_factory(fixture)):
             chunks = await _collect_astream(model)
         assert _aggregate_text(chunks) == "middle</think>final answer"
