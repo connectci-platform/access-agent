@@ -206,9 +206,23 @@ GENERAL_CAPABILITIES: list[Capability] = [
         "Check usage (XDMoD)",
         "View resource usage and performance data",
         "analytics",
-        backend=McpBackend(servers=("xdmod", "xdmod-data")),
+        backend=McpBackend(servers=("xdmod",)),
         requires_auth=False,
         example_query="Show my resource usage on Delta last month",
+    ),
+    # Split out from check_usage: the xdmod-data server extracts raw/per-user
+    # data and requires a per-user XDMoD API token, which the agent cannot yet
+    # obtain. Kept as its own capability so it can be gated off via
+    # DISABLED_CAPABILITIES=extract_xdmod_data until the token flow lands,
+    # without disabling the no-token xdmod charting tools above.
+    Capability(
+        "extract_xdmod_data",
+        "Extract XDMoD data",
+        "Extract raw and per-user XDMoD usage data (requires a per-user token)",
+        "analytics",
+        backend=McpBackend(servers=("xdmod-data",)),
+        requires_auth=False,
+        example_query="Extract raw job records for my ACCESS ID last month",
     ),
     Capability(
         "search_nsf_awards",

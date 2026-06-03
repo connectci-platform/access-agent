@@ -28,13 +28,18 @@ services:
       - QA_SERVICE_URL=${QA_SERVICE_URL:-}
       - MCP_SERVER_HOST=${MCP_SERVER_HOST:-host.docker.internal}
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/langgraph
-      - MCP_CATALOG_URL=http://n8n:5678/webhook/generate-mcp-catalog
+      # Catalog is live-aggregated from each MCP server's /tools at startup and
+      # cached in memory; no static file or generator service is needed.
       # UKY document RAG
       - ACCESS_AI_API_KEY=${ACCESS_AI_API_KEY:-}
       # Drupal endpoint for resource group section cache
       - DRUPAL_RESOURCE_GROUPS_URL=${DRUPAL_RESOURCE_GROUPS_URL:-https://support.access-ci.org/api/1.0/resource-groups}
       # MCP API key for servers requiring authentication (announcements, events, jsm)
       - MCP_API_KEY=${MCP_API_KEY:-}
+      # Capability gating (comma-separated capability ids). See docker-compose.prod.yml:
+      # extract_xdmod_data is gated off by default until the per-user XDMoD token flow exists.
+      - DISABLED_CAPABILITIES=${DISABLED_CAPABILITIES:-extract_xdmod_data}
+      - ENABLED_CAPABILITIES=${ENABLED_CAPABILITIES:-}
       # JWT Authentication (ES256 + JWKS)
       - TRUSTED_JWKS_URLS=${TRUSTED_JWKS_URLS:-}
       - ALLOW_BODY_ACTING_USER=${ALLOW_BODY_ACTING_USER:-true}
