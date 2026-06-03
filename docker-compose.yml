@@ -35,6 +35,10 @@ services:
       - DRUPAL_RESOURCE_GROUPS_URL=${DRUPAL_RESOURCE_GROUPS_URL:-https://support.access-ci.org/api/1.0/resource-groups}
       # MCP API key for servers requiring authentication (announcements, events, jsm)
       - MCP_API_KEY=${MCP_API_KEY:-}
+      # Capability gating (comma-separated capability ids). See docker-compose.prod.yml:
+      # extract_xdmod_data is gated off by default until the per-user XDMoD token flow exists.
+      - DISABLED_CAPABILITIES=${DISABLED_CAPABILITIES:-extract_xdmod_data}
+      - ENABLED_CAPABILITIES=${ENABLED_CAPABILITIES:-}
       # JWT Authentication (ES256 + JWKS)
       - TRUSTED_JWKS_URLS=${TRUSTED_JWKS_URLS:-}
       - ALLOW_BODY_ACTING_USER=${ALLOW_BODY_ACTING_USER:-true}

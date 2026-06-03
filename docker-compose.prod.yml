@@ -51,6 +51,13 @@ services:
       - MCP_SERVER_HOST=${MCP_SERVER_HOST:-localhost}
       # MCP API key for servers requiring authentication (announcements, events, jsm)
       - MCP_API_KEY=${MCP_API_KEY:-}
+      # Capability gating (comma-separated capability ids). extract_xdmod_data
+      # is gated off by default because the xdmod-data MCP server needs a
+      # per-user XDMoD token the agent cannot yet obtain; without this the
+      # agent picks those tools and surfaces an XDMoD auth error. Remove it
+      # once the per-user token flow is in place.
+      - DISABLED_CAPABILITIES=${DISABLED_CAPABILITIES:-extract_xdmod_data}
+      - ENABLED_CAPABILITIES=${ENABLED_CAPABILITIES:-}
       # JWT Authentication (ES256 + JWKS)
       - TRUSTED_JWKS_URLS=${TRUSTED_JWKS_URLS:-}
       - ALLOW_BODY_ACTING_USER=${ALLOW_BODY_ACTING_USER:-true}

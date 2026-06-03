@@ -240,10 +240,14 @@ class TestBackendQueries:
         cap = reg.capability_for_server("allocations")
         assert cap is not None
         assert cap.id == "check_allocations"
-        # xdmod is shared between xdmod and xdmod-data servers
+        # The no-token charting server and the token-gated data server are
+        # separate capabilities so xdmod-data can be gated off on its own.
         cap = reg.capability_for_server("xdmod")
         assert cap is not None
         assert cap.id == "check_usage"
+        cap = reg.capability_for_server("xdmod-data")
+        assert cap is not None
+        assert cap.id == "extract_xdmod_data"
         assert reg.capability_for_server("nonexistent") is None
 
     def test_is_domain_enabled_default(self):
