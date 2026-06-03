@@ -183,7 +183,10 @@ jobs:
               exit 1
             fi
 
-            SUCCESS=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['success'])")
+            # /api/v1/query streams Server-Sent Events (event: status / event: done),
+            # not a single JSON object. Pull `success` from the `data:` payload of the
+            # terminal `done` event. Kept on one line so the embedded Python stays valid YAML.
+            SUCCESS=$(echo "$RESPONSE" | python3 -c "import sys,json; objs=[json.loads(l[5:].strip()) for l in sys.stdin if l.strip().startswith('data:') and l[5:].strip()]; vals=[o['success'] for o in objs if 'success' in o]; print(vals[-1] if vals else None)")
             if [ "$SUCCESS" != "True" ]; then
               echo "FAIL: Query returned success=false"
               echo "$RESPONSE"
