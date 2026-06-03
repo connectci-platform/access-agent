@@ -28,7 +28,8 @@ services:
       - QA_SERVICE_URL=${QA_SERVICE_URL:-}
       - MCP_SERVER_HOST=${MCP_SERVER_HOST:-host.docker.internal}
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/langgraph
-      - MCP_CATALOG_URL=http://n8n:5678/webhook/generate-mcp-catalog
+      # Catalog is live-aggregated from each MCP server's /tools at startup and
+      # cached in memory; no static file or generator service is needed.
       # UKY document RAG
       - ACCESS_AI_API_KEY=${ACCESS_AI_API_KEY:-}
       # Drupal endpoint for resource group section cache

@@ -108,8 +108,13 @@ class Settings(BaseSettings):
     # inadvertent writes would be unacceptable. Overrides nothing else.
     READ_ONLY: bool = False
 
-    # MCP Servers
-    MCP_CATALOG_URL: str = "http://localhost:5678/webhook/generate-mcp-catalog"
+    # MCP Servers. With both unset (the default), the catalog is built by
+    # live-aggregating each MCP server's /tools endpoint at startup and cached
+    # in memory (see CatalogAggregator). MCP_CATALOG_PATH is an optional escape
+    # hatch to load a static catalog file instead; MCP_CATALOG_URL to fetch one
+    # from an HTTP endpoint. (A retired n8n webhook previously generated such a
+    # file; that path is no longer used.)
+    MCP_CATALOG_URL: str = ""
     MCP_CATALOG_PATH: str | None = None
 
     # max_tokens budget for the tool_calling_loop's react agent. Reasoning
