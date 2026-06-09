@@ -7,6 +7,7 @@ from src.turn_reporter import (
     TurnReportBase,
     TurnReporter,
     _assemble_turn_report,
+    _count_citations,
 )
 
 
@@ -243,3 +244,15 @@ class TestWrite:
             success=True,
             capabilities=[],
         )
+
+
+class TestCitationCount:
+    def test_counts_distinct_urls(self):
+        assert _count_citations("See https://a.org/x and https://b.org/y.") == 2
+
+    def test_dedupes_repeated_url(self):
+        assert _count_citations("https://a.org/x then again https://a.org/x") == 1
+
+    def test_zero_when_none_or_empty(self):
+        assert _count_citations(None) == 0
+        assert _count_citations("no links here") == 0

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -115,6 +116,21 @@ def _args_hash(arguments: dict[str, Any] | None) -> str:
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
+_URL_RE = re.compile(r"https?://[^\s)\]>}\"']+")
+
+
+def _count_citations(answer: str | None) -> int:
+    """Count distinct cited source URLs in an answer.
+
+    The system prompt instructs the model to cite source URLs; distinct URLs
+    are the citation signal. No validity check — citations_valid has no source
+    in the agent (an A3/Area-D concern).
+    """
+    if not answer:
+        return 0
+    return len(set(_URL_RE.findall(answer)))
+
+
 def _assemble_turn_report(
     *,
     final_state: dict[str, Any],
@@ -158,6 +174,7 @@ def _assemble_turn_report(
         "any_tool_failed": failures > 0,
         "invoked_write": invoked_write,
         "total_tokens": final_state.get("total_tokens"),
+        "citation_count": _count_citations(final_state.get("final_answer")),
         "payload": {
             "answer": final_state.get("final_answer"),
             "tool_results": results,
