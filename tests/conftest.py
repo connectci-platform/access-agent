@@ -28,6 +28,9 @@ def _reset_async_singletons():
     ``is_closed`` does not catch this (a dead loop does not close the
     client), so resetting the globals is the reliable fix: each test
     rebuilds its client on its own loop.
+
+    Also resets the turn_capture ContextVar to None so that top-level
+    reset_turn_capture() calls in one test don't bleed into the next.
     """
     yield
     from src.services import uky_client
@@ -35,6 +38,15 @@ def _reset_async_singletons():
 
     uky_client._client = None
     mcp_client._shared_client = None
+
+    # Clear the turn_capture ContextVar between tests to prevent top-level
+    # reset_turn_capture() calls in one test from polluting the next.
+    try:
+        from src.agent.turn_capture import _turn_capture
+
+        _turn_capture.set(None)
+    except ImportError:
+        pass
 
 
 @pytest.fixture

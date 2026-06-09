@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
 from ..agent.graph import stream_agent
+from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..auth import get_acting_user_from_cookie
 from ..config import settings
 from ..tools import ToolRegistry, get_catalog_aggregator
@@ -204,6 +205,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
     """
     start_time = time.time()
     final_state: dict[str, Any] = {}
+    reset_turn_capture()
 
     try:
         registry = await get_registry()
@@ -352,6 +354,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                 acting_user=acting_user,
                 success=True,
                 capabilities=_cap_reg().infer_capability_ids(tools_used),
+                turn_capture=get_turn_capture(),
             )
         except Exception:
             logger.exception("Turn report write failed")

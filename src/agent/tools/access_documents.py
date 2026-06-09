@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 from ...services.uky_client import UKYChunk, get_uky_client
 from ..domains.capabilities import get_capability_registry
+from ..turn_capture import record_retrieved_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +155,7 @@ async def _search_access_documents(
         logger.warning("search_access_documents (chat-mcp) failed: %s", exc)
         return f"Documentation search failed: {exc}. Try another approach."
 
+    record_retrieved_chunks(retrieval.chunks)
     return _format_chunks(query, retrieval.chunks)
 
 

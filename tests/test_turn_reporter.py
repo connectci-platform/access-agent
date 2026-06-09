@@ -171,6 +171,60 @@ class TestAssemble:
         assert report["user_hash"] is None
         assert report["invoked_write"] is False
 
+    def test_rag_fields_and_payload_from_capture(self):
+        cap = {
+            "searched": True,
+            "chunks": [{"rank": 1, "url": "https://a.org", "snippet": "x"}],
+            "summarized": False,
+        }
+        report, _ = _assemble_turn_report(
+            final_state={"tools_used": ["search_access_documents"], "tool_results": []},
+            session_id="s",
+            turn_index=1,
+            question_id="q",
+            query_text="hi",
+            duration_ms=1.0,
+            acting_user=None,
+            success=True,
+            capabilities=[],
+            turn_capture=cap,
+        )
+        assert report["rag_chunk_count"] == 1
+        assert report["rag_zero_hits"] is False
+        assert report["payload"]["retrieved_chunks"] == cap["chunks"]
+
+    def test_rag_zero_hits_when_search_returned_nothing(self):
+        cap = {"searched": True, "chunks": [], "summarized": False}
+        report, _ = _assemble_turn_report(
+            final_state={"tools_used": [], "tool_results": []},
+            session_id="s",
+            turn_index=1,
+            question_id="q",
+            query_text="hi",
+            duration_ms=1.0,
+            acting_user=None,
+            success=True,
+            capabilities=[],
+            turn_capture=cap,
+        )
+        assert report["rag_chunk_count"] == 0
+        assert report["rag_zero_hits"] is True
+
+    def test_no_search_is_not_zero_hits(self):
+        report, _ = _assemble_turn_report(
+            final_state={"tools_used": [], "tool_results": []},
+            session_id="s",
+            turn_index=1,
+            question_id="q",
+            query_text="hi",
+            duration_ms=1.0,
+            acting_user=None,
+            success=True,
+            capabilities=[],
+        )
+        assert report["rag_chunk_count"] == 0
+        assert report["rag_zero_hits"] is False
+
 
 class TestWrite:
     def _reporter(self):

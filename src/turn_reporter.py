@@ -143,6 +143,7 @@ def _assemble_turn_report(
     acting_user: str | None,
     success: bool,
     capabilities: list[str],
+    turn_capture: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Turn final_state + ids into a (turn_report dict, tool_call dicts) pair.
 
@@ -151,6 +152,9 @@ def _assemble_turn_report(
     raw_results = final_state.get("tool_results", []) or []
     results = [r if isinstance(r, dict) else r.model_dump() for r in raw_results]
     tools_used = final_state.get("tools_used", []) or []
+    capture = turn_capture or {}
+    rag_chunks = capture.get("chunks", []) or []
+    rag_searched = bool(capture.get("searched"))
 
     failures = sum(1 for r in results if not r.get("success", True))
     invoked_write = any(r.get("tool_name") in WRITE_MCP_TOOL_NAMES for r in results)
@@ -176,11 +180,14 @@ def _assemble_turn_report(
         "invoked_write": invoked_write,
         "total_tokens": final_state.get("total_tokens"),
         "citation_count": _count_citations(final_state.get("final_answer")),
+        "rag_chunk_count": len(rag_chunks),
+        "rag_zero_hits": rag_searched and len(rag_chunks) == 0,
         "payload": {
             "answer": final_state.get("final_answer"),
             "tool_results": results,
             "node_trace": final_state.get("node_trace", []),
             "params": {},
+            "retrieved_chunks": rag_chunks,
         },
     }
     tool_calls = [
