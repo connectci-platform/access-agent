@@ -53,3 +53,13 @@ def test_does_not_mark_when_base_skips(monkeypatch):
     reset_turn_capture()
     asyncio.run(_instance().abefore_model({}, None))
     assert get_turn_capture()["summarized"] is False
+
+
+def test_sync_before_model_marks_summarized(monkeypatch):
+    def fake_before(self, state, runtime):
+        return {"messages": []}
+
+    monkeypatch.setattr(SummarizationMiddleware, "before_model", fake_before, raising=True)
+    reset_turn_capture()
+    _instance().before_model({}, None)
+    assert get_turn_capture()["summarized"] is True

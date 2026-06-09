@@ -228,6 +228,8 @@ class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
     it fired. before_model/abefore_model return non-None only when a summary is
     produced, so we set a per-turn flag (via turn_capture) on that signal.
     Deterministic; no message-count guessing.
+
+    Relies on SummarizationMiddleware.before_model / abefore_model returning None when no compaction occurred — re-verify this invariant on LangChain upgrades.
     """
 
     def before_model(self, state: Any, runtime: Any) -> Any:
