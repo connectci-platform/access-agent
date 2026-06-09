@@ -228,6 +228,19 @@ class TurnReporter:
                 if name not in existing:
                     conn.execute(text(f"ALTER TABLE turn_reports ADD COLUMN {name} {col_type}"))
 
+    def count_turns_for_session(self, session_id: str) -> int:
+        """How many turn_reports already exist for this session (prior turns)."""
+        if not self._ensure_initialized() or self._session_factory is None:
+            return 0
+        session = self._session_factory()
+        try:
+            return session.query(TurnReport).filter(TurnReport.session_id == session_id).count()
+        except Exception as e:
+            logger.error(f"Failed to count turns for session: {e}")
+            return 0
+        finally:
+            session.close()
+
     def log_turn_report(self, **kwargs: Any) -> None:
         if not self._ensure_initialized() or self._session_factory is None:
             return

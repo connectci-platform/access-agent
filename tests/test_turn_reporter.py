@@ -183,6 +183,24 @@ class TestWrite:
         assert s.query(ReportToolCall).filter_by(report_id=row.id).count() == 1
         s.close()
 
+    def test_count_turns_for_session(self):
+        r = self._reporter()
+        assert r.count_turns_for_session("sX") == 0
+        for _ in range(2):
+            r.log_turn_report(
+                final_state={"tools_used": [], "tool_results": []},
+                session_id="sX",
+                turn_index=1,
+                question_id="q",
+                query_text="hi",
+                duration_ms=1.0,
+                acting_user=None,
+                success=True,
+                capabilities=[],
+            )
+        assert r.count_turns_for_session("sX") == 2
+        assert r.count_turns_for_session("other") == 0
+
     def test_write_never_raises_on_bad_state(self):
         r = self._reporter()
         r.log_turn_report(
