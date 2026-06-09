@@ -34,6 +34,12 @@ class TestParse:
         assert _parse_judge_response(None) == {}
         assert _parse_judge_response("[1,2,3]") == {}
 
+    def test_list_wrapped_object_is_leniently_extracted(self):
+        # Best-effort: if the model wraps the object in a list, we extract the
+        # inner object rather than dropping the label. Intentional for a
+        # dashboard label (not a strict schema gate).
+        assert _parse_judge_response('[{"query_intent":"genuine"}]') == {"query_intent": "genuine"}
+
 
 class TestPrompt:
     def test_includes_and_truncates(self):
@@ -69,3 +75,16 @@ class TestJudgeTurn:
 
         monkeypatch.setattr("src.turn_judge.get_llm", _boom)
         assert asyncio.run(judge_turn("q", "a")) == {}
+
+    def test_non_string_content_coerced(self, monkeypatch):
+        monkeypatch.setattr(settings, "TURN_JUDGE_ENABLED", True)
+
+        class _FakeModel:
+            async def ainvoke(self, _prompt):
+                # content arrives as a non-string (e.g. a list of parts)
+                return SimpleNamespace(content=['{"query_intent":"genuine",', '"refused":false}'])
+
+        monkeypatch.setattr("src.turn_judge.get_llm", lambda **kw: _FakeModel())
+        out = asyncio.run(judge_turn("q", "a"))
+        # str(list) is not valid JSON for our extractor → graceful {} (never raises)
+        assert out == {}

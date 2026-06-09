@@ -84,6 +84,7 @@ async def judge_turn(query: str, answer: str | None) -> dict[str, Any]:
 
     Off the response path; failures return {} so the report row still writes
     with NULLs. Disabled via TURN_JUDGE_ENABLED=false.
+    Not prompt-injection-hardened: a crafted query/answer could nudge the label — acceptable because this is a dashboard label, not a safety gate.
     """
     if not settings.TURN_JUDGE_ENABLED:
         return {}
