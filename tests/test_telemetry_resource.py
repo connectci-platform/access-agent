@@ -13,6 +13,7 @@ def test_version_and_env_come_from_settings(monkeypatch):
 def test_falls_back_when_unset(monkeypatch):
     monkeypatch.setattr(settings, "AGENT_VERSION", "")
     monkeypatch.setattr(settings, "DEPLOY_ENV", "")
+    monkeypatch.setenv("ENVIRONMENT", "local")
     attrs = _build_resource_attributes("access-agent")
     assert attrs["service.version"] == "unknown"
-    assert attrs["deployment.environment"]  # non-empty (env fallback)
+    assert attrs["deployment.environment"] == "local"
