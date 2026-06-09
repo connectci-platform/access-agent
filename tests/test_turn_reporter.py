@@ -256,3 +256,6 @@ class TestCitationCount:
     def test_zero_when_none_or_empty(self):
         assert _count_citations(None) == 0
         assert _count_citations("no links here") == 0
+
+    def test_trailing_punctuation_does_not_double_count(self):
+        assert _count_citations("Read https://a.org/x. Also https://a.org/x") == 1

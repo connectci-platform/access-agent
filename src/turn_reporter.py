@@ -128,7 +128,8 @@ def _count_citations(answer: str | None) -> int:
     """
     if not answer:
         return 0
-    return len(set(_URL_RE.findall(answer)))
+    urls = {m.rstrip(".,;:!?") for m in _URL_RE.findall(answer)}
+    return len(urls)
 
 
 def _assemble_turn_report(
