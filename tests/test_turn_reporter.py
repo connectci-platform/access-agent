@@ -139,6 +139,21 @@ class TestAssemble:
         )
         assert report["total_tokens"] == 123
 
+    def test_total_tokens_absent_is_none_not_zero(self):
+        # NULL ("not measured") must stay distinct from a measured 0.
+        report, _ = _assemble_turn_report(
+            final_state={"tools_used": [], "tool_results": []},
+            session_id="s",
+            turn_index=1,
+            question_id="q",
+            query_text="hi",
+            duration_ms=1.0,
+            acting_user=None,
+            success=True,
+            capabilities=[],
+        )
+        assert report["total_tokens"] is None
+
     def test_anonymous_user_not_authenticated(self):
         report, _ = _assemble_turn_report(
             final_state={"tools_used": [], "tool_results": []},

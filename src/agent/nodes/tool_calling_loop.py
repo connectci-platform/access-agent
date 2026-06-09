@@ -210,7 +210,8 @@ class _TokenUsageAccumulator(AsyncCallbackHandler):
     def __init__(self) -> None:
         self.total_tokens = 0
 
-    async def on_llm_end(self, response: Any, **kwargs: Any) -> None:  # noqa: ARG002
+    async def on_llm_end(self, response: Any, **kwargs: Any) -> None:
+        del kwargs
         for gen_list in getattr(response, "generations", []) or []:
             for gen in gen_list:
                 msg = getattr(gen, "message", None)
