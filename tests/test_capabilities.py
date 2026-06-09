@@ -343,18 +343,39 @@ class TestEnvVarFilter:
         assert reg.get_by_id("check_allocations") is not None
 
 
-# ── infer_capability_ids ───────────────────────────────────────────────────
+# ── infer_capability_ids (results-based) ────────────────────────────────────
 
 
-def test_infer_capability_ids_maps_each_tool_server():
+def test_infer_capability_ids_mcp_via_server_and_rag_via_args():
     reg = get_capability_registry()
-    ids = reg.infer_capability_ids(
-        ["allocations__search_projects", "software-discovery__search_software"]
+    results = [
+        {"tool_name": "list_all_software", "server": "software-discovery", "arguments": {}},
+        {"tool_name": "search_access_documents", "server": "", "arguments": {"source": "general"}},
+    ]
+    ids = reg.infer_capability_ids(results)
+    assert "search_software" in ids  # MCP tool → server → capability
+    assert "ask_question" in ids  # doc-search general → RAG capability
+    assert ids == sorted(set(ids))  # deduped + sorted
+
+
+def test_infer_capability_ids_doc_search_xdmod_and_scoped():
+    reg = get_capability_registry()
+    xdmod = reg.infer_capability_ids(
+        [{"tool_name": "search_access_documents", "server": None, "arguments": {"source": "xdmod"}}]
     )
-    assert "check_allocations" in ids
-    assert "search_software" in ids
-    assert ids == sorted(set(ids))
+    assert xdmod == ["ask_xdmod_question"]
+    scoped = reg.infer_capability_ids(
+        [
+            {
+                "tool_name": "search_access_documents",
+                "server": None,
+                "arguments": {"source": "general", "rp_name": "delta"},
+            }
+        ]
+    )
+    assert scoped == ["ask_about_resource"]
 
 
-def test_infer_capability_ids_empty_is_empty():
+def test_infer_capability_ids_empty():
     assert get_capability_registry().infer_capability_ids([]) == []
+    assert get_capability_registry().infer_capability_ids(None) == []

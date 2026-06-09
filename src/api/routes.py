@@ -353,7 +353,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                 duration_ms=duration_ms,
                 acting_user=acting_user,
                 success=True,
-                capabilities=_cap_reg().infer_capability_ids(tools_used),
+                capabilities=_cap_reg().infer_capability_ids(final_state.get("tool_results", [])),
                 turn_capture=get_turn_capture(),
             )
         except Exception:
