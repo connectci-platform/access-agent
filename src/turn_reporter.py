@@ -7,8 +7,11 @@ usage_logs already stores; user ids are hashed.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import (
     JSON,
@@ -73,3 +76,85 @@ class ReportToolCall(TurnReportBase):  # type: ignore[valid-type,misc]
     args_hash = Column(String(64), index=True)
     arguments = Column(JSON)
     duration_ms = Column(Integer, default=0)  # per-call timing deferred to A2
+
+
+# ── Pure payload builder ──────────────────────────────────────────────────
+
+from src.agent.domains.capabilities import WRITE_MCP_TOOL_NAMES  # noqa: E402
+
+from .config import settings  # noqa: E402
+
+
+def _hash_user(user_id: str | None) -> str | None:
+    if not user_id:
+        return None
+    return hashlib.sha256(user_id.encode()).hexdigest()[:16]
+
+
+def _args_hash(arguments: dict[str, Any] | None) -> str:
+    blob = json.dumps(arguments or {}, sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
+def _assemble_turn_report(
+    *,
+    final_state: dict[str, Any],
+    session_id: str,
+    turn_index: int,
+    question_id: str,
+    query_text: str,
+    duration_ms: float | None,
+    acting_user: str | None,
+    success: bool,
+    capabilities: list[str],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Turn final_state + ids into a (turn_report dict, tool_call dicts) pair.
+
+    Pure: no DB, no I/O. ToolResult objects may be pydantic models or dicts.
+    """
+    raw_results = final_state.get("tool_results", []) or []
+    results = [r if isinstance(r, dict) else r.model_dump() for r in raw_results]
+    tools_used = final_state.get("tools_used", []) or []
+
+    failures = sum(1 for r in results if not r.get("success", True))
+    invoked_write = any(r.get("tool_name") in WRITE_MCP_TOOL_NAMES for r in results)
+
+    report: dict[str, Any] = {
+        "session_id": session_id,
+        "turn_index": turn_index,
+        "question_id": question_id,
+        "query_text": query_text,
+        "origin": "real",
+        "agent_version": settings.AGENT_VERSION or None,
+        "env": settings.DEPLOY_ENV or None,
+        "model_id": getattr(settings, "LLM_MODEL", None),
+        "capabilities": capabilities,
+        "resource_context": final_state.get("resource_context"),
+        "was_authenticated": acting_user is not None,
+        "user_hash": _hash_user(acting_user),
+        "success": success,
+        "duration_ms": duration_ms,
+        "tool_count": len(tools_used),
+        "tool_failure_count": failures,
+        "any_tool_failed": failures > 0,
+        "invoked_write": invoked_write,
+        "payload": {
+            "answer": final_state.get("final_answer"),
+            "tool_results": results,
+            "node_trace": final_state.get("node_trace", []),
+            "params": {},
+        },
+    }
+    tool_calls = [
+        {
+            "step_index": i,
+            "tool_name": r.get("tool_name"),
+            "server": r.get("server"),
+            "success": bool(r.get("success", True)),
+            "args_hash": _args_hash(r.get("arguments")),
+            "arguments": r.get("arguments") or {},
+            "duration_ms": int(r.get("duration_ms") or 0),
+        }
+        for i, r in enumerate(results)
+    ]
+    return report, tool_calls

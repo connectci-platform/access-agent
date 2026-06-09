@@ -1,7 +1,7 @@
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 
-from src.turn_reporter import ReportToolCall, TurnReport, TurnReportBase
+from src.turn_reporter import ReportToolCall, TurnReport, TurnReportBase, _assemble_turn_report
 
 
 class TestTurnReportModels:
@@ -55,3 +55,69 @@ class TestTurnReportModels:
         s.commit()
         assert s.query(ReportToolCall).filter_by(report_id=r.id).count() == 1
         s.close()
+
+
+def _tool_result(name, server, success=True, args=None):
+    return {
+        "step_id": "x",
+        "tool_name": name,
+        "server": server,
+        "success": success,
+        "data": "ok",
+        "error": None,
+        "arguments": args or {},
+        "duration_ms": 0,
+    }
+
+
+class TestAssemble:
+    def test_derived_columns_and_children(self):
+        final_state = {
+            "final_answer": "Delta has Python.",
+            "tools_used": ["software-discovery__search_software", "jsm__create_support_ticket"],
+            "tool_results": [
+                _tool_result("search_software", "software-discovery", True, {"q": "python"}),
+                _tool_result("create_support_ticket", "jsm", False, {"summary": "x"}),
+            ],
+            "node_trace": [{"node": "loop"}],
+            "resource_context": "delta",
+        }
+        report, tool_calls = _assemble_turn_report(
+            final_state=final_state,
+            session_id="s1",
+            turn_index=2,
+            question_id="q1",
+            query_text="is python on delta?",
+            duration_ms=1234.5,
+            acting_user="user@x.edu",
+            success=True,
+            capabilities=["search_software", "open_ticket"],
+        )
+        assert report["tool_count"] == 2
+        assert report["tool_failure_count"] == 1
+        assert report["any_tool_failed"] is True
+        assert report["invoked_write"] is True
+        assert report["was_authenticated"] is True
+        assert report["resource_context"] == "delta"
+        assert report["capabilities"] == ["search_software", "open_ticket"]
+        assert report["payload"]["answer"] == "Delta has Python."
+        assert len(tool_calls) == 2
+        assert tool_calls[0]["step_index"] == 0
+        assert tool_calls[1]["tool_name"] == "create_support_ticket"
+        assert tool_calls[0]["args_hash"]
+
+    def test_anonymous_user_not_authenticated(self):
+        report, _ = _assemble_turn_report(
+            final_state={"tools_used": [], "tool_results": []},
+            session_id="s",
+            turn_index=1,
+            question_id="q",
+            query_text="hi",
+            duration_ms=1.0,
+            acting_user=None,
+            success=True,
+            capabilities=[],
+        )
+        assert report["was_authenticated"] is False
+        assert report["user_hash"] is None
+        assert report["invoked_write"] is False
