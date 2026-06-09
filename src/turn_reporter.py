@@ -182,6 +182,7 @@ def _assemble_turn_report(
         "citation_count": _count_citations(final_state.get("final_answer")),
         "rag_chunk_count": len(rag_chunks),
         "rag_zero_hits": rag_searched and len(rag_chunks) == 0,
+        "summarized": bool(capture.get("summarized")),
         "payload": {
             "answer": final_state.get("final_answer"),
             "tool_results": results,

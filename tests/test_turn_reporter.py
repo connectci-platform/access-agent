@@ -225,6 +225,22 @@ class TestAssemble:
         assert report["rag_chunk_count"] == 0
         assert report["rag_zero_hits"] is False
 
+    def test_summarized_from_capture(self):
+        cap = {"searched": False, "chunks": [], "summarized": True}
+        report, _ = _assemble_turn_report(
+            final_state={"tools_used": [], "tool_results": []},
+            session_id="s",
+            turn_index=1,
+            question_id="q",
+            query_text="hi",
+            duration_ms=1.0,
+            acting_user=None,
+            success=True,
+            capabilities=[],
+            turn_capture=cap,
+        )
+        assert report["summarized"] is True
+
 
 class TestWrite:
     def _reporter(self):

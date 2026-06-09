@@ -34,6 +34,7 @@ from ..domains.tools import create_mcp_tools_from_catalog
 from ..prompts.system_prompt import build_system_prompt
 from ..state import ToolResult
 from ..tools import search_access_documents
+from ..turn_capture import mark_summarized
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +221,28 @@ class _TokenUsageAccumulator(AsyncCallbackHandler):
                     self.total_tokens += int(usage.get("total_tokens") or 0)
 
 
+class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
+    """SummarizationMiddleware that records when it actually summarizes.
+
+    The built-in compacts history transparently — nothing in final_state says
+    it fired. before_model/abefore_model return non-None only when a summary is
+    produced, so we set a per-turn flag (via turn_capture) on that signal.
+    Deterministic; no message-count guessing.
+    """
+
+    def before_model(self, state: Any, runtime: Any) -> Any:
+        result = super().before_model(state, runtime)
+        if result is not None:
+            mark_summarized()
+        return result
+
+    async def abefore_model(self, state: Any, runtime: Any) -> Any:
+        result = await super().abefore_model(state, runtime)
+        if result is not None:
+            mark_summarized()
+        return result
+
+
 async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
     """Run the tool-calling loop.
 
@@ -263,7 +286,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
             tools=tools,
             system_prompt=system_prompt,
             middleware=[
-                SummarizationMiddleware(
+                _FlaggingSummarizationMiddleware(
                     model=llm,
                     trigger=("tokens", settings.SUMMARIZATION_TRIGGER_TOKENS),
                     keep=("tokens", settings.SUMMARIZATION_KEEP_TOKENS),
