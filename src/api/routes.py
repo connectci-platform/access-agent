@@ -333,6 +333,27 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
         except Exception:
             logger.exception("Usage logging failed")
 
+        # Turn report (denormalized read model for the reporting dashboard).
+        # Off the response path, swallow failures — never affects the answer.
+        from ..agent.domains.capabilities import get_capability_registry as _cap_reg
+        from ..turn_reporter import get_turn_reporter
+
+        try:
+            await asyncio.to_thread(
+                get_turn_reporter().log_turn_report,
+                final_state=final_state,
+                session_id=session_id,
+                turn_index=1,  # A2: derive real turn index from session history
+                question_id=question_id,
+                query_text=request.query,
+                duration_ms=duration_ms,
+                acting_user=acting_user,
+                success=True,
+                capabilities=_cap_reg().infer_capability_ids(tools_used),
+            )
+        except Exception:
+            logger.exception("Turn report write failed")
+
         # Track query for Turnstile free-query counting
         if not acting_user:
             get_turnstile_guard().record_query(session_id)
