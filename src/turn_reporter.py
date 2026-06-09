@@ -144,6 +144,7 @@ def _assemble_turn_report(
     success: bool,
     capabilities: list[str],
     turn_capture: dict[str, Any] | None = None,
+    judge: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Turn final_state + ids into a (turn_report dict, tool_call dicts) pair.
 
@@ -153,6 +154,7 @@ def _assemble_turn_report(
     results = [r if isinstance(r, dict) else r.model_dump() for r in raw_results]
     tools_used = final_state.get("tools_used", []) or []
     capture = turn_capture or {}
+    judged = judge or {}
     rag_chunks = capture.get("chunks", []) or []
     rag_searched = bool(capture.get("searched"))
 
@@ -183,6 +185,9 @@ def _assemble_turn_report(
         "rag_chunk_count": len(rag_chunks),
         "rag_zero_hits": rag_searched and len(rag_chunks) == 0,
         "summarized": bool(capture.get("summarized")),
+        "query_intent": judged.get("query_intent"),
+        "refused": judged.get("refused"),
+        "is_deflection": judged.get("is_deflection"),
         "payload": {
             "answer": final_state.get("final_answer"),
             "tool_results": results,

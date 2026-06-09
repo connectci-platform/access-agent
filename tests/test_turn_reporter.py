@@ -241,6 +241,39 @@ class TestAssemble:
         )
         assert report["summarized"] is True
 
+    def test_judge_fields_populate(self):
+        report, _ = _assemble_turn_report(
+            final_state={"tools_used": [], "tool_results": []},
+            session_id="s",
+            turn_index=1,
+            question_id="q",
+            query_text="hi",
+            duration_ms=1.0,
+            acting_user=None,
+            success=True,
+            capabilities=[],
+            judge={"query_intent": "malicious", "refused": True, "is_deflection": False},
+        )
+        assert report["query_intent"] == "malicious"
+        assert report["refused"] is True
+        assert report["is_deflection"] is False
+
+    def test_judge_absent_leaves_none(self):
+        report, _ = _assemble_turn_report(
+            final_state={"tools_used": [], "tool_results": []},
+            session_id="s",
+            turn_index=1,
+            question_id="q",
+            query_text="hi",
+            duration_ms=1.0,
+            acting_user=None,
+            success=True,
+            capabilities=[],
+        )
+        assert report["query_intent"] is None
+        assert report["refused"] is None
+        assert report["is_deflection"] is None
+
 
 class TestWrite:
     def _reporter(self):
