@@ -339,11 +339,10 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
         from ..turn_reporter import get_turn_reporter
 
         try:
-            prior_turns = await asyncio.to_thread(
-                get_turn_reporter().count_turns_for_session, session_id
-            )
+            reporter = get_turn_reporter()
+            prior_turns = await asyncio.to_thread(reporter.count_turns_for_session, session_id)
             await asyncio.to_thread(
-                get_turn_reporter().log_turn_report,
+                reporter.log_turn_report,
                 final_state=final_state,
                 session_id=session_id,
                 turn_index=prior_turns + 1,
