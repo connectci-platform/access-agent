@@ -7,6 +7,7 @@ from src.agent.nodes.tool_calling_loop import (
     _FlaggingSummarizationMiddleware,
     _TokenUsageAccumulator,
 )
+from src.agent.state import AgentState, create_initial_state
 from src.agent.turn_capture import get_turn_capture, reset_turn_capture
 
 
@@ -63,3 +64,19 @@ def test_sync_before_model_marks_summarized(monkeypatch):
     reset_turn_capture()
     _instance().before_model({}, None)
     assert get_turn_capture()["summarized"] is True
+
+
+def test_total_tokens_is_a_declared_state_channel():
+    # Must be a declared channel or LangGraph strips it from the updates stream
+    # and final_state never carries it (the loop's return value is silently dropped).
+    assert "total_tokens" in AgentState.__annotations__
+
+
+def test_create_initial_state_sets_total_tokens():
+    state = create_initial_state(
+        query="q",
+        session_id="s",
+        question_id="qid",
+        tool_catalog={},
+    )
+    assert state["total_tokens"] is None

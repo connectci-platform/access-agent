@@ -191,6 +191,9 @@ class AgentState(TypedDict):
     # Output (set by the loop at end of run).
     final_answer: Annotated[str | None, "Final answer to return to user"]
 
+    # Output (turn-scoped token total summed by the loop's usage callback).
+    total_tokens: Annotated[int | None, "Turn-scoped total tokens for this turn's LLM calls"]
+
 
 def create_initial_state(
     query: str,
@@ -238,4 +241,5 @@ def create_initial_state(
         domain_completed=None,
         # Output.
         final_answer=None,
+        total_tokens=None,
     )
