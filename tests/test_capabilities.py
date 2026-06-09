@@ -379,3 +379,12 @@ def test_infer_capability_ids_doc_search_xdmod_and_scoped():
 def test_infer_capability_ids_empty():
     assert get_capability_registry().infer_capability_ids([]) == []
     assert get_capability_registry().infer_capability_ids(None) == []
+
+
+def test_infer_capability_ids_unknown_tool_no_server_contributes_nothing():
+    reg = get_capability_registry()
+    results = [
+        {"tool_name": "some_future_tool", "server": "", "arguments": {}},
+        {"tool_name": "another_local_tool", "server": None, "arguments": {"x": 1}},
+    ]
+    assert reg.infer_capability_ids(results) == []

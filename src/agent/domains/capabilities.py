@@ -86,6 +86,9 @@ _ATTRIBUTION_FALLBACK_ORDER: tuple[str, ...] = (
     "check_system_status",
 )
 
+# The doc-search tool's name (RAG-backed); see infer_capability_ids attribution.
+_DOC_SEARCH_TOOL_NAME = "search_access_documents"
+
 # ── Write-capable capabilities ────────────────────────────────────────────
 
 # Capabilities whose backend performs writes (POST/PUT/DELETE) against an
@@ -634,7 +637,7 @@ class CapabilityRegistry:
                 cap = self.capability_for_server(server)
                 if cap is not None:
                     out.add(cap.id)
-            elif name == "search_access_documents":
+            elif name == _DOC_SEARCH_TOOL_NAME:
                 source = args.get("source") or "general"
                 scoped = bool(args.get("rp_name"))
                 cap = self.capability_for_rag(source, scoped)
