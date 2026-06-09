@@ -11,7 +11,7 @@ import hashlib
 import json
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
     JSON,
@@ -23,8 +23,17 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    create_engine,
+    inspect,
+    text,
 )
-from sqlalchemy.orm import declarative_base
+from sqlalchemy.orm import Session, declarative_base, sessionmaker
+
+from .agent.domains.capabilities import WRITE_MCP_TOOL_NAMES
+from .config import settings
+
+if TYPE_CHECKING:
+    from sqlalchemy.engine import Engine
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +88,6 @@ class ReportToolCall(TurnReportBase):  # type: ignore[valid-type,misc]
 
 
 # ── Pure payload builder ──────────────────────────────────────────────────
-
-from src.agent.domains.capabilities import WRITE_MCP_TOOL_NAMES  # noqa: E402
-
-from .config import settings  # noqa: E402
 
 
 def _hash_user(user_id: str | None) -> str | None:
@@ -158,3 +163,71 @@ def _assemble_turn_report(
         for i, r in enumerate(results)
     ]
     return report, tool_calls
+
+
+# ── Writer ────────────────────────────────────────────────────────────────
+
+
+class TurnReporter:
+    """Writes turn_reports + report_tool_calls. Mirrors UsageLogger."""
+
+    def __init__(self) -> None:
+        self._engine: Engine | None = None
+        self._session_factory: sessionmaker[Session] | None = None
+        self._initialized = False
+
+    def _ensure_initialized(self) -> bool:
+        if self._initialized:
+            return True
+        if not settings.DATABASE_URL:
+            logger.warning("DATABASE_URL not set, turn reporting disabled")
+            return False
+        try:
+            db_url = settings.DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
+            self._engine = create_engine(db_url)
+            TurnReportBase.metadata.create_all(self._engine)
+            self._migrate_columns()
+            self._session_factory = sessionmaker(bind=self._engine)
+            self._initialized = True
+            logger.info("Turn reporting initialized")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to initialize turn reporting: {e}")
+            return False
+
+    def _migrate_columns(self) -> None:
+        if self._engine is None:
+            return
+        existing = {c["name"] for c in inspect(self._engine).get_columns("turn_reports")}
+        migrations: dict[str, str] = {}  # A2 adds columns here
+        with self._engine.begin() as conn:
+            for name, col_type in migrations.items():
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE turn_reports ADD COLUMN {name} {col_type}"))
+
+    def log_turn_report(self, **kwargs: Any) -> None:
+        if not self._ensure_initialized() or self._session_factory is None:
+            return
+        session = self._session_factory()
+        try:
+            report_data, tool_calls = _assemble_turn_report(**kwargs)
+            report = TurnReport(**report_data)
+            session.add(report)
+            session.flush()
+            for tc in tool_calls:
+                session.add(ReportToolCall(report_id=report.id, **tc))
+            session.commit()
+        except Exception as e:
+            logger.error(f"Failed to write turn report: {e}")
+        finally:
+            session.close()
+
+
+_turn_reporter: TurnReporter | None = None
+
+
+def get_turn_reporter() -> TurnReporter:
+    global _turn_reporter
+    if _turn_reporter is None:
+        _turn_reporter = TurnReporter()
+    return _turn_reporter

@@ -1,7 +1,13 @@
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 
-from src.turn_reporter import ReportToolCall, TurnReport, TurnReportBase, _assemble_turn_report
+from src.turn_reporter import (
+    ReportToolCall,
+    TurnReport,
+    TurnReportBase,
+    TurnReporter,
+    _assemble_turn_report,
+)
 
 
 class TestTurnReportModels:
@@ -121,3 +127,59 @@ class TestAssemble:
         assert report["was_authenticated"] is False
         assert report["user_hash"] is None
         assert report["invoked_write"] is False
+
+
+class TestWrite:
+    def _reporter(self):
+        r = TurnReporter()
+        r._engine = create_engine("sqlite:///:memory:")
+        TurnReportBase.metadata.create_all(r._engine)
+        r._session_factory = sessionmaker(bind=r._engine)
+        r._initialized = True
+        return r
+
+    def test_write_persists_parent_and_children(self):
+        r = self._reporter()
+        final_state = {
+            "final_answer": "ok",
+            "tools_used": ["jsm__create_support_ticket"],
+            "tool_results": [
+                {
+                    "tool_name": "create_support_ticket",
+                    "server": "jsm",
+                    "success": True,
+                    "arguments": {"summary": "x"},
+                    "duration_ms": 0,
+                }
+            ],
+        }
+        r.log_turn_report(
+            final_state=final_state,
+            session_id="s1",
+            turn_index=1,
+            question_id="q1",
+            query_text="open a ticket",
+            duration_ms=10.0,
+            acting_user="u@x.edu",
+            success=True,
+            capabilities=["open_ticket"],
+        )
+        s = r._session_factory()
+        row = s.query(TurnReport).one()
+        assert row.invoked_write is True
+        assert s.query(ReportToolCall).filter_by(report_id=row.id).count() == 1
+        s.close()
+
+    def test_write_never_raises_on_bad_state(self):
+        r = self._reporter()
+        r.log_turn_report(
+            final_state={},
+            session_id="s",
+            turn_index=1,
+            question_id="q",
+            query_text="x",
+            duration_ms=None,
+            acting_user=None,
+            success=True,
+            capabilities=[],
+        )
