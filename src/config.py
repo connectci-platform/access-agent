@@ -163,6 +163,9 @@ class Settings(BaseSettings):
     AGENT_VERSION: str = ""  # OTEL service.version; stamped at build (Plan A2)
     DEPLOY_ENV: str = ""  # staging | prod
 
+    TURN_JUDGE_ENABLED: bool = True  # baseline per-turn judge (query_intent/refused/is_deflection)
+    TURN_JUDGE_MAX_TOKENS: int = 200  # judge output is a tiny JSON object
+
     # Eval pipeline
     EVAL_JUDGE_BASE_URL: str = ""  # Empty = use default OpenAI. Set for on-premise LLM.
     EVAL_JUDGE_API_KEY: str = ""  # Falls back to OPENAI_API_KEY if empty
