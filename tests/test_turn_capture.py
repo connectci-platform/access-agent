@@ -54,3 +54,23 @@ def test_child_task_writes_visible_to_parent():
 
     cap = asyncio.run(_main())
     assert len(cap["chunks"]) == 1 and cap["chunks"][0]["rank"] == 3
+
+
+def test_concurrent_requests_are_isolated():
+    # Each request task resets then records its own chunk; neither sees the other's.
+    async def _request(rank, url):
+        reset_turn_capture()
+        # yield control so both tasks interleave between reset and record
+        await asyncio.sleep(0)
+        record_retrieved_chunks([_chunk(rank, url, "t")])
+        await asyncio.sleep(0)
+        return get_turn_capture()["chunks"]
+
+    async def _main():
+        import asyncio as _a
+
+        return await _a.gather(_request(1, "https://one.org"), _request(2, "https://two.org"))
+
+    results = asyncio.run(_main())
+    assert [c[0]["url"] for c in results] == ["https://one.org", "https://two.org"]
+    assert all(len(c) == 1 for c in results)  # no cross-task leakage
