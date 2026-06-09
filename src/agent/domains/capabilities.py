@@ -589,6 +589,21 @@ class CapabilityRegistry:
         logger.warning("infer_capability_id: no fallback capability enabled, returning 'unknown'")
         return "unknown"
 
+    def infer_capability_ids(self, tools_used: list[str] | None) -> list[str]:
+        """All capabilities a turn touched, derived from the tools that fired.
+
+        Unlike infer_capability_id (one primary id), this returns the full set —
+        a looped turn can hit multiple backends. Tool names are MCP-qualified
+        ("server__tool"); we map each tool's server to its capability.
+        """
+        out: set[str] = set()
+        for tool in tools_used or []:
+            server = tool.split("__", 1)[0] if "__" in tool else tool
+            cap = self.capability_for_server(server)
+            if cap is not None:
+                out.add(cap.id)
+        return sorted(out)
+
 
 # ── Singleton ─────────────────────────────────────────────────────────────
 

@@ -9,6 +9,7 @@ from src.agent.domains.capabilities import (
     GENERAL_CAPABILITIES,
     CapabilityRegistry,
     _build_registry,
+    get_capability_registry,
 )
 from src.agent.domains.config import Capability
 
@@ -340,3 +341,20 @@ class TestEnvVarFilter:
         reg = self._build(enabled="ask_question, check_allocations ")
         assert reg.get_by_id("ask_question") is not None
         assert reg.get_by_id("check_allocations") is not None
+
+
+# ── infer_capability_ids ───────────────────────────────────────────────────
+
+
+def test_infer_capability_ids_maps_each_tool_server():
+    reg = get_capability_registry()
+    ids = reg.infer_capability_ids(
+        ["allocations__search_projects", "software-discovery__search_software"]
+    )
+    assert "check_allocations" in ids
+    assert "search_software" in ids
+    assert ids == sorted(set(ids))
+
+
+def test_infer_capability_ids_empty_is_empty():
+    assert get_capability_registry().infer_capability_ids([]) == []
