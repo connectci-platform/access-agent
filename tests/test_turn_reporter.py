@@ -43,6 +43,19 @@ class TestTurnReportModels:
             "duration_ms",
         }.issubset(child)
 
+    def test_a2_columns_exist(self):
+        cols = {c["name"] for c in inspect(self.engine).get_columns("turn_reports")}
+        assert {
+            "rag_chunk_count",
+            "rag_zero_hits",
+            "total_tokens",
+            "citation_count",
+            "summarized",
+            "query_intent",
+            "refused",
+            "is_deflection",
+        }.issubset(cols)
+
     def test_parent_child_insert(self):
         s = self.Session()
         r = TurnReport(session_id="s1", turn_index=1, query_text="hi", origin="real")

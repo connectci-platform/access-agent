@@ -70,6 +70,19 @@ class TurnReport(TurnReportBase):  # type: ignore[valid-type,misc]
     any_tool_failed = Column(Boolean, default=False, index=True)
     invoked_write = Column(Boolean, default=False, index=True)
 
+    # A2 derived signals
+    rag_chunk_count = Column(Integer, default=0)
+    rag_zero_hits = Column(Boolean, default=False, index=True)
+    total_tokens = Column(Integer)
+    citation_count = Column(Integer, default=0)
+    summarized = Column(Boolean, default=False, index=True)
+
+    # A3 (LLM turn-judge) — added nullable now to stabilize the schema for
+    # Plan B; populated by Plan A3, never written here.
+    query_intent = Column(String(16), index=True)
+    refused = Column(Boolean, index=True)
+    is_deflection = Column(Boolean, index=True)
+
     payload = Column(JSON)  # answer, tool_results, node_trace, params, etc.
 
 
@@ -199,7 +212,16 @@ class TurnReporter:
         if self._engine is None:
             return
         existing = {c["name"] for c in inspect(self._engine).get_columns("turn_reports")}
-        migrations: dict[str, str] = {}  # A2 adds columns here
+        migrations: dict[str, str] = {
+            "rag_chunk_count": "INTEGER DEFAULT 0",
+            "rag_zero_hits": "BOOLEAN DEFAULT FALSE",
+            "total_tokens": "INTEGER",
+            "citation_count": "INTEGER DEFAULT 0",
+            "summarized": "BOOLEAN DEFAULT FALSE",
+            "query_intent": "VARCHAR(16)",
+            "refused": "BOOLEAN",
+            "is_deflection": "BOOLEAN",
+        }
         with self._engine.begin() as conn:
             for name, col_type in migrations.items():
                 if name not in existing:
