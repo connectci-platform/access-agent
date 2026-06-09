@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 from .agent.domains.capabilities import WRITE_MCP_TOOL_NAMES
 from .config import settings
+from .llm.providers import active_model_name
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import Engine
@@ -145,7 +146,7 @@ def _assemble_turn_report(
         "origin": "real",
         "agent_version": settings.AGENT_VERSION or None,
         "env": settings.DEPLOY_ENV or None,
-        "model_id": getattr(settings, "LLM_MODEL", None),
+        "model_id": active_model_name(),
         "capabilities": capabilities,
         "resource_context": final_state.get("resource_context"),
         "was_authenticated": acting_user is not None,
