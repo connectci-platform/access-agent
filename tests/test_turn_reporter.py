@@ -125,6 +125,20 @@ class TestAssemble:
         assert tool_calls[1]["tool_name"] == "create_support_ticket"
         assert tool_calls[0]["args_hash"]
 
+    def test_total_tokens_from_final_state(self):
+        report, _ = _assemble_turn_report(
+            final_state={"tools_used": [], "tool_results": [], "total_tokens": 123},
+            session_id="s",
+            turn_index=1,
+            question_id="q",
+            query_text="hi",
+            duration_ms=1.0,
+            acting_user=None,
+            success=True,
+            capabilities=[],
+        )
+        assert report["total_tokens"] == 123
+
     def test_anonymous_user_not_authenticated(self):
         report, _ = _assemble_turn_report(
             final_state={"tools_used": [], "tool_results": []},

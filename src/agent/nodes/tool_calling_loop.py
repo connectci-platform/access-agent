@@ -198,6 +198,27 @@ class _ToolStatusEmitter(AsyncCallbackHandler):
         self._writer({"type": "status", "message": _friendly_tool_status(name)})
 
 
+class _TokenUsageAccumulator(AsyncCallbackHandler):
+    """Sums token usage across this turn's LLM calls.
+
+    create_agent calls the model once per tool-calling step; on_llm_end fires
+    per call. We accumulate usage_metadata.total_tokens so the report records a
+    turn-scoped total — summing over final_state messages would double-count,
+    since checkpointing prepends prior-turn history.
+    """
+
+    def __init__(self) -> None:
+        self.total_tokens = 0
+
+    async def on_llm_end(self, response: Any, **kwargs: Any) -> None:  # noqa: ARG002
+        for gen_list in getattr(response, "generations", []) or []:
+            for gen in gen_list:
+                msg = getattr(gen, "message", None)
+                usage = getattr(msg, "usage_metadata", None) if msg is not None else None
+                if usage:
+                    self.total_tokens += int(usage.get("total_tokens") or 0)
+
+
 async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
     """Run the tool-calling loop.
 
@@ -263,12 +284,13 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
         # roughly 10 tool turns before LangGraph hard-stops.
         recursion_limit = 25
         tool_status_emitter = _ToolStatusEmitter(status_writer)
+        token_accumulator = _TokenUsageAccumulator()
         try:
             result = await agent.ainvoke(
                 {"messages": messages},
                 {
                     "recursion_limit": recursion_limit,
-                    "callbacks": [tool_status_emitter],
+                    "callbacks": [tool_status_emitter, token_accumulator],
                 },
             )
             result_messages = result.get("messages", [])
@@ -331,6 +353,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
             "final_answer": final_answer,
             "messages": result_messages,
             "tools_used": tools_used,
+            "total_tokens": token_accumulator.total_tokens,
             "tool_results": tool_results,
             "node_trace": [
                 {

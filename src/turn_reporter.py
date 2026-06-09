@@ -157,6 +157,7 @@ def _assemble_turn_report(
         "tool_failure_count": failures,
         "any_tool_failed": failures > 0,
         "invoked_write": invoked_write,
+        "total_tokens": final_state.get("total_tokens"),
         "payload": {
             "answer": final_state.get("final_answer"),
             "tool_results": results,
