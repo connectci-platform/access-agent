@@ -587,6 +587,16 @@ async def submit_rating(request: RatingRequest, raw_request: Request) -> dict[st
     )
 
     if result == "ok":
+        # Mirror the rating onto turn_reports (read model). Best-effort;
+        # update_rating swallows its own failures.
+        from ..turn_reporter import get_turn_reporter
+
+        await asyncio.to_thread(
+            get_turn_reporter().update_rating,
+            question_id=request.query_id,
+            rating=request.rating,
+            feedback=request.feedback,
+        )
         return {"success": True}
     if result == "not_found":
         raise HTTPException(status_code=404, detail="query_id not found")

@@ -362,3 +362,43 @@ class TestCitationCount:
 
     def test_trailing_punctuation_does_not_double_count(self):
         assert _count_citations("Read https://a.org/x. Also https://a.org/x") == 1
+
+
+class TestUpdateRating:
+    def _reporter(self):
+        r = TurnReporter()
+        r._engine = create_engine("sqlite:///:memory:")
+        TurnReportBase.metadata.create_all(r._engine)
+        r._session_factory = sessionmaker(bind=r._engine)
+        r._initialized = True
+        return r
+
+    def test_rating_columns_exist(self):
+        engine = create_engine("sqlite:///:memory:")
+        TurnReportBase.metadata.create_all(engine)
+        cols = {c["name"] for c in inspect(engine).get_columns("turn_reports")}
+        assert {"rating", "rating_feedback"} <= cols
+
+    def test_update_rating_sets_values(self):
+        r = self._reporter()
+        session = r._session_factory()
+        session.add(TurnReport(question_id="q-1", query_text="hello"))
+        session.commit()
+        session.close()
+
+        r.update_rating(question_id="q-1", rating="not_helpful", feedback="wrong link")
+
+        session = r._session_factory()
+        row = session.query(TurnReport).filter_by(question_id="q-1").one()
+        assert row.rating == "not_helpful"
+        assert row.rating_feedback == "wrong link"
+        session.close()
+
+    def test_update_rating_unknown_question_is_noop(self):
+        r = self._reporter()
+        # Must not raise — best-effort, same discipline as log_turn_report.
+        r.update_rating(question_id="nope", rating="helpful", feedback=None)
+
+    def test_update_rating_never_raises_when_uninitialized(self):
+        r = TurnReporter()  # no engine, DATABASE_URL likely unset in tests
+        r.update_rating(question_id="q-1", rating="helpful", feedback=None)

@@ -90,6 +90,10 @@ class TurnReport(TurnReportBase):  # type: ignore[valid-type,misc]
     refused = Column(Boolean, index=True)
     is_deflection = Column(Boolean, index=True)
 
+    # Rating (late UPDATE via POST /api/v1/rating, after the usage_logs write)
+    rating = Column(String(16), index=True)  # "helpful" or "not_helpful"
+    rating_feedback = Column(Text)
+
     payload = Column(_JSONB)  # answer, tool_results, node_trace, params, etc.
 
 
@@ -259,6 +263,8 @@ class TurnReporter:
             "query_intent": "VARCHAR(16)",
             "refused": "BOOLEAN",
             "is_deflection": "BOOLEAN",
+            "rating": "VARCHAR(16)",
+            "rating_feedback": "TEXT",
         }
         # Each ALTER runs in its own transaction with its own guard: a failure
         # (insufficient DB privileges, transient error) degrades that one column
@@ -289,6 +295,28 @@ class TurnReporter:
         except Exception as e:
             logger.error(f"Failed to count turns for session: {e}")
             return 0
+        finally:
+            session.close()
+
+    def update_rating(self, question_id: str, rating: str, feedback: str | None = None) -> None:
+        """Copy a user rating onto the matching turn_reports row.
+
+        Best-effort: the usage_logs write is the system of record; this keeps
+        the read model complete. Never raises.
+        """
+        if not self._ensure_initialized() or self._session_factory is None:
+            return
+        session = self._session_factory()
+        try:
+            report = session.query(TurnReport).filter_by(question_id=question_id).first()
+            if report is None:
+                logger.warning("No turn_report for rated question_id: %s", question_id)
+                return
+            report.rating = rating  # type: ignore[assignment]
+            report.rating_feedback = feedback  # type: ignore[assignment]
+            session.commit()
+        except Exception as e:
+            logger.error(f"Failed to update turn report rating: {e}")
         finally:
             session.close()
 
