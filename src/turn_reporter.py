@@ -28,6 +28,7 @@ from sqlalchemy import (
     inspect,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 from .agent.domains.capabilities import WRITE_MCP_TOOL_NAMES
@@ -39,7 +40,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# JSON renders as JSONB on Postgres and as TEXT-backed JSON on SQLite (tests).
+# Renders as JSONB on Postgres (GIN-indexable, supports @> containment for the
+# dashboard's capability filters) and as plain TEXT-backed JSON on SQLite, which
+# the tests run on (bare JSONB will not compile on SQLite).
+_JSONB = JSON().with_variant(JSONB(), "postgresql")
 TurnReportBase = declarative_base()
 
 
@@ -60,7 +64,7 @@ class TurnReport(TurnReportBase):  # type: ignore[valid-type,misc]
     env = Column(String(16), index=True)
     model_id = Column(String(64))
 
-    capabilities = Column(JSON)  # list[str]
+    capabilities = Column(_JSONB)  # list[str]
     resource_context = Column(String(64), index=True)
     was_authenticated = Column(Boolean, default=False)
     user_hash = Column(String(16), index=True)
@@ -79,13 +83,14 @@ class TurnReport(TurnReportBase):  # type: ignore[valid-type,misc]
     citation_count = Column(Integer, default=0)
     summarized = Column(Boolean, default=False, index=True)
 
-    # A3 (LLM turn-judge) — added nullable now to stabilize the schema for
-    # Plan B; populated by Plan A3, never written here.
+    # A3 (LLM turn-judge) signals, written here from the judge_turn result
+    # passed in by routes.py. Nullable because the judge is best-effort and may
+    # be disabled (TURN_JUDGE_ENABLED=false), in which case these stay NULL.
     query_intent = Column(String(16), index=True)
     refused = Column(Boolean, index=True)
     is_deflection = Column(Boolean, index=True)
 
-    payload = Column(JSON)  # answer, tool_results, node_trace, params, etc.
+    payload = Column(_JSONB)  # answer, tool_results, node_trace, params, etc.
 
 
 class ReportToolCall(TurnReportBase):  # type: ignore[valid-type,misc]
@@ -98,7 +103,7 @@ class ReportToolCall(TurnReportBase):  # type: ignore[valid-type,misc]
     server = Column(String(64), index=True)
     success = Column(Boolean, default=True)
     args_hash = Column(String(64), index=True)
-    arguments = Column(JSON)
+    arguments = Column(_JSONB)
     duration_ms = Column(Integer, default=0)  # per-call timing deferred to A2
 
 
@@ -255,10 +260,24 @@ class TurnReporter:
             "refused": "BOOLEAN",
             "is_deflection": "BOOLEAN",
         }
-        with self._engine.begin() as conn:
-            for name, col_type in migrations.items():
-                if name not in existing:
+        # Each ALTER runs in its own transaction with its own guard: a failure
+        # (insufficient DB privileges, transient error) degrades that one column
+        # rather than propagating up to _ensure_initialized and disabling ALL
+        # turn reporting for the process lifetime.
+        for name, col_type in migrations.items():
+            if name in existing:
+                continue
+            try:
+                with self._engine.begin() as conn:
                     conn.execute(text(f"ALTER TABLE turn_reports ADD COLUMN {name} {col_type}"))
+                logger.info("Added column turn_reports.%s", name)
+            except Exception as e:
+                logger.warning(
+                    "Failed to add column turn_reports.%s (%s); reporting continues "
+                    "with that column degraded",
+                    name,
+                    e,
+                )
 
     def count_turns_for_session(self, session_id: str) -> int:
         """How many turn_reports already exist for this session (prior turns)."""

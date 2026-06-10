@@ -163,7 +163,12 @@ class Settings(BaseSettings):
     AGENT_VERSION: str = ""  # OTEL service.version; stamped at build (Plan A2)
     DEPLOY_ENV: str = ""  # staging | prod
 
-    TURN_JUDGE_ENABLED: bool = True  # baseline per-turn judge (query_intent/refused/is_deflection)
+    # Baseline per-turn judge (query_intent/refused/is_deflection). Default OFF:
+    # it fires an extra LLM call per query against the SAME production inference
+    # endpoint the agent uses (there is no separate judge endpoint available), so
+    # it competes with agent traffic for capacity. Opt in once that impact is
+    # measured.
+    TURN_JUDGE_ENABLED: bool = False
     TURN_JUDGE_MAX_TOKENS: int = 200  # judge output is a tiny JSON object
 
     # Eval pipeline

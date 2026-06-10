@@ -368,6 +368,33 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
 
     except Exception as e:
         logger.exception(f"Stream failed: {e}")
+        # Write a minimal success=False turn report so the dashboard can tell a
+        # failed query apart from one that never happened. Off the response path,
+        # swallow failures — never affects the error the user sees. final_state
+        # may be partial (the failure can land mid-stream); _assemble_turn_report
+        # tolerates missing keys, and the judge is skipped (there's no answer).
+        try:
+            from ..agent.domains.capabilities import get_capability_registry as _cap_reg
+            from ..turn_reporter import get_turn_reporter
+
+            reporter = get_turn_reporter()
+            prior_turns = await asyncio.to_thread(reporter.count_turns_for_session, session_id)
+            await asyncio.to_thread(
+                reporter.log_turn_report,
+                final_state=final_state,
+                session_id=session_id,
+                turn_index=prior_turns + 1,
+                question_id=question_id,
+                query_text=request.query,
+                duration_ms=(time.time() - start_time) * 1000,
+                acting_user=acting_user,
+                success=False,
+                capabilities=_cap_reg().infer_capability_ids(final_state.get("tool_results", [])),
+                turn_capture=get_turn_capture(),
+                judge=None,
+            )
+        except Exception:
+            logger.exception("Failed-turn report write failed")
         yield _format_sse_event(
             "error", {"message": "Failed to process query", "code": "agent_error"}
         )
