@@ -1,6 +1,7 @@
 """Orchestrate an eval run: load questions, run agent, judge answers, store results."""
 
 import logging
+from pathlib import Path
 from typing import Any, cast
 
 from src.config import settings
@@ -71,6 +72,8 @@ async def run_eval(  # noqa: PLR0915
             registry.catalog,
             system=system,
             resource_context=q.metadata.get("resource"),
+            battery_id=Path(question_set_path).stem,
+            battery_run_id=str(run.id),
         )
 
         if not result.success:

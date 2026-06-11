@@ -9,6 +9,7 @@ from src.agent.domains.capabilities import (
     GENERAL_CAPABILITIES,
     CapabilityRegistry,
     _build_registry,
+    get_capability_registry,
 )
 from src.agent.domains.config import Capability
 
@@ -340,3 +341,50 @@ class TestEnvVarFilter:
         reg = self._build(enabled="ask_question, check_allocations ")
         assert reg.get_by_id("ask_question") is not None
         assert reg.get_by_id("check_allocations") is not None
+
+
+# ── infer_capability_ids (results-based) ────────────────────────────────────
+
+
+def test_infer_capability_ids_mcp_via_server_and_rag_via_args():
+    reg = get_capability_registry()
+    results = [
+        {"tool_name": "list_all_software", "server": "software-discovery", "arguments": {}},
+        {"tool_name": "search_access_documents", "server": "", "arguments": {"source": "general"}},
+    ]
+    ids = reg.infer_capability_ids(results)
+    assert "search_software" in ids  # MCP tool → server → capability
+    assert "ask_question" in ids  # doc-search general → RAG capability
+    assert ids == sorted(set(ids))  # deduped + sorted
+
+
+def test_infer_capability_ids_doc_search_xdmod_and_scoped():
+    reg = get_capability_registry()
+    xdmod = reg.infer_capability_ids(
+        [{"tool_name": "search_access_documents", "server": None, "arguments": {"source": "xdmod"}}]
+    )
+    assert xdmod == ["ask_xdmod_question"]
+    scoped = reg.infer_capability_ids(
+        [
+            {
+                "tool_name": "search_access_documents",
+                "server": None,
+                "arguments": {"source": "general", "rp_name": "delta"},
+            }
+        ]
+    )
+    assert scoped == ["ask_about_resource"]
+
+
+def test_infer_capability_ids_empty():
+    assert get_capability_registry().infer_capability_ids([]) == []
+    assert get_capability_registry().infer_capability_ids(None) == []
+
+
+def test_infer_capability_ids_unknown_tool_no_server_contributes_nothing():
+    reg = get_capability_registry()
+    results = [
+        {"tool_name": "some_future_tool", "server": "", "arguments": {}},
+        {"tool_name": "another_local_tool", "server": None, "arguments": {"x": 1}},
+    ]
+    assert reg.infer_capability_ids(results) == []

@@ -160,6 +160,9 @@ class Settings(BaseSettings):
     REPORT_EMAIL_TO: str = ""
     REPORT_SLACK_WEBHOOK_URL: str = ""
 
+    AGENT_VERSION: str = ""  # OTEL service.version; stamped at build (Plan A2)
+    DEPLOY_ENV: str = ""  # staging | prod
+
     # Eval pipeline
     EVAL_JUDGE_BASE_URL: str = ""  # Empty = use default OpenAI. Set for on-premise LLM.
     EVAL_JUDGE_API_KEY: str = ""  # Falls back to OPENAI_API_KEY if empty

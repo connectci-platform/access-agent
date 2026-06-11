@@ -22,6 +22,9 @@ RUN uv sync --locked --no-dev
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONPATH=/app
 ENV ENVIRONMENT=docker
+# Build-time version stamp (CI passes --build-arg AGENT_VERSION="$(git describe --tags --always --dirty)").
+ARG AGENT_VERSION=""
+ENV AGENT_VERSION=$AGENT_VERSION
 
 EXPOSE 8000
 

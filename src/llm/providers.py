@@ -408,6 +408,20 @@ def get_llm_provider() -> LLMProvider:
     raise ValueError(f"Unknown LLM provider: {provider}")
 
 
+def active_model_name() -> str:
+    """The model id actually used at runtime, mirroring get_llm_provider's
+    provider→model mapping so reporting records the real model, not a default.
+    """
+    provider = settings.LLM_PROVIDER
+    if provider == "openai":
+        return settings.OPENAI_MODEL
+    if provider == "vllm":
+        return settings.VLLM_MODEL_NAME
+    if provider == "access_ai":
+        return "access-llama"
+    return provider or "unknown"
+
+
 def get_llm(
     model_name: str | None = None,
     temperature: float = 0.1,

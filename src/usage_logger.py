@@ -229,9 +229,10 @@ class UsageLogger:
                 session.close()
                 return "already_rated"
 
-            # Time window — 24h from original query
+            # Time window — 24h from original query. entry.timestamp is naive
+            # UTC (the column default is datetime.utcnow), so compare naive.
             if entry.timestamp:
-                cutoff = datetime.now(tz=UTC) - timedelta(hours=24)
+                cutoff = datetime.now(tz=UTC).replace(tzinfo=None) - timedelta(hours=24)
                 if entry.timestamp < cutoff:
                     logger.warning("Expired rating for question_id: %s", question_id)
                     session.close()

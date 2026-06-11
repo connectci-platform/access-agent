@@ -28,7 +28,10 @@ capabilities from the section-to-question mapping and the RPSectionCache.
 """
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 from .config import Capability, Category, McpBackend, RagBackend
 
@@ -82,6 +85,9 @@ _ATTRIBUTION_FALLBACK_ORDER: tuple[str, ...] = (
     "check_allocations",
     "check_system_status",
 )
+
+# The doc-search tool's name (RAG-backed); see infer_capability_ids attribution.
+_DOC_SEARCH_TOOL_NAME = "search_access_documents"
 
 # ── Write-capable capabilities ────────────────────────────────────────────
 
@@ -337,6 +343,24 @@ class CapabilityRegistry:
                 return cap
         return None
 
+    def capability_for_rag(self, endpoint: str, scoped: bool) -> "Capability | None":
+        """Find the enabled RAG-backed capability matching this endpoint + scope.
+
+        Mirrors capability_for_server for RagBackend capabilities — maps an
+        observed doc-search call (search_access_documents carries source +
+        optional rp_name) back to the capability that owns it. Disabled
+        capabilities aren't in self._capabilities, so gating is honored.
+        """
+        for cap in self._capabilities.values():
+            b = cap.backend
+            if (
+                isinstance(b, RagBackend)
+                and b.endpoint == endpoint
+                and bool(getattr(b, "scoped", False)) == scoped
+            ):
+                return cap
+        return None
+
     def get_categories(self) -> list[Category]:
         """Categories sorted by display order."""
         # Only return categories that have at least one capability
@@ -588,6 +612,38 @@ class CapabilityRegistry:
         # sentinel so usage analytics can filter it explicitly.
         logger.warning("infer_capability_id: no fallback capability enabled, returning 'unknown'")
         return "unknown"
+
+    def infer_capability_ids(self, tool_results: "Iterable[Any] | None") -> list[str]:
+        """All capabilities a turn touched, derived from the tools that actually ran.
+
+        Uses tool_results, not tools_used: the result carries the resolved MCP
+        ``server`` and the call ``arguments``, whereas tools_used holds only the
+        bare tool name the LLM used (which can't be mapped to a server). MCP
+        tools map via their server; the doc-search tool
+        (``search_access_documents``, RAG-backed) maps via its source/rp_name.
+        Accepts ToolResult objects or plain dicts.
+        """
+        out: set[str] = set()
+        for r in tool_results or []:
+            if isinstance(r, dict):
+                server = r.get("server")
+                name = r.get("tool_name")
+                args = r.get("arguments") or {}
+            else:
+                server = getattr(r, "server", None)
+                name = getattr(r, "tool_name", None)
+                args = getattr(r, "arguments", None) or {}
+            if server:
+                cap = self.capability_for_server(server)
+                if cap is not None:
+                    out.add(cap.id)
+            elif name == _DOC_SEARCH_TOOL_NAME:
+                source = args.get("source") or "general"
+                scoped = bool(args.get("rp_name"))
+                cap = self.capability_for_rag(source, scoped)
+                if cap is not None:
+                    out.add(cap.id)
+        return sorted(out)
 
 
 # ── Singleton ─────────────────────────────────────────────────────────────

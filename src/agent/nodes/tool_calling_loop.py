@@ -34,6 +34,7 @@ from ..domains.tools import create_mcp_tools_from_catalog
 from ..prompts.system_prompt import build_system_prompt
 from ..state import ToolResult
 from ..tools import search_access_documents
+from ..turn_capture import mark_summarized
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +199,52 @@ class _ToolStatusEmitter(AsyncCallbackHandler):
         self._writer({"type": "status", "message": _friendly_tool_status(name)})
 
 
+class _TokenUsageAccumulator(AsyncCallbackHandler):
+    """Sums token usage across this turn's LLM calls.
+
+    create_agent calls the model once per tool-calling step; on_llm_end fires
+    per call. We accumulate usage_metadata.total_tokens so the report records a
+    turn-scoped total — summing over final_state messages would double-count,
+    since checkpointing prepends prior-turn history.
+    """
+
+    def __init__(self) -> None:
+        self.total_tokens = 0
+
+    async def on_llm_end(self, response: Any, **kwargs: Any) -> None:
+        del kwargs
+        for gen_list in getattr(response, "generations", []) or []:
+            for gen in gen_list:
+                msg = getattr(gen, "message", None)
+                usage = getattr(msg, "usage_metadata", None) if msg is not None else None
+                if usage:
+                    self.total_tokens += int(usage.get("total_tokens") or 0)
+
+
+class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
+    """SummarizationMiddleware that records when it actually summarizes.
+
+    The built-in compacts history transparently — nothing in final_state says
+    it fired. before_model/abefore_model return non-None only when a summary is
+    produced, so we set a per-turn flag (via turn_capture) on that signal.
+    Deterministic; no message-count guessing.
+
+    Relies on SummarizationMiddleware.before_model / abefore_model returning None when no compaction occurred — re-verify this invariant on LangChain upgrades.
+    """
+
+    def before_model(self, state: Any, runtime: Any) -> Any:
+        result = super().before_model(state, runtime)
+        if result is not None:
+            mark_summarized()
+        return result
+
+    async def abefore_model(self, state: Any, runtime: Any) -> Any:
+        result = await super().abefore_model(state, runtime)
+        if result is not None:
+            mark_summarized()
+        return result
+
+
 async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
     """Run the tool-calling loop.
 
@@ -241,7 +288,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
             tools=tools,
             system_prompt=system_prompt,
             middleware=[
-                SummarizationMiddleware(
+                _FlaggingSummarizationMiddleware(
                     model=llm,
                     trigger=("tokens", settings.SUMMARIZATION_TRIGGER_TOKENS),
                     keep=("tokens", settings.SUMMARIZATION_KEEP_TOKENS),
@@ -263,12 +310,13 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
         # roughly 10 tool turns before LangGraph hard-stops.
         recursion_limit = 25
         tool_status_emitter = _ToolStatusEmitter(status_writer)
+        token_accumulator = _TokenUsageAccumulator()
         try:
             result = await agent.ainvoke(
                 {"messages": messages},
                 {
                     "recursion_limit": recursion_limit,
-                    "callbacks": [tool_status_emitter],
+                    "callbacks": [tool_status_emitter, token_accumulator],
                 },
             )
             result_messages = result.get("messages", [])
@@ -331,6 +379,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
             "final_answer": final_answer,
             "messages": result_messages,
             "tools_used": tools_used,
+            "total_tokens": token_accumulator.total_tokens,
             "tool_results": tool_results,
             "node_trace": [
                 {

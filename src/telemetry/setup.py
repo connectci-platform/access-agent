@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..config import settings
+
 # Load .env file if it exists (needed for OTLP credentials)
 _env_file = Path(__file__).parent.parent.parent / ".env"
 if _env_file.exists():
@@ -33,6 +35,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _tracer_provider: TracerProvider | None = None
+
+
+def _build_resource_attributes(service_name: str) -> dict[str, str]:
+    """OTEL resource attributes. service.version/deployment.environment come
+    from settings (stamped at build) with env fallback for local dev.
+    """
+    dataset = os.getenv("HONEYCOMB_DATASET", "access-ci")
+    return {
+        "service.name": dataset,
+        "service.component": service_name,
+        "service.version": settings.AGENT_VERSION or "unknown",
+        "deployment.environment": settings.DEPLOY_ENV or os.getenv("ENVIRONMENT", "local"),
+    }
 
 
 def init_telemetry(
@@ -71,14 +86,7 @@ def init_telemetry(
     # Use HONEYCOMB_DATASET as service.name (determines dataset in Honeycomb)
     # Use original service_name as service.component for filtering
     dataset = os.getenv("HONEYCOMB_DATASET", "access-ci")
-    resource = Resource.create(
-        {
-            "service.name": dataset,
-            "service.component": service_name,
-            "service.version": "0.1.0",
-            "deployment.environment": os.getenv("ENVIRONMENT", "local"),
-        }
-    )
+    resource = Resource.create(_build_resource_attributes(service_name))
 
     # Create tracer provider
     _tracer_provider = TracerProvider(resource=resource)
