@@ -345,13 +345,15 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
         try:
             reporter = get_turn_reporter()
             prior_turns = await asyncio.to_thread(reporter.count_turns_for_session, session_id)
+            # None = count unknown (DB error): write NULL, not a wrong "1".
+            turn_index = prior_turns + 1 if prior_turns is not None else None
             judge_result = await judge_turn(request.query, final_answer)
             resources = await resources_for_turn(request.query, final_answer or "")
             await asyncio.to_thread(
                 reporter.log_turn_report,
                 final_state=final_state,
                 session_id=session_id,
-                turn_index=prior_turns + 1,
+                turn_index=turn_index,
                 question_id=question_id,
                 query_text=request.query,
                 duration_ms=duration_ms,
@@ -390,7 +392,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                 reporter.log_turn_report,
                 final_state=final_state,
                 session_id=session_id,
-                turn_index=prior_turns + 1,
+                turn_index=turn_index,
                 question_id=question_id,
                 query_text=request.query,
                 duration_ms=(time.time() - start_time) * 1000,

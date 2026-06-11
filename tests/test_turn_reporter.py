@@ -450,3 +450,34 @@ class TestMigrationIndexes:
         r._migrate_columns()
         names = {ix["name"] for ix in inspect(r._engine).get_indexes("turn_reports")}
         assert "ix_turn_reports_rating" in names
+
+
+class TestCountTurnsUnknown:
+    def test_uninitialized_returns_none_not_zero(self):
+        # A failed count must not masquerade as "no prior turns" — the caller
+        # writes turn_index NULL (unknown) instead of a wrong 1.
+        r = TurnReporter()
+        r._ensure_initialized = lambda: False  # type: ignore[method-assign]
+        assert r.count_turns_for_session("s1") is None
+
+    def test_db_error_returns_none(self):
+        r = TurnReporter()
+        r._engine = create_engine("sqlite:///:memory:")
+        # Tables deliberately NOT created → query raises → None, not 0.
+        r._session_factory = sessionmaker(bind=r._engine)
+        r._initialized = True
+        assert r.count_turns_for_session("s1") is None
+
+    def test_assemble_accepts_unknown_turn_index(self):
+        report, _ = _assemble_turn_report(
+            final_state={},
+            session_id="s",
+            turn_index=None,
+            question_id="q",
+            query_text="x",
+            duration_ms=1.0,
+            acting_user=None,
+            success=False,
+            capabilities=[],
+        )
+        assert report["turn_index"] is None

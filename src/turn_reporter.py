@@ -146,7 +146,7 @@ def _assemble_turn_report(
     *,
     final_state: dict[str, Any],
     session_id: str,
-    turn_index: int,
+    turn_index: int | None,
     question_id: str,
     query_text: str,
     duration_ms: float | None,
@@ -301,16 +301,21 @@ class TurnReporter:
         except Exception as e:
             logger.warning("Failed to ensure rating index (%s); continuing", e)
 
-    def count_turns_for_session(self, session_id: str) -> int:
-        """How many turn_reports already exist for this session (prior turns)."""
+    def count_turns_for_session(self, session_id: str) -> int | None:
+        """How many turn_reports already exist for this session (prior turns).
+
+        Returns None when the count is unknown (uninitialized or DB error) —
+        callers write turn_index NULL rather than a wrong 1 (review finding:
+        a failed turn must not claim to be turn 1 when it's really turn 5).
+        """
         if not self._ensure_initialized() or self._session_factory is None:
-            return 0
+            return None
         session = self._session_factory()
         try:
             return session.query(TurnReport).filter(TurnReport.session_id == session_id).count()
         except Exception as e:
             logger.error(f"Failed to count turns for session: {e}")
-            return 0
+            return None
         finally:
             session.close()
 
