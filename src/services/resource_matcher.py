@@ -11,7 +11,7 @@ Word boundaries prevent substring hits ("anvilteam.org" does not match Anvil).
 import re
 from collections.abc import Iterable
 
-from .rp_cache import RPInfo
+from .rp_cache import RPInfo, get_rp_cache
 
 # Letter-runs and digit-runs of a name; separators between them are dropped
 # and re-allowed as optional [-\s] when matching.
@@ -39,3 +39,18 @@ def match_resources(text: str, groups: Iterable[RPInfo]) -> list[str]:
                 matched.add(group.slug)
                 break
     return sorted(matched)
+
+
+async def resources_for_turn(query_text: str, answer: str) -> list[str]:
+    """Resource slugs mentioned in a turn (question + answer).
+
+    Best-effort: cache failures degrade to an empty list — this feeds the
+    turn report and must never raise or block the response path.
+    """
+    try:
+        cache = get_rp_cache()
+        await cache.ensure_loaded()
+        groups = cache.list_groups()
+    except Exception:
+        return []
+    return match_resources(f"{query_text}\n{answer}", groups)

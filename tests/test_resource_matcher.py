@@ -1,4 +1,7 @@
-from src.services.resource_matcher import match_resources
+import asyncio
+from unittest.mock import AsyncMock, patch
+
+from src.services.resource_matcher import match_resources, resources_for_turn
 from src.services.rp_cache import RPInfo
 
 
@@ -36,3 +39,31 @@ class TestMatchResources:
     def test_empty_inputs(self):
         assert match_resources("", _groups()) == []
         assert match_resources("anything about Delta", []) == []
+
+
+class TestResourcesForTurn:
+    def _fake_cache(self, groups):
+        fake = AsyncMock()
+        fake.ensure_loaded = AsyncMock()
+        fake.list_groups = lambda: groups
+        return fake
+
+    def test_matches_against_cached_groups(self):
+        fake = self._fake_cache(
+            [
+                RPInfo(slug="delta", title="Delta"),
+                RPInfo(slug="anvil", title="Anvil"),
+            ]
+        )
+        with patch("src.services.resource_matcher.get_rp_cache", return_value=fake):
+            result = asyncio.run(
+                resources_for_turn("tell me about Delta", "Anvil is also an option")
+            )
+        assert result == ["anvil", "delta"]
+
+    def test_cache_failure_degrades_to_empty(self):
+        fake = self._fake_cache([])
+        fake.ensure_loaded = AsyncMock(side_effect=RuntimeError("drupal down"))
+        with patch("src.services.resource_matcher.get_rp_cache", return_value=fake):
+            result = asyncio.run(resources_for_turn("about Delta", ""))
+        assert result == []

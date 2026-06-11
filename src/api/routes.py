@@ -338,6 +338,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
         # Turn report (denormalized read model for the reporting dashboard).
         # Off the response path, swallow failures — never affects the answer.
         from ..agent.domains.capabilities import get_capability_registry as _cap_reg
+        from ..services.resource_matcher import resources_for_turn
         from ..turn_judge import judge_turn
         from ..turn_reporter import get_turn_reporter
 
@@ -345,6 +346,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
             reporter = get_turn_reporter()
             prior_turns = await asyncio.to_thread(reporter.count_turns_for_session, session_id)
             judge_result = await judge_turn(request.query, final_answer)
+            resources = await resources_for_turn(request.query, final_answer or "")
             await asyncio.to_thread(
                 reporter.log_turn_report,
                 final_state=final_state,
@@ -356,6 +358,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                 acting_user=acting_user,
                 success=True,
                 capabilities=_cap_reg().infer_capability_ids(final_state.get("tool_results", [])),
+                resources=resources,
                 turn_capture=get_turn_capture(),
                 judge=judge_result,
             )
@@ -375,10 +378,14 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
         # tolerates missing keys, and the judge is skipped (there's no answer).
         try:
             from ..agent.domains.capabilities import get_capability_registry as _cap_reg
+            from ..services.resource_matcher import resources_for_turn
             from ..turn_reporter import get_turn_reporter
 
             reporter = get_turn_reporter()
             prior_turns = await asyncio.to_thread(reporter.count_turns_for_session, session_id)
+            resources = await resources_for_turn(
+                request.query, str(final_state.get("final_answer") or "")
+            )
             await asyncio.to_thread(
                 reporter.log_turn_report,
                 final_state=final_state,
@@ -390,6 +397,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                 acting_user=acting_user,
                 success=False,
                 capabilities=_cap_reg().infer_capability_ids(final_state.get("tool_results", [])),
+                resources=resources,
                 turn_capture=get_turn_capture(),
                 judge=None,
             )
