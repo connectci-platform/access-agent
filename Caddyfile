@@ -2,11 +2,18 @@ access-agent.elytra.net qa.access-ci.org {
     # Use internal TLS (Cloudflare handles public SSL)
     tls internal
 
-    # Proxy all requests to FastAPI backend
-    reverse_proxy access-agent:8000 {
-        flush_interval -1
-        transport http {
-            read_timeout 0
+    # Reporting dashboard (Nuxt) — must precede the agent catch-all
+    handle /dashboard* {
+        reverse_proxy dashboard:3000
+    }
+
+    # Agent API (catch-all)
+    handle {
+        reverse_proxy access-agent:8000 {
+            flush_interval -1
+            transport http {
+                read_timeout 0
+            }
         }
     }
 

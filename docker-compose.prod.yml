@@ -95,6 +95,30 @@ services:
       - agent-network
       - mcp-network
 
+  dashboard:
+    image: ghcr.io/necyberteam/access-agent-reporting/dashboard:latest
+    # Internal only — Caddy routes qa.access-ci.org/dashboard here
+    expose:
+      - "3000"
+    restart: unless-stopped
+    environment:
+      - NUXT_DATABASE_URL=postgresql://reporting_app:${REPORTING_DB_PASSWORD}@postgres:5432/langgraph
+      - NUXT_SESSION_PASSWORD=${NUXT_SESSION_PASSWORD}
+      - NUXT_OAUTH_OIDC_CLIENT_ID=${NUXT_OAUTH_OIDC_CLIENT_ID}
+      - NUXT_OAUTH_OIDC_CLIENT_SECRET=${NUXT_OAUTH_OIDC_CLIENT_SECRET}
+      - NUXT_OAUTH_OIDC_OPENID_CONFIG=https://cilogon.org/.well-known/openid-configuration
+      - NUXT_OAUTH_OIDC_REDIRECT_URL=${NUXT_OAUTH_OIDC_REDIRECT_URL:-https://qa.access-ci.org/dashboard/api/auth/cilogon}
+      - NUXT_REPORTING_OPERATORS=${NUXT_REPORTING_OPERATORS}
+      - NUXT_REPORTING_REVIEWERS=${NUXT_REPORTING_REVIEWERS}
+    depends_on:
+      - postgres
+    networks:
+      - agent-network
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
   postgres:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
