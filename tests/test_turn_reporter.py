@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 
 from src.turn_reporter import (
@@ -435,3 +435,18 @@ class TestUpdateRating:
     def test_update_rating_never_raises_when_uninitialized(self):
         r = TurnReporter()  # no engine, DATABASE_URL likely unset in tests
         r.update_rating(question_id="q-1", rating="helpful", feedback=None)
+
+
+class TestMigrationIndexes:
+    def test_rating_index_created_on_existing_db(self):
+        # Simulate an existing DB whose rating column was ALTER-added (no
+        # index): create tables, drop the model-created index, then run the
+        # healing pass and assert it restores the index.
+        r = TurnReporter()
+        r._engine = create_engine("sqlite:///:memory:")
+        TurnReportBase.metadata.create_all(r._engine)
+        with r._engine.begin() as conn:
+            conn.execute(text("DROP INDEX IF EXISTS ix_turn_reports_rating"))
+        r._migrate_columns()
+        names = {ix["name"] for ix in inspect(r._engine).get_indexes("turn_reports")}
+        assert "ix_turn_reports_rating" in names

@@ -289,6 +289,18 @@ class TurnReporter:
                     e,
                 )
 
+        # ALTER-migrated columns never get the index their model declaration
+        # specifies. Create the one the dashboard actually filters on.
+        try:
+            with self._engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_turn_reports_rating ON turn_reports (rating)"
+                    )
+                )
+        except Exception as e:
+            logger.warning("Failed to ensure rating index (%s); continuing", e)
+
     def count_turns_for_session(self, session_id: str) -> int:
         """How many turn_reports already exist for this session (prior turns)."""
         if not self._ensure_initialized() or self._session_factory is None:
