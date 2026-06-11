@@ -7,8 +7,13 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from src.agent.domains.capabilities import get_capability_registry
 from src.agent.graph import run_agent
+from src.agent.state import AgentState
+from src.agent.turn_capture import get_turn_capture, reset_turn_capture
+from src.services.resource_matcher import resources_for_turn
 from src.services.uky_client import get_uky_client
+from src.turn_reporter import get_turn_reporter
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +185,8 @@ async def run_question(
     tool_catalog: Any,
     system: SystemMode = "agent_full",
     resource_context: str | None = None,
+    battery_id: str | None = None,
+    battery_run_id: str | None = None,
 ) -> RunResult:
     start = time.monotonic()
     try:
@@ -191,6 +198,8 @@ async def run_question(
                 question_text,
                 tool_catalog,
                 resource_context=resource_context,
+                battery_id=battery_id,
+                battery_run_id=battery_run_id,
             )
         result.duration_ms = (time.monotonic() - start) * 1000
         return result
@@ -237,18 +246,42 @@ async def _run_agent(
     question_text: str,
     tool_catalog: Any,
     resource_context: str | None = None,
+    battery_id: str | None = None,
+    battery_run_id: str | None = None,
 ) -> RunResult:
-    """Call run_agent() and capture the final answer + execution context."""
+    """Call run_agent() and capture the final answer + execution context.
+
+    When battery_run_id is set, also write a turn_reports row (origin='battery')
+    mirroring the API layer's write in src/api/routes.py — that's what makes
+    battery runs visible in the reporting dashboard. The session id is
+    namespaced per run so two runs of the same battery never merge into one
+    dashboard session.
+    """
+    session_id = f"eval_{battery_run_id}_{question_id}" if battery_run_id else f"eval_{question_id}"
+    reset_turn_capture()
+    start = time.monotonic()
     state = await run_agent(
         query=question_text,
-        session_id=f"eval_{question_id}",
+        session_id=session_id,
         question_id=question_id,
         tool_catalog=tool_catalog,
         use_checkpointing=False,
         resource_context=resource_context,
     )
+    duration_ms = (time.monotonic() - start) * 1000
 
     answer = state.get("final_answer", "")
+    if battery_run_id:
+        await _report_battery_turn(
+            state=state,
+            session_id=session_id,
+            question_id=question_id,
+            query_text=question_text,
+            duration_ms=duration_ms,
+            battery_id=battery_id,
+            battery_run_id=battery_run_id,
+            success=bool(answer),
+        )
     return RunResult(
         question_id=question_id,
         question_text=question_text,
@@ -259,3 +292,40 @@ async def _run_agent(
         tools_used=state.get("tools_used", []),
         success=bool(answer),
     )
+
+
+async def _report_battery_turn(
+    *,
+    state: AgentState,
+    session_id: str,
+    question_id: str,
+    query_text: str,
+    duration_ms: float,
+    battery_id: str | None,
+    battery_run_id: str,
+    success: bool,
+) -> None:
+    """Best-effort: a reporting failure must never fail the eval run."""
+    try:
+        resources = await resources_for_turn(query_text, str(state.get("final_answer") or ""))
+        get_turn_reporter().log_turn_report(
+            final_state=state,
+            session_id=session_id,
+            turn_index=1,  # battery questions are single-turn sessions
+            question_id=question_id,
+            query_text=query_text,
+            duration_ms=duration_ms,
+            acting_user=None,
+            success=success,
+            capabilities=get_capability_registry().infer_capability_ids(
+                state.get("tool_results", [])
+            ),
+            resources=resources,
+            turn_capture=get_turn_capture(),
+            judge=None,
+            origin="battery",
+            battery_id=battery_id,
+            battery_run_id=battery_run_id,
+        )
+    except Exception:
+        logger.exception("Battery turn report write failed (run continues)")
