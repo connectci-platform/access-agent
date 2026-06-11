@@ -20,6 +20,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # Full history so `git describe` can see tags for AGENT_VERSION.
+          fetch-depth: 0
+
+      - name: Compute version stamp
+        id: version
+        # No tags yet → short sha. The day a tag exists (e.g. v1.0.0), builds
+        # automatically report v1.0.0-<n>-g<sha> — tags are opt-in semver.
+        run: echo "describe=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -50,7 +59,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            AGENT_VERSION=${{ github.ref_name }}-${{ github.sha }}
+            AGENT_VERSION=${{ steps.version.outputs.describe }}
             GIT_COMMIT=${{ github.sha }}
             GIT_BRANCH=${{ github.ref_name }}
           cache-from: type=gha
