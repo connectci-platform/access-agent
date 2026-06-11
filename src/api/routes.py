@@ -339,7 +339,6 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
         # Off the response path, swallow failures — never affects the answer.
         from ..agent.domains.capabilities import get_capability_registry as _cap_reg
         from ..services.resource_matcher import resources_for_turn
-        from ..turn_judge import judge_turn
         from ..turn_reporter import get_turn_reporter
 
         try:
@@ -347,7 +346,6 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
             prior_turns = await asyncio.to_thread(reporter.count_turns_for_session, session_id)
             # None = count unknown (DB error): write NULL, not a wrong "1".
             turn_index = prior_turns + 1 if prior_turns is not None else None
-            judge_result = await judge_turn(request.query, final_answer)
             resources = await resources_for_turn(request.query, final_answer or "")
             await asyncio.to_thread(
                 reporter.log_turn_report,
@@ -362,7 +360,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                 capabilities=_cap_reg().infer_capability_ids(final_state.get("tool_results", [])),
                 resources=resources,
                 turn_capture=get_turn_capture(),
-                judge=judge_result,
+                judge=None,
             )
         except Exception:
             logger.exception("Turn report write failed")

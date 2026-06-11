@@ -84,9 +84,9 @@ class TurnReport(TurnReportBase):  # type: ignore[valid-type,misc]
     citation_count = Column(Integer, default=0)
     summarized = Column(Boolean, default=False, index=True)
 
-    # A3 (LLM turn-judge) signals, written here from the judge_turn result
-    # passed in by routes.py. Nullable because the judge is best-effort and may
-    # be disabled (TURN_JUDGE_ENABLED=false), in which case these stay NULL.
+    # Judge signals — reserved for a future REPORTING-SIDE judging pass over
+    # stored rows (per PR #75 review, judging doesn't belong in the request
+    # path). The agent never writes these today; they stay NULL.
     query_intent = Column(String(16), index=True)
     refused = Column(Boolean, index=True)
     is_deflection = Column(Boolean, index=True)
