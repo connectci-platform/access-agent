@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -11,6 +12,7 @@ from src.agent.domains.capabilities import get_capability_registry
 from src.agent.graph import run_agent
 from src.agent.state import AgentState
 from src.agent.turn_capture import get_turn_capture, reset_turn_capture
+from src.config import settings
 from src.services.resource_matcher import resources_for_turn
 from src.services.uky_client import get_uky_client
 from src.turn_reporter import get_turn_reporter
@@ -62,16 +64,24 @@ class RunResult:
 
 
 def get_git_info() -> dict[str, Any]:
-    info = {}
+    """Code provenance for eval_runs (agent_commit / agent_branch).
+
+    Inside the container there is no .git, so fall back to the env stamps the
+    image build provides (GIT_COMMIT / GIT_BRANCH build args), then
+    AGENT_VERSION as a last resort for the commit.
+    """
     try:
-        info["commit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-        info["branch"] = subprocess.check_output(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"], text=True
-        ).strip()
+        return {
+            "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+            "branch": subprocess.check_output(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"], text=True
+            ).strip(),
+        }
     except Exception:
-        info["commit"] = "unknown"
-        info["branch"] = "unknown"
-    return info
+        return {
+            "commit": os.environ.get("GIT_COMMIT") or settings.AGENT_VERSION or "unknown",
+            "branch": os.environ.get("GIT_BRANCH") or "unknown",
+        }
 
 
 def _format_rag_matches(state: Any) -> str | None:

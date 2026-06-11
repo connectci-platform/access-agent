@@ -2,7 +2,13 @@ version: '3.8'
 
 services:
   agent:
-    build: .
+    build:
+      context: .
+      args:
+        # Code-provenance stamps for eval_runs / turn_reports. Local builds:
+        # GIT_COMMIT=$(git rev-parse HEAD) GIT_BRANCH=$(git branch --show-current) docker compose up -d --build
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        GIT_BRANCH: ${GIT_BRANCH:-}
     ports:
       - "8000:8000"
     environment:
