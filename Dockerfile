@@ -22,9 +22,15 @@ RUN uv sync --locked --no-dev
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONPATH=/app
 ENV ENVIRONMENT=docker
-# Build-time version stamp (CI passes --build-arg AGENT_VERSION="$(git describe --tags --always --dirty)").
+# Build-time code-provenance stamps. CI passes these (deploy-production.yml);
+# local compose forwards GIT_COMMIT/GIT_BRANCH from the shell when set. The
+# image has no .git, so the eval CLI's get_git_info() reads these instead.
 ARG AGENT_VERSION=""
 ENV AGENT_VERSION=$AGENT_VERSION
+ARG GIT_COMMIT=""
+ENV GIT_COMMIT=$GIT_COMMIT
+ARG GIT_BRANCH=""
+ENV GIT_BRANCH=$GIT_BRANCH
 
 EXPOSE 8000
 
