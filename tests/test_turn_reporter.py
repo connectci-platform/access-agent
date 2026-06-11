@@ -57,6 +57,10 @@ class TestTurnReportModels:
             "is_deflection",
         }.issubset(cols)
 
+    def test_resources_column_exists(self):
+        cols = {c["name"] for c in inspect(self.engine).get_columns("turn_reports")}
+        assert "resources" in cols
+
     def test_parent_child_insert(self):
         s = self.Session()
         r = TurnReport(session_id="s1", turn_index=1, query_text="hi", origin="real")
@@ -273,6 +277,35 @@ class TestAssemble:
         assert report["query_intent"] is None
         assert report["refused"] is None
         assert report["is_deflection"] is None
+
+    def test_resources_passed_through(self):
+        report, _ = _assemble_turn_report(
+            final_state={},
+            session_id="s",
+            turn_index=1,
+            question_id="q",
+            query_text="delta question",
+            duration_ms=1.0,
+            acting_user=None,
+            success=True,
+            capabilities=[],
+            resources=["anvil", "delta"],
+        )
+        assert report["resources"] == ["anvil", "delta"]
+
+    def test_resources_absent_defaults_empty(self):
+        report, _ = _assemble_turn_report(
+            final_state={},
+            session_id="s",
+            turn_index=1,
+            question_id="q",
+            query_text="x",
+            duration_ms=1.0,
+            acting_user=None,
+            success=True,
+            capabilities=[],
+        )
+        assert report["resources"] == []
 
 
 class TestWrite:

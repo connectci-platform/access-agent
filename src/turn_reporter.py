@@ -65,6 +65,7 @@ class TurnReport(TurnReportBase):  # type: ignore[valid-type,misc]
     model_id = Column(String(64))
 
     capabilities = Column(_JSONB)  # list[str]
+    resources = Column(_JSONB)  # list[str] — RP slugs mentioned in the turn
     resource_context = Column(String(64), index=True)
     was_authenticated = Column(Boolean, default=False)
     user_hash = Column(String(16), index=True)
@@ -152,6 +153,7 @@ def _assemble_turn_report(
     acting_user: str | None,
     success: bool,
     capabilities: list[str],
+    resources: list[str] | None = None,
     turn_capture: dict[str, Any] | None = None,
     judge: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -180,6 +182,7 @@ def _assemble_turn_report(
         "env": settings.DEPLOY_ENV or None,
         "model_id": active_model_name(),
         "capabilities": capabilities,
+        "resources": resources or [],
         "resource_context": final_state.get("resource_context"),
         "was_authenticated": acting_user is not None,
         "user_hash": _hash_user(acting_user),
@@ -265,6 +268,7 @@ class TurnReporter:
             "is_deflection": "BOOLEAN",
             "rating": "VARCHAR(16)",
             "rating_feedback": "TEXT",
+            "resources": "JSONB",
         }
         # Each ALTER runs in its own transaction with its own guard: a failure
         # (insufficient DB privileges, transient error) degrades that one column
