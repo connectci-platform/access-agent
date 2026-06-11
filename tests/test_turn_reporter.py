@@ -481,3 +481,48 @@ class TestCountTurnsUnknown:
             capabilities=[],
         )
         assert report["turn_index"] is None
+
+
+class TestBatteryProvenance:
+    def setup_method(self):
+        self.engine = create_engine("sqlite:///:memory:")
+        TurnReportBase.metadata.create_all(self.engine)
+
+    def test_battery_run_id_column_exists(self):
+        cols = {c["name"] for c in inspect(self.engine).get_columns("turn_reports")}
+        assert "battery_run_id" in cols
+
+    def test_assemble_defaults_to_real_origin(self):
+        report, _ = _assemble_turn_report(
+            final_state={},
+            session_id="s",
+            turn_index=1,
+            question_id="q",
+            query_text="hi",
+            duration_ms=1.0,
+            acting_user=None,
+            success=True,
+            capabilities=[],
+        )
+        assert report["origin"] == "real"
+        assert report["battery_id"] is None
+        assert report["battery_run_id"] is None
+
+    def test_assemble_battery_fields_pass_through(self):
+        report, _ = _assemble_turn_report(
+            final_state={},
+            session_id="s",
+            turn_index=1,
+            question_id="q",
+            query_text="hi",
+            duration_ms=1.0,
+            acting_user=None,
+            success=True,
+            capabilities=[],
+            origin="battery",
+            battery_id="phase3_smoke_battery",
+            battery_run_id="loop-20260611-141530-a3f2c1",
+        )
+        assert report["origin"] == "battery"
+        assert report["battery_id"] == "phase3_smoke_battery"
+        assert report["battery_run_id"] == "loop-20260611-141530-a3f2c1"

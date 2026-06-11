@@ -60,6 +60,7 @@ class TurnReport(TurnReportBase):  # type: ignore[valid-type,misc]
 
     origin = Column(String(16), default="real", index=True)  # real | battery | redteam
     battery_id = Column(String(64))
+    battery_run_id = Column(String(64), index=True)  # eval run id; set when origin='battery'
     agent_version = Column(String(64), index=True)
     env = Column(String(16), index=True)
     model_id = Column(String(64))
@@ -156,6 +157,9 @@ def _assemble_turn_report(
     resources: list[str] | None = None,
     turn_capture: dict[str, Any] | None = None,
     judge: dict[str, Any] | None = None,
+    origin: str = "real",
+    battery_id: str | None = None,
+    battery_run_id: str | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Turn final_state + ids into a (turn_report dict, tool_call dicts) pair.
 
@@ -177,7 +181,9 @@ def _assemble_turn_report(
         "turn_index": turn_index,
         "question_id": question_id,
         "query_text": query_text,
-        "origin": "real",
+        "origin": origin,
+        "battery_id": battery_id,
+        "battery_run_id": battery_run_id,
         "agent_version": settings.AGENT_VERSION or None,
         "env": settings.DEPLOY_ENV or None,
         "model_id": active_model_name(),
@@ -269,6 +275,7 @@ class TurnReporter:
             "rating": "VARCHAR(16)",
             "rating_feedback": "TEXT",
             "resources": "JSONB",
+            "battery_run_id": "VARCHAR(64)",
         }
         # Each ALTER runs in its own transaction with its own guard: a failure
         # (insufficient DB privileges, transient error) degrades that one column
@@ -300,6 +307,17 @@ class TurnReporter:
                 )
         except Exception as e:
             logger.warning("Failed to ensure rating index (%s); continuing", e)
+
+        try:
+            with self._engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_turn_reports_battery_run_id "
+                        "ON turn_reports (battery_run_id)"
+                    )
+                )
+        except Exception as e:
+            logger.warning("Failed to ensure battery_run_id index (%s); continuing", e)
 
     def count_turns_for_session(self, session_id: str) -> int | None:
         """How many turn_reports already exist for this session (prior turns).
