@@ -111,7 +111,8 @@ services:
       - NUXT_REPORTING_OPERATORS=${NUXT_REPORTING_OPERATORS}
       - NUXT_REPORTING_REVIEWERS=${NUXT_REPORTING_REVIEWERS}
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     networks:
       - agent-network
     deploy:
@@ -131,7 +132,8 @@ services:
           PGPASSWORD=$${POSTGRES_PASSWORD:-postgres} pg_dump -h postgres -U postgres -d langgraph \
             --schema=reporting --no-owner \
             -f /backups/reporting-$$(date +%F).sql \
-            && echo "reporting backup $$(date +%F) done"
+            && echo "reporting backup $$(date +%F) done" \
+            || echo "reporting backup failed (schema not provisioned yet?) — will retry in 24h"
           find /backups -name 'reporting-*.sql' -mtime +14 -delete
           sleep 86400
         done
