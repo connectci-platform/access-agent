@@ -1,10 +1,9 @@
 """Match resource-group mentions in turn text.
 
-Pure module: no cache, no I/O. The caller supplies the group list (slug +
-title from RPSectionCache); ``match_resources`` returns the slugs whose name
-appears in the text. Matching is case-insensitive with light normalization —
-hyphens/spaces between name parts are interchangeable and optional, so
-"bridges2", "bridges 2", and "Bridges-2" all match the "Bridges-2" group.
+``match_resources`` is pure (no cache, no I/O); ``resources_for_turn`` is the cache-aware wrapper the API layer calls.
+The caller supplies the group list (slug + title from RPSectionCache); ``match_resources`` returns the slugs whose name
+appears in the text. Matching is case-insensitive with light normalization — hyphens/spaces between name parts are
+interchangeable and optional, so "bridges2", "bridges 2", and "Bridges-2" all match the "Bridges-2" group.
 Word boundaries prevent substring hits ("anvilteam.org" does not match Anvil).
 """
 
