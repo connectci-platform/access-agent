@@ -260,14 +260,30 @@ async def _run_agent(
     session_id = f"eval_{battery_run_id}_{question_id}" if battery_run_id else f"eval_{question_id}"
     reset_turn_capture()
     start = time.monotonic()
-    state = await run_agent(
-        query=question_text,
-        session_id=session_id,
-        question_id=question_id,
-        tool_catalog=tool_catalog,
-        use_checkpointing=False,
-        resource_context=resource_context,
-    )
+    try:
+        state = await run_agent(
+            query=question_text,
+            session_id=session_id,
+            question_id=question_id,
+            tool_catalog=tool_catalog,
+            use_checkpointing=False,
+            resource_context=resource_context,
+        )
+    except Exception:
+        # Mirror src/api/routes.py's failure write: a failed battery question
+        # must be distinguishable from one that never ran.
+        if battery_run_id:
+            await _report_battery_turn(
+                state={},
+                session_id=session_id,
+                question_id=question_id,
+                query_text=question_text,
+                duration_ms=(time.monotonic() - start) * 1000,
+                battery_id=battery_id,
+                battery_run_id=battery_run_id,
+                success=False,
+            )
+        raise
     duration_ms = (time.monotonic() - start) * 1000
 
     answer = state.get("final_answer", "")
@@ -296,7 +312,7 @@ async def _run_agent(
 
 async def _report_battery_turn(
     *,
-    state: AgentState,
+    state: dict[str, Any] | AgentState,
     session_id: str,
     question_id: str,
     query_text: str,
