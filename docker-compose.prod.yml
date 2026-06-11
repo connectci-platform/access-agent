@@ -119,6 +119,31 @@ services:
         limits:
           memory: 256M
 
+  reporting-backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    # Daily pg_dump of the reporting schema (human review data — the most
+    # expensive thing in the system to recreate). Keeps 14 days.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          PGPASSWORD=$${POSTGRES_PASSWORD:-postgres} pg_dump -h postgres -U postgres -d langgraph \
+            --schema=reporting --no-owner \
+            -f /backups/reporting-$$(date +%F).sql \
+            && echo "reporting backup $$(date +%F) done"
+          find /backups -name 'reporting-*.sql' -mtime +14 -delete
+          sleep 86400
+        done
+    environment:
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - reporting_backups:/backups
+    depends_on:
+      - postgres
+    networks:
+      - agent-network
+
   postgres:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
@@ -165,6 +190,7 @@ volumes:
   redis_data:
   caddy_data:
   caddy_config:
+  reporting_backups:
 
 networks:
   agent-network:
