@@ -96,3 +96,31 @@ async def test_reporter_failure_does_not_fail_the_run():
         )
 
     assert result.success  # reporting is best-effort; the eval answer still counts
+
+
+@pytest.mark.asyncio
+async def test_agent_failure_still_writes_failed_report():
+    from src.eval.runner import run_question
+
+    reporter = MagicMock()
+    p1, p2, p3 = _patches(reporter)
+    with (
+        p1,
+        p2,
+        p3,
+        patch("src.eval.runner.run_agent", new=AsyncMock(side_effect=RuntimeError("agent died"))),
+    ):
+        result = await run_question(
+            "q1",
+            "How do I check my allocation?",
+            tool_catalog=None,
+            battery_id="phase3_smoke_battery",
+            battery_run_id="run-A",
+        )
+
+    assert not result.success
+    kwargs = reporter.log_turn_report.call_args.kwargs
+    assert kwargs["success"] is False
+    assert kwargs["origin"] == "battery"
+    assert kwargs["battery_run_id"] == "run-A"
+    assert kwargs["session_id"] == "eval_run-A_q1"
