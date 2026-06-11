@@ -16,6 +16,9 @@ RUN pip install --no-cache-dir uv
 # Install Python dependencies from the lockfile (production deps only).
 COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
+# Batteries are version-controlled content — bake them in so the eval CLI
+# (and the future battery-trigger API) can run them wherever the agent runs.
+COPY eval/ ./eval/
 RUN uv sync --locked --no-dev
 
 # Make the venv's executables findable so CMD can call uvicorn directly.
