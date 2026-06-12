@@ -77,3 +77,29 @@ def test_mcp_wrapper_records_timing_on_failure(monkeypatch):
     )
     asyncio.run(wrapper._arun())
     assert get_turn_capture()["tool_timings"] == [{"tool_name": "list_things", "duration_ms": 17}]
+
+
+def test_doc_search_records_timing_when_unavailable(monkeypatch):
+    from src.agent.tools.access_documents import _search_access_documents
+
+    reset_turn_capture()
+
+    class _Client:
+        is_chatmcp_configured = False
+
+    class _Registry:
+        def enabled_rag_endpoints(self):
+            return {"general", "xdmod"}
+
+        def scoped_rag_enabled(self):
+            return True
+
+    monkeypatch.setattr("src.agent.tools.access_documents.get_uky_client", _Client)
+    monkeypatch.setattr(
+        "src.agent.tools.access_documents.get_capability_registry",
+        _Registry,
+    )
+    asyncio.run(_search_access_documents("anything"))
+    timings = get_turn_capture()["tool_timings"]
+    assert len(timings) == 1
+    assert timings[0]["tool_name"] == "search_access_documents"

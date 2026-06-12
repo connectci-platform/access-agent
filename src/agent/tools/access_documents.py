@@ -68,6 +68,8 @@ class _SearchAccessDocumentsArgs(BaseModel):
     )
 
 
+_TOOL_NAME = "search_access_documents"
+
 _UNAVAILABLE = (
     "Documentation search is currently unavailable. "
     "Try answering from your other tools or tell the user the doc "
@@ -170,13 +172,13 @@ async def _search_access_documents(
     try:
         return await _search_access_documents_inner(query, source, rp_name)
     finally:
-        record_tool_timing("search_access_documents", int((time.monotonic() - start) * 1000))
+        record_tool_timing(_TOOL_NAME, int((time.monotonic() - start) * 1000))
 
 
 search_access_documents = StructuredTool.from_function(
     func=None,
     coroutine=_search_access_documents,
-    name="search_access_documents",
+    name=_TOOL_NAME,
     description=(
         "Search the ACCESS-CI documentation RAG for how-tos, policies, "
         "concepts, hardware/software references, and XDMoD documentation. "
