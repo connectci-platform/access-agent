@@ -63,7 +63,9 @@ class TurnReport(TurnReportBase):  # type: ignore[valid-type,misc]
     battery_run_id = Column(String(64), index=True)  # eval run id; set when origin='battery'
     agent_version = Column(String(64), index=True)
     env = Column(String(16), index=True)
-    trace_id = Column(String(32), index=True)  # OTEL trace id of the turn's root span
+    trace_id = Column(
+        String(32)
+    )  # OTEL trace id of the turn's root span; display-only, never filtered
     model_id = Column(String(64))
 
     capabilities = Column(_JSONB)  # list[str]
