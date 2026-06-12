@@ -108,3 +108,10 @@ def test_model_calls_is_a_declared_state_channel():
 def test_create_initial_state_sets_model_calls():
     state = create_initial_state(query="q", session_id="s", question_id="qid", tool_catalog={})
     assert state["model_calls"] is None
+
+
+def test_accumulator_times_via_on_llm_start():
+    acc = _TokenUsageAccumulator()
+    asyncio.run(acc.on_llm_start({}, [], run_id="r"))
+    asyncio.run(acc.on_llm_end(_resp(5), run_id="r"))
+    assert acc.model_calls[0]["duration_ms"] >= 0

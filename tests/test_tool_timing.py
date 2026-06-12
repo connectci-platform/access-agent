@@ -190,3 +190,54 @@ def test_build_tool_results_skips_prior_turn_messages():
     assert orphans == 0
     by_id = {r.step_id: r.duration_ms for r in results}
     assert by_id == {"t1": 0, "t2": 900}
+
+
+def test_build_tool_results_logs_leftover_timings(caplog):
+    import logging
+
+    with caplog.at_level(logging.DEBUG, logger="src.agent.nodes.tool_calling_loop"):
+        results, _ = _build_tool_results(
+            _thread_two_calls(), [], [{"tool_name": "other_tool", "duration_ms": 5}]
+        )
+    assert [r.duration_ms for r in results] == [0, 0]
+    assert "no matching current-turn ToolMessage" in caplog.text
+
+
+def test_run_agent_records_trace_id(monkeypatch):
+    from opentelemetry.sdk.trace import TracerProvider
+
+    import src.agent.graph as graph_mod
+
+    class _Graph:
+        async def ainvoke(self, state, config):
+            return {}
+
+    monkeypatch.setattr(graph_mod, "create_agent_graph", _Graph)
+    monkeypatch.setattr(graph_mod, "get_tracer", lambda name="t": TracerProvider().get_tracer(name))
+    reset_turn_capture()
+    asyncio.run(graph_mod.run_agent(query="q", session_id="s", question_id="qid", tool_catalog={}))
+    assert get_turn_capture()["trace_id"] is not None
+
+
+def test_stream_agent_records_trace_id(monkeypatch):
+    from opentelemetry.sdk.trace import TracerProvider
+
+    import src.agent.graph as graph_mod
+
+    class _Graph:
+        async def astream(self, state, config=None, stream_mode=None):
+            return
+            yield  # makes this an (empty) async generator
+
+    monkeypatch.setattr(graph_mod, "create_agent_graph", _Graph)
+    monkeypatch.setattr(graph_mod, "get_tracer", lambda name="t": TracerProvider().get_tracer(name))
+    reset_turn_capture()
+
+    async def _consume():
+        async for _ in graph_mod.stream_agent(
+            query="q", session_id="s", question_id="qid", tool_catalog={}
+        ):
+            pass
+
+    asyncio.run(_consume())
+    assert get_turn_capture()["trace_id"] is not None

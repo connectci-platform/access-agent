@@ -292,3 +292,20 @@ def test_call_tool_failure_span_has_error_status(monkeypatch):
     assert spans[0].attributes["mcp.success"] is False
     assert "Timeout" in spans[0].attributes["mcp.error"]
     assert spans[0].status.status_code is StatusCode.ERROR
+
+
+def test_call_tool_generic_exception_returns_error(monkeypatch):
+    import asyncio
+
+    from src.tools.mcp_client import MCPClient
+
+    class _Client:
+        async def post(self, url, json=None, headers=None):
+            raise ValueError("kaboom")
+
+    monkeypatch.setattr("src.tools.mcp_client.get_shared_client", lambda timeout: _Client())
+    monkeypatch.setattr(MCPClient, "get_server_url", lambda self, s: "http://x")
+
+    result = asyncio.run(MCPClient().call_tool(server="srv", tool_name="t", arguments={}))
+    assert not result.success
+    assert result.error.startswith("ValueError: kaboom")
