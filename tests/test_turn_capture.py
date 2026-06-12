@@ -5,6 +5,8 @@ from src.agent.turn_capture import (
     get_turn_capture,
     mark_summarized,
     record_retrieved_chunks,
+    record_tool_timing,
+    record_trace_id,
     reset_turn_capture,
 )
 
@@ -40,7 +42,13 @@ def test_default_capture_is_safe_without_reset():
         return get_turn_capture()
 
     cap = asyncio.run(_isolated())
-    assert cap == {"searched": False, "chunks": [], "summarized": False}
+    assert cap == {
+        "searched": False,
+        "chunks": [],
+        "summarized": False,
+        "tool_timings": [],
+        "trace_id": None,
+    }
 
 
 def test_child_task_writes_visible_to_parent():
@@ -74,3 +82,30 @@ def test_concurrent_requests_are_isolated():
     results = asyncio.run(_main())
     assert [c[0]["url"] for c in results] == ["https://one.org", "https://two.org"]
     assert all(len(c) == 1 for c in results)  # no cross-task leakage
+
+
+def test_records_tool_timings_in_order():
+    reset_turn_capture()
+    record_tool_timing("list_things", 42)
+    record_tool_timing("search_access_documents", 7)
+    cap = get_turn_capture()
+    assert cap["tool_timings"] == [
+        {"tool_name": "list_things", "duration_ms": 42},
+        {"tool_name": "search_access_documents", "duration_ms": 7},
+    ]
+
+
+def test_records_trace_id():
+    reset_turn_capture()
+    record_trace_id("ab" * 16)
+    assert get_turn_capture()["trace_id"] == "ab" * 16
+
+
+def test_tool_timing_safe_without_reset():
+    async def _isolated():
+        record_tool_timing("x", 1)
+        record_trace_id("ff" * 16)
+        return get_turn_capture()
+
+    cap = asyncio.run(_isolated())
+    assert cap["tool_timings"] == [] and cap["trace_id"] is None

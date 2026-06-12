@@ -80,3 +80,38 @@ def test_create_initial_state_sets_total_tokens():
         tool_catalog={},
     )
     assert state["total_tokens"] is None
+
+
+def test_accumulator_times_model_calls():
+    acc = _TokenUsageAccumulator()
+    rid = "run-1"
+    asyncio.run(acc.on_chat_model_start({}, [], run_id=rid))
+    asyncio.run(acc.on_llm_end(_resp(30), run_id=rid))
+    assert len(acc.model_calls) == 1
+    call = acc.model_calls[0]
+    assert call["index"] == 0
+    assert call["total_tokens"] == 30
+    assert call["duration_ms"] >= 0
+
+
+def test_accumulator_unmatched_run_id_records_zero_duration():
+    acc = _TokenUsageAccumulator()
+    asyncio.run(acc.on_llm_end(_resp(12), run_id="never-started"))
+    assert acc.model_calls[0]["duration_ms"] == 0
+    assert acc.total_tokens == 12
+
+
+def test_model_calls_is_a_declared_state_channel():
+    assert "model_calls" in AgentState.__annotations__
+
+
+def test_create_initial_state_sets_model_calls():
+    state = create_initial_state(query="q", session_id="s", question_id="qid", tool_catalog={})
+    assert state["model_calls"] is None
+
+
+def test_accumulator_times_via_on_llm_start():
+    acc = _TokenUsageAccumulator()
+    asyncio.run(acc.on_llm_start({}, [], run_id="r"))
+    asyncio.run(acc.on_llm_end(_resp(5), run_id="r"))
+    assert acc.model_calls[0]["duration_ms"] >= 0

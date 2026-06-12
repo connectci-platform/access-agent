@@ -194,6 +194,12 @@ class AgentState(TypedDict):
     # Output (turn-scoped token total summed by the loop's usage callback).
     total_tokens: Annotated[int | None, "Turn-scoped total tokens for this turn's LLM calls"]
 
+    # Output (per-LLM-call timing/tokens recorded by the loop's usage callback).
+    model_calls: Annotated[
+        list[dict[str, Any]] | None,
+        "Per-LLM-call {index, duration_ms, total_tokens} entries for this turn",
+    ]
+
 
 def create_initial_state(
     query: str,
@@ -242,4 +248,5 @@ def create_initial_state(
         # Output.
         final_answer=None,
         total_tokens=None,
+        model_calls=None,
     )

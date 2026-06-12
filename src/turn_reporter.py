@@ -63,6 +63,9 @@ class TurnReport(TurnReportBase):  # type: ignore[valid-type,misc]
     battery_run_id = Column(String(64), index=True)  # eval run id; set when origin='battery'
     agent_version = Column(String(64), index=True)
     env = Column(String(16), index=True)
+    trace_id = Column(
+        String(32)
+    )  # OTEL trace id of the turn's root span; display-only, never filtered
     model_id = Column(String(64))
 
     capabilities = Column(_JSONB)  # list[str]
@@ -110,7 +113,7 @@ class ReportToolCall(TurnReportBase):  # type: ignore[valid-type,misc]
     success = Column(Boolean, default=True)
     args_hash = Column(String(64), index=True)
     arguments = Column(_JSONB)
-    duration_ms = Column(Integer, default=0)  # per-call timing deferred to A2
+    duration_ms = Column(Integer, default=0)  # wall-clock ms measured at the call site
 
 
 # ── Pure payload builder ──────────────────────────────────────────────────
@@ -186,6 +189,7 @@ def _assemble_turn_report(
         "battery_run_id": battery_run_id,
         "agent_version": settings.AGENT_VERSION or None,
         "env": settings.DEPLOY_ENV or None,
+        "trace_id": capture.get("trace_id"),
         "model_id": active_model_name(),
         "capabilities": capabilities,
         "resources": resources or [],
@@ -210,6 +214,7 @@ def _assemble_turn_report(
             "answer": final_state.get("final_answer"),
             "tool_results": results,
             "node_trace": final_state.get("node_trace", []),
+            "model_calls": final_state.get("model_calls") or [],
             "params": {},
             "retrieved_chunks": rag_chunks,
         },
@@ -276,6 +281,7 @@ class TurnReporter:
             "rating_feedback": "TEXT",
             "resources": "JSONB",
             "battery_run_id": "VARCHAR(64)",
+            "trace_id": "VARCHAR(32)",
         }
         # Each ALTER runs in its own transaction with its own guard: a failure
         # (insufficient DB privileges, transient error) degrades that one column

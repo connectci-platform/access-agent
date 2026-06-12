@@ -21,8 +21,21 @@ from langgraph.graph import END, START, StateGraph
 from ..telemetry import get_tracer
 from .nodes.tool_calling_loop import tool_calling_loop_node
 from .state import AgentState
+from .turn_capture import record_trace_id
 
 logger = logging.getLogger(__name__)
+
+
+def _record_current_trace_id(span: Any) -> None:
+    """Stash the root span's trace id (32-hex) in turn_capture.
+
+    With telemetry disabled the span is non-recording and its trace_id is 0 —
+    record nothing, so turn_reports.trace_id stays NULL rather than holding a
+    dead link.
+    """
+    trace_id = span.get_span_context().trace_id
+    if trace_id:
+        record_trace_id(format(trace_id, "032x"))
 
 
 def _build_graph_structure(
@@ -90,6 +103,7 @@ async def run_agent(
             "agent.user": acting_user or "anonymous",
         },
     ) as root_span:
+        _record_current_trace_id(root_span)
         initial_state = create_initial_state(
             query=query,
             session_id=session_id,
@@ -164,7 +178,8 @@ async def stream_agent(
             "agent.question_id": question_id,
             "agent.user": acting_user or "anonymous",
         },
-    ):
+    ) as root_span:
+        _record_current_trace_id(root_span)
         initial_state = create_initial_state(
             query=query,
             session_id=session_id,

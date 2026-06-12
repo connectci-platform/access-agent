@@ -12,6 +12,7 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field, create_model
 
 from ...tools.mcp_client import MCPClient
+from ..turn_capture import record_tool_timing
 from .config import DomainAgentConfig
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,8 @@ class MCPToolWrapper(BaseTool):
             arguments=arguments,
             acting_user=self.acting_user,
         )
+
+        record_tool_timing(self.name, result.duration_ms)
 
         if result.success:
             return json.dumps(result.data, default=str)

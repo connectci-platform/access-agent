@@ -206,3 +206,106 @@ class TestSharedClient:
         client1 = get_shared_client()
         client2 = get_shared_client()
         assert client1 is client2
+
+
+def test_call_tool_emits_span(monkeypatch):
+    import asyncio
+
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from src.tools.mcp_client import MCPClient
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(
+        "src.telemetry.spans.get_tracer",
+        lambda name="test": provider.get_tracer(name),
+    )
+
+    class _Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"content": [{"type": "text", "text": '{"ok": true}'}]}
+
+    class _Client:
+        async def post(self, url, json=None, headers=None):
+            return _Resp()
+
+    monkeypatch.setattr("src.tools.mcp_client.get_shared_client", lambda timeout: _Client())
+    monkeypatch.setattr(MCPClient, "get_server_url", lambda self, s: "http://x")
+
+    result = asyncio.run(
+        MCPClient().call_tool(server="srv", tool_name="list_things", arguments={"a": 1})
+    )
+    assert result.success
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert spans[0].name == "mcp.call_tool.list_things"
+    assert spans[0].attributes["mcp.server"] == "srv"
+    assert spans[0].attributes["mcp.success"] is True
+    assert spans[0].attributes["mcp.duration_ms"] >= 0
+
+
+def test_call_tool_failure_span_has_error_status(monkeypatch):
+    import asyncio
+
+    import httpx
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+    from opentelemetry.trace import StatusCode
+
+    from src.tools.mcp_client import MCPClient
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(
+        "src.telemetry.spans.get_tracer",
+        lambda name="test": provider.get_tracer(name),
+    )
+
+    class _Client:
+        async def post(self, url, json=None, headers=None):
+            raise httpx.TimeoutException("timed out")
+
+    monkeypatch.setattr("src.tools.mcp_client.get_shared_client", lambda timeout: _Client())
+    monkeypatch.setattr(MCPClient, "get_server_url", lambda self, s: "http://x")
+
+    result = asyncio.run(MCPClient().call_tool(server="srv", tool_name="list_things", arguments={}))
+    assert not result.success
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert spans[0].attributes["mcp.success"] is False
+    assert "Timeout" in spans[0].attributes["mcp.error"]
+    assert spans[0].status.status_code is StatusCode.ERROR
+
+
+def test_call_tool_generic_exception_returns_error(monkeypatch):
+    import asyncio
+
+    from src.tools.mcp_client import MCPClient
+
+    class _Client:
+        async def post(self, url, json=None, headers=None):
+            raise ValueError("kaboom")
+
+    monkeypatch.setattr("src.tools.mcp_client.get_shared_client", lambda timeout: _Client())
+    monkeypatch.setattr(MCPClient, "get_server_url", lambda self, s: "http://x")
+
+    result = asyncio.run(MCPClient().call_tool(server="srv", tool_name="t", arguments={}))
+    assert not result.success
+    assert result.error.startswith("ValueError: kaboom")

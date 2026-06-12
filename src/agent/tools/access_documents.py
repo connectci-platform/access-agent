@@ -20,6 +20,7 @@ synthesis endpoint. The tool's outward parameter shape is unchanged.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Literal
 
 from langchain_core.tools import StructuredTool
@@ -27,7 +28,7 @@ from pydantic import BaseModel, Field
 
 from ...services.uky_client import UKYChunk, get_uky_client
 from ..domains.capabilities import get_capability_registry
-from ..turn_capture import record_retrieved_chunks
+from ..turn_capture import record_retrieved_chunks, record_tool_timing
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,8 @@ class _SearchAccessDocumentsArgs(BaseModel):
     )
 
 
+_TOOL_NAME = "search_access_documents"
+
 _UNAVAILABLE = (
     "Documentation search is currently unavailable. "
     "Try answering from your other tools or tell the user the doc "
@@ -92,7 +95,7 @@ def _format_chunks(query: str, chunks: list[UKYChunk]) -> str:
     return "\n\n".join(parts)
 
 
-async def _search_access_documents(
+async def _search_access_documents_inner(
     query: str,
     source: Literal["general", "xdmod"] = "general",
     rp_name: str | None = None,
@@ -159,10 +162,23 @@ async def _search_access_documents(
     return _format_chunks(query, retrieval.chunks)
 
 
+async def _search_access_documents(
+    query: str,
+    source: Literal["general", "xdmod"] = "general",
+    rp_name: str | None = None,
+) -> str:
+    """Timing wrapper: guarantees exactly one timing record per call (1:1 invariant)."""
+    start = time.monotonic()
+    try:
+        return await _search_access_documents_inner(query, source, rp_name)
+    finally:
+        record_tool_timing(_TOOL_NAME, int((time.monotonic() - start) * 1000))
+
+
 search_access_documents = StructuredTool.from_function(
     func=None,
     coroutine=_search_access_documents,
-    name="search_access_documents",
+    name=_TOOL_NAME,
     description=(
         "Search the ACCESS-CI documentation RAG for how-tos, policies, "
         "concepts, hardware/software references, and XDMoD documentation. "

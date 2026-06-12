@@ -363,7 +363,7 @@ async def test_orphan_tool_messages_are_counted(base_state):
     assert result["tool_results"][0].step_id == "call_1"
 
     # Sanity-check the helper directly returns the orphan count
-    tool_results, orphan_count = _build_tool_results(messages, [])
+    tool_results, orphan_count = _build_tool_results(messages, [], [])
     assert orphan_count == 1
     assert len(tool_results) == 1
 
