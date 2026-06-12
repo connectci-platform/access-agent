@@ -32,6 +32,12 @@ services:
       - LLM_PROVIDER=${LLM_PROVIDER:-openai}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
+      # vLLM (UKY Qwen) — required when LLM_PROVIDER=vllm. These were always
+      # passed by the dev compose but never by prod, so prod silently fell
+      # back to the OpenAI default regardless of the droplet .env.
+      - VLLM_BASE_URL=${VLLM_BASE_URL:-}
+      - VLLM_API_KEY=${VLLM_API_KEY:-}
+      - VLLM_MODEL_NAME=${VLLM_MODEL_NAME:-}
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/langgraph
       - REDIS_URL=redis://redis:6379/0
       - CITATION_VALIDATION_ENABLED=${CITATION_VALIDATION_ENABLED:-true}
