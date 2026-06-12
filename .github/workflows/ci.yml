@@ -13,6 +13,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # Full history: the coverage diff-gate needs a real merge base with
+          # origin/main; shallow checkouts make diff-cover fail ("no merge base").
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -51,7 +55,7 @@ jobs:
 
       - name: Fetch main for diff
         if: github.event_name == 'pull_request'
-        run: git fetch --no-tags --depth=200 origin main
+        run: git fetch --no-tags origin main
 
       - name: Coverage diff-gate (100% on changed lines)
         if: >
