@@ -8,7 +8,6 @@ from src.agent.domains.tools import MCPToolWrapper
 from src.agent.nodes.tool_calling_loop import _build_tool_results
 from src.agent.turn_capture import (
     get_turn_capture,
-    record_tool_timing,
     reset_turn_capture,
 )
 from src.tools.mcp_client import MCPClient, MCPToolResult
@@ -125,15 +124,45 @@ def _thread_two_calls():
 
 
 def test_build_tool_results_pairs_timings_fifo():
-    reset_turn_capture()
-    record_tool_timing("list_things", 42)
-    record_tool_timing("list_things", 7)
-    results, orphans = _build_tool_results(_thread_two_calls(), [])
+    results, orphans = _build_tool_results(
+        _thread_two_calls(),
+        [],
+        [
+            {"tool_name": "list_things", "duration_ms": 42},
+            {"tool_name": "list_things", "duration_ms": 7},
+        ],
+    )
     assert orphans == 0
     assert [r.duration_ms for r in results] == [42, 7]
 
 
 def test_build_tool_results_without_timings_defaults_zero():
-    reset_turn_capture()
-    results, _ = _build_tool_results(_thread_two_calls(), [])
+    results, _ = _build_tool_results(_thread_two_calls(), [], [])
     assert [r.duration_ms for r in results] == [0, 0]
+
+
+def test_build_tool_results_skips_prior_turn_messages():
+    from langchain_core.messages import HumanMessage
+
+    prior_ai = AIMessage(
+        content="",
+        tool_calls=[{"name": "list_things", "args": {"a": 0}, "id": "t1"}],
+    )
+    current_ai = AIMessage(
+        content="",
+        tool_calls=[{"name": "list_things", "args": {"a": 1}, "id": "t2"}],
+    )
+    thread = [
+        HumanMessage(content="first question"),
+        prior_ai,
+        ToolMessage(content="{}", tool_call_id="t1"),
+        AIMessage(content="first answer"),
+        HumanMessage(content="second question"),
+        current_ai,
+        ToolMessage(content="{}", tool_call_id="t2"),
+    ]
+    timings = [{"tool_name": "list_things", "duration_ms": 900}]
+    results, orphans = _build_tool_results(thread, [], timings)
+    assert orphans == 0
+    by_id = {r.step_id: r.duration_ms for r in results}
+    assert by_id == {"t1": 0, "t2": 900}

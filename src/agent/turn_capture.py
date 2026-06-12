@@ -7,8 +7,9 @@ the turn's OTEL trace id.
 
 We carry them out via a ContextVar holding one mutable dict. The route resets
 it per turn; the doc-search tool, the summarization middleware, the MCP tool
-wrapper, and the root-span trace-id recorder mutate it **in place**; the route
-reads it after the stream and hands it to the reporter.
+wrapper, and the root-span trace-id recorder mutate it **in place**; the loop
+node reads tool_timings to pair durations onto current-turn ToolResults, and
+the route reads the full capture after the stream and hands it to the reporter.
 Mutating-in-place (never reassigning the ContextVar inside child tasks) is what
 makes writes visible across the asyncio tasks LangGraph spawns — child tasks
 inherit the same dict reference. Pure observation: nothing here changes what the

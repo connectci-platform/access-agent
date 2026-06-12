@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 from langchain.agents import create_agent
 from langchain.agents.middleware import SummarizationMiddleware
 from langchain_core.callbacks import AsyncCallbackHandler
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.config import get_stream_writer
 from langgraph.errors import GraphRecursionError
 
@@ -358,7 +358,9 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
                         tools_used.append(name)
 
         tool_result_count = sum(1 for m in result_messages if isinstance(m, ToolMessage))
-        tool_results, orphan_count = _build_tool_results(result_messages, tools)
+        tool_results, orphan_count = _build_tool_results(
+            result_messages, tools, get_turn_capture().get("tool_timings", [])
+        )
 
         answer_length = len(final_answer) if final_answer else 0
         span.set_attribute("agent.answer_length", answer_length)
@@ -395,9 +397,27 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
         }
 
 
+def _build_call_lookup(
+    result_messages: list[Any],
+) -> dict[str, tuple[str, dict[str, Any]]]:
+    """Map tool_call_id → (tool_name, args) from all AIMessage tool_calls in the thread."""
+    call_lookup: dict[str, tuple[str, dict[str, Any]]] = {}
+    for msg in result_messages:
+        if not (isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None)):
+            continue
+        for tc in msg.tool_calls:
+            tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+            tc_name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+            tc_args = tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
+            if tc_id and tc_name:
+                call_lookup[tc_id] = (tc_name, tc_args or {})
+    return call_lookup
+
+
 def _build_tool_results(
     result_messages: list[Any],
     tools: list[Any],
+    tool_timings: list[dict[str, Any]],
 ) -> tuple[list[ToolResult], int]:
     """Back-fill state.tool_results from a react-loop message thread.
 
@@ -413,8 +433,13 @@ def _build_tool_results(
     cases (e.g., future LLM quirks where a ToolMessage appears without a
     matching call).
 
-    duration_ms is paired from turn_capture's tool_timings (recorded at the
-    call sites), FIFO per tool name; calls with no recorded timing keep 0.
+    duration_ms is paired from tool_timings (recorded at the call sites) FIFO
+    per tool name, but ONLY onto ToolMessages that appear after the last
+    HumanMessage in result_messages — those are the current turn's calls.
+    Prior-turn ToolMessages (at or before that boundary) keep duration_ms=0;
+    0 is the honest value because their wall-clock time was not recorded for
+    this turn. Limitation: two parallel calls to the SAME tool in one turn may
+    swap durations between them (records append in completion order).
 
     Returns:
         (tool_results, orphan_count) — the reconstructed ToolResult list and
@@ -425,27 +450,23 @@ def _build_tool_results(
         getattr(t, "name", ""): getattr(t, "tool_server", "") for t in tools
     }
 
-    call_lookup: dict[str, tuple[str, dict[str, Any]]] = {}
-    for msg in result_messages:
-        if not (isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None)):
-            continue
-        for tc in msg.tool_calls:
-            tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
-            tc_name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
-            tc_args = tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
-            if tc_id and tc_name:
-                call_lookup[tc_id] = (tc_name, tc_args or {})
+    call_lookup = _build_call_lookup(result_messages)
 
-    # Pair capture-recorded durations back to results, FIFO per tool name.
-    # Limitation: two parallel calls to the SAME tool in one turn may swap
-    # durations between them (records append in completion order).
+    # Find the boundary: ToolMessages at or before the last HumanMessage index
+    # belong to prior turns. Only messages after that index get timing data.
+    human_boundary = -1
+    for i, msg in enumerate(result_messages):
+        if isinstance(msg, HumanMessage):
+            human_boundary = i
+
+    # Pair capture-recorded durations back to current-turn results, FIFO per tool name.
     timing_queues: dict[str, deque[int]] = {}
-    for rec in get_turn_capture().get("tool_timings", []):
+    for rec in tool_timings:
         timing_queues.setdefault(rec["tool_name"], deque()).append(rec["duration_ms"])
 
     results: list[ToolResult] = []
     orphan_count = 0
-    for msg in result_messages:
+    for i, msg in enumerate(result_messages):
         if not isinstance(msg, ToolMessage):
             continue
         tc_id = msg.tool_call_id
@@ -454,11 +475,23 @@ def _build_tool_results(
             continue
         tool_name, tool_args = call_lookup[tc_id]
         server = tool_server_lookup.get(tool_name, "")
-        result = _parse_tool_message(msg, tc_id, tool_name, server, tool_args)
-        queue = timing_queues.get(tool_name)
-        if queue:
-            result.duration_ms = queue.popleft()
+        # Only pop a timing for current-turn messages (after the last HumanMessage).
+        duration_ms = 0
+        if i > human_boundary:
+            queue = timing_queues.get(tool_name)
+            if queue:
+                duration_ms = queue.popleft()
+        result = _parse_tool_message(
+            msg, tc_id, tool_name, server, tool_args, duration_ms=duration_ms
+        )
         results.append(result)
+
+    leftover = sum(len(q) for q in timing_queues.values())
+    if leftover:
+        logger.debug(
+            "tool timing pairing: %d recorded timing(s) had no matching current-turn ToolMessage",
+            leftover,
+        )
 
     return results, orphan_count
 
@@ -469,6 +502,7 @@ def _parse_tool_message(
     tool_name: str,
     server: str,
     tool_args: dict[str, Any],
+    duration_ms: int = 0,
 ) -> ToolResult:
     """Build a ToolResult from a single ToolMessage + its originating call metadata."""
     raw_content = msg.content if isinstance(msg.content, str) else str(msg.content)
@@ -485,6 +519,7 @@ def _parse_tool_message(
             success=False,
             error=str(parsed["error"]),
             arguments=tool_args,
+            duration_ms=duration_ms,
         )
 
     return ToolResult(
@@ -494,4 +529,5 @@ def _parse_tool_message(
         success=True,
         data=parsed,
         arguments=tool_args,
+        duration_ms=duration_ms,
     )
