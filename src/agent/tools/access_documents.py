@@ -20,6 +20,7 @@ synthesis endpoint. The tool's outward parameter shape is unchanged.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Literal
 
 from langchain_core.tools import StructuredTool
@@ -27,7 +28,7 @@ from pydantic import BaseModel, Field
 
 from ...services.uky_client import UKYChunk, get_uky_client
 from ..domains.capabilities import get_capability_registry
-from ..turn_capture import record_retrieved_chunks
+from ..turn_capture import record_retrieved_chunks, record_tool_timing
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ def _format_chunks(query: str, chunks: list[UKYChunk]) -> str:
     return "\n\n".join(parts)
 
 
-async def _search_access_documents(
+async def _search_access_documents_inner(
     query: str,
     source: Literal["general", "xdmod"] = "general",
     rp_name: str | None = None,
@@ -157,6 +158,19 @@ async def _search_access_documents(
 
     record_retrieved_chunks(retrieval.chunks)
     return _format_chunks(query, retrieval.chunks)
+
+
+async def _search_access_documents(
+    query: str,
+    source: Literal["general", "xdmod"] = "general",
+    rp_name: str | None = None,
+) -> str:
+    """Timing wrapper: guarantees exactly one timing record per call (1:1 invariant)."""
+    start = time.monotonic()
+    try:
+        return await _search_access_documents_inner(query, source, rp_name)
+    finally:
+        record_tool_timing("search_access_documents", int((time.monotonic() - start) * 1000))
 
 
 search_access_documents = StructuredTool.from_function(
