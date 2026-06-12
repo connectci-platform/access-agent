@@ -61,6 +61,9 @@ class TestTurnReportModels:
         cols = {c["name"] for c in inspect(self.engine).get_columns("turn_reports")}
         assert "resources" in cols
 
+    def test_trace_id_column_exists(self):
+        assert "trace_id" in TurnReport.__table__.columns
+
     def test_parent_child_insert(self):
         s = self.Session()
         r = TurnReport(session_id="s1", turn_index=1, query_text="hi", origin="real")
@@ -306,6 +309,76 @@ class TestAssemble:
             capabilities=[],
         )
         assert report["resources"] == []
+
+    def test_trace_id_from_capture(self):
+        report, _ = _assemble_turn_report(
+            final_state={},
+            session_id="s",
+            turn_index=1,
+            question_id="q",
+            query_text="hello",
+            duration_ms=10.0,
+            acting_user=None,
+            success=True,
+            capabilities=[],
+            turn_capture={"trace_id": "ab" * 16, "searched": False, "chunks": []},
+        )
+        assert report["trace_id"] == "ab" * 16
+
+    def test_trace_id_absent_is_none(self):
+        report, _ = _assemble_turn_report(
+            final_state={},
+            session_id="s",
+            turn_index=1,
+            question_id="q",
+            query_text="hello",
+            duration_ms=10.0,
+            acting_user=None,
+            success=True,
+            capabilities=[],
+        )
+        assert report["trace_id"] is None
+
+    def test_payload_model_calls_from_final_state(self):
+        calls = [{"index": 0, "duration_ms": 1200, "total_tokens": 900}]
+        report, _ = _assemble_turn_report(
+            final_state={"model_calls": calls},
+            session_id="s",
+            turn_index=1,
+            question_id="q",
+            query_text="hello",
+            duration_ms=10.0,
+            acting_user=None,
+            success=True,
+            capabilities=[],
+        )
+        assert report["payload"]["model_calls"] == calls
+
+    def test_tool_call_duration_flows_to_children(self):
+        _report, tool_calls = _assemble_turn_report(
+            final_state={
+                "tool_results": [
+                    {
+                        "step_id": "c1",
+                        "tool_name": "list_things",
+                        "server": "srv",
+                        "success": True,
+                        "arguments": {"a": 1},
+                        "duration_ms": 42,
+                    }
+                ],
+                "tools_used": ["list_things"],
+            },
+            session_id="s",
+            turn_index=1,
+            question_id="q",
+            query_text="hello",
+            duration_ms=10.0,
+            acting_user=None,
+            success=True,
+            capabilities=[],
+        )
+        assert tool_calls[0]["duration_ms"] == 42
 
 
 class TestWrite:
