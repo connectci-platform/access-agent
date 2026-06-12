@@ -215,6 +215,7 @@ def _assemble_turn_report(
             "tool_results": results,
             "node_trace": final_state.get("node_trace", []),
             "model_calls": final_state.get("model_calls") or [],
+            "reasoning": capture.get("model_reasoning") or [],
             "params": {},
             "retrieved_chunks": rag_chunks,
         },

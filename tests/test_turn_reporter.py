@@ -599,3 +599,38 @@ class TestBatteryProvenance:
         assert report["origin"] == "battery"
         assert report["battery_id"] == "phase3_smoke_battery"
         assert report["battery_run_id"] == "loop-20260611-141530-a3f2c1"
+
+
+class TestPayloadReasoning:
+    def test_payload_reasoning_from_capture(self):
+        report, _ = _assemble_turn_report(
+            final_state={},
+            session_id="s",
+            turn_index=1,
+            question_id="q",
+            query_text="hello",
+            duration_ms=10.0,
+            acting_user=None,
+            success=True,
+            capabilities=[],
+            turn_capture={
+                "model_reasoning": ["thought one", "thought two"],
+                "searched": False,
+                "chunks": [],
+            },
+        )
+        assert report["payload"]["reasoning"] == ["thought one", "thought two"]
+
+    def test_payload_reasoning_absent_is_empty_list(self):
+        report, _ = _assemble_turn_report(
+            final_state={},
+            session_id="s",
+            turn_index=1,
+            question_id="q",
+            query_text="hello",
+            duration_ms=10.0,
+            acting_user=None,
+            success=True,
+            capabilities=[],
+        )
+        assert report["payload"]["reasoning"] == []
