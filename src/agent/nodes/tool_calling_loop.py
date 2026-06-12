@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections import deque
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -201,25 +202,52 @@ class _ToolStatusEmitter(AsyncCallbackHandler):
 
 
 class _TokenUsageAccumulator(AsyncCallbackHandler):
-    """Sums token usage across this turn's LLM calls.
+    """Sums token usage and times each LLM call across this turn.
 
     create_agent calls the model once per tool-calling step; on_llm_end fires
-    per call. We accumulate usage_metadata.total_tokens so the report records a
-    turn-scoped total — summing over final_state messages would double-count,
-    since checkpointing prepends prior-turn history.
+    per call. We accumulate usage_metadata.total_tokens for the turn total
+    (summing over final_state messages would double-count, since checkpointing
+    prepends prior-turn history) and record one {index, duration_ms,
+    total_tokens} entry per call. Start times are keyed by run_id so parallel
+    calls pair correctly; an end with no matching start records 0ms.
     """
 
     def __init__(self) -> None:
         self.total_tokens = 0
+        self.model_calls: list[dict[str, Any]] = []
+        self._starts: dict[Any, float] = {}
 
-    async def on_llm_end(self, response: Any, **kwargs: Any) -> None:
+    async def on_llm_start(
+        self, serialized: Any, prompts: Any, *, run_id: Any = None, **kwargs: Any
+    ) -> None:
+        del serialized, prompts, kwargs
+        self._starts[run_id] = time.monotonic()
+
+    async def on_chat_model_start(
+        self, serialized: Any, messages: Any, *, run_id: Any = None, **kwargs: Any
+    ) -> None:
+        del serialized, messages, kwargs
+        self._starts[run_id] = time.monotonic()
+
+    async def on_llm_end(self, response: Any, *, run_id: Any = None, **kwargs: Any) -> None:
         del kwargs
+        call_tokens = 0
         for gen_list in getattr(response, "generations", []) or []:
             for gen in gen_list:
                 msg = getattr(gen, "message", None)
                 usage = getattr(msg, "usage_metadata", None) if msg is not None else None
                 if usage:
-                    self.total_tokens += int(usage.get("total_tokens") or 0)
+                    call_tokens += int(usage.get("total_tokens") or 0)
+        self.total_tokens += call_tokens
+        started = self._starts.pop(run_id, None)
+        duration_ms = int((time.monotonic() - started) * 1000) if started is not None else 0
+        self.model_calls.append(
+            {
+                "index": len(self.model_calls),
+                "duration_ms": duration_ms,
+                "total_tokens": call_tokens or None,
+            }
+        )
 
 
 class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
@@ -383,6 +411,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
             "messages": result_messages,
             "tools_used": tools_used,
             "total_tokens": token_accumulator.total_tokens,
+            "model_calls": token_accumulator.model_calls,
             "tool_results": tool_results,
             "node_trace": [
                 {
