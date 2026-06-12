@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 import httpx
+from opentelemetry.trace import Status, StatusCode
 from pydantic import BaseModel
 
 from ..config import settings
@@ -181,6 +182,11 @@ class MCPClient:
             span.set_attribute("mcp.success", result.success)
             if result.error:
                 span.set_attribute("mcp.error", result.error[:300])
+            if not result.success:
+                # call_tool converts exceptions to error results, so the context
+                # manager's own ERROR handling never fires — set status here so
+                # span-status error queries (e.g. the Honeycomb board) see failures.
+                span.set_status(Status(StatusCode.ERROR, result.error or "tool call failed"))
             return result
 
     def _parse_mcp_response(self, data: Any) -> Any:
