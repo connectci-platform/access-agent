@@ -2,9 +2,13 @@
 
 import asyncio
 
+from langchain_core.messages import AIMessage, ToolMessage
+
 from src.agent.domains.tools import MCPToolWrapper
+from src.agent.nodes.tool_calling_loop import _build_tool_results
 from src.agent.turn_capture import (
     get_turn_capture,
+    record_tool_timing,
     reset_turn_capture,
 )
 from src.tools.mcp_client import MCPClient, MCPToolResult
@@ -103,3 +107,33 @@ def test_doc_search_records_timing_when_unavailable(monkeypatch):
     timings = get_turn_capture()["tool_timings"]
     assert len(timings) == 1
     assert timings[0]["tool_name"] == "search_access_documents"
+
+
+def _thread_two_calls():
+    ai = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "list_things", "args": {"a": 1}, "id": "c1"},
+            {"name": "list_things", "args": {"a": 2}, "id": "c2"},
+        ],
+    )
+    return [
+        ai,
+        ToolMessage(content="{}", tool_call_id="c1"),
+        ToolMessage(content="{}", tool_call_id="c2"),
+    ]
+
+
+def test_build_tool_results_pairs_timings_fifo():
+    reset_turn_capture()
+    record_tool_timing("list_things", 42)
+    record_tool_timing("list_things", 7)
+    results, orphans = _build_tool_results(_thread_two_calls(), [])
+    assert orphans == 0
+    assert [r.duration_ms for r in results] == [42, 7]
+
+
+def test_build_tool_results_without_timings_defaults_zero():
+    reset_turn_capture()
+    results, _ = _build_tool_results(_thread_two_calls(), [])
+    assert [r.duration_ms for r in results] == [0, 0]

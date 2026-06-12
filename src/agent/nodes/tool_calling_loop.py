@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import deque
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -34,7 +35,7 @@ from ..domains.tools import create_mcp_tools_from_catalog
 from ..prompts.system_prompt import build_system_prompt
 from ..state import ToolResult
 from ..tools import search_access_documents
-from ..turn_capture import mark_summarized
+from ..turn_capture import get_turn_capture, mark_summarized
 
 logger = logging.getLogger(__name__)
 
@@ -412,8 +413,8 @@ def _build_tool_results(
     cases (e.g., future LLM quirks where a ToolMessage appears without a
     matching call).
 
-    duration_ms is left at 0 because the react loop doesn't track per-call
-    timing; the eval scorer doesn't depend on it.
+    duration_ms is paired from turn_capture's tool_timings (recorded at the
+    call sites), FIFO per tool name; calls with no recorded timing keep 0.
 
     Returns:
         (tool_results, orphan_count) — the reconstructed ToolResult list and
@@ -435,6 +436,13 @@ def _build_tool_results(
             if tc_id and tc_name:
                 call_lookup[tc_id] = (tc_name, tc_args or {})
 
+    # Pair capture-recorded durations back to results, FIFO per tool name.
+    # Limitation: two parallel calls to the SAME tool in one turn may swap
+    # durations between them (records append in completion order).
+    timing_queues: dict[str, deque[int]] = {}
+    for rec in get_turn_capture().get("tool_timings", []):
+        timing_queues.setdefault(rec["tool_name"], deque()).append(rec["duration_ms"])
+
     results: list[ToolResult] = []
     orphan_count = 0
     for msg in result_messages:
@@ -446,7 +454,11 @@ def _build_tool_results(
             continue
         tool_name, tool_args = call_lookup[tc_id]
         server = tool_server_lookup.get(tool_name, "")
-        results.append(_parse_tool_message(msg, tc_id, tool_name, server, tool_args))
+        result = _parse_tool_message(msg, tc_id, tool_name, server, tool_args)
+        queue = timing_queues.get(tool_name)
+        if queue:
+            result.duration_ms = queue.popleft()
+        results.append(result)
 
     return results, orphan_count
 
