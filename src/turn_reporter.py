@@ -113,7 +113,7 @@ class ReportToolCall(TurnReportBase):  # type: ignore[valid-type,misc]
     success = Column(Boolean, default=True)
     args_hash = Column(String(64), index=True)
     arguments = Column(_JSONB)
-    duration_ms = Column(Integer, default=0)  # per-call timing deferred to A2
+    duration_ms = Column(Integer, default=0)  # wall-clock ms measured at the call site
 
 
 # ── Pure payload builder ──────────────────────────────────────────────────
