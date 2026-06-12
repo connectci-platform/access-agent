@@ -141,6 +141,30 @@ def test_build_tool_results_without_timings_defaults_zero():
     assert [r.duration_ms for r in results] == [0, 0]
 
 
+def test_record_current_trace_id_writes_32_hex():
+    from opentelemetry.sdk.trace import TracerProvider
+
+    from src.agent.graph import _record_current_trace_id
+
+    reset_turn_capture()
+    tracer = TracerProvider().get_tracer("test")
+    with tracer.start_as_current_span("agent.run") as span:
+        _record_current_trace_id(span)
+    tid = get_turn_capture()["trace_id"]
+    assert tid is not None and len(tid) == 32
+    assert int(tid, 16) != 0
+
+
+def test_record_current_trace_id_noop_for_non_recording_span():
+    from opentelemetry.trace import INVALID_SPAN
+
+    from src.agent.graph import _record_current_trace_id
+
+    reset_turn_capture()
+    _record_current_trace_id(INVALID_SPAN)
+    assert get_turn_capture()["trace_id"] is None
+
+
 def test_build_tool_results_skips_prior_turn_messages():
     from langchain_core.messages import HumanMessage
 
