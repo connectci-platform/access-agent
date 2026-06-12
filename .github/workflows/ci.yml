@@ -13,6 +13,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # Full history: the coverage diff-gate needs a real merge base with
+          # origin/main; shallow checkouts make diff-cover fail ("no merge base").
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -38,6 +42,9 @@ jobs:
         run: uv run pytest tests/ -x -q -m "not e2e" --cov=src --cov-report=xml --cov-report=term-missing
         env:
           DATABASE_URL: ""
+          # Provider construction validates a key exists; unit tests mock at
+          # the create_agent boundary and never call out. A dummy satisfies it.
+          OPENAI_API_KEY: "ci-dummy-key"
 
       - name: Upload coverage artifact
         if: always()
@@ -48,7 +55,7 @@ jobs:
 
       - name: Fetch main for diff
         if: github.event_name == 'pull_request'
-        run: git fetch --no-tags --depth=200 origin main
+        run: git fetch --no-tags origin main
 
       - name: Coverage diff-gate (100% on changed lines)
         if: >
@@ -111,8 +118,15 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Gitleaks scan
-        uses: gitleaks/gitleaks-action@v2
+      # Run the gitleaks CLI directly: the gitleaks-action requires a paid
+      # org license. Same scan, same config, job still fails red on findings;
+      # we only lose the action's PR-comment annotations. (Settled with
+      # Andrew, 2026-06: option 2 of the four.)
+      - name: Download gitleaks
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_CONFIG: .gitleaks.toml
+          GITLEAKS_VERSION: "8.30.1"
+        run: |
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar -xz gitleaks
+
+      - name: Gitleaks scan
+        run: ./gitleaks detect --source . --config .gitleaks.toml --redact --verbose

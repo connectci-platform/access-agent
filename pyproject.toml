@@ -156,6 +156,9 @@ disallow_untyped_defs = false
 [tool.coverage.run]
 source = ["src"]
 branch = true
+# Required by py-cov-action/python-coverage-comment-action: it reads the
+# .coverage data inside its own container, so paths must be repo-relative.
+relative_files = true
 
 [tool.coverage.report]
 exclude_lines = [
