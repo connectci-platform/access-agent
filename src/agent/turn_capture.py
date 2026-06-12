@@ -1,13 +1,15 @@
 """Per-request side-channel for turn observations absent from final_state.
 
-Carries four kinds of data the agent graph doesn't surface in final_state:
+Carries five kinds of data the agent graph doesn't surface in final_state:
 retrieved chunks (search_access_documents flattens them to a string before
-returning), whether SummarizationMiddleware fired, per-tool-call durations, and
-the turn's OTEL trace id.
+returning), whether SummarizationMiddleware fired, per-tool-call durations,
+the turn's OTEL trace id, and the per-model-call ``<think>`` reasoning the
+LLM wrapper strips from responses.
 
 We carry them out via a ContextVar holding one mutable dict. The route resets
 it per turn; the doc-search tool, the summarization middleware, the MCP tool
-wrapper, and the root-span trace-id recorder mutate it **in place**; the loop
+wrapper, the root-span trace-id recorder, and the LLM think-stripper mutate it
+**in place**; the loop
 node reads tool_timings to pair durations onto current-turn ToolResults, and
 the route reads the full capture after the stream and hands it to the reporter.
 Mutating-in-place (never reassigning the ContextVar inside child tasks) is what
@@ -36,6 +38,7 @@ def _fresh_capture() -> dict[str, Any]:
         "summarized": False,
         "tool_timings": [],
         "trace_id": None,
+        "model_reasoning": [],
     }
 
 
@@ -80,6 +83,14 @@ def record_trace_id(trace_id: str) -> None:
     cap = _turn_capture.get()
     if cap is not None:
         cap["trace_id"] = trace_id
+
+
+def record_model_reasoning(reasoning: str) -> None:
+    """Record one model call's stripped ``<think>`` reasoning (call order)."""
+    cap = _turn_capture.get()
+    if cap is None or not reasoning:
+        return
+    cap["model_reasoning"].append(reasoning)
 
 
 def get_turn_capture() -> dict[str, Any]:

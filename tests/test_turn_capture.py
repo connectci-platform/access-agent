@@ -48,6 +48,7 @@ def test_default_capture_is_safe_without_reset():
         "summarized": False,
         "tool_timings": [],
         "trace_id": None,
+        "model_reasoning": [],
     }
 
 
@@ -109,3 +110,27 @@ def test_tool_timing_safe_without_reset():
 
     cap = asyncio.run(_isolated())
     assert cap["tool_timings"] == [] and cap["trace_id"] is None
+
+
+def test_records_model_reasoning_in_order():
+    from src.agent.turn_capture import record_model_reasoning
+
+    reset_turn_capture()
+    record_model_reasoning("first call thoughts")
+    record_model_reasoning("")  # empty is skipped
+    record_model_reasoning("second call thoughts")
+    assert get_turn_capture()["model_reasoning"] == [
+        "first call thoughts",
+        "second call thoughts",
+    ]
+
+
+def test_model_reasoning_safe_without_reset():
+    from src.agent.turn_capture import record_model_reasoning
+
+    async def _isolated():
+        record_model_reasoning("x")
+        return get_turn_capture()
+
+    cap = asyncio.run(_isolated())
+    assert cap["model_reasoning"] == []
