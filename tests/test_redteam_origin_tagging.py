@@ -52,6 +52,22 @@ def test_redteam_header_without_run_id_still_tags_origin():
     assert ctx["battery_run_id"] is None
 
 
+def test_redteam_grouping_ids_truncated_to_column_width():
+    # Columns are VARCHAR(64); an oversized client-supplied id is clipped so the
+    # insert can't raise and drop the whole turn report.
+    ctx = redteam_report_context(
+        Headers(
+            {
+                "X-Redteam": "1",
+                "X-Redteam-Suite": "s" * 100,
+                "X-Redteam-Run-Id": "r" * 100,
+            }
+        )
+    )
+    assert ctx["battery_id"] == "s" * 64
+    assert ctx["battery_run_id"] == "r" * 64
+
+
 async def _fake_stream(**_kwargs):
     # One state update carrying a final answer, then end.
     yield "updates", {"tool_calling_loop": {"final_answer": "ok", "tools_used": []}}

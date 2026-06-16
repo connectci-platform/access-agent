@@ -60,7 +60,7 @@ class TurnReport(TurnReportBase):  # type: ignore[valid-type,misc]
 
     origin = Column(String(16), default="real", index=True)  # real | battery | redteam
     battery_id = Column(String(64))
-    battery_run_id = Column(String(64), index=True)  # eval run id; set when origin='battery'
+    battery_run_id = Column(String(64), index=True)  # run id; set when origin in ('battery', 'redteam')
     agent_version = Column(String(64), index=True)
     env = Column(String(16), index=True)
     trace_id = Column(

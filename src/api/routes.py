@@ -49,10 +49,17 @@ def redteam_report_context(headers: Headers) -> dict[str, Any]:
     """
     if headers.get(REDTEAM_HEADER) is None:
         return {}
+
+    # Header values are client-supplied; the columns are VARCHAR(64). Truncate
+    # so an oversized grouping id can't raise on insert and drop the whole turn
+    # report — the id is best-effort, origin is the load-bearing signal.
+    def _clip(value: str | None) -> str | None:
+        return value[:64] if value is not None else None
+
     return {
         "origin": "redteam",
-        "battery_id": headers.get(REDTEAM_SUITE_HEADER),
-        "battery_run_id": headers.get(REDTEAM_RUN_ID_HEADER),
+        "battery_id": _clip(headers.get(REDTEAM_SUITE_HEADER)),
+        "battery_run_id": _clip(headers.get(REDTEAM_RUN_ID_HEADER)),
     }
 
 
