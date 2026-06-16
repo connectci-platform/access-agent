@@ -20,6 +20,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # Full history so `git describe` can see tags for AGENT_VERSION.
+          fetch-depth: 0
+
+      - name: Compute version stamp
+        id: version
+        # No tags yet → short sha. The day a tag exists (e.g. v1.0.0), builds
+        # automatically report v1.0.0-<n>-g<sha> — tags are opt-in semver.
+        run: echo "describe=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -49,6 +58,10 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            AGENT_VERSION=${{ steps.version.outputs.describe }}
+            GIT_COMMIT=${{ github.sha }}
+            GIT_BRANCH=${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -183,7 +196,10 @@ jobs:
               exit 1
             fi
 
-            SUCCESS=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['success'])")
+            # /api/v1/query streams Server-Sent Events (event: status / event: done),
+            # not a single JSON object. Pull `success` from the `data:` payload of the
+            # terminal `done` event. Kept on one line so the embedded Python stays valid YAML.
+            SUCCESS=$(echo "$RESPONSE" | python3 -c "import sys,json; objs=[json.loads(l[5:].strip()) for l in sys.stdin if l.strip().startswith('data:') and l[5:].strip()]; vals=[o['success'] for o in objs if 'success' in o]; print(vals[-1] if vals else None)")
             if [ "$SUCCESS" != "True" ]; then
               echo "FAIL: Query returned success=false"
               echo "$RESPONSE"

@@ -372,3 +372,83 @@ class TestOpenAIProviderIgnoresEnableThinking:
         provider = OpenAIProvider(api_key="sk-test")
         model = provider.get_chat_model(enable_thinking=False)
         assert getattr(model, "extra_body", None) is None
+
+
+class TestReasoningCapture:
+    """Stripped <think> reasoning is recorded into turn_capture per model call."""
+
+    def setup_method(self):
+        from src.agent.turn_capture import reset_turn_capture
+
+        reset_turn_capture()
+
+    def test_split_returns_answer_and_reasoning(self):
+        from src.llm.providers import _split_think_block
+
+        answer, reasoning = _split_think_block("I should check the docs.</think>The answer.")
+        assert answer == "The answer."
+        assert reasoning == "I should check the docs."
+
+    def test_split_no_think_has_empty_reasoning(self):
+        from src.llm.providers import _split_think_block
+
+        answer, reasoning = _split_think_block("Just an answer.")
+        assert answer == "Just an answer."
+        assert reasoning == ""
+
+    def test_split_truncated_mid_think_captures_tail(self):
+        from src.llm.providers import _split_think_block
+
+        answer, reasoning = _split_think_block("Preamble.<think>cut off mid-reason")
+        assert answer == "Preamble."
+        assert reasoning == "cut off mid-reason"
+
+    def test_split_paired_blocks_captured(self):
+        from src.llm.providers import _split_think_block
+
+        answer, reasoning = _split_think_block("<think>step one</think>Answer.")
+        assert answer == "Answer."
+        assert reasoning == "step one"
+
+    def test_strip_generations_records_reasoning(self):
+        from src.agent.turn_capture import get_turn_capture
+
+        result = ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content="thinking hard</think>Final."))]
+        )
+        _strip_generations(result)
+        assert result.generations[0].message.content == "Final."
+        assert get_turn_capture()["model_reasoning"] == ["thinking hard"]
+
+    def test_strip_generations_no_reasoning_records_nothing(self):
+        from src.agent.turn_capture import get_turn_capture
+
+        result = ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content="Plain answer."))]
+        )
+        _strip_generations(result)
+        assert get_turn_capture()["model_reasoning"] == []
+
+    def test_stream_state_accumulates_reasoning_on_close(self):
+        from src.llm.providers import _ThinkStripState
+
+        state = _ThinkStripState()
+        assert state.feed("step one, ") is None
+        assert state.feed("step two</think>Answer") == "Answer"
+        assert state.reasoning == "step one, step two"
+
+    def test_stream_state_flush_captures_truncated_reasoning(self):
+        from src.llm.providers import _ThinkStripState
+
+        state = _ThinkStripState()
+        assert state.feed("<think>never closed") is None
+        assert state.flush() is None
+        assert state.reasoning == "never closed"
+
+    def test_stream_state_no_reasoning_stays_empty(self):
+        from src.llm.providers import _ThinkStripState
+
+        state = _ThinkStripState()
+        state.feed("plain ")
+        assert state.flush() == "plain"
+        assert state.reasoning == ""

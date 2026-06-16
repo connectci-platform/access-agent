@@ -157,8 +157,10 @@ def trace_mcp_call(
         attributes=attributes,
     ) as span:
         try:
+            # No OK status on clean exit: UNSET is OTel's success default, and
+            # forcing OK here would overwrite the ERROR a caller sets for
+            # failures it converted to result objects instead of raising.
             yield span
-            span.set_status(Status(StatusCode.OK))
         except Exception as e:
             span.set_status(Status(StatusCode.ERROR, str(e)))
             span.record_exception(e)

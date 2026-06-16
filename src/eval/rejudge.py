@@ -80,9 +80,7 @@ async def rejudge_run(
             continue
 
         context: dict[str, Any] = score.context or {}  # type: ignore[assignment]
-        logger.info(
-            f"[{i}/{len(original_scores)}] rejudging {score.question_id}"
-        )
+        logger.info(f"[{i}/{len(original_scores)}] rejudging {score.question_id}")
 
         judge_result = await judge.score(
             query=str(score.question_text or ""),
@@ -155,7 +153,6 @@ async def rejudge_run(
     }
 
     logger.info(
-        f"Rejudge run {new_run.id} complete: "
-        f"{rescored} rescored, delta={summary['delta']:+.2f}"
+        f"Rejudge run {new_run.id} complete: {rescored} rescored, delta={summary['delta']:+.2f}"
     )
     return summary

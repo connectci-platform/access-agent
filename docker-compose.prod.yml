@@ -32,12 +32,22 @@ services:
       - LLM_PROVIDER=${LLM_PROVIDER:-openai}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
+      # vLLM (UKY Qwen) — required when LLM_PROVIDER=vllm. These were always
+      # passed by the dev compose but never by prod, so prod silently fell
+      # back to the OpenAI default regardless of the droplet .env.
+      - VLLM_BASE_URL=${VLLM_BASE_URL:-}
+      - VLLM_API_KEY=${VLLM_API_KEY:-}
+      - VLLM_MODEL_NAME=${VLLM_MODEL_NAME:-}
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/langgraph
       - REDIS_URL=redis://redis:6379/0
       - CITATION_VALIDATION_ENABLED=${CITATION_VALIDATION_ENABLED:-true}
       # UKY RAG endpoints (dual RAG: general ACCESS Q&A + XDMoD)
+      # ACCESS_AI_API_KEY is the canonical credential; UKY_RAG_API_KEY and
+      # UKY_CHATMCP_API_KEY are optional per-endpoint overrides that the app
+      # falls back from to ACCESS_AI_API_KEY (see config.uky_rag_api_key_resolved).
+      - ACCESS_AI_API_KEY=${ACCESS_AI_API_KEY:-}
       - UKY_RAG_ENABLED=${UKY_RAG_ENABLED:-true}
-      - UKY_RAG_API_KEY=${UKY_RAG_API_KEY:-}  # Falls back to ACCESS_AI_API_KEY
+      - UKY_RAG_API_KEY=${UKY_RAG_API_KEY:-}  # Optional override; falls back to ACCESS_AI_API_KEY
       - UKY_RAG_GENERAL_URL=${UKY_RAG_GENERAL_URL:-https://access-ai-grace1-external.ccs.uky.edu/access/chat/api/}
       - UKY_RAG_XDMOD_URL=${UKY_RAG_XDMOD_URL:-https://access-ai-grace1-external.ccs.uky.edu/access/xdmod/chat/api/}
       - UKY_RAG_TIMEOUT=${UKY_RAG_TIMEOUT:-60.0}
@@ -47,6 +57,13 @@ services:
       - MCP_SERVER_HOST=${MCP_SERVER_HOST:-localhost}
       # MCP API key for servers requiring authentication (announcements, events, jsm)
       - MCP_API_KEY=${MCP_API_KEY:-}
+      # Capability gating (comma-separated capability ids). extract_xdmod_data
+      # is gated off by default because the xdmod-data MCP server needs a
+      # per-user XDMoD token the agent cannot yet obtain; without this the
+      # agent picks those tools and surfaces an XDMoD auth error. Remove it
+      # once the per-user token flow is in place.
+      - DISABLED_CAPABILITIES=${DISABLED_CAPABILITIES:-extract_xdmod_data}
+      - ENABLED_CAPABILITIES=${ENABLED_CAPABILITIES:-}
       # JWT Authentication (ES256 + JWKS)
       - TRUSTED_JWKS_URLS=${TRUSTED_JWKS_URLS:-}
       - ALLOW_BODY_ACTING_USER=${ALLOW_BODY_ACTING_USER:-true}

@@ -6,10 +6,12 @@ import time
 from typing import Any
 
 import httpx
+from opentelemetry.trace import Status, StatusCode
 from pydantic import BaseModel
 
 from ..config import settings
 from ..telemetry import create_async_client
+from ..telemetry.spans import trace_mcp_call
 
 logger = logging.getLogger(__name__)
 
@@ -132,48 +134,60 @@ class MCPClient:
         if server in settings.mcp_servers_requiring_api_key and settings.MCP_API_KEY:
             headers["X-Api-Key"] = settings.MCP_API_KEY
 
-        try:
-            response = await client.post(
-                url,
-                json={"arguments": arguments},
-                headers=headers,
-            )
-            response.raise_for_status()
+        with trace_mcp_call(server, tool_name, arguments) as span:
+            try:
+                response = await client.post(
+                    url,
+                    json={"arguments": arguments},
+                    headers=headers,
+                )
+                response.raise_for_status()
 
-            data = response.json()
+                data = response.json()
 
-            # Parse MCP response format
-            # Response: {"content": [{"type": "text", "text": "{...json...}"}]}
-            parsed_data = self._parse_mcp_response(data)
+                # Parse MCP response format
+                # Response: {"content": [{"type": "text", "text": "{...json...}"}]}
+                parsed_data = self._parse_mcp_response(data)
 
-            logger.info(
-                f"MCP response for {tool_name}: success, data keys: {list(parsed_data.keys()) if isinstance(parsed_data, dict) else type(parsed_data)}"
-            )
+                logger.info(
+                    f"MCP response for {tool_name}: success, data keys: {list(parsed_data.keys()) if isinstance(parsed_data, dict) else type(parsed_data)}"
+                )
 
-            return MCPToolResult(
-                success=True,
-                data=parsed_data,
-                duration_ms=int(time.time() * 1000) - start_ms,
-            )
+                result = MCPToolResult(
+                    success=True,
+                    data=parsed_data,
+                    duration_ms=int(time.time() * 1000) - start_ms,
+                )
 
-        except httpx.HTTPStatusError as e:
-            return MCPToolResult(
-                success=False,
-                error=f"HTTP {e.response.status_code}: {e.response.text[:500]}",
-                duration_ms=int(time.time() * 1000) - start_ms,
-            )
-        except httpx.TimeoutException:
-            return MCPToolResult(
-                success=False,
-                error=f"Timeout calling {server}/{tool_name}",
-                duration_ms=int(time.time() * 1000) - start_ms,
-            )
-        except Exception as e:
-            return MCPToolResult(
-                success=False,
-                error=f"{type(e).__name__}: {e}",
-                duration_ms=int(time.time() * 1000) - start_ms,
-            )
+            except httpx.HTTPStatusError as e:
+                result = MCPToolResult(
+                    success=False,
+                    error=f"HTTP {e.response.status_code}: {e.response.text[:500]}",
+                    duration_ms=int(time.time() * 1000) - start_ms,
+                )
+            except httpx.TimeoutException:
+                result = MCPToolResult(
+                    success=False,
+                    error=f"Timeout calling {server}/{tool_name}",
+                    duration_ms=int(time.time() * 1000) - start_ms,
+                )
+            except Exception as e:
+                result = MCPToolResult(
+                    success=False,
+                    error=f"{type(e).__name__}: {e}",
+                    duration_ms=int(time.time() * 1000) - start_ms,
+                )
+
+            span.set_attribute("mcp.duration_ms", result.duration_ms)
+            span.set_attribute("mcp.success", result.success)
+            if result.error:
+                span.set_attribute("mcp.error", result.error[:300])
+            if not result.success:
+                # call_tool converts exceptions to error results, so the context
+                # manager's own ERROR handling never fires — set status here so
+                # span-status error queries (e.g. the Honeycomb board) see failures.
+                span.set_status(Status(StatusCode.ERROR, result.error or "tool call failed"))
+            return result
 
     def _parse_mcp_response(self, data: Any) -> Any:
         """Parse MCP response format to extract actual data.

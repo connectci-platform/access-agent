@@ -17,10 +17,28 @@ _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
 # Non-greedy paired-block match. DOTALL so newlines inside the trace match.
 _PAIRED_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+# Same match with the trace captured, for reasoning capture.
+_PAIRED_THINK_INNER_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
+
+
+def _record_model_reasoning(reasoning: str) -> None:
+    """Stash one model call's stripped reasoning in turn_capture.
+
+    Import is lazy: the agent package imports this module (nodes → llm), so a
+    module-level import of agent.turn_capture would be circular.
+    """
+    from ..agent.turn_capture import record_model_reasoning
+
+    record_model_reasoning(reasoning)
 
 
 def _strip_think_block(content: str) -> str:
-    """Strip reasoning trace from reasoning-model output.
+    """Strip reasoning trace from reasoning-model output (see _split_think_block)."""
+    return _split_think_block(content)[0]
+
+
+def _split_think_block(content: str) -> tuple[str, str]:
+    """Split reasoning-model output into (answer, reasoning trace).
 
     On UKY's vLLM the opening ``<think>`` is consumed by the Qwen chat
     template, so the visible stream is shaped ``[reasoning prose]</think>
@@ -44,26 +62,43 @@ def _strip_think_block(content: str) -> str:
     stripped. This false positive is rare in ACCESS-CI question-answering
     vs the 100% true-positive rate of stripping reasoning traces on
     every Qwen response.
+
+    The reasoning side of the split feeds the turn report's
+    ``payload.reasoning`` (the dashboard's Reasoning tab); empty string
+    when the content carried no trace.
     """
+    parts = [p.strip() for p in _PAIRED_THINK_INNER_RE.findall(content) if p.strip()]
     content = _PAIRED_THINK_RE.sub("", content)
     open_idx = content.find(_THINK_OPEN)
     if open_idx != -1:
+        tail = content[open_idx + len(_THINK_OPEN) :].strip()
+        if tail:
+            parts.append(tail)
         content = content[:open_idx]
     if _THINK_CLOSE in content:
-        _, _, after = content.partition(_THINK_CLOSE)
-        return after.lstrip()
-    return content.strip()
+        before, _, after = content.partition(_THINK_CLOSE)
+        if before.strip():
+            parts.append(before.strip())
+        return after.lstrip(), "\n".join(parts)
+    return content.strip(), "\n".join(parts)
 
 
 def _strip_generations(result: ChatResult) -> None:
-    """Strip ``</think>`` blocks from each generation's message in place."""
+    """Strip ``</think>`` blocks from each generation's message in place.
+
+    The stripped reasoning is recorded into turn_capture so the turn report
+    can carry it (one entry per model call).
+    """
     for gen in result.generations:
         msg = getattr(gen, "message", None)
         if msg is None:
             continue
         content = getattr(msg, "content", None)
         if isinstance(content, str):
-            msg.content = _strip_think_block(content)
+            answer, reasoning = _split_think_block(content)
+            msg.content = answer
+            if reasoning:
+                _record_model_reasoning(reasoning)
 
 
 class _ThinkStripState:
@@ -89,6 +124,7 @@ class _ThinkStripState:
     def __init__(self) -> None:
         self._buffer = ""
         self._seen_close = False
+        self.reasoning = ""
 
     @property
     def seen_close(self) -> bool:
@@ -99,7 +135,8 @@ class _ThinkStripState:
         if self._seen_close:
             return content
         self._buffer += content
-        # Strip paired <think>...</think> blocks first.
+        # Capture paired-block traces before stripping them.
+        parts = [p.strip() for p in _PAIRED_THINK_INNER_RE.findall(self._buffer) if p.strip()]
         new_buffer, n_subs = _PAIRED_THINK_RE.subn("", self._buffer)
         has_close = _THINK_CLOSE in new_buffer
         if n_subs == 0 and not has_close:
@@ -109,8 +146,12 @@ class _ThinkStripState:
         self._buffer = ""
         if has_close:
             # Bare </think> remains (Qwen no-open-tag case) — partition.
-            _, _, after = new_buffer.partition(_THINK_CLOSE)
+            before, _, after = new_buffer.partition(_THINK_CLOSE)
+            if before.strip():
+                parts.append(before.strip())
+            self.reasoning = "\n".join(parts)
             return after.lstrip() or None
+        self.reasoning = "\n".join(parts)
         # Only paired blocks were present. ``lstrip`` only — a trailing
         # space here connects to the next chunk; ``strip`` would eat it.
         return new_buffer.lstrip() or None
@@ -127,9 +168,11 @@ class _ThinkStripState:
         """
         if self._seen_close:
             return None
-        result = _strip_think_block(self._buffer)
+        answer, reasoning = _split_think_block(self._buffer)
+        if reasoning:
+            self.reasoning = reasoning
         self._buffer = ""
-        return result or None
+        return answer or None
 
 
 def _replace_chunk_content(chunk: ChatGenerationChunk, new_content: str) -> ChatGenerationChunk:
@@ -211,6 +254,8 @@ class _StrippingChatOpenAI(ChatOpenAI):
         tail = _flush_strip_state(state)
         if tail is not None:
             yield tail
+        if state.reasoning:
+            _record_model_reasoning(state.reasoning)
 
     async def _astream(
         self,
@@ -226,6 +271,8 @@ class _StrippingChatOpenAI(ChatOpenAI):
         tail = _flush_strip_state(state)
         if tail is not None:
             yield tail
+        if state.reasoning:
+            _record_model_reasoning(state.reasoning)
 
 
 def _apply_strip_to_chunk(
@@ -406,6 +453,20 @@ def get_llm_provider() -> LLMProvider:
         )
 
     raise ValueError(f"Unknown LLM provider: {provider}")
+
+
+def active_model_name() -> str:
+    """The model id actually used at runtime, mirroring get_llm_provider's
+    provider→model mapping so reporting records the real model, not a default.
+    """
+    provider = settings.LLM_PROVIDER
+    if provider == "openai":
+        return settings.OPENAI_MODEL
+    if provider == "vllm":
+        return settings.VLLM_MODEL_NAME
+    if provider == "access_ai":
+        return "access-llama"
+    return provider or "unknown"
 
 
 def get_llm(

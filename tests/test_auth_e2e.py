@@ -32,7 +32,10 @@ from httpx import ASGITransport, AsyncClient
 from jwt import algorithms as jwt_algorithms
 
 os.environ.setdefault("ALLOW_BODY_ACTING_USER", "true")
-os.environ.setdefault("DATABASE_URL", "")  # Disable checkpointing
+# Force-empty (not setdefault): this suite mocks the agent and must never touch
+# a real DB. With setdefault, an exported DATABASE_URL (normal dev shell) leaks
+# through and the route's turn reporter writes real rows to local Postgres.
+os.environ["DATABASE_URL"] = ""  # Disable checkpointing + turn reporting
 os.environ.setdefault("TRUSTED_JWKS_URLS", "")  # Configured per-test
 
 from src.auth import configure_trusted_issuers

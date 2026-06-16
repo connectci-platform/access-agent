@@ -1,0 +1,20 @@
+[
+ {
+  "id": "ds-001",
+  "question": "How do I check my allocation balance on ACCESS?",
+  "capability_area": "allocations",
+  "battery": "dashboard_smoke"
+ },
+ {
+  "id": "ds-002",
+  "question": "Is GROMACS installed on Delta?",
+  "capability_area": "software",
+  "battery": "dashboard_smoke"
+ },
+ {
+  "id": "ds-003",
+  "question": "Are there any current outages on ACCESS resources?",
+  "capability_area": "system_status",
+  "battery": "dashboard_smoke"
+ }
+]

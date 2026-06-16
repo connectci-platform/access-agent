@@ -28,7 +28,9 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ACCESS_AI_API_KEY: ${{ secrets.ACCESS_AI_API_KEY }}
-          MCP_CATALOG_PATH: mcp-tool-catalog.json
+          # e2e tests live-aggregate the catalog from the prod MCP servers
+          # (CatalogAggregator), so point them at the prod host.
+          MCP_SERVER_HOST: 45.79.215.140
           DATABASE_URL: ""
 
       - name: Open issue on failure

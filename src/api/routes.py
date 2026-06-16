@@ -11,9 +11,11 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from langchain_core.messages import AIMessageChunk
 from pydantic import BaseModel, Field
+from starlette.datastructures import Headers
 from starlette.responses import StreamingResponse
 
 from ..agent.graph import stream_agent
+from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..auth import get_acting_user_from_cookie
 from ..config import settings
 from ..tools import ToolRegistry, get_catalog_aggregator
@@ -26,6 +28,40 @@ router = APIRouter()
 
 # Check if checkpointing is enabled
 USE_CHECKPOINTING = bool(settings.DATABASE_URL)
+
+# Headers the redteam (PyRIT) harness sends so its prompts are recorded as a
+# redteam run instead of polluting real-traffic views. The harness hits the
+# same /api/v1/query door as a real user, so the header is the only signal.
+# See access-redteam's AccessAgentTarget.
+REDTEAM_HEADER = "X-Redteam"
+REDTEAM_RUN_ID_HEADER = "X-Redteam-Run-Id"
+REDTEAM_SUITE_HEADER = "X-Redteam-Suite"
+
+
+def redteam_report_context(headers: Headers) -> dict[str, Any]:
+    """Map redteam request headers to turn_report tagging kwargs.
+
+    Returns ``{}`` for ordinary traffic. When the harness's ``X-Redteam``
+    header is present, returns the ``origin`` / ``battery_id`` /
+    ``battery_run_id`` kwargs so the prompt is tagged as a redteam run the
+    reporting dashboard can group and keep out of real-traffic views. The
+    grouping ids are best-effort; ``origin`` is the load-bearing signal.
+    """
+    if headers.get(REDTEAM_HEADER) is None:
+        return {}
+
+    # Header values are client-supplied; the columns are VARCHAR(64). Truncate
+    # so an oversized grouping id can't raise on insert and drop the whole turn
+    # report — the id is best-effort, origin is the load-bearing signal.
+    def _clip(value: str | None) -> str | None:
+        return value[:64] if value is not None else None
+
+    return {
+        "origin": "redteam",
+        "battery_id": _clip(headers.get(REDTEAM_SUITE_HEADER)),
+        "battery_run_id": _clip(headers.get(REDTEAM_RUN_ID_HEADER)),
+    }
+
 
 # Global registry - built from aggregated catalog
 _registry: ToolRegistry | None = None
@@ -196,6 +232,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
     session_id: str,
     question_id: str,
     include_trace: bool,
+    report_context: dict[str, Any] | None = None,
 ) -> AsyncGenerator[str, None]:
     """Translate LangGraph stream chunks into SSE events.
 
@@ -204,6 +241,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
     """
     start_time = time.time()
     final_state: dict[str, Any] = {}
+    reset_turn_capture()
 
     try:
         registry = await get_registry()
@@ -333,12 +371,76 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
         except Exception:
             logger.exception("Usage logging failed")
 
+        # Turn report (denormalized read model for the reporting dashboard).
+        # Off the response path, swallow failures — never affects the answer.
+        from ..agent.domains.capabilities import get_capability_registry as _cap_reg
+        from ..services.resource_matcher import resources_for_turn
+        from ..turn_reporter import get_turn_reporter
+
+        try:
+            reporter = get_turn_reporter()
+            prior_turns = await asyncio.to_thread(reporter.count_turns_for_session, session_id)
+            # None = count unknown (DB error): write NULL, not a wrong "1".
+            turn_index = prior_turns + 1 if prior_turns is not None else None
+            resources = await resources_for_turn(request.query, final_answer or "")
+            await asyncio.to_thread(
+                reporter.log_turn_report,
+                final_state=final_state,
+                session_id=session_id,
+                turn_index=turn_index,
+                question_id=question_id,
+                query_text=request.query,
+                duration_ms=duration_ms,
+                acting_user=acting_user,
+                success=True,
+                capabilities=_cap_reg().infer_capability_ids(final_state.get("tool_results", [])),
+                resources=resources,
+                turn_capture=get_turn_capture(),
+                judge=None,
+                **(report_context or {}),
+            )
+        except Exception:
+            logger.exception("Turn report write failed")
+
         # Track query for Turnstile free-query counting
         if not acting_user:
             get_turnstile_guard().record_query(session_id)
 
     except Exception as e:
         logger.exception(f"Stream failed: {e}")
+        # Write a minimal success=False turn report so the dashboard can tell a
+        # failed query apart from one that never happened. Off the response path,
+        # swallow failures — never affects the error the user sees. final_state
+        # may be partial (the failure can land mid-stream); _assemble_turn_report
+        # tolerates missing keys, and the judge is skipped (there's no answer).
+        try:
+            from ..agent.domains.capabilities import get_capability_registry as _cap_reg
+            from ..services.resource_matcher import resources_for_turn
+            from ..turn_reporter import get_turn_reporter
+
+            reporter = get_turn_reporter()
+            prior_turns = await asyncio.to_thread(reporter.count_turns_for_session, session_id)
+            resources = await resources_for_turn(
+                request.query, str(final_state.get("final_answer") or "")
+            )
+            await asyncio.to_thread(
+                reporter.log_turn_report,
+                final_state=final_state,
+                session_id=session_id,
+                turn_index=turn_index,
+                question_id=question_id,
+                query_text=request.query,
+                duration_ms=(time.time() - start_time) * 1000,
+                acting_user=acting_user,
+                success=False,
+                capabilities=_cap_reg().infer_capability_ids(final_state.get("tool_results", [])),
+                resources=resources,
+                turn_capture=get_turn_capture(),
+                judge=None,
+                **(report_context or {}),
+            )
+        except Exception:
+            logger.exception("Failed-turn report write failed")
         yield _format_sse_event(
             "error", {"message": "Failed to process query", "code": "agent_error"}
         )
@@ -420,9 +522,16 @@ async def query_agent(
     if discovery_response is not None:
         return discovery_response
 
+    # Redteam (PyRIT) prompts come through this same door as real users; the
+    # X-Redteam header is the only signal that lets us tag them instead of
+    # polluting real-traffic views.
+    report_context = redteam_report_context(raw_request.headers)
+
     # Agent queries stream via SSE
     return StreamingResponse(
-        _stream_events(request, acting_user, session_id, question_id, include_trace),
+        _stream_events(
+            request, acting_user, session_id, question_id, include_trace, report_context
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -531,6 +640,16 @@ async def submit_rating(request: RatingRequest, raw_request: Request) -> dict[st
     )
 
     if result == "ok":
+        # Mirror the rating onto turn_reports (read model). Best-effort;
+        # update_rating swallows its own failures.
+        from ..turn_reporter import get_turn_reporter
+
+        await asyncio.to_thread(
+            get_turn_reporter().update_rating,
+            question_id=request.query_id,
+            rating=request.rating,
+            feedback=request.feedback,
+        )
         return {"success": True}
     if result == "not_found":
         raise HTTPException(status_code=404, detail="query_id not found")

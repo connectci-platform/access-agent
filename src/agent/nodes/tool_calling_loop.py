@@ -11,13 +11,15 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+from collections import deque
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import SummarizationMiddleware
 from langchain_core.callbacks import AsyncCallbackHandler
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.config import get_stream_writer
 from langgraph.errors import GraphRecursionError
 
@@ -34,6 +36,7 @@ from ..domains.tools import create_mcp_tools_from_catalog
 from ..prompts.system_prompt import build_system_prompt
 from ..state import ToolResult
 from ..tools import search_access_documents
+from ..turn_capture import get_turn_capture, mark_summarized
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +201,79 @@ class _ToolStatusEmitter(AsyncCallbackHandler):
         self._writer({"type": "status", "message": _friendly_tool_status(name)})
 
 
+class _TokenUsageAccumulator(AsyncCallbackHandler):
+    """Sums token usage and times each LLM call across this turn.
+
+    create_agent calls the model once per tool-calling step; on_llm_end fires
+    per call. We accumulate usage_metadata.total_tokens for the turn total
+    (summing over final_state messages would double-count, since checkpointing
+    prepends prior-turn history) and record one {index, duration_ms,
+    total_tokens} entry per call. Start times are keyed by run_id so parallel
+    calls pair correctly; an end with no matching start records 0ms.
+    """
+
+    def __init__(self) -> None:
+        self.total_tokens = 0
+        self.model_calls: list[dict[str, Any]] = []
+        self._starts: dict[Any, float] = {}
+
+    async def on_llm_start(
+        self, serialized: Any, prompts: Any, *, run_id: Any = None, **kwargs: Any
+    ) -> None:
+        del serialized, prompts, kwargs
+        self._starts[run_id] = time.monotonic()
+
+    async def on_chat_model_start(
+        self, serialized: Any, messages: Any, *, run_id: Any = None, **kwargs: Any
+    ) -> None:
+        del serialized, messages, kwargs
+        self._starts[run_id] = time.monotonic()
+
+    async def on_llm_end(self, response: Any, *, run_id: Any = None, **kwargs: Any) -> None:
+        del kwargs
+        call_tokens = 0
+        for gen_list in getattr(response, "generations", []) or []:
+            for gen in gen_list:
+                msg = getattr(gen, "message", None)
+                usage = getattr(msg, "usage_metadata", None) if msg is not None else None
+                if usage:
+                    call_tokens += int(usage.get("total_tokens") or 0)
+        self.total_tokens += call_tokens
+        started = self._starts.pop(run_id, None)
+        duration_ms = int((time.monotonic() - started) * 1000) if started is not None else 0
+        self.model_calls.append(
+            {
+                "index": len(self.model_calls),
+                "duration_ms": duration_ms,
+                "total_tokens": call_tokens or None,
+            }
+        )
+
+
+class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
+    """SummarizationMiddleware that records when it actually summarizes.
+
+    The built-in compacts history transparently — nothing in final_state says
+    it fired. before_model/abefore_model return non-None only when a summary is
+    produced, so we set a per-turn flag (via turn_capture) on that signal.
+    Deterministic; no message-count guessing.
+
+    Relies on SummarizationMiddleware.before_model / abefore_model returning None when no compaction occurred — re-verify this invariant on LangChain upgrades.
+    """
+
+    def before_model(self, state: Any, runtime: Any) -> Any:
+        result = super().before_model(state, runtime)
+        if result is not None:
+            mark_summarized()
+        return result
+
+    async def abefore_model(self, state: Any, runtime: Any) -> Any:
+        result = await super().abefore_model(state, runtime)
+        if result is not None:
+            mark_summarized()
+        return result
+
+
 async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
     """Run the tool-calling loop.
 
@@ -241,7 +317,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
             tools=tools,
             system_prompt=system_prompt,
             middleware=[
-                SummarizationMiddleware(
+                _FlaggingSummarizationMiddleware(
                     model=llm,
                     trigger=("tokens", settings.SUMMARIZATION_TRIGGER_TOKENS),
                     keep=("tokens", settings.SUMMARIZATION_KEEP_TOKENS),
@@ -263,12 +339,13 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
         # roughly 10 tool turns before LangGraph hard-stops.
         recursion_limit = 25
         tool_status_emitter = _ToolStatusEmitter(status_writer)
+        token_accumulator = _TokenUsageAccumulator()
         try:
             result = await agent.ainvoke(
                 {"messages": messages},
                 {
                     "recursion_limit": recursion_limit,
-                    "callbacks": [tool_status_emitter],
+                    "callbacks": [tool_status_emitter, token_accumulator],
                 },
             )
             result_messages = result.get("messages", [])
@@ -309,7 +386,9 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
                         tools_used.append(name)
 
         tool_result_count = sum(1 for m in result_messages if isinstance(m, ToolMessage))
-        tool_results, orphan_count = _build_tool_results(result_messages, tools)
+        tool_results, orphan_count = _build_tool_results(
+            result_messages, tools, get_turn_capture().get("tool_timings", [])
+        )
 
         answer_length = len(final_answer) if final_answer else 0
         span.set_attribute("agent.answer_length", answer_length)
@@ -331,6 +410,8 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
             "final_answer": final_answer,
             "messages": result_messages,
             "tools_used": tools_used,
+            "total_tokens": token_accumulator.total_tokens,
+            "model_calls": token_accumulator.model_calls,
             "tool_results": tool_results,
             "node_trace": [
                 {
@@ -345,9 +426,27 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
         }
 
 
+def _build_call_lookup(
+    result_messages: list[Any],
+) -> dict[str, tuple[str, dict[str, Any]]]:
+    """Map tool_call_id → (tool_name, args) from all AIMessage tool_calls in the thread."""
+    call_lookup: dict[str, tuple[str, dict[str, Any]]] = {}
+    for msg in result_messages:
+        if not (isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None)):
+            continue
+        for tc in msg.tool_calls:
+            tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+            tc_name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+            tc_args = tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
+            if tc_id and tc_name:
+                call_lookup[tc_id] = (tc_name, tc_args or {})
+    return call_lookup
+
+
 def _build_tool_results(
     result_messages: list[Any],
     tools: list[Any],
+    tool_timings: list[dict[str, Any]],
 ) -> tuple[list[ToolResult], int]:
     """Back-fill state.tool_results from a react-loop message thread.
 
@@ -363,8 +462,13 @@ def _build_tool_results(
     cases (e.g., future LLM quirks where a ToolMessage appears without a
     matching call).
 
-    duration_ms is left at 0 because the react loop doesn't track per-call
-    timing; the eval scorer doesn't depend on it.
+    duration_ms is paired from tool_timings (recorded at the call sites) FIFO
+    per tool name, but ONLY onto ToolMessages that appear after the last
+    HumanMessage in result_messages — those are the current turn's calls.
+    Prior-turn ToolMessages (at or before that boundary) keep duration_ms=0;
+    0 is the honest value because their wall-clock time was not recorded for
+    this turn. Limitation: two parallel calls to the SAME tool in one turn may
+    swap durations between them (records append in completion order).
 
     Returns:
         (tool_results, orphan_count) — the reconstructed ToolResult list and
@@ -375,20 +479,23 @@ def _build_tool_results(
         getattr(t, "name", ""): getattr(t, "tool_server", "") for t in tools
     }
 
-    call_lookup: dict[str, tuple[str, dict[str, Any]]] = {}
-    for msg in result_messages:
-        if not (isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None)):
-            continue
-        for tc in msg.tool_calls:
-            tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
-            tc_name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
-            tc_args = tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
-            if tc_id and tc_name:
-                call_lookup[tc_id] = (tc_name, tc_args or {})
+    call_lookup = _build_call_lookup(result_messages)
+
+    # Find the boundary: ToolMessages at or before the last HumanMessage index
+    # belong to prior turns. Only messages after that index get timing data.
+    human_boundary = -1
+    for i, msg in enumerate(result_messages):
+        if isinstance(msg, HumanMessage):
+            human_boundary = i
+
+    # Pair capture-recorded durations back to current-turn results, FIFO per tool name.
+    timing_queues: dict[str, deque[int]] = {}
+    for rec in tool_timings:
+        timing_queues.setdefault(rec["tool_name"], deque()).append(rec["duration_ms"])
 
     results: list[ToolResult] = []
     orphan_count = 0
-    for msg in result_messages:
+    for i, msg in enumerate(result_messages):
         if not isinstance(msg, ToolMessage):
             continue
         tc_id = msg.tool_call_id
@@ -397,7 +504,23 @@ def _build_tool_results(
             continue
         tool_name, tool_args = call_lookup[tc_id]
         server = tool_server_lookup.get(tool_name, "")
-        results.append(_parse_tool_message(msg, tc_id, tool_name, server, tool_args))
+        # Only pop a timing for current-turn messages (after the last HumanMessage).
+        duration_ms = 0
+        if i > human_boundary:
+            queue = timing_queues.get(tool_name)
+            if queue:
+                duration_ms = queue.popleft()
+        result = _parse_tool_message(
+            msg, tc_id, tool_name, server, tool_args, duration_ms=duration_ms
+        )
+        results.append(result)
+
+    leftover = sum(len(q) for q in timing_queues.values())
+    if leftover:
+        logger.debug(
+            "tool timing pairing: %d recorded timing(s) had no matching current-turn ToolMessage",
+            leftover,
+        )
 
     return results, orphan_count
 
@@ -408,6 +531,7 @@ def _parse_tool_message(
     tool_name: str,
     server: str,
     tool_args: dict[str, Any],
+    duration_ms: int = 0,
 ) -> ToolResult:
     """Build a ToolResult from a single ToolMessage + its originating call metadata."""
     raw_content = msg.content if isinstance(msg.content, str) else str(msg.content)
@@ -424,6 +548,7 @@ def _parse_tool_message(
             success=False,
             error=str(parsed["error"]),
             arguments=tool_args,
+            duration_ms=duration_ms,
         )
 
     return ToolResult(
@@ -433,4 +558,5 @@ def _parse_tool_message(
         success=True,
         data=parsed,
         arguments=tool_args,
+        duration_ms=duration_ms,
     )

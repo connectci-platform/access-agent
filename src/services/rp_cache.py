@@ -133,6 +133,10 @@ class RPSectionCache:
         """All cached RP slugs."""
         return list(self._cache.keys())
 
+    def list_groups(self) -> list[RPInfo]:
+        """All cached RP groups."""
+        return list(self._cache.values())
+
 
 # Singleton
 _cache: RPSectionCache | None = None
