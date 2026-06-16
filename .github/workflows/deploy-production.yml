@@ -75,7 +75,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Deploy to production server
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.PRODUCTION_HOST }}
           username: github
@@ -128,7 +128,7 @@ jobs:
             docker compose -f docker-compose.prod.yml images
 
       - name: Smoke test agent
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.PRODUCTION_HOST }}
           username: github
