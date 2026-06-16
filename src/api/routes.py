@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from langchain_core.messages import AIMessageChunk
 from pydantic import BaseModel, Field
+from starlette.datastructures import Headers
 from starlette.responses import StreamingResponse
 
 from ..agent.graph import stream_agent
@@ -27,6 +28,40 @@ router = APIRouter()
 
 # Check if checkpointing is enabled
 USE_CHECKPOINTING = bool(settings.DATABASE_URL)
+
+# Headers the redteam (PyRIT) harness sends so its prompts are recorded as a
+# redteam run instead of polluting real-traffic views. The harness hits the
+# same /api/v1/query door as a real user, so the header is the only signal.
+# See access-redteam's AccessAgentTarget.
+REDTEAM_HEADER = "X-Redteam"
+REDTEAM_RUN_ID_HEADER = "X-Redteam-Run-Id"
+REDTEAM_SUITE_HEADER = "X-Redteam-Suite"
+
+
+def redteam_report_context(headers: Headers) -> dict[str, Any]:
+    """Map redteam request headers to turn_report tagging kwargs.
+
+    Returns ``{}`` for ordinary traffic. When the harness's ``X-Redteam``
+    header is present, returns the ``origin`` / ``battery_id`` /
+    ``battery_run_id`` kwargs so the prompt is tagged as a redteam run the
+    reporting dashboard can group and keep out of real-traffic views. The
+    grouping ids are best-effort; ``origin`` is the load-bearing signal.
+    """
+    if headers.get(REDTEAM_HEADER) is None:
+        return {}
+
+    # Header values are client-supplied; the columns are VARCHAR(64). Truncate
+    # so an oversized grouping id can't raise on insert and drop the whole turn
+    # report — the id is best-effort, origin is the load-bearing signal.
+    def _clip(value: str | None) -> str | None:
+        return value[:64] if value is not None else None
+
+    return {
+        "origin": "redteam",
+        "battery_id": _clip(headers.get(REDTEAM_SUITE_HEADER)),
+        "battery_run_id": _clip(headers.get(REDTEAM_RUN_ID_HEADER)),
+    }
+
 
 # Global registry - built from aggregated catalog
 _registry: ToolRegistry | None = None
@@ -197,6 +232,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
     session_id: str,
     question_id: str,
     include_trace: bool,
+    report_context: dict[str, Any] | None = None,
 ) -> AsyncGenerator[str, None]:
     """Translate LangGraph stream chunks into SSE events.
 
@@ -361,6 +397,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                 resources=resources,
                 turn_capture=get_turn_capture(),
                 judge=None,
+                **(report_context or {}),
             )
         except Exception:
             logger.exception("Turn report write failed")
@@ -400,6 +437,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                 resources=resources,
                 turn_capture=get_turn_capture(),
                 judge=None,
+                **(report_context or {}),
             )
         except Exception:
             logger.exception("Failed-turn report write failed")
@@ -484,9 +522,16 @@ async def query_agent(
     if discovery_response is not None:
         return discovery_response
 
+    # Redteam (PyRIT) prompts come through this same door as real users; the
+    # X-Redteam header is the only signal that lets us tag them instead of
+    # polluting real-traffic views.
+    report_context = redteam_report_context(raw_request.headers)
+
     # Agent queries stream via SSE
     return StreamingResponse(
-        _stream_events(request, acting_user, session_id, question_id, include_trace),
+        _stream_events(
+            request, acting_user, session_id, question_id, include_trace, report_context
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
