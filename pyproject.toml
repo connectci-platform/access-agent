@@ -32,7 +32,7 @@ dependencies = [
     # wrap_function_wrapper(module=...), but wrapt 2.x dropped the `module=`
     # kwarg — TypeError on import. Pin wrapt<2 until upstream ships a wrapt-2
     # compatible release (tracking: traceloop/openllmetry#4025, #4048).
-    "wrapt<2",
+    "wrapt<3",
     # Reporting
     "google-analytics-data>=0.23.0",
     "python-dotenv>=1.0.0",
