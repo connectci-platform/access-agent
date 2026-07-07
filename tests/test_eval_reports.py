@@ -269,3 +269,11 @@ def test_compare_judge_has_no_completeness_or_1_5_scale():
     assert '"completeness"' not in src
     assert "1.0-5.0" not in src
     assert '"specificity"' in src
+
+
+def test_main_score_to_dict_has_no_completeness():
+    import src.eval.__main__ as em
+
+    src = _inspect.getsource(em)
+    assert '"completeness": s.completeness' not in src
+    assert '"specificity": s.specificity' in src

@@ -146,7 +146,7 @@ def _handle_comparison(args: argparse.Namespace) -> None:
                 "answer_text": s.answer_text,
                 "composite_score": s.composite_score,
                 "correctness": s.correctness,
-                "completeness": s.completeness,
+                "specificity": s.specificity,
                 "relevance": s.relevance,
                 "citation_quality": s.citation_quality,
                 "hedging": s.hedging,
