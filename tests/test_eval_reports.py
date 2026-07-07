@@ -12,6 +12,50 @@ from src.eval.report import (
 from src.eval.report_data import build_report_data
 
 
+class _FakeScore:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def test_report_dimensions_are_v2_and_exclude_na(monkeypatch):
+    scores = [
+        _FakeScore(
+            question_id="q1",
+            run_id="r1",
+            source="judge",
+            composite_score=1.0,
+            question_text="a",
+            correctness=2,
+            specificity=2,
+            relevance=2,
+            citation_quality=2,
+            hedging=1,
+            answerable=True,
+        ),
+        _FakeScore(
+            question_id="q2",
+            run_id="r1",
+            source="judge",
+            composite_score=1.0,
+            question_text="b",
+            correctness=2,
+            specificity=None,
+            relevance=2,
+            citation_quality=2,
+            hedging=1,
+            answerable=True,
+        ),
+    ]
+    # exercise the per_dimension computation directly on the score list
+    # (helper extracted below), asserting specificity averages only the non-None value.
+    from src.eval.report_data import _per_dimension_means
+
+    pd = _per_dimension_means(scores)
+    assert set(pd) == {"correctness", "specificity", "relevance", "citation_quality", "hedging"}
+    assert pd["specificity"] == 2.0  # q2's None excluded, not counted as 0
+    assert "completeness" not in pd
+
+
 class TestTeamReport:
     def test_generates_markdown(self):
         data = {
