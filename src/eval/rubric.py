@@ -1,7 +1,8 @@
-"""Scoring rubric for agent answer evaluation.
+"""Scoring rubric for agent answer evaluation (v2).
 
-Five dimensions, each scored 1-5. Weights are configurable.
-The same rubric is used by both the LLM judge and human reviewers in Argilla.
+Five scored dimensions on a 3-point ordinal scale (hedging is 2-point),
+plus a pre-score answerability screen that is NOT a scored dimension.
+Higher integer = better. See docs/collaboration/2026-07-06-eval-rubric-v2.md.
 """
 
 from dataclasses import dataclass
@@ -12,61 +13,91 @@ from typing import Any
 class Dimension:
     name: str
     description: str
-    low: str
-    high: str
+    anchors: list[str]  # best -> worst, one label per ordinal value (highest first)
 
 
 DIMENSIONS = [
     Dimension(
         name="correctness",
-        description="Does the answer accurately represent its sources? Tool results (live API data) take precedence over RAG docs when they conflict.",
-        low="Contradicts tool results or hallucinates facts not in any source",
-        high="Faithfully represents tool results and relevant RAG content",
+        description=(
+            "Are the answer's claims true, judged against the question's authored "
+            "required_facts (the ground truth), NOT surface plausibility?"
+        ),
+        anchors=["Correct", "Partial", "Incorrect"],
     ),
     Dimension(
-        name="completeness",
-        description="Does the answer address all parts of the question with the most appropriate type of information? Specific data (resource names, version numbers, event dates, ticket confirmations) is more complete than general guidance when the question calls for specifics.",
-        low="Misses the main point, or gives only general guidance when specific data was needed",
-        high="Thoroughly covers the question with concrete, specific information",
+        name="specificity",
+        description=(
+            "Does the answer give concrete, actionable info (named resources, versions, "
+            "dates, counts, live values) vs. generic guidance? Scored independently of "
+            "correctness. 'N/A' when the question does not call for specifics."
+        ),
+        anchors=["Actionable", "Mixed", "Generic"],  # N/A handled separately (see parser)
     ),
     Dimension(
         name="relevance",
-        description="Does the answer stay on topic without padding?",
-        low="Mostly irrelevant content",
-        high="Focused and directly addresses the query",
+        description="Does the answer address the question without padding?",
+        anchors=["On-target", "Partial", "Off"],
     ),
     Dimension(
         name="citation_quality",
-        description="Are URLs present, valid, and from source docs?",
-        low="No URLs or hallucinated URLs",
-        high="All relevant URLs preserved from sources",
+        description="Are source URLs present, valid, and drawn from the actual source material?",
+        anchors=["Good", "Fair", "Poor"],
     ),
     Dimension(
         name="hedging",
-        description="Does the answer admit uncertainty when sources are thin, avoid over-hedging when strong?",
-        low="Confidently wrong or hedges everything",
-        high="Calibrated confidence matching source quality",
+        description=(
+            "Does the answer honestly signal how much to trust it, to a user who cannot "
+            "verify it? Over-confident on shaky claims OR needless hedging = miscalibrated."
+        ),
+        anchors=["Calibrated", "Miscalibrated"],
     ),
 ]
 
 DIMENSION_NAMES = [d.name for d in DIMENSIONS]
 
+# Highest ordinal integer per dimension (values run max..0). hedging is 2-point.
+DIMENSION_MAX: dict[str, int] = {d.name: len(d.anchors) - 1 for d in DIMENSIONS}
+
+# Map each dimension's anchor labels to their ordinal integers (best label -> max).
+DIMENSION_LABELS: dict[str, dict[str, int]] = {
+    d.name: {label: DIMENSION_MAX[d.name] - i for i, label in enumerate(d.anchors)}
+    for d in DIMENSIONS
+}
+
+# Configurable/overridable DEFAULT — NOT a hardcoded constant. compute_composite accepts a
+# `weights` override so the split can be tuned per-comparison as we learn (spec §5.3, RESOLVED).
+# Correctness-dominant (fact-grounded correctness matters most, guards confident-wrong);
+# specificity second as the actionable-vs-generic discriminator.
 DEFAULT_WEIGHTS: dict[str, float] = {
-    "correctness": 0.30,
-    "completeness": 0.25,
-    "relevance": 0.20,
-    "citation_quality": 0.15,
-    "hedging": 0.10,
+    "correctness": 0.40,
+    "specificity": 0.25,
+    "relevance": 0.15,
+    "citation_quality": 0.12,
+    "hedging": 0.08,
 }
 
 
 def compute_composite(
-    scores: dict[str, int],
+    scores: dict[str, int | None],
     weights: dict[str, float] | None = None,
 ) -> float:
-    """Compute weighted composite score from dimension scores."""
+    """Weighted composite on [0,1].
+
+    Each dimension is normalized to [0,1] by its own max before weighting, so the
+    2-point hedging axis is not out-weighted by the 3-point axes. A None value
+    (e.g. specificity N/A) is skipped and its weight is renormalized away.
+    """
     w = weights or DEFAULT_WEIGHTS
-    return sum(scores[name] * w[name] for name in DIMENSION_NAMES)
+    active = {name: w[name] for name in DIMENSION_NAMES if scores.get(name) is not None}
+    total_w = sum(active.values())
+    if total_w == 0:
+        return 0.0
+    acc = 0.0
+    for name, weight in active.items():
+        norm = scores[name] / DIMENSION_MAX[name]  # type: ignore[operator]
+        acc += norm * (weight / total_w)
+    return acc
 
 
 def flatten_required_facts(
@@ -102,7 +133,10 @@ def build_judge_prompt(
 ) -> str:
     """Build the LLM judge prompt with the rubric and context."""
     rubric_text = "\n".join(
-        f"- **{d.name}** (1-5): {d.description}\n  1 = {d.low}\n  5 = {d.high}" for d in DIMENSIONS
+        f"- **{d.name}**: {d.description}\n  Values (best to worst): "
+        + " / ".join(d.anchors)
+        + ("" if d.name != "specificity" else " / N/A (question doesn't call for specifics)")
+        for d in DIMENSIONS
     )
 
     context_sections = []
@@ -158,32 +192,32 @@ You will see up to three kinds of context the agent had:
 
 **Treat the context as your source of truth, not the answer.** The agent's answer is what you are grading. When the answer makes a specific factual claim — names a resource, group, person, software version, count, date, URL, ticket number — that claim must be supported either by the Tool Results, by the RAG Documents, or by widely known ACCESS-CI facts you are confident about. A specific name or number that appears only in the answer and nowhere in the context is unsupported, and should be treated as a hallucination. Penalize unsupported specifics in the relevant rubric dimensions and in the per-fact verdicts below.
 
+## Answerability screen (do this FIRST, before scoring)
+
+Decide whether this is a fair, answerable question:
+- "Fair" — a reasonable question the system could answer.
+- "Unfair" — off-topic, adversarial, or unanswerable without context the system lacks.
+If "Unfair", still return the screen but the dimension scores will be ignored.
+
 ## Scoring Rubric
 
-Score each dimension from 1 (worst) to 5 (best):
+Choose exactly one labeled value per dimension (use the anchor label strings verbatim):
 
 {rubric_text}
+
+For `correctness`, base your label on the per-fact required_facts verdicts below:
+mostly-supported -> "Correct", mixed -> "Partial", missing/contradicted key facts -> "Incorrect".
+For `specificity`, use "N/A" only when the question is a process/how-to that does not call
+for concrete named specifics.
 
 ## Important
 
 - Judge whether the agent accurately represented the information it HAD ACCESS TO.
-- If the source documents contain outdated information and the agent faithfully reported it, that is CORRECT (score 5 on correctness). Data quality is not the agent's fault.
-- If the agent added information not in the sources, that is a hallucination (score 1-2 on correctness).
+- If the source documents contain outdated information and the agent faithfully reported it, that is Correct on correctness. Data quality is not the agent's fault.
+- If the agent added information not in the sources, that is a hallucination (Incorrect on correctness).
 - CRITICAL: Tool Results are LIVE DATA from real-time APIs and are MORE CURRENT than RAG Documents. When tool results return POSITIVE DATA that conflicts with RAG documents (e.g., tool says "Delta has 4 GPU nodes" but RAG says 8), the agent is CORRECT to trust the tool results. Score the agent based on whether it accurately represented the tool results.
 - HOWEVER: Tool results returning 0 items or empty results represent ABSENCE of data, not contradiction of other sources. Do not penalize an answer for relying on RAG documents just because a tool search returned no results — the search may not have matched, or the data may not be in that tool's scope. Only treat tool results as overriding RAG when the tool returns positive data that conflicts with the RAG answer.
 - If tool results show 0 items AND the RAG documents have relevant content, the agent is CORRECT to use the RAG content. Do not penalize this.
-
-## Completeness: Specificity and Action
-
-In judging completeness, you are looking for specific examples. Specific examples are concrete items like named resources (e.g., "Anvil", "Expanse", "Bridges-2"), specific software with versions (e.g., "Anaconda3 version 2020.11"), named events with dates, or exact counts and statistics. An answer that describes a category ("several resources support GPUs") without naming them is NOT specific. An answer that names them ("Anvil has NVIDIA A100s, Expanse has V100s, ACES has H100s") IS specific.
-
-You may find that an answer contains a list of examples. Count the specific, individually named items (not categories). If the answer lists 6 or more specific named items, completeness may be scored 5. If the answer lists fewer than 6 specific named items, score completeness no higher than 4. Do not count general categories or types of things (e.g., "workshops on AI, cybersecurity, and data management") — those are categories, not specific items.
-
-Apply these rules:
-- When the question asks for CURRENT or SPECIFIC information (e.g., "what events are coming up", "which resources have X installed", "show me allocation statistics") and the answer provides only general/static guidance without specific names, versions, dates, or counts, score completeness 3 or lower. A correct general answer to a specific question is incomplete.
-- When the question asks "which resources" or "where can I" and the answer does NOT include a list of specifically named resources, score completeness no higher than 3 — even if the general advice is correct.
-- When the system TAKES AN ACTION on behalf of the user (e.g., creates a support ticket, files a report) rather than merely suggesting the user take that action themselves, that is more complete. An answer that says "a ticket has been created (ticket ATS-12345)" is more complete than "you should open a ticket at this URL."
-- When the answer includes real-time data (live event listings, current software versions, system status) alongside documentation, it is more complete than documentation alone — the user gets both the how-to and the current state.
 
 ## User Question
 
@@ -202,10 +236,11 @@ Apply these rules:
 Return a JSON object with this exact structure (no other text):
 ```json
 {{
-  "correctness": {{"score": <1-5>, "justification": "<brief explanation>"}},
-  "completeness": {{"score": <1-5>, "justification": "<brief explanation>"}},
-  "relevance": {{"score": <1-5>, "justification": "<brief explanation>"}},
-  "citation_quality": {{"score": <1-5>, "justification": "<brief explanation>"}},
-  "hedging": {{"score": <1-5>, "justification": "<brief explanation>"}}{facts_response_schema}
+  "answerable": "<Fair|Unfair>",
+  "correctness": {{"value": "<Correct|Partial|Incorrect>", "justification": "<brief>"}},
+  "specificity": {{"value": "<Actionable|Mixed|Generic|N/A>", "justification": "<brief>"}},
+  "relevance": {{"value": "<On-target|Partial|Off>", "justification": "<brief>"}},
+  "citation_quality": {{"value": "<Good|Fair|Poor>", "justification": "<brief>"}},
+  "hedging": {{"value": "<Calibrated|Miscalibrated>", "justification": "<brief>"}}{facts_response_schema}
 }}
 ```"""

@@ -89,7 +89,7 @@ def build_report_data(  # noqa: PLR0912
     avg_composite = sum(composites) / len(composites) if composites else 0.0
 
     per_dimension = {}
-    for dim in ["correctness", "completeness", "relevance", "citation_quality", "hedging"]:
+    for dim in ["correctness", "specificity", "relevance", "citation_quality", "hedging"]:
         vals = [getattr(s, dim) for s in scores if getattr(s, dim) is not None]
         per_dimension[dim] = sum(vals) / len(vals) if vals else 0.0
 

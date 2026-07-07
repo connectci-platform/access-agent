@@ -8,16 +8,23 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
-from .rubric import DIMENSION_NAMES, build_judge_prompt, compute_composite
+from .rubric import (
+    DIMENSION_LABELS,
+    DIMENSION_NAMES,
+    build_judge_prompt,
+    compute_composite,
+)
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class JudgeResult:
-    scores: dict[str, int]
+    scores: dict[str, int | None]
     justifications: dict[str, str]
     composite: float
+    answerable: bool | None = None
+    specificity_na: bool = False
     fact_verdicts: list[dict[str, Any]] | None = None
 
 
@@ -34,22 +41,36 @@ def parse_judge_response(raw: str) -> JudgeResult | None:
         logger.warning("Judge returned invalid JSON")
         return None
 
-    scores: dict[str, int] = {}
+    scores: dict[str, int | None] = {}
     justifications: dict[str, str] = {}
+    specificity_na = False
+
+    # Answerability screen (routed to the screen, never averaged as a dimension).
+    raw_answerable = data.get("answerable")
+    if raw_answerable not in ("Fair", "Unfair"):
+        logger.warning(f"Judge answerability missing/invalid: {raw_answerable}")
+        return None
+    answerable = raw_answerable == "Fair"
 
     for name in DIMENSION_NAMES:
         if name not in data:
             logger.warning(f"Judge response missing dimension: {name}")
             return None
         entry = data[name]
-        if not isinstance(entry, dict) or "score" not in entry:
+        if not isinstance(entry, dict) or "value" not in entry:
             logger.warning(f"Judge response malformed for dimension: {name}")
             return None
-        score = entry["score"]
-        if not isinstance(score, int) or score < 1 or score > 5:
-            logger.warning(f"Judge score out of range for {name}: {score}")
+        label = entry["value"]
+        if name == "specificity" and label == "N/A":
+            scores[name] = None
+            specificity_na = True
+            justifications[name] = entry.get("justification", "")
+            continue
+        allowed = DIMENSION_LABELS[name]
+        if label not in allowed:
+            logger.warning(f"Judge label out of set for {name}: {label!r}")
             return None
-        scores[name] = score
+        scores[name] = allowed[label]
         justifications[name] = entry.get("justification", "")
 
     fact_verdicts: list[dict[str, Any]] | None = None
@@ -76,6 +97,8 @@ def parse_judge_response(raw: str) -> JudgeResult | None:
         scores=scores,
         justifications=justifications,
         composite=compute_composite(scores),
+        answerable=answerable,
+        specificity_na=specificity_na,
         fact_verdicts=fact_verdicts,
     )
 
@@ -113,8 +136,9 @@ class Judge:
             required_facts=required_facts,
         )
 
-        # Base 500 tokens for the 5-dimension scoring; ~80 tokens per fact verdict
-        # (id + verdict + brief justification) when required_facts present.
+        # Base 500 tokens for the 5-dimension scoring (categorical labels now, not 1-5
+        # integers); ~80 tokens per fact verdict (id + verdict + brief justification)
+        # when required_facts present.
         from .rubric import flatten_required_facts
 
         n_facts = len(flatten_required_facts(required_facts)) if required_facts else 0

@@ -61,7 +61,7 @@ async def run_eval(
     )
     logger.info(f"Eval run {run.id} started ({len(questions)} questions, system={system})")
 
-    all_scores: list[dict[str, int]] = []
+    all_scores: list[dict[str, int | None]] = []
     for i, q in enumerate(questions, 1):
         logger.info(f"[{i}/{len(questions)}] {q.question[:60]}...")
 
@@ -128,7 +128,10 @@ async def run_eval(
             },
             context_completeness="full" if result.rag_context or result.tool_results else "partial",
             correctness=judge_result.scores["correctness"],
-            completeness=judge_result.scores["completeness"],
+            specificity=judge_result.scores["specificity"],
+            specificity_na=judge_result.specificity_na,
+            answerable=judge_result.answerable,
+            rubric_version=2,
             relevance=judge_result.scores["relevance"],
             citation_quality=judge_result.scores["citation_quality"],
             hedging=judge_result.scores["hedging"],
@@ -140,7 +143,11 @@ async def run_eval(
 
     if all_scores:
         avg_scores = {
-            name: sum(s[name] for s in all_scores) / len(all_scores) for name in DIMENSION_NAMES
+            name: (
+                sum(v for s in all_scores if (v := s.get(name)) is not None)
+                / max(1, sum(1 for s in all_scores if s.get(name) is not None))
+            )
+            for name in DIMENSION_NAMES
         }
         avg_composite = sum(compute_composite(s) for s in all_scores) / len(all_scores)
     else:
