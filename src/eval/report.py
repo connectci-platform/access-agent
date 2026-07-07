@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from .rubric import DIMENSION_NAMES
+from .rubric import DIMENSION_MAX, DIMENSION_NAMES
 
 
 def print_run_summary(summary: dict[str, Any]) -> None:
@@ -19,14 +19,22 @@ def print_run_summary(summary: dict[str, Any]) -> None:
     print(f"  Scored:    {summary['scored']}")
     print(f"  Skipped:   {summary['skipped']}")
     print()
-    print(f"  Composite Score: {summary['composite_score']:.2f} / 5.00")
+    print(f"  Composite Score: {summary['composite_score']:.2f} / 1.00")
     print()
     dims = summary.get("per_dimension", {})
     if dims:
         print("  Per Dimension:")
+        # Bar is a fixed display width filled proportionally to score / the
+        # dimension's own max (v2 dimensions max at 2, hedging at 1), so a
+        # perfect score renders full regardless of the per-dimension scale.
+        bar_width = 5
         for name in DIMENSION_NAMES:
             score = dims.get(name, 0.0)
-            bar = "█" * int(score) + "░" * (5 - int(score))
+            filled = (
+                round(bar_width * score / DIMENSION_MAX[name]) if DIMENSION_MAX.get(name) else 0
+            )
+            filled = max(0, min(bar_width, filled))
+            bar = "█" * filled + "░" * (bar_width - filled)
             print(f"    {name:20s} {score:.2f}  {bar}")
     print()
     print("=" * 60)
@@ -64,7 +72,7 @@ def generate_team_report(data: dict[str, Any]) -> str:
     lines = [
         f"# Agent Quality Report — {data['period']}",
         "",
-        f"**Composite Score: {data['composite_score']:.2f} / 5.00**",
+        f"**Composite Score: {data['composite_score']:.2f} / 1.00**",
         f"Answers scored: {data['total_scored']} | Human reviewed: {data['human_coverage']:.0%}",
     ]
     if data.get("judge_human_agreement") is not None:
@@ -95,7 +103,7 @@ def generate_leadership_report(data: dict[str, Any]) -> str:
     lines = [
         f"# Agent Quality Summary — {data['period']}",
         "",
-        f"**Composite Score: {data['composite_score']:.2f} / 5.00**",
+        f"**Composite Score: {data['composite_score']:.2f} / 1.00**",
     ]
     prev = data.get("previous_composite")
     if prev is not None:
@@ -134,7 +142,7 @@ def generate_resource_report(data: dict[str, Any]) -> str:
         f"# {resource} — Agent Answer Quality",
         "",
         f"**Period:** {data['period']}",
-        f"**Composite Score: {data['composite_score']:.2f} / 5.00**",
+        f"**Composite Score: {data['composite_score']:.2f} / 1.00**",
         f"**Answers scored:** {data['total_scored']}",
     ]
     dims = data.get("per_dimension", {})

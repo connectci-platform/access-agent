@@ -17,6 +17,27 @@ class _FakeScore:
         self.__dict__.update(kw)
 
 
+def test_team_report_uses_unit_interval_composite():
+    data = {
+        "period": "x",
+        "resource": None,
+        "total_scored": 1,
+        "human_coverage": 0.0,
+        "composite_score": 0.87,
+        "per_dimension": {"correctness": 2.0},
+        "worst_answers": [],
+        "capability_gaps": [],
+        "judge_human_agreement": None,
+        "total_queries": 1,
+        "human_reviewed": 0,
+        "previous_composite": None,
+        "capability_breakdown": [],
+    }
+    out = generate_team_report(data)
+    assert "/ 5.00" not in out
+    assert "0.87" in out
+
+
 def test_report_dimensions_are_v2_and_exclude_na(monkeypatch):
     scores = [
         _FakeScore(
