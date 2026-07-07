@@ -9,6 +9,7 @@ from src.tools import ToolRegistry, get_catalog_aggregator
 
 from .db import EvalDB
 from .judge import Judge
+from .question_facts import resolve_required_facts
 from .questions import load_questions
 from .rubric import DIMENSION_NAMES, compute_composite
 from .runner import SystemMode, gen_semantic_run_id, get_git_info, run_question
@@ -75,6 +76,10 @@ async def run_eval(
             battery_run_id=str(run.id),
         )
 
+        # Prefer stable-id required facts from reporting.question_facts; fall back to
+        # the YAML battery's required_facts when the reporting table is unavailable.
+        required_facts = resolve_required_facts(db, q.id, q.metadata.get("required_facts"))
+
         if not result.success:
             db.add_score(
                 run_id=run.id,
@@ -93,7 +98,7 @@ async def run_eval(
             rag_context=result.rag_context,
             tool_results=result.tool_results,
             node_trace=result.node_trace,
-            required_facts=q.metadata.get("required_facts"),
+            required_facts=required_facts,
         )
 
         if judge_result is None:
@@ -122,7 +127,7 @@ async def run_eval(
                 "rag_context": result.rag_context,
                 "tool_results": result.tool_results,
                 "node_trace": result.node_trace,
-                "required_facts": q.metadata.get("required_facts"),
+                "required_facts": required_facts,
                 "fact_verdicts": judge_result.fact_verdicts,
                 "ground_truth_stability": q.metadata.get("ground_truth_stability"),
             },

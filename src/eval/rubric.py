@@ -105,14 +105,22 @@ def flatten_required_facts(
 ) -> list[tuple[str, str]]:
     """Flatten required_facts into [(id, text), ...] for prompt rendering.
 
-    Plain string facts stay as-is. {heading, items} dicts produce one entry
-    per item, with the heading prefixed for context. IDs are F1, F2, ...
-    in document order.
+    A fact dict carrying a stable ``fact_id`` (e.g. loaded from
+    reporting.question_facts) keeps that id, so fact verdicts stay joinable
+    across runs even when the authored fact list is edited. Its text comes from
+    ``fact_text`` (the reporting column) or ``text`` (defensive fallback).
+
+    Legacy shapes keep positional ids: plain string facts and ``{heading, items}``
+    dicts are numbered F1, F2, ... in document order. Stable-id facts do NOT
+    consume a positional slot.
     """
     out: list[tuple[str, str]] = []
     counter = 1
     for fact in facts:
-        if isinstance(fact, str):
+        if isinstance(fact, dict) and "fact_id" in fact and ("fact_text" in fact or "text" in fact):
+            text_val = fact.get("fact_text", fact.get("text"))
+            out.append((str(fact["fact_id"]), str(text_val)))
+        elif isinstance(fact, str):
             out.append((f"F{counter}", fact))
             counter += 1
         elif isinstance(fact, dict) and "heading" in fact and "items" in fact:

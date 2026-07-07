@@ -3,6 +3,7 @@ from src.eval.rubric import (
     DIMENSION_MAX,
     DIMENSION_NAMES,
     compute_composite,
+    flatten_required_facts,
 )
 
 
@@ -56,3 +57,44 @@ def test_composite_skips_na_specificity_and_renormalizes():
     }
     # All non-N/A dims at max → still 1.0 after renormalization.
     assert abs(compute_composite(scores) - 1.0) < 1e-9
+
+
+# --- Task 12: stable fact_id keying ---
+
+
+def test_flatten_carries_stable_fact_id_from_db_dict():
+    # A DB-shaped fact dict (fact_id + fact_text) keeps its stable id, not F{n}.
+    facts = [{"fact_id": 83, "fact_text": "Anvil has A100s"}]
+    flat = flatten_required_facts(facts)
+    assert flat == [("83", "Anvil has A100s")]
+
+
+def test_flatten_fact_id_accepts_text_key_too():
+    # Defensive: some callers use "text" instead of "fact_text".
+    facts = [{"fact_id": "fx-abc", "text": "Bridges-2 has GPUs"}]
+    flat = flatten_required_facts(facts)
+    assert flat == [("fx-abc", "Bridges-2 has GPUs")]
+
+
+def test_flatten_keeps_positional_fallbacks_for_legacy_shapes():
+    # Plain strings → F{n}; {heading, items} → F{n}. Stable ids only when provided.
+    facts = [
+        "Delta has A100 GPUs",
+        {"heading": "Software:", "items": ["GCC", "OpenMPI"]},
+    ]
+    flat = flatten_required_facts(facts)
+    assert flat == [
+        ("F1", "Delta has A100 GPUs"),
+        ("F2", "Software: GCC"),
+        ("F3", "Software: OpenMPI"),
+    ]
+
+
+def test_flatten_mixed_stable_and_positional():
+    # A stable-id dict does not consume a positional counter slot.
+    facts = [
+        {"fact_id": 7, "fact_text": "Stable one"},
+        "Legacy string",
+    ]
+    flat = flatten_required_facts(facts)
+    assert flat == [("7", "Stable one"), ("F1", "Legacy string")]

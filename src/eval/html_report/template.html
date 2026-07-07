@@ -728,13 +728,18 @@
   }
 
   // Flatten required_facts (mirror of src/eval/rubric.py:flatten_required_facts).
-  // String facts → one entry. {heading, items} dicts → one entry per item.
+  // A fact with a stable fact_id (from reporting.question_facts) keeps that id so
+  // baseline/candidate verdicts stay joinable after fact edits. String facts and
+  // {heading, items} dicts get positional F{n} ids and do not consume a stable slot.
   function flattenFacts(facts) {
     if (!Array.isArray(facts)) return [];
     const out = [];
     let counter = 1;
     for (const fact of facts) {
-      if (typeof fact === 'string') {
+      if (fact && typeof fact === 'object' && fact.fact_id != null
+          && (fact.fact_text != null || fact.text != null)) {
+        out.push({ id: String(fact.fact_id), text: String(fact.fact_text != null ? fact.fact_text : fact.text) });
+      } else if (typeof fact === 'string') {
         out.push({ id: 'F' + counter, text: fact });
         counter++;
       } else if (fact && typeof fact === 'object' && fact.heading && Array.isArray(fact.items)) {
