@@ -1,7 +1,9 @@
 """Tests for eval report generation."""
 
+import inspect as _inspect
 from datetime import UTC, datetime, timedelta
 
+import src.eval.compare_judge as cj
 from src.eval.db import EvalDB
 from src.eval.models import EvalRun
 from src.eval.report import (
@@ -260,3 +262,10 @@ class TestReportDataDedup:
         data = build_report_data(self.db, since="7d")
         # Should use human score (3.0), not judge (5.0)
         assert data["composite_score"] == 3.0
+
+
+def test_compare_judge_has_no_completeness_or_1_5_scale():
+    src = _inspect.getsource(cj)
+    assert '"completeness"' not in src
+    assert "1.0-5.0" not in src
+    assert '"specificity"' in src
