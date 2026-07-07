@@ -23,17 +23,20 @@ def build_schema_description() -> str:
 One row per eval run.
 - id (UUID), created_at (timestamp), run_type ("pre_production"/"production")
 - agent_commit, agent_branch, tool_catalog (JSON), llm_model, judge_model
-- question_set, question_count, scores_summary (JSON), composite_score (float 1-5)
+- question_set, question_count, scores_summary (JSON), composite_score (float 0-1)
 
 ### eval_scores
 One row per scored answer.
 - id (UUID), created_at (timestamp), run_id (FK to eval_runs)
 - question_id, source ("judge"/"human"/"judge_error"/"skipped"), reviewer_id
 - question_text, answer_text, context (JSON)
-- correctness (1-5), completeness (1-5), relevance (1-5), citation_quality (1-5), hedging (1-5)
-- composite_score (float), justifications (JSON), feedback (text)
+- correctness (0-2), specificity (0-2, NULL when N/A), relevance (0-2),
+  citation_quality (0-2), hedging (0-1)  -- 3-point ordinal (hedging 2-point), higher=better
+- specificity_na (bool), answerable (bool; NULL=pre-v2; FALSE rows excluded from aggregates)
+- rubric_version (2 for v2 rows), composite_score (float 0-1), justifications (JSON), feedback (text)
 
-## Weights: correctness 30%, completeness 25%, relevance 20%, citation_quality 15%, hedging 10%
+## Weights (v2 default, overridable): correctness 40%, specificity 25%, relevance 15%, citation_quality 12%, hedging 8%
+## Composite is per-dimension normalized to [0,1] then weighted; specificity N/A rows are skipped.
 """
 
 

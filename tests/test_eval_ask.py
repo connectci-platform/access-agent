@@ -15,6 +15,14 @@ class TestBuildSchemaDescription:
         assert "question_id" in desc
         assert "source" in desc
 
+    def test_schema_description_is_v2(self):
+        s = build_schema_description()
+        assert "completeness" not in s
+        assert "specificity" in s
+        assert "answerable" in s
+        assert "(1-5)" not in s
+        assert "0-2" in s or "3-point" in s
+
 
 class TestBuildAskPrompt:
     def test_includes_question(self):
