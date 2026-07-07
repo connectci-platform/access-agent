@@ -2,7 +2,7 @@
 
 import logging
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from src.config import settings
 from src.tools import ToolRegistry, get_catalog_aggregator
@@ -16,14 +16,13 @@ from .runner import SystemMode, gen_semantic_run_id, get_git_info, run_question
 logger = logging.getLogger(__name__)
 
 
-async def run_eval(  # noqa: PLR0915
+async def run_eval(
     question_set_path: str,
     system: SystemMode = "agent_full",
     database_url: str | None = None,
     judge_base_url: str | None = None,
     judge_api_key: str | None = None,
     judge_model: str | None = None,
-    push_argilla: bool = False,
 ) -> dict[str, Any]:
     db_url = database_url or settings.DATABASE_URL
     j_base = judge_base_url or settings.EVAL_JUDGE_BASE_URL or None
@@ -149,60 +148,6 @@ async def run_eval(  # noqa: PLR0915
         avg_composite = 0.0
 
     db.update_run_summary(str(run.id), avg_scores, avg_composite)
-
-    if push_argilla:
-        from .argilla_push import (
-            build_argilla_record,
-            dataset_name_for_branch,
-            push_scores_to_argilla,
-        )
-
-        ds_name = dataset_name_for_branch(git_info.get("branch"))
-        # Push low-scoring answers for review (composite < 4.5), plus all errors/skips
-        argilla_score_threshold = 4.5
-        argilla_records = []
-        for score in db.get_scores_for_run(str(run.id)):
-            if score.source not in ("judge", "judge_error", "skipped"):
-                continue
-            if score.source == "judge" and (score.composite_score or 0) >= argilla_score_threshold:
-                continue
-            score_context: dict[str, Any] = score.context or {}  # type: ignore[assignment]
-            argilla_records.append(
-                build_argilla_record(
-                    question_id=str(score.question_id),
-                    question_text=str(score.question_text or ""),
-                    answer_text=str(score.answer_text or ""),
-                    judge_scores={
-                        "correctness": int(score.correctness or 0),
-                        "completeness": int(score.completeness or 0),
-                        "relevance": int(score.relevance or 0),
-                        "citation_quality": int(score.citation_quality or 0),
-                        "hedging": int(score.hedging or 0),
-                    },
-                    composite_score=float(score.composite_score or 0.0),
-                    rag_context=score_context.get("rag_context"),
-                    tool_results=score_context.get("tool_results"),
-                    node_trace=score_context.get("node_trace"),
-                    run_id=str(run.id),
-                    agent_branch=git_info.get("branch"),
-                    agent_commit=git_info.get("commit"),
-                    judge_model=j_model,
-                    duration_ms=float(score.duration_ms) if score.duration_ms else None,
-                    question_set=cast("str | None", run.question_set),
-                    tool_count=cast("int | None", run.tool_catalog.get("total_tools"))
-                    if run.tool_catalog
-                    else None,
-                )
-            )
-
-        if argilla_records:
-            pushed = push_scores_to_argilla(
-                argilla_records,
-                settings.ARGILLA_URL,
-                settings.ARGILLA_API_KEY,
-                ds_name,
-            )
-            logger.info(f"Pushed {pushed} records to Argilla dataset '{ds_name}'")
 
     summary = {
         "run_id": run.id,

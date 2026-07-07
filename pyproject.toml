@@ -41,9 +41,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-eval = [
-    "argilla>=2.0.0",
-]
 dev = [
     "pytest>=9.1.0",
     "pytest-asyncio>=1.4.0",

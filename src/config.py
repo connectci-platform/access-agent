@@ -168,11 +168,6 @@ class Settings(BaseSettings):
     EVAL_JUDGE_API_KEY: str = ""  # Falls back to OPENAI_API_KEY if empty
     EVAL_JUDGE_MODEL: str = "gpt-4o-mini"
 
-    # Argilla (human review)
-    ARGILLA_URL: str = "http://localhost:6900"
-    ARGILLA_API_KEY: str = ""
-    ARGILLA_EVAL_DATASET: str = "eval-production"
-
     # MCP Server port mappings
     @property
     def mcp_server_urls(self) -> dict[str, str]:
