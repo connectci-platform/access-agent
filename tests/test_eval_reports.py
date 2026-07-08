@@ -1,7 +1,9 @@
 """Tests for eval report generation."""
 
+import inspect as _inspect
 from datetime import UTC, datetime, timedelta
 
+import src.eval.compare_judge as cj
 from src.eval.db import EvalDB
 from src.eval.models import EvalRun
 from src.eval.report import (
@@ -10,6 +12,71 @@ from src.eval.report import (
     generate_team_report,
 )
 from src.eval.report_data import build_report_data
+
+
+class _FakeScore:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def test_team_report_uses_unit_interval_composite():
+    data = {
+        "period": "x",
+        "resource": None,
+        "total_scored": 1,
+        "human_coverage": 0.0,
+        "composite_score": 0.87,
+        "per_dimension": {"correctness": 2.0},
+        "worst_answers": [],
+        "capability_gaps": [],
+        "judge_human_agreement": None,
+        "total_queries": 1,
+        "human_reviewed": 0,
+        "previous_composite": None,
+        "capability_breakdown": [],
+    }
+    out = generate_team_report(data)
+    assert "/ 5.00" not in out
+    assert "0.87" in out
+
+
+def test_report_dimensions_are_v2_and_exclude_na(monkeypatch):
+    scores = [
+        _FakeScore(
+            question_id="q1",
+            run_id="r1",
+            source="judge",
+            composite_score=1.0,
+            question_text="a",
+            correctness=2,
+            specificity=2,
+            relevance=2,
+            citation_quality=2,
+            hedging=1,
+            answerable=True,
+        ),
+        _FakeScore(
+            question_id="q2",
+            run_id="r1",
+            source="judge",
+            composite_score=1.0,
+            question_text="b",
+            correctness=2,
+            specificity=None,
+            relevance=2,
+            citation_quality=2,
+            hedging=1,
+            answerable=True,
+        ),
+    ]
+    # exercise the per_dimension computation directly on the score list
+    # (helper extracted below), asserting specificity averages only the non-None value.
+    from src.eval.report_data import _per_dimension_means
+
+    pd = _per_dimension_means(scores)
+    assert set(pd) == {"correctness", "specificity", "relevance", "citation_quality", "hedging"}
+    assert pd["specificity"] == 2.0  # q2's None excluded, not counted as 0
+    assert "completeness" not in pd
 
 
 class TestTeamReport:
@@ -123,11 +190,11 @@ class TestReportDataDedup:
             question_id="q1",
             source="judge",
             question_text="What is ACCESS?",
-            correctness=3,
-            completeness=3,
-            relevance=3,
-            citation_quality=3,
-            hedging=3,
+            correctness=1,
+            specificity=1,
+            relevance=1,
+            citation_quality=1,
+            hedging=1,
             composite_score=3.0,
         )
 
@@ -143,11 +210,11 @@ class TestReportDataDedup:
             question_id="q1",
             source="judge",
             question_text="What is ACCESS?",
-            correctness=5,
-            completeness=5,
-            relevance=5,
-            citation_quality=5,
-            hedging=5,
+            correctness=2,
+            specificity=2,
+            relevance=2,
+            citation_quality=2,
+            hedging=1,
             composite_score=5.0,
         )
 
@@ -170,11 +237,11 @@ class TestReportDataDedup:
             question_id="q2",
             source="judge",
             question_text="How to login?",
-            correctness=5,
-            completeness=5,
-            relevance=5,
-            citation_quality=5,
-            hedging=5,
+            correctness=2,
+            specificity=2,
+            relevance=2,
+            citation_quality=2,
+            hedging=1,
             composite_score=5.0,
         )
         # Human scores 3.0
@@ -184,14 +251,55 @@ class TestReportDataDedup:
             source="human",
             reviewer_id="drew",
             question_text="How to login?",
-            correctness=3,
-            completeness=3,
-            relevance=3,
-            citation_quality=3,
-            hedging=3,
+            correctness=1,
+            specificity=1,
+            relevance=1,
+            citation_quality=1,
+            hedging=1,
             composite_score=3.0,
         )
 
         data = build_report_data(self.db, since="7d")
         # Should use human score (3.0), not judge (5.0)
         assert data["composite_score"] == 3.0
+
+
+def test_compare_judge_has_no_completeness_or_1_5_scale():
+    src = _inspect.getsource(cj)
+    assert '"completeness"' not in src
+    assert "1.0-5.0" not in src
+    assert '"specificity"' in src
+
+
+def test_main_score_to_dict_has_no_completeness():
+    import src.eval.__main__ as em
+
+    src = _inspect.getsource(em)
+    assert '"completeness": s.completeness' not in src
+    assert '"specificity": s.specificity' in src
+
+
+def test_print_run_summary_renders_v2(capsys):
+    from src.eval.report import print_run_summary
+
+    summary = {
+        "run_id": "r1",
+        "agent_branch": "b",
+        "agent_commit": "c",
+        "questions": 3,
+        "scored": 3,
+        "skipped": 0,
+        "composite_score": 1.0,
+        "per_dimension": {
+            "correctness": 2.0,
+            "specificity": 2.0,
+            "relevance": 2.0,
+            "citation_quality": 2.0,
+            "hedging": 1.0,
+        },
+    }
+    print_run_summary(summary)
+    out = capsys.readouterr().out
+    assert "/ 1.00" in out  # v2 unit-interval composite label
+    assert "correctness" in out
+    assert "█████" in out  # perfect score → full bar (bar scaled to dim max)

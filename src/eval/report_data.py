@@ -6,8 +6,18 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .db import EvalDB
+from .rubric import DIMENSION_NAMES
 
 logger = logging.getLogger(__name__)
+
+
+def _per_dimension_means(scores: list[Any]) -> dict[str, float]:
+    """Mean per v2 dimension, excluding None (e.g. specificity N/A) from each mean."""
+    out: dict[str, float] = {}
+    for dim in DIMENSION_NAMES:
+        vals = [getattr(s, dim) for s in scores if getattr(s, dim, None) is not None]
+        out[dim] = sum(vals) / len(vals) if vals else 0.0
+    return out
 
 
 def _parse_since(since: str) -> datetime:
@@ -20,7 +30,7 @@ def _parse_since(since: str) -> datetime:
     return datetime.now(UTC) - delta.get(unit, timedelta(days=7))
 
 
-def build_report_data(  # noqa: PLR0912
+def build_report_data(
     db: EvalDB,
     since: str = "7d",
     resource: str | None = None,
@@ -67,6 +77,9 @@ def build_report_data(  # noqa: PLR0912
         elif judge:
             scores.extend(judge)
 
+    # Answerability screen: excluded items never enter aggregates (spec §6).
+    scores = [s for s in scores if getattr(s, "answerable", None) is not False]
+
     if not scores:
         return {
             "period": f"Since {since_dt.strftime('%Y-%m-%d')}",
@@ -88,10 +101,7 @@ def build_report_data(  # noqa: PLR0912
     composites = [s.composite_score for s in scores if s.composite_score is not None]
     avg_composite = sum(composites) / len(composites) if composites else 0.0
 
-    per_dimension = {}
-    for dim in ["correctness", "completeness", "relevance", "citation_quality", "hedging"]:
-        vals = [getattr(s, dim) for s in scores if getattr(s, dim) is not None]
-        per_dimension[dim] = sum(vals) / len(vals) if vals else 0.0
+    per_dimension = _per_dimension_means(scores)
 
     worst = sorted(scores, key=lambda s: s.composite_score or 0)[:10]
     worst_answers = [

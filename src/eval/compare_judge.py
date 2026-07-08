@@ -7,8 +7,8 @@ then a run-level summary. Output is a JSON artifact on disk — no DB writes.
 Uses the same OpenAI endpoint / model the per-answer judge uses
 (EVAL_JUDGE_BASE_URL, EVAL_JUDGE_API_KEY, EVAL_JUDGE_MODEL). The
 comparison judge is a distinct first-class stage in the eval pipeline,
-parallel to `rejudge` and `argilla-push`; the HTML report generator can
-optionally consume its JSON as a narrative spine.
+parallel to `rejudge`; the HTML report generator can optionally consume
+its JSON as a narrative spine.
 """
 
 from __future__ import annotations
@@ -107,7 +107,7 @@ def _build_comparison_prompt(
 {_format_context(context_a)}
 
 ### Prior per-answer judge composite score for A
-{score_a:.2f} (on a 1.0-5.0 scale)
+{score_a:.2f} (on a 0.0-1.0 scale)
 
 ## System B — {system_b}
 
@@ -118,7 +118,7 @@ def _build_comparison_prompt(
 {_format_context(context_b)}
 
 ### Prior per-answer judge composite score for B
-{score_b:.2f} (on a 1.0-5.0 scale)
+{score_b:.2f} (on a 0.0-1.0 scale)
 
 ## Your task
 
@@ -270,7 +270,7 @@ def _score_to_public(score: Any) -> dict[str, Any]:
         "composite": round(float(score.composite_score or 0), 2),
         "dimensions": {
             "correctness": score.correctness,
-            "completeness": score.completeness,
+            "specificity": score.specificity,
             "relevance": score.relevance,
             "citation_quality": score.citation_quality,
             "hedging": score.hedging,

@@ -9,7 +9,7 @@ import argparse
 import asyncio
 import logging
 import sys
-from typing import Any, cast
+from typing import Any
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,7 +26,6 @@ def _handle_run(args: argparse.Namespace) -> None:
             question_set_path=args.questions,
             system=args.system,
             judge_model=args.judge_model,
-            push_argilla=args.push_argilla,
         )
     )
     print_run_summary(summary)
@@ -70,36 +69,6 @@ def _handle_compare(args: argparse.Namespace) -> None:
         "per_dimension": run_b.scores_summary or {},
     }
     print_comparison(summary_a, summary_b)
-
-
-def _handle_argilla_sync(args: argparse.Namespace) -> None:
-    from src.config import settings
-
-    from .argilla_pull import sync_from_argilla
-    from .db import EvalDB
-
-    db = EvalDB(settings.DATABASE_URL)
-    stats = sync_from_argilla(
-        db=db,
-        argilla_url=settings.ARGILLA_URL,
-        argilla_api_key=settings.ARGILLA_API_KEY,
-        dataset_name=args.dataset,
-        run_id=args.run_id,
-    )
-    print(f"Synced: {stats['synced']}, Skipped: {stats['skipped']}, Errors: {stats['errors']}")
-
-
-def _handle_cleanup(args: argparse.Namespace) -> None:
-    from src.config import settings
-
-    from .argilla_push import dataset_name_for_branch, delete_dataset
-
-    ds_name = dataset_name_for_branch(args.branch)
-    if delete_dataset(settings.ARGILLA_URL, settings.ARGILLA_API_KEY, ds_name):
-        print(f"Deleted dataset '{ds_name}'")
-    else:
-        print(f"Failed to delete dataset '{ds_name}'")
-        sys.exit(1)
 
 
 def _handle_report(args: argparse.Namespace) -> None:
@@ -177,7 +146,7 @@ def _handle_comparison(args: argparse.Namespace) -> None:
                 "answer_text": s.answer_text,
                 "composite_score": s.composite_score,
                 "correctness": s.correctness,
-                "completeness": s.completeness,
+                "specificity": s.specificity,
                 "relevance": s.relevance,
                 "citation_quality": s.citation_quality,
                 "hedging": s.hedging,
@@ -285,86 +254,6 @@ def _handle_compare_judge(args: argparse.Namespace) -> None:
     print(_json.dumps(preview, indent=2, default=str))
 
 
-def _handle_argilla_push(args: argparse.Namespace) -> None:
-    from src.config import settings
-
-    from .argilla_push import (
-        build_argilla_record,
-        dataset_name_for_branch,
-        push_scores_to_argilla,
-    )
-    from .db import EvalDB
-
-    argilla_url = args.argilla_url or settings.ARGILLA_URL
-    argilla_key = args.argilla_key or settings.ARGILLA_API_KEY
-
-    if not argilla_url or not argilla_key:
-        print("Error: ARGILLA_URL and ARGILLA_API_KEY required (via args or env)")
-        sys.exit(1)
-
-    db = EvalDB(settings.DATABASE_URL)
-    run = db.get_run(args.run_id)
-    if not run:
-        print(f"Error: Run {args.run_id} not found")
-        sys.exit(1)
-
-    if run.run_type == "rejudge" and not args.force:
-        print(f"Error: Run {args.run_id} is a rejudge run.")
-        print(
-            "Argilla records are keyed by question_id and would OVERWRITE the "
-            "originals on push, silently replacing the prior judge's suggestions."
-        )
-        print("If you really want to push a rejudge run, re-run with --force.")
-        sys.exit(1)
-
-    meta: dict[str, Any] = run.metadata_ or {}  # type: ignore[assignment]
-    ds_name = args.dataset or dataset_name_for_branch(cast("str | None", run.agent_branch))
-
-    scores = db.get_scores_for_run(args.run_id)
-    records = []
-    for score in scores:
-        if score.source not in ("judge", "judge_error", "skipped"):
-            continue
-        score_context: dict[str, Any] = score.context or {}  # type: ignore[assignment]
-        records.append(
-            build_argilla_record(
-                question_id=str(score.question_id),
-                question_text=str(score.question_text or ""),
-                answer_text=str(score.answer_text or ""),
-                judge_scores={
-                    "correctness": int(score.correctness or 0),
-                    "completeness": int(score.completeness or 0),
-                    "relevance": int(score.relevance or 0),
-                    "citation_quality": int(score.citation_quality or 0),
-                    "hedging": int(score.hedging or 0),
-                },
-                composite_score=float(score.composite_score or 0.0),
-                rag_context=score_context.get("rag_context"),
-                tool_results=score_context.get("tool_results"),
-                node_trace=score_context.get("node_trace"),
-                run_id=args.run_id,
-                agent_branch=cast("str | None", run.agent_branch),
-                agent_commit=cast("str | None", run.agent_commit),
-                judge_model=cast("str | None", run.judge_model),
-                duration_ms=float(score.duration_ms) if score.duration_ms else None,
-                question_set=cast("str | None", run.question_set),
-                tool_count=cast("int | None", run.tool_catalog.get("total_tools"))
-                if run.tool_catalog
-                else None,
-            )
-        )
-
-    if not records:
-        print("No scores to push")
-        sys.exit(0)
-
-    pushed = push_scores_to_argilla(records, argilla_url, argilla_key, ds_name)
-    print(f"Pushed {pushed} records to Argilla dataset '{ds_name}'")
-    print(f"  System: {meta.get('system', '?')}")
-    print(f"  Battery: {run.question_set}")
-    print(f"  Composite: {run.composite_score:.2f}")
-
-
 def _handle_html(args: argparse.Namespace) -> None:
     from datetime import date as _date
     from pathlib import Path
@@ -458,22 +347,10 @@ def main() -> None:  # noqa: PLR0915  # CLI dispatcher, statements not meaningfu
         default=None,
         help="Override judge model (default: from config)",
     )
-    run_parser.add_argument(
-        "--push-argilla",
-        action="store_true",
-        help="Push scored answers to Argilla for human review",
-    )
 
     compare_parser = subparsers.add_parser("compare", help="Compare two eval runs")
     compare_parser.add_argument("--run-a", required=True, help="First run ID")
     compare_parser.add_argument("--run-b", required=True, help="Second run ID")
-
-    sync_parser = subparsers.add_parser("argilla-sync", help="Sync human annotations from Argilla")
-    sync_parser.add_argument("--dataset", required=True, help="Argilla dataset name")
-    sync_parser.add_argument("--run-id", required=True, help="Eval run to associate scores with")
-
-    cleanup_parser = subparsers.add_parser("cleanup", help="Delete Argilla branch dataset")
-    cleanup_parser.add_argument("--branch", required=True, help="Branch name")
 
     report_parser = subparsers.add_parser("report", help="Generate eval report")
     report_parser.add_argument(
@@ -566,25 +443,6 @@ def main() -> None:  # noqa: PLR0915  # CLI dispatcher, statements not meaningfu
     compare_judge_parser.add_argument("--output", "-o", required=True, help="Output JSON file path")
     compare_judge_parser.add_argument(
         "--judge-model", default=None, help="Override judge model (default: from config)"
-    )
-
-    push_parser = subparsers.add_parser(
-        "argilla-push", help="Push a completed run to Argilla (all scores, no threshold)"
-    )
-    push_parser.add_argument("--run-id", required=True, help="Eval run ID to push")
-    push_parser.add_argument(
-        "--dataset", default=None, help="Argilla dataset name (default: eval-{branch})"
-    )
-    push_parser.add_argument(
-        "--argilla-url", default=None, help="Argilla URL (default: from config)"
-    )
-    push_parser.add_argument(
-        "--argilla-key", default=None, help="Argilla API key (default: from config)"
-    )
-    push_parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Allow pushing a rejudge run (overwrites original's Argilla suggestions)",
     )
 
     html_parser = subparsers.add_parser(
@@ -702,12 +560,9 @@ def main() -> None:  # noqa: PLR0915  # CLI dispatcher, statements not meaningfu
         "run": _handle_run,
         "compare": _handle_compare,
         "comparison": _handle_comparison,
-        "argilla-sync": _handle_argilla_sync,
-        "argilla-push": _handle_argilla_push,
         "rejudge": _handle_rejudge,
         "compare-judge": _handle_compare_judge,
         "grand-prix": _handle_grand_prix,
-        "cleanup": _handle_cleanup,
         "report": _handle_report,
         "ask": _handle_ask,
         "html": _handle_html,

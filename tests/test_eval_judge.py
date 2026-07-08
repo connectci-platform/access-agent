@@ -1,65 +1,69 @@
 """Tests for the LLM judge."""
 
-import json
-
 from src.eval.judge import parse_judge_response
 
 
-class TestParseJudgeResponse:
-    def test_valid_response(self):
-        raw = json.dumps(
-            {
-                "correctness": {"score": 4, "justification": "Good"},
-                "completeness": {"score": 3, "justification": "Missing some"},
-                "relevance": {"score": 5, "justification": "On point"},
-                "citation_quality": {"score": 4, "justification": "URLs present"},
-                "hedging": {"score": 5, "justification": "Well calibrated"},
-            }
-        )
-        result = parse_judge_response(raw)
-        assert result is not None
-        assert result.scores["correctness"] == 4
-        assert result.scores["completeness"] == 3
-        assert result.justifications["relevance"] == "On point"
-        assert abs(result.composite - 4.05) < 0.01
+def _good_payload():
+    return """```json
+{
+  "answerable": "Fair",
+  "correctness": {"value": "Correct", "justification": "a"},
+  "specificity": {"value": "Actionable", "justification": "b"},
+  "relevance": {"value": "On-target", "justification": "c"},
+  "citation_quality": {"value": "Good", "justification": "d"},
+  "hedging": {"value": "Calibrated", "justification": "e"}
+}
+```"""
 
-    def test_json_in_markdown_code_block(self):
-        inner = json.dumps(
-            {
-                "correctness": {"score": 5, "justification": "x"},
-                "completeness": {"score": 5, "justification": "x"},
-                "relevance": {"score": 5, "justification": "x"},
-                "citation_quality": {"score": 5, "justification": "x"},
-                "hedging": {"score": 5, "justification": "x"},
-            }
-        )
-        raw = f"```json\n{inner}\n```"
-        result = parse_judge_response(raw)
-        assert result is not None
-        assert result.scores["correctness"] == 5
 
-    def test_invalid_json_returns_none(self):
-        result = parse_judge_response("this is not json")
-        assert result is None
+def test_parses_v2_labels_to_ordinals():
+    r = parse_judge_response(_good_payload())
+    assert r is not None
+    assert r.scores == {
+        "correctness": 2,
+        "specificity": 2,
+        "relevance": 2,
+        "citation_quality": 2,
+        "hedging": 1,
+    }
+    assert r.answerable is True
+    assert r.specificity_na is False
+    assert abs(r.composite - 1.0) < 1e-9
 
-    def test_missing_dimension_returns_none(self):
-        raw = json.dumps(
-            {
-                "correctness": {"score": 4, "justification": "Good"},
-            }
-        )
-        result = parse_judge_response(raw)
-        assert result is None
 
-    def test_score_out_of_range_returns_none(self):
-        raw = json.dumps(
-            {
-                "correctness": {"score": 6, "justification": "Too high"},
-                "completeness": {"score": 3, "justification": "Ok"},
-                "relevance": {"score": 5, "justification": "Ok"},
-                "citation_quality": {"score": 4, "justification": "Ok"},
-                "hedging": {"score": 5, "justification": "Ok"},
-            }
-        )
-        result = parse_judge_response(raw)
-        assert result is None
+def test_specificity_na_sets_flag_and_none_score():
+    payload = _good_payload().replace('"value": "Actionable"', '"value": "N/A"')
+    r = parse_judge_response(payload)
+    assert r is not None
+    assert r.scores["specificity"] is None
+    assert r.specificity_na is True
+
+
+def test_unfair_answerability_still_parses():
+    payload = _good_payload().replace('"answerable": "Fair"', '"answerable": "Unfair"')
+    r = parse_judge_response(payload)
+    assert r is not None
+    assert r.answerable is False
+
+
+def test_rejects_old_1_5_integer():
+    payload = """```json
+{"answerable": "Fair",
+ "correctness": {"score": 5},
+ "specificity": {"value": "Actionable"},
+ "relevance": {"value": "On-target"},
+ "citation_quality": {"value": "Good"},
+ "hedging": {"value": "Calibrated"}}
+```"""
+    assert parse_judge_response(payload) is None
+
+
+def test_rejects_out_of_set_label():
+    payload = _good_payload().replace('"value": "Correct"', '"value": "Excellent"')
+    assert parse_judge_response(payload) is None
+
+
+def test_invalid_answerability_rejected():
+    # answerable not in ("Fair","Unfair") → parse rejects the whole payload.
+    payload = _good_payload().replace('"answerable": "Fair"', '"answerable": "Maybe"')
+    assert parse_judge_response(payload) is None

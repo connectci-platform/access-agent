@@ -11,7 +11,7 @@
 #
 # Usage:
 #   scripts/eval-prod run --questions eval/questions/friendly_battery.json
-#   scripts/eval-prod run --questions eval/questions/mcp_coverage_battery.json --push-argilla
+#   scripts/eval-prod run --questions eval/questions/mcp_coverage_battery.json
 #   scripts/eval-prod --rag-only run --questions eval/questions/friendly_battery.json
 #   scripts/eval-prod compare --run-a <id> --run-b <id>
 #
@@ -70,11 +70,6 @@ if [[ -z "${DATABASE_URL:-}" ]] || [[ "${DATABASE_URL}" == *"USER:PASS"* ]]; the
   exit 1
 fi
 
-if [[ -z "${ARGILLA_EVAL_DATASET:-}" ]]; then
-  echo "error: ARGILLA_EVAL_DATASET must be set (expected: eval-baseline-comparison)." >&2
-  exit 1
-fi
-
 # Apply the --rag-only flag by setting ENABLED_CAPABILITIES.
 if [[ "${RAG_ONLY}" -eq 1 ]]; then
   export ENABLED_CAPABILITIES="ask_question,ask_xdmod_question,ask_about_resource"
@@ -92,7 +87,6 @@ DB_REDACTED="$(printf '%s' "${DATABASE_URL}" | sed -E 's|(://)[^@/]*@|\1***@|')"
 cat >&2 <<BANNER
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  eval-prod | mode: ${MODE}
- argilla dataset: ${ARGILLA_EVAL_DATASET}
  database: ${DB_REDACTED}
  mcp catalog: ${MCP_CATALOG_URL:-${MCP_CATALOG_PATH:-UNSET}}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

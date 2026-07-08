@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     Column,
     DateTime,
@@ -68,7 +69,10 @@ class EvalScore(EvalBase):  # type: ignore[valid-type,misc]
     context = Column(JSONB)
     context_completeness = Column(String(16))
     correctness = Column(Integer)
-    completeness = Column(Integer)
+    specificity = Column(Integer)
+    specificity_na = Column(Boolean, nullable=False, server_default=text("FALSE"))
+    answerable = Column(Boolean)
+    rubric_version = Column(Integer)
     relevance = Column(Integer)
     citation_quality = Column(Integer)
     hedging = Column(Integer)
@@ -83,6 +87,14 @@ class EvalScore(EvalBase):  # type: ignore[valid-type,misc]
         CheckConstraint(
             "source IN ('judge', 'human', 'judge_error', 'skipped')",
             name="ck_eval_scores_source",
+        ),
+        CheckConstraint(
+            "(correctness IS NULL OR correctness BETWEEN 0 AND 2) AND "
+            "(relevance IS NULL OR relevance BETWEEN 0 AND 2) AND "
+            "(citation_quality IS NULL OR citation_quality BETWEEN 0 AND 2) AND "
+            "(hedging IS NULL OR hedging BETWEEN 0 AND 1) AND "
+            "(specificity IS NULL OR specificity BETWEEN 0 AND 2)",
+            name="ck_eval_scores_v2_ranges",
         ),
         Index(
             "ix_eval_scores_machine_unique",

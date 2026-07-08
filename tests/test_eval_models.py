@@ -1,9 +1,19 @@
 """Tests for eval database models and operations."""
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 
 from src.eval.models import EvalBase, EvalRun, EvalScore
+
+
+def test_eval_scores_has_v2_columns_not_completeness():
+    cols = {c.name for c in inspect(EvalScore).columns}
+    assert "specificity" in cols
+    assert "specificity_na" in cols
+    assert "answerable" in cols
+    assert "completeness" not in cols  # dropped, not renamed
+    # context_completeness is a DIFFERENT column and must stay.
+    assert "context_completeness" in cols
 
 
 class TestEvalModels:
@@ -54,12 +64,14 @@ class TestEvalModels:
             source="judge",
             question_text="What GPUs does Delta have?",
             answer_text="Delta has NVIDIA A100 GPUs.",
-            correctness=5,
-            completeness=4,
-            relevance=5,
-            citation_quality=3,
-            hedging=4,
-            composite_score=4.35,
+            correctness=2,
+            specificity=2,
+            specificity_na=False,
+            answerable=True,
+            relevance=2,
+            citation_quality=2,
+            hedging=1,
+            composite_score=0.95,
         )
         session.add(score)
         session.commit()
@@ -67,8 +79,8 @@ class TestEvalModels:
         result = session.query(EvalScore).first()
         assert result is not None
         assert result.source == "judge"
-        assert result.correctness == 5
-        assert result.composite_score == 4.35
+        assert result.correctness == 2
+        assert result.composite_score == 0.95
         assert result.run_id == run.id
         session.close()
 
