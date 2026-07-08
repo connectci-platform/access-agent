@@ -277,3 +277,29 @@ def test_main_score_to_dict_has_no_completeness():
     src = _inspect.getsource(em)
     assert '"completeness": s.completeness' not in src
     assert '"specificity": s.specificity' in src
+
+
+def test_print_run_summary_renders_v2(capsys):
+    from src.eval.report import print_run_summary
+
+    summary = {
+        "run_id": "r1",
+        "agent_branch": "b",
+        "agent_commit": "c",
+        "questions": 3,
+        "scored": 3,
+        "skipped": 0,
+        "composite_score": 1.0,
+        "per_dimension": {
+            "correctness": 2.0,
+            "specificity": 2.0,
+            "relevance": 2.0,
+            "citation_quality": 2.0,
+            "hedging": 1.0,
+        },
+    }
+    print_run_summary(summary)
+    out = capsys.readouterr().out
+    assert "/ 1.00" in out  # v2 unit-interval composite label
+    assert "correctness" in out
+    assert "█████" in out  # perfect score → full bar (bar scaled to dim max)

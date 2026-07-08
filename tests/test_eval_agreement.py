@@ -39,3 +39,9 @@ def test_quadratic_weight_option():
 
 def test_no_overlapping_pairs_returns_zero():
     assert weighted_kappa([None, None], [1, 2], max_value=2) == 0.0
+
+
+def test_all_same_category_returns_one():
+    # Both raters give the identical constant value → expected agreement is 1.0
+    # (degenerate case, expected >= 1.0), kappa defined as 1.0.
+    assert weighted_kappa([2, 2, 2], [2, 2, 2], max_value=2) == 1.0

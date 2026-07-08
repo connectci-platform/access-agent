@@ -98,3 +98,9 @@ def test_flatten_mixed_stable_and_positional():
     ]
     flat = flatten_required_facts(facts)
     assert flat == [("7", "Stable one"), ("F1", "Legacy string")]
+
+
+def test_composite_all_none_is_zero():
+    # Every dimension N/A/None → total weight 0 → composite 0.0, no divide-by-zero.
+    scores = dict.fromkeys(DIMENSION_NAMES, None)
+    assert compute_composite(scores) == 0.0

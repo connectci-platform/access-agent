@@ -61,3 +61,9 @@ def test_rejects_old_1_5_integer():
 def test_rejects_out_of_set_label():
     payload = _good_payload().replace('"value": "Correct"', '"value": "Excellent"')
     assert parse_judge_response(payload) is None
+
+
+def test_invalid_answerability_rejected():
+    # answerable not in ("Fair","Unfair") → parse rejects the whole payload.
+    payload = _good_payload().replace('"answerable": "Fair"', '"answerable": "Maybe"')
+    assert parse_judge_response(payload) is None
