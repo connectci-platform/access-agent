@@ -111,8 +111,19 @@ class Judge:
         base_url: str | None = None,
         api_key: str | None = None,
         model: str = "gpt-4o-mini",
+        thinking: bool = False,
     ) -> None:
         self.model = model
+        # A custom base_url means an on-premise vLLM endpoint (per config: empty =
+        # OpenAI). Reasoning models there (Qwen3) emit chain-of-thought as plain
+        # content and exhaust max_tokens before any JSON unless thinking is
+        # disabled via vLLM's chat_template_kwargs — which OpenAI would reject,
+        # so it is only sent when a base_url is set. `thinking=True` keeps the
+        # reasoning ON (it may judge better) — the response is then reasoning +
+        # '</think>' + JSON, so the budget is raised and the trace stripped
+        # before parsing.
+        self._on_premise = base_url is not None
+        self.thinking = thinking
         self.client = AsyncOpenAI(
             base_url=base_url,
             api_key=api_key or "not-needed",
@@ -143,6 +154,8 @@ class Judge:
 
         n_facts = len(flatten_required_facts(required_facts)) if required_facts else 0
         max_tokens = 500 + 80 * n_facts
+        if self.thinking:
+            max_tokens += 3000  # headroom for the reasoning trace before the JSON
 
         for attempt in range(2):
             try:
@@ -151,8 +164,26 @@ class Judge:
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.1,
                     max_tokens=max_tokens,
+                    extra_body=(
+                        {"chat_template_kwargs": {"enable_thinking": False}}
+                        if self._on_premise and not self.thinking
+                        else None
+                    ),
                 )
-                raw = response.choices[0].message.content or ""
+                choice = response.choices[0]
+                raw = choice.message.content or ""
+                # Reasoning models emit '…trace…</think>answer' (no opening tag on
+                # this vLLM). Keep only what follows the trace; harmless otherwise.
+                if "</think>" in raw:
+                    raw = raw.split("</think>")[-1]
+                # A truncated response can never parse; more verbose judge models
+                # (Qwen) blow the budget sized for gpt-4o-mini. Double and retry.
+                if choice.finish_reason == "length":
+                    logger.warning(
+                        f"Judge response truncated at {max_tokens} tokens, retrying with double"
+                    )
+                    max_tokens *= 2
+                    continue
                 result = parse_judge_response(raw)
                 if result is not None:
                     return result

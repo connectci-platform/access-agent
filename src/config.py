@@ -167,6 +167,12 @@ class Settings(BaseSettings):
     EVAL_JUDGE_BASE_URL: str = ""  # Empty = use default OpenAI. Set for on-premise LLM.
     EVAL_JUDGE_API_KEY: str = ""  # Falls back to OPENAI_API_KEY if empty
     EVAL_JUDGE_MODEL: str = "gpt-4o-mini"
+    # Keep the reasoning trace ON for an on-premise reasoning judge (Qwen3): in a
+    # 2026-07-08 3-config comparison the thinking judge halved score variance
+    # (stdev 0.028 vs 0.057) at equal-or-better means, at the cost of latency.
+    # Only meaningful with EVAL_JUDGE_BASE_URL set; the trace is stripped by the
+    # judge before parsing.
+    EVAL_JUDGE_THINKING: bool = False
 
     # MCP Server port mappings
     @property

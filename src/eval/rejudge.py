@@ -43,7 +43,9 @@ async def rejudge_run(
     if original is None:
         raise ValueError(f"Run {original_run_id} not found")
 
-    judge = Judge(base_url=j_base, api_key=j_key, model=j_model)
+    judge = Judge(
+        base_url=j_base, api_key=j_key, model=j_model, thinking=settings.EVAL_JUDGE_THINKING
+    )
     git_info = get_git_info()
     original_meta: dict[str, Any] = original.metadata_ or {}  # type: ignore[assignment]
 
@@ -88,6 +90,10 @@ async def rejudge_run(
             rag_context=context.get("rag_context"),
             tool_results=context.get("tool_results"),
             node_trace=context.get("node_trace"),
+            # The scorer freezes required_facts in context; replay them so a
+            # rejudged run keeps fact-grounded verdicts (and the fact-sized
+            # token budget — omitting them starved verbose judges at 500 tokens).
+            required_facts=context.get("required_facts"),
         )
 
         if judge_result is None:
