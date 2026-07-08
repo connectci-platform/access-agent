@@ -46,7 +46,9 @@ async def run_eval(
     }
 
     db = EvalDB(db_url)
-    judge = Judge(base_url=j_base, api_key=j_key, model=j_model)
+    judge = Judge(
+        base_url=j_base, api_key=j_key, model=j_model, thinking=settings.EVAL_JUDGE_THINKING
+    )
 
     run = db.create_run(
         id=gen_semantic_run_id(system),

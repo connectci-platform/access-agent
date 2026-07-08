@@ -118,3 +118,54 @@ async def test_rejudge_run_replays_and_writes_v2(mock_db):
     assert rescored.specificity_na is False
     assert rescored.composite_score is not None
     assert abs(rescored.composite_score - 1.0) < 1e-9
+
+
+async def test_rejudge_replays_required_facts(mock_db):
+    """The scorer freezes required_facts in context; rejudge must pass them back
+    to the judge so rejudged runs keep fact-grounded verdicts (and the right
+    token budget)."""
+    db = EvalDB(mock_db)
+    original = db.create_run(
+        run_type="pre_production",
+        agent_commit="abc123",
+        agent_branch="main",
+        llm_model="qwen",
+        judge_model="gpt-4o-mini",
+        question_set="tiny",
+        question_count=1,
+        composite_score=0.5,
+        metadata_={"system": "access-agent"},
+    )
+    db.add_score(
+        run_id=original.id,
+        question_id="q1",
+        source="judge",
+        question_text="What is ACCESS?",
+        answer_text="ACCESS is a program.",
+        context={
+            "rag_context": None,
+            "tool_results": None,
+            "node_trace": None,
+            "required_facts": [{"fact_id": 42, "fact_text": "ACCESS allocates HPC resources"}],
+        },
+        context_completeness=1.0,
+        correctness=1,
+        specificity=1,
+        specificity_na=False,
+        answerable=True,
+        rubric_version=2,
+        relevance=1,
+        citation_quality=1,
+        hedging=1,
+        composite_score=0.5,
+        duration_ms=123,
+    )
+
+    with patch("src.eval.judge.AsyncOpenAI") as mock_openai_cls:
+        mock_client = mock_openai_cls.return_value
+        mock_client.chat.completions.create = AsyncMock(return_value=_completion(MOCK_JUDGE_BEST))
+        await rejudge_run(original_run_id=str(original.id), database_url=mock_db)
+        # The prompt sent to the judge must contain the stored fact (and its stable id).
+        sent = mock_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "ACCESS allocates HPC resources" in sent
+        assert "Required Facts" in sent
