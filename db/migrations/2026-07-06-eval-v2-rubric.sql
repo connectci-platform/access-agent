@@ -35,12 +35,28 @@ BEGIN;
 ALTER TABLE eval_scores RENAME TO eval_scores_v1_archive;
 ALTER TABLE eval_runs   RENAME TO eval_runs_v1_archive;
 
+-- Renaming a table does NOT rename its explicitly-named indexes. models.py defines
+-- these on eval_scores (index=True on run_id/question_id, plus two named unique
+-- Indexes), so they travel with the archive under their ORIGINAL names and then
+-- COLLIDE when create_all rebuilds the fresh eval_scores. (The PK index name is
+-- auto-disambiguated by Postgres; these explicit ones are NOT — verified in prod
+-- 2026-07-08: create_all failed with 'relation "ix_eval_scores_question_id"
+-- already exists' until these were renamed.) Rename them aside too.
+ALTER INDEX ix_eval_scores_question_id     RENAME TO ix_eval_scores_question_id_v1_archive;
+ALTER INDEX ix_eval_scores_run_id          RENAME TO ix_eval_scores_run_id_v1_archive;
+ALTER INDEX ix_eval_scores_machine_unique  RENAME TO ix_eval_scores_machine_unique_v1_archive;
+ALTER INDEX ix_eval_scores_human_unique    RENAME TO ix_eval_scores_human_unique_v1_archive;
+
 COMMIT;
 
--- Rollback (if ever needed): the reverse rename restores the pre-v2 state exactly.
+-- Rollback (if ever needed): reverse the renames to restore the pre-v2 state exactly.
 --   BEGIN;
 --   DROP TABLE IF EXISTS eval_scores;  -- the fresh v2 table, if create_all already ran
 --   DROP TABLE IF EXISTS eval_runs;
 --   ALTER TABLE eval_scores_v1_archive RENAME TO eval_scores;
 --   ALTER TABLE eval_runs_v1_archive   RENAME TO eval_runs;
+--   ALTER INDEX ix_eval_scores_question_id_v1_archive    RENAME TO ix_eval_scores_question_id;
+--   ALTER INDEX ix_eval_scores_run_id_v1_archive         RENAME TO ix_eval_scores_run_id;
+--   ALTER INDEX ix_eval_scores_machine_unique_v1_archive RENAME TO ix_eval_scores_machine_unique;
+--   ALTER INDEX ix_eval_scores_human_unique_v1_archive   RENAME TO ix_eval_scores_human_unique;
 --   COMMIT;
