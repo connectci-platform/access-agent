@@ -201,7 +201,13 @@ async def run_question(
     start = time.monotonic()
     try:
         if system == "raw_rag":
-            result = await _run_raw_rag(question_id, question_text, resource_context)
+            result = await _run_raw_rag(
+                question_id,
+                question_text,
+                resource_context,
+                battery_id=battery_id,
+                battery_run_id=battery_run_id,
+            )
         else:  # agent_full
             result = await _run_agent(
                 question_id,
@@ -230,19 +236,55 @@ async def _run_raw_rag(
     question_id: str,
     question_text: str,
     resource_context: str | None = None,  # noqa: ARG001 — see docstring
+    battery_id: str | None = None,
+    battery_run_id: str | None = None,
 ) -> RunResult:
     """Call UKY RAG directly — no agent graph. Simulates current production.
 
     Intentionally ignores resource_context: current prod does not do
     resource-scoped RAG, so the baseline shouldn't either.
+
+    Like the agent path, writes a battery turn_reports row when battery_run_id
+    is set — raw_rag answers must reach the review UI so humans score BOTH
+    systems for the judge-vs-human comparison. The state is answer-only (no
+    tools, no trace); the report's tool sections come out empty.
     """
+    session_id = f"eval_{battery_run_id}_{question_id}" if battery_run_id else f"eval_{question_id}"
+    start = time.monotonic()
     client = get_uky_client()
-    uky_response = await client.ask(
-        query=question_text,
-        endpoint_type="general",
-        session_id=f"eval_{question_id}",
-        question_id=question_id,
-    )
+    try:
+        uky_response = await client.ask(
+            query=question_text,
+            endpoint_type="general",
+            session_id=session_id,
+            question_id=question_id,
+        )
+    except Exception:
+        # Mirror the agent path: a failed battery question must be
+        # distinguishable from one that never ran.
+        if battery_run_id:
+            await _report_battery_turn(
+                state={},
+                session_id=session_id,
+                question_id=question_id,
+                query_text=question_text,
+                duration_ms=(time.monotonic() - start) * 1000,
+                battery_id=battery_id,
+                battery_run_id=battery_run_id,
+                success=False,
+            )
+        raise
+    if battery_run_id:
+        await _report_battery_turn(
+            state={"final_answer": uky_response.response},
+            session_id=session_id,
+            question_id=question_id,
+            query_text=question_text,
+            duration_ms=(time.monotonic() - start) * 1000,
+            battery_id=battery_id,
+            battery_run_id=battery_run_id,
+            success=bool(uky_response.response),
+        )
     return RunResult(
         question_id=question_id,
         question_text=question_text,
