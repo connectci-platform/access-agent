@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from src.config import settings
+from src.llm.providers import active_model_name
 from src.tools import ToolRegistry, get_catalog_aggregator
 
 from .db import EvalDB
@@ -56,7 +57,10 @@ async def run_eval(
         agent_commit=git_info.get("commit"),
         agent_branch=git_info.get("branch"),
         tool_catalog=tool_catalog_snapshot,
-        llm_model=settings.OPENAI_MODEL,
+        # Provenance: the model that actually answers. agent_full runs the
+        # tool-calling loop on the configured provider; raw_rag never touches
+        # the loop LLM (answers come from the UKY /ask endpoint).
+        llm_model=active_model_name() if system == "agent_full" else "uky-rag-ask",
         judge_model=j_model,
         question_set=question_set_path,
         question_count=len(questions),
