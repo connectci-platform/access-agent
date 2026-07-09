@@ -80,6 +80,13 @@ services:
       - REPORT_EMAIL_FROM=${REPORT_EMAIL_FROM:-reports@mg.sweetandfizzy.com}
       - REPORT_EMAIL_TO=${REPORT_EMAIL_TO:-}
       - REPORT_SLACK_WEBHOOK_URL=${REPORT_SLACK_WEBHOOK_URL:-}
+      # Eval judge — empty defaults = OpenAI gpt-4o-mini; the droplet .env
+      # points these at the UKY Qwen endpoint with thinking on. Must be listed
+      # here (like VLLM_* above) or the .env values never reach the container.
+      - EVAL_JUDGE_BASE_URL=${EVAL_JUDGE_BASE_URL:-}
+      - EVAL_JUDGE_API_KEY=${EVAL_JUDGE_API_KEY:-}
+      - EVAL_JUDGE_MODEL=${EVAL_JUDGE_MODEL:-gpt-4o-mini}
+      - EVAL_JUDGE_THINKING=${EVAL_JUDGE_THINKING:-false}
       # Catalog is fetched dynamically from MCP servers at startup
     volumes:
       - ./mghpcc-4626301de758.json:/app/mghpcc-4626301de758.json:ro
