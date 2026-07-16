@@ -2,6 +2,7 @@
 
 from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -229,6 +230,30 @@ class Settings(BaseSettings):
     def mcp_servers_requiring_api_key(self) -> set[str]:
         """Servers that perform write operations and require API key auth."""
         return {"jsm", "announcements", "events"}
+
+    # T2 data-residency guard (fail closed). Production user queries must never
+    # reach a commercial model API — a formal program mandate, and Table 1 of
+    # the trust model claims it as enforced in code. Enforcing at Settings
+    # construction means a misconfigured deployment refuses to BOOT rather than
+    # silently violating residency. This is not hypothetical: the eval judge ran
+    # on a commercial model in production for weeks because its base-url env var
+    # (empty = OpenAI fallback) was never passed through the prod compose file.
+    @model_validator(mode="after")
+    def _enforce_production_residency(self) -> "Settings":
+        if self.ENVIRONMENT == "production":
+            if self.LLM_PROVIDER != "vllm":
+                raise ValueError(
+                    "Data-residency guard: ENVIRONMENT=production requires "
+                    f"LLM_PROVIDER=vllm (on-premise), got {self.LLM_PROVIDER!r}. "
+                    "User queries must not reach a commercial model API."
+                )
+            if not self.EVAL_JUDGE_BASE_URL:
+                raise ValueError(
+                    "Data-residency guard: production requires EVAL_JUDGE_BASE_URL "
+                    "set to the on-premise judge endpoint — empty silently falls "
+                    "back to OpenAI."
+                )
+        return self
 
     # extra=ignore: .env is shared with docker-compose and may contain vars for
     # other services (e.g., XDMOD_API_TOKEN for mcp-xdmod-data). Rejecting unknown

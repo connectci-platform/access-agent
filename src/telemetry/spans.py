@@ -36,9 +36,13 @@ def trace_agent_node(
         extract_attributes: Optional function to extract span attributes from state.
 
     Example:
-        @trace_agent_node("plan", extract_attributes=lambda s: {"query": s.get("query")})
+        @trace_agent_node("plan", extract_attributes=lambda s: {"query_length": len(s.get("query", ""))})
         async def plan_node(state: AgentState) -> dict:
             ...
+
+    Residency note (T2): span attributes must stay METADATA-ONLY (lengths,
+    counts, ids, tool names) — telemetry is the one deliberate egress across
+    the institutional boundary and must never carry query or answer text.
     """
 
     def decorator(func: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
