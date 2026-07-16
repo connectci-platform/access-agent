@@ -119,6 +119,9 @@ WRITE_MCP_TOOL_NAMES: frozenset[str] = frozenset(
         "create_support_ticket",
         "create_login_ticket",
         "report_security_incident",
+        # events domain (event registration writes)
+        "cancel_registration",
+        "register_for_event",
     }
 )
 

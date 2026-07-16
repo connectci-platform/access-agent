@@ -51,6 +51,28 @@ def test_write_capability_ids_constant_matches_known_writes():
     )
 
 
+def test_write_mcp_tool_names_covers_all_known_write_tools():
+    """The tool-name deny-list gates the loop and stamps invoked_write —
+    every write-capable MCP tool must be listed exactly."""
+    from src.agent.domains.capabilities import WRITE_MCP_TOOL_NAMES
+
+    assert (
+        frozenset(
+            {
+                "create_announcement",
+                "update_announcement",
+                "delete_announcement",
+                "create_support_ticket",
+                "create_login_ticket",
+                "report_security_incident",
+                "cancel_registration",
+                "register_for_event",
+            }
+        )
+        == WRITE_MCP_TOOL_NAMES
+    )
+
+
 def test_baseline_write_caps_enabled_without_read_only(monkeypatch, fresh_registry):
     """Sanity check: with READ_ONLY=false and no ENABLED/DISABLED env, writes are on."""
     monkeypatch.setattr("src.config.settings.READ_ONLY", False, raising=False)
