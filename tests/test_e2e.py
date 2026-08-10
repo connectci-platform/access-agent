@@ -21,12 +21,17 @@ from pathlib import Path
 
 import pytest
 
-# Mark all tests in this module as e2e and skip if OPENAI_API_KEY is not set
+# Mark all tests in this module as e2e and skip if the configured LLM
+# provider has no credentials. The nightly runs the production provider
+# (LLM_PROVIDER=vllm); local runs default to openai.
+_PROVIDER = os.environ.get("LLM_PROVIDER", "openai")
+_PROVIDER_KEY = "VLLM_API_KEY" if _PROVIDER == "vllm" else "OPENAI_API_KEY"
+
 pytestmark = [
-    pytest.mark.e2e,  # Requires live MCP servers + real OpenAI; runs nightly
+    pytest.mark.e2e,  # Requires live MCP servers + a live LLM; runs nightly
     pytest.mark.skipif(
-        not os.environ.get("OPENAI_API_KEY"),
-        reason="OPENAI_API_KEY required for e2e tests",
+        not os.environ.get(_PROVIDER_KEY),
+        reason=f"{_PROVIDER_KEY} required for e2e tests (LLM_PROVIDER={_PROVIDER})",
     ),
 ]
 
