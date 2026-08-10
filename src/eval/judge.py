@@ -137,6 +137,7 @@ class Judge:
         tool_results: str | None = None,
         node_trace: str | None = None,
         required_facts: list[str | dict[str, Any]] | None = None,
+        conversation_history: list[tuple[str, str]] | None = None,
     ) -> JudgeResult | None:
         prompt = build_judge_prompt(
             query=query,
@@ -145,6 +146,7 @@ class Judge:
             tool_results=tool_results,
             node_trace=node_trace,
             required_facts=required_facts,
+            conversation_history=conversation_history,
         )
 
         # Base 500 tokens for the 5-dimension scoring (categorical labels now, not 1-5
@@ -154,6 +156,11 @@ class Judge:
 
         n_facts = len(flatten_required_facts(required_facts)) if required_facts else 0
         max_tokens = 500 + 80 * n_facts
+        if conversation_history:
+            # History lengthens the prompt, not the response, but verbose judges
+            # anchor response length to prompt length; cap the bump at 2000.
+            hist_chars = sum(len(q) + len(a) for q, a in conversation_history)
+            max_tokens += min(2000, hist_chars // 4)
         if self.thinking:
             max_tokens += 3000  # headroom for the reasoning trace before the JSON
 
