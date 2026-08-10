@@ -126,3 +126,16 @@ def test_cli_multiturn_flags_reach_run_battery(monkeypatch):
     cli.main()
     assert mock.call_args.kwargs["score"] is True
     assert mock.call_args.kwargs["judge_model"] == "m"
+
+
+def test_support_battery_file_is_valid():
+    from src.eval.multiturn import load_thread_battery
+
+    threads = load_thread_battery("eval/questions/multiturn_support_battery.yaml")
+    assert len(threads) == 9
+    scenarios = [t.get("scenario") for t in threads]
+    assert scenarios.count("followup") == 2
+    assert scenarios.count("clarification") == 2
+    assert scenarios.count("action") == 2
+    assert scenarios.count("topic_switch") == 2
+    assert scenarios.count("mixed") == 1

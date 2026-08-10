@@ -1,0 +1,217 @@
+# Multi-turn support battery — 9 threads, 2 per core scenario + 1 mixed.
+# Scenario tags: followup | clarification | action | topic_switch | mixed.
+# Facts are STUDENT-CHECK first pass; AUTHOR: markers need live values filled at
+# authoring time (same convention as gapfill_battery.yaml). Facts on dependent turns
+# MUST be checkable from prior ANSWER TEXT alone (judge never sees prior tool results).
+# Threads tagged acting_user_required need --acting-user with the eval test account.
+
+- thread_id: mt-followup-01
+  description: Follow-up dependency over compute hardware — references must resolve across turns.
+  scenario: followup
+  questions:
+  - turn_id: t1
+    question: Which ACCESS resources are good for GPU workloads? I need NVIDIA GPUs.
+    required_facts:
+    - "Answer names real NVIDIA-GPU resources per search_resources/get_resource_hardware
+      (AUTHOR: exact list, e.g. Delta, DeltaAI, Anvil GPU, Bridges-2 GPU — verify live)."
+    - Answer names at least two specific resources, not generic 'ACCESS has GPU resources' guidance.
+    ground_truth_stability: time_bound
+    authoring_notes: ["AUTHOR: capture live list; the t2/t3 facts depend on what t1's answer names."]
+  - turn_id: t2
+    question: Which of those have A100s specifically?
+    required_facts:
+    - "Answer is a subset of the resources named in the previous answer (reference resolution:
+      'those' = t1's list), filtered to A100 (AUTHOR: exact A100 subset per get_resource_hardware)."
+    - Answer does not introduce resources absent from the t1 answer without flagging the addition.
+    ground_truth_stability: time_bound
+  - turn_id: t3
+    question: What's the maximum job walltime on the first one you mentioned?
+    required_facts:
+    - "Answer gives the walltime for the FIRST resource named in the t2 answer (AUTHOR: value
+      per docs/tool for that resource), demonstrating positional reference resolution."
+    ground_truth_stability: time_bound
+
+- thread_id: mt-followup-02
+  description: Follow-up dependency over events — a different capability area than followup-01.
+  scenario: followup
+  questions:
+  - turn_id: t1
+    question: What ACCESS training events are coming up in the next month?
+    required_facts:
+    - "Answer lists real upcoming events per search_events (AUTHOR: verify 2-3 anchor events live)."
+    ground_truth_stability: time_bound
+  - turn_id: t2
+    question: Which of those are virtual?
+    required_facts:
+    - "Answer filters the t1 answer's events to virtual/online ones (AUTHOR: exact subset);
+      does not invent events not named in t1's answer."
+    ground_truth_stability: time_bound
+  - turn_id: t3
+    question: How do I sign up for the first virtual one?
+    required_facts:
+    - "Answer gives registration guidance for the first virtual event from the t2 answer
+      (AUTHOR: registration URL/mechanism for that event)."
+    ground_truth_stability: time_bound
+
+- thread_id: mt-clarify-01
+  description: Underspecified allocation ask — agent should surface the ambiguity before answering.
+  scenario: clarification
+  questions:
+  - turn_id: t1
+    question: Can I get more time?
+    required_facts:
+    - Answer surfaces the ambiguity (more compute credits/allocation vs. longer job walltime
+      vs. allocation extension) or asks which the user means.
+    - Answer does NOT confidently answer exactly one interpretation as if it were the only one.
+    ground_truth_stability: stable
+  - turn_id: t2
+    question: I mean my allocation on Delta is running low — how do I get more credits?
+    required_facts:
+    - "Answer describes the supplement/exchange path for an existing allocation (AUTHOR:
+      verify current mechanism names per docs — e.g. supplement request via ACCESS allocations)."
+    - Answer is specific to adding credits to an existing allocation, not applying for a new one.
+    ground_truth_stability: stable
+  - turn_id: t3
+    question: How long does that usually take to be approved?
+    required_facts:
+    - "Answer addresses the timeline for the mechanism named in t2's answer; hedges honestly
+      if no authoritative timeline exists (AUTHOR: verify whether docs state one)."
+    ground_truth_stability: stable
+
+- thread_id: mt-clarify-02
+  description: Underspecified access ask — 'get access' has several meanings.
+  scenario: clarification
+  questions:
+  - turn_id: t1
+    question: How do I get access?
+    required_facts:
+    - Answer surfaces the ambiguity (ACCESS account vs. an allocation vs. login access to a
+      specific resource) or asks which the user means.
+    ground_truth_stability: stable
+  - turn_id: t2
+    question: Sorry — I already have an ACCESS account and an allocation. I need to actually log into Anvil.
+    required_facts:
+    - "Answer covers Anvil login specifics (AUTHOR: verify current guidance — e.g. Anvil
+      user creation via allocation, ssh via login.anvil.rcac.purdue.edu / Open OnDemand)."
+    - Answer does not re-explain account creation or allocation application (already ruled out).
+    ground_truth_stability: stable
+
+- thread_id: mt-action-01
+  description: Lookup then authenticated action-shaped read — needs the eval test account.
+  scenario: action
+  acting_user_required: true
+  questions:
+  - turn_id: t1
+    question: What ACCESS training events are coming up on GPU or AI topics?
+    required_facts:
+    - "Answer lists real upcoming GPU/AI events per search_events (AUTHOR: anchor 2 events live)."
+    ground_truth_stability: time_bound
+  - turn_id: t2
+    question: Am I registered for any of those?
+    required_facts:
+    - "Answer joins the t1 events against get_my_registrations for the acting user (AUTHOR:
+      expected overlap for the test account — seed one registration so the answer is non-trivial)."
+    - Answer reflects the actual registration state; does not guess or claim inability to check.
+    ground_truth_stability: time_bound
+  - turn_id: t3
+    question: What else am I registered for?
+    required_facts:
+    - "Answer lists the test account's other registrations per get_my_registrations (AUTHOR:
+      seeded list), excluding ones already discussed."
+    ground_truth_stability: time_bound
+
+- thread_id: mt-action-02
+  description: Authenticated read first, then a dependent public lookup — inverted dependency.
+  scenario: action
+  acting_user_required: true
+  questions:
+  - turn_id: t1
+    question: What events am I currently registered for?
+    required_facts:
+    - "Answer lists the test account's registrations per get_my_registrations (AUTHOR: seeded list)."
+    ground_truth_stability: time_bound
+  - turn_id: t2
+    question: Are there other upcoming events similar to the first one on that list?
+    required_facts:
+    - "Answer searches events related to the FIRST registration named in t1's answer (reference
+      resolution) and names real similar events (AUTHOR: verify plausible result set)."
+    ground_truth_stability: time_bound
+
+- thread_id: mt-switch-01
+  description: Software -> allocations pivot -> return to software; context must not bleed.
+  scenario: topic_switch
+  questions:
+  - turn_id: t1
+    question: What versions of PyTorch are available on Delta?
+    required_facts:
+    - "Answer names Delta PyTorch versions per software discovery tools (AUTHOR: exact versions)."
+    ground_truth_stability: time_bound
+  - turn_id: t2
+    question: Separate question — how do ACCESS credits convert to GPU hours on Delta?
+    required_facts:
+    - "Answer addresses the exchange/conversion rate question (AUTHOR: verify current guidance),
+      and does NOT drag PyTorch content into an unrelated allocations answer."
+    ground_truth_stability: stable
+  - turn_id: t3
+    question: Back to the software question — which of those PyTorch versions did you say was newest?
+    required_facts:
+    - "Answer recovers the t1 topic and names the newest version FROM ITS OWN t1 ANSWER
+      (recovery after switch; AUTHOR: consistent with t1's list)."
+    ground_truth_stability: time_bound
+
+- thread_id: mt-switch-02
+  description: Events -> system status pivot -> return to events.
+  scenario: topic_switch
+  questions:
+  - turn_id: t1
+    question: Are there any upcoming ACCESS office hours sessions?
+    required_facts:
+    - "Answer lists real office-hours events per search_events (AUTHOR: verify live)."
+    ground_truth_stability: time_bound
+  - turn_id: t2
+    question: Different topic — is Bridges-2 currently operational?
+    required_facts:
+    - "Answer reflects live get_infrastructure_news status for Bridges-2 (AUTHOR: status at
+      authoring; self-refreshing — re-verify at eval time)."
+    ground_truth_stability: time_bound
+  - turn_id: t3
+    question: On the office hours from before — when is the next one?
+    required_facts:
+    - "Answer returns to the t1 events and names the soonest one consistently with its own
+      t1 answer (recovery after switch)."
+    ground_truth_stability: time_bound
+
+- thread_id: mt-mixed-01
+  description: Realistic meandering support session chaining lookup, follow-up, status, events, and an authenticated read.
+  scenario: mixed
+  acting_user_required: true
+  questions:
+  - turn_id: t1
+    question: I'm starting a machine learning project — which ACCESS resources would suit it?
+    required_facts:
+    - "Answer recommends real GPU/ML-suitable resources (AUTHOR: anchor list per tools)."
+    ground_truth_stability: time_bound
+  - turn_id: t2
+    question: Which of those have A100 or newer GPUs?
+    required_facts:
+    - "Answer filters t1's recommendations by GPU generation (AUTHOR: subset per
+      get_resource_hardware), resolving 'those' to its own t1 list."
+    ground_truth_stability: time_bound
+  - turn_id: t3
+    question: Is that first one up right now, or in maintenance?
+    required_facts:
+    - "Answer checks live status for the first resource of t2's answer (AUTHOR: status;
+      self-refreshing)."
+    ground_truth_stability: time_bound
+  - turn_id: t4
+    question: Any upcoming training to help me get started on it?
+    required_facts:
+    - "Answer names real upcoming training relevant to the referenced resource or to new-user
+      onboarding (AUTHOR: verify events)."
+    ground_truth_stability: time_bound
+  - turn_id: t5
+    question: Have I already registered for anything like that?
+    required_facts:
+    - "Answer checks get_my_registrations for the acting user and answers about overlap with
+      t4's events (AUTHOR: expected state for the test account)."
+    ground_truth_stability: time_bound
