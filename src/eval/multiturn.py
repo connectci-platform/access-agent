@@ -41,11 +41,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from src.agent.graph import run_agent
 from src.config import settings
 from src.tools import ToolRegistry, get_catalog_aggregator
 
 logger = logging.getLogger(__name__)
+
+MAX_QUESTION_ID_LEN = 64  # eval_scores.question_id is String(64)
 
 
 @dataclass
@@ -69,6 +73,33 @@ class ThreadResult:
     thread_id: str
     description: str
     turns: list[TurnResult] = field(default_factory=list)
+
+
+def load_thread_battery(path: str) -> list[dict[str, Any]]:
+    """Load a multi-turn battery (YAML or JSON by extension) and fail fast on bad shape."""
+    file_path = Path(path)
+    with file_path.open() as f:
+        data: Any = yaml.safe_load(f) if file_path.suffix in (".yaml", ".yml") else json.load(f)
+    threads: list[dict[str, Any]] = data
+
+    seen_threads: set[str] = set()
+    for thread in threads:
+        tid = thread["thread_id"]
+        if tid in seen_threads:
+            raise ValueError(f"duplicate thread_id: {tid!r}")
+        seen_threads.add(tid)
+        seen_turns: set[str] = set()
+        for q in thread["questions"]:
+            turn_id = q["turn_id"]
+            if turn_id in seen_turns:
+                raise ValueError(f"duplicate turn_id {turn_id!r} in thread {tid!r}")
+            seen_turns.add(turn_id)
+            question_id = f"{tid}_{turn_id}"
+            if len(question_id) > MAX_QUESTION_ID_LEN:
+                raise ValueError(f"question_id {question_id!r} exceeds {MAX_QUESTION_ID_LEN} chars")
+            if not str(q.get("question", "")).strip():
+                raise ValueError(f"empty question in thread {tid!r} turn {turn_id!r}")
+    return threads
 
 
 async def run_thread(
@@ -162,9 +193,7 @@ async def run_battery(
     resource_context: str | None = None,
 ) -> list[ThreadResult]:
     """Load a multi-turn battery JSON file and run every thread in it."""
-    path = Path(battery_path)
-    with path.open() as f:
-        threads = json.load(f)
+    threads = load_thread_battery(battery_path)
 
     aggregator = get_catalog_aggregator()
     catalog = await aggregator.fetch_catalog()
