@@ -4,7 +4,7 @@ Runs a thread of questions through the agent in ONE session so accumulated
 message history can grow across turns. Designed to exercise context-management
 behavior (SummarizationMiddleware) which never fires in single-turn eval.
 
-Battery format (JSON):
+Battery format (YAML or JSON):
 
     [
       {
@@ -12,11 +12,17 @@ Battery format (JSON):
         "description": "Tool-heavy thread to exercise SummarizationMiddleware",
         "questions": [
           {"turn_id": "t1", "question": "..."},
-          {"turn_id": "t2", "question": "..."},
+          {"turn_id": "t2", "question": "...", "required_facts": [...]},
           ...
-        ]
+        ],
+        "scenario": "Optional scenario context (applies to all turns)",
+        "acting_user_required": true
       }
     ]
+
+Optional per-thread fields: ``scenario`` (applies to all turns in the thread)
+and ``acting_user_required`` (enforce acting_user parameter). Optional
+per-turn fields: ``required_facts`` (YAML list of fact objects or strings).
 
 The harness loads each thread, then issues each turn's question via
 ``run_agent(use_checkpointing=True, session_id=thread_id)``. The LangGraph
@@ -27,9 +33,15 @@ Per-turn output (printed + collected) includes message count growth,
 duration, tools used, and answer length — enough to eyeball whether
 compaction fired and whether answers degraded.
 
-The harness writes to ``stdout`` and returns a structured result list. It
-does NOT score answers with a judge — that's a separate concern and can be
-layered on top by feeding the collected results into ``judge.score()``.
+With ``--score``, the harness runs a per-turn judge with access to the full
+conversation history via ScoringContext. Each successful turn is scored,
+persisted to eval_runs/eval_scores, and reported with a thread-level
+composite (average of scored turns). Failed/skipped turns are persisted but
+excluded from composites; threads with no scored turns are excluded from the
+run-level composite.
+
+The harness writes to ``stdout`` and returns a structured result list and
+(when scoring) a summary of run/thread/turn composites.
 """
 
 from __future__ import annotations
@@ -291,7 +303,7 @@ async def run_battery(
     judge_model: str | None = None,
     database_url: str | None = None,
 ) -> tuple[list[ThreadResult], dict[str, Any] | None]:
-    """Load a multi-turn battery JSON file and run every thread in it.
+    """Load a multi-turn battery (YAML or JSON) file and run every thread in it.
 
     When ``score`` is set, each turn is judged and persisted under a new
     eval_runs row, and a run-level summary (thread + run composites) is

@@ -28,7 +28,7 @@ def test_no_history_prompt_matches_pre_change_golden():
 
     prompt = build_judge_prompt(**GOLDEN_ARGS)
     fixture_content = FIXTURE.read_text()
-    assert prompt == fixture_content.rstrip("\n")
+    assert prompt == fixture_content.removesuffix("\n")
 
 
 def test_history_renders_conversation_section():
@@ -51,6 +51,6 @@ def test_history_renders_conversation_section():
 def test_empty_history_is_byte_identical_to_none():
     from src.eval.rubric import build_judge_prompt
 
-    assert build_judge_prompt(**GOLDEN_ARGS, conversation_history=[]) == FIXTURE.read_text().rstrip(
-        "\n"
-    )
+    assert build_judge_prompt(
+        **GOLDEN_ARGS, conversation_history=[]
+    ) == FIXTURE.read_text().removesuffix("\n")
