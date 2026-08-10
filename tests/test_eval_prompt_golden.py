@@ -29,3 +29,28 @@ def test_no_history_prompt_matches_pre_change_golden():
     prompt = build_judge_prompt(**GOLDEN_ARGS)
     fixture_content = FIXTURE.read_text()
     assert prompt == fixture_content.rstrip("\n")
+
+
+def test_history_renders_conversation_section():
+    from src.eval.rubric import build_judge_prompt
+
+    prompt = build_judge_prompt(
+        **GOLDEN_ARGS,
+        conversation_history=[
+            ("What GPU resources does ACCESS offer?", "Delta, Anvil, and Bridges-2 offer GPUs."),
+            ("Which have A100s?", "(no answer — turn failed)"),
+        ],
+    )
+    assert "## Conversation so far" in prompt
+    assert "Turn 1 — User: What GPU resources does ACCESS offer?" in prompt
+    assert "Turn 2 — Assistant: (no answer — turn failed)" in prompt
+    # Section sits above the current question
+    assert prompt.index("## Conversation so far") < prompt.index("## User Question")
+
+
+def test_empty_history_is_byte_identical_to_none():
+    from src.eval.rubric import build_judge_prompt
+
+    assert build_judge_prompt(**GOLDEN_ARGS, conversation_history=[]) == FIXTURE.read_text().rstrip(
+        "\n"
+    )

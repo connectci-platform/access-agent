@@ -138,6 +138,7 @@ def build_judge_prompt(
     tool_results: str | None = None,
     node_trace: str | None = None,
     required_facts: list[str | dict[str, Any]] | None = None,
+    conversation_history: list[tuple[str, str]] | None = None,
 ) -> str:
     """Build the LLM judge prompt with the rubric and context."""
     rubric_text = "\n".join(
@@ -181,6 +182,20 @@ A correct answer for this question must support each of the following claims. Fo
   "required_facts": [
     {verdict_lines}
   ]"""
+
+    history_section = ""
+    if conversation_history:
+        turns = []
+        for i, (q, a) in enumerate(conversation_history, 1):
+            turns.append(f"Turn {i} — User: {q}\nTurn {i} — Assistant: {a}")
+        history_section = (
+            "## Conversation so far\n\n"
+            "This is a multi-turn conversation. Earlier turns, oldest first:\n\n"
+            + "\n\n".join(turns)
+            + "\n\nThe answer you are evaluating responds to the latest user question "
+            "below, in the context of this conversation. Judge reference resolution "
+            '("that", "those", "the first one") against these earlier turns.\n\n'
+        )
 
     return f"""You are evaluating the quality of an AI agent's answer to a user question.
 
@@ -227,7 +242,7 @@ for concrete named specifics.
 - HOWEVER: Tool results returning 0 items or empty results represent ABSENCE of data, not contradiction of other sources. Do not penalize an answer for relying on RAG documents just because a tool search returned no results — the search may not have matched, or the data may not be in that tool's scope. Only treat tool results as overriding RAG when the tool returns positive data that conflicts with the RAG answer.
 - If tool results show 0 items AND the RAG documents have relevant content, the agent is CORRECT to use the RAG content. Do not penalize this.
 
-## User Question
+{history_section}## User Question
 
 {query}
 
