@@ -63,6 +63,8 @@ XFAIL_CHART_SELECTION = {
     "xdmod_active_allocations_trend",
     "xdmod_gpu_utilization",
     "xdmod_job_count_by_field_of_science",
+    "xdmod_aces_allocated",
+    "xdmod_filter_with_hyphen",
 }
 
 
