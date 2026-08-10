@@ -116,6 +116,10 @@ def load_thread_battery(path: str) -> list[dict[str, Any]]:
     file_path = Path(path)
     with file_path.open() as f:
         data: Any = yaml.safe_load(f) if file_path.suffix in (".yaml", ".yml") else json.load(f)
+    if not isinstance(data, list):
+        # ValueError (not TypeError) to match the other fail-fast validation in this
+        # function — all battery-shape errors raise the same exception type.
+        raise ValueError("battery must be a top-level list of threads")  # noqa: TRY004
     threads: list[dict[str, Any]] = data
 
     seen_threads: set[str] = set()
@@ -243,7 +247,11 @@ async def run_thread(
                     node_trace=format_node_trace(state),
                     required_facts=required_facts,
                     conversation_history=list(history) or None,
-                    extra_context={"thread_id": thread_id, "turn_index": i},
+                    extra_context={
+                        "thread_id": thread_id,
+                        "turn_index": i,
+                        "ground_truth_stability": q.get("ground_truth_stability"),
+                    },
                     duration_ms=turn_result.duration_ms,
                 )
                 if judge_result is not None:
@@ -310,6 +318,13 @@ async def run_battery(
     returned alongside the per-thread results.
     """
     threads = load_thread_battery(battery_path)
+
+    if acting_user is None:
+        missing_acting_user = [t["thread_id"] for t in threads if t.get("acting_user_required")]
+        if missing_acting_user:
+            raise ValueError(
+                f"acting_user_required threads need --acting-user: {', '.join(missing_acting_user)}"
+            )
 
     aggregator = get_catalog_aggregator()
     catalog = await aggregator.fetch_catalog()

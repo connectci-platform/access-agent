@@ -76,6 +76,14 @@ def test_empty_question_rejected(tmp_path):
         load_thread_battery(_write(tmp_path, "b.yaml", bad))
 
 
+def test_top_level_mapping_rejected(tmp_path):
+    from src.eval.multiturn import load_thread_battery
+
+    bad = {"thread_id": "t", "questions": [{"turn_id": "t1", "question": "a?"}]}
+    with pytest.raises(ValueError, match="top-level list"):
+        load_thread_battery(_write(tmp_path, "b.yaml", bad))
+
+
 STATE = {"final_answer": "ok", "tools_used": [], "messages": []}
 
 
@@ -126,6 +134,52 @@ def test_cli_multiturn_flags_reach_run_battery(monkeypatch):
     cli.main()
     assert mock.call_args.kwargs["score"] is True
     assert mock.call_args.kwargs["judge_model"] == "m"
+
+
+ACTING_USER_REQUIRED = [
+    {
+        "thread_id": "mt-auth-01",
+        "description": "d",
+        "acting_user_required": True,
+        "questions": [{"turn_id": "t1", "question": "Am I registered?"}],
+    }
+]
+
+
+@pytest.mark.asyncio
+async def test_acting_user_required_without_acting_user_raises(tmp_path):
+    from unittest.mock import AsyncMock, patch
+
+    from src.eval.multiturn import run_battery
+
+    battery = _write(tmp_path, "b.json", ACTING_USER_REQUIRED)
+
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(return_value=STATE)),
+        patch("src.eval.multiturn.get_catalog_aggregator") as agg,
+    ):
+        agg.return_value.fetch_catalog = AsyncMock(return_value={"tools": []})
+        with pytest.raises(ValueError, match="mt-auth-01"):
+            await run_battery(battery_path=battery)
+
+
+@pytest.mark.asyncio
+async def test_acting_user_required_with_acting_user_runs(tmp_path):
+    from unittest.mock import AsyncMock, patch
+
+    from src.eval.multiturn import run_battery
+
+    battery = _write(tmp_path, "b.json", ACTING_USER_REQUIRED)
+
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(return_value=STATE)),
+        patch("src.eval.multiturn.get_catalog_aggregator") as agg,
+    ):
+        agg.return_value.fetch_catalog = AsyncMock(return_value={"tools": []})
+        results, _ = await run_battery(battery_path=battery, acting_user="test_user")
+
+    assert len(results) == 1
+    assert results[0].thread_id == "mt-auth-01"
 
 
 def test_support_battery_file_is_valid():

@@ -16,9 +16,11 @@ from pathlib import Path
 
 from sqlalchemy import create_engine, text
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
 BATTERIES = [
-    "eval/questions/multiturn_support_battery.yaml",
-    "eval/questions/multiturn_compaction_battery.json",
+    str(REPO_ROOT / "eval/questions/multiturn_support_battery.yaml"),
+    str(REPO_ROOT / "eval/questions/multiturn_compaction_battery.json"),
 ]
 
 INSERT = text("""
@@ -37,7 +39,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    sys.path.insert(0, str(REPO_ROOT))
     from src.eval.multiturn import load_thread_battery
 
     rows = []

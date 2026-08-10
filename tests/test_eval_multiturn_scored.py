@@ -26,7 +26,11 @@ THREAD = {
     "description": "d",
     "questions": [
         {"turn_id": "t1", "question": "What GPU resources exist?"},
-        {"turn_id": "t2", "question": "Which have A100s?"},
+        {
+            "turn_id": "t2",
+            "question": "Which have A100s?",
+            "ground_truth_stability": "time_bound",
+        },
         {"turn_id": "t3", "question": "Walltime on that one?"},
     ],
 }
@@ -70,6 +74,12 @@ async def test_scored_thread_persists_one_row_per_turn(tmp_path):
     # Turn 3's judge call saw turns 1-2 as history
     hist = judge.score.call_args_list[2].kwargs["conversation_history"]
     assert [q for q, _ in hist] == ["What GPU resources exist?", "Which have A100s?"]
+
+    # ground_truth_stability from the battery turn lands in the row's context (t2 has it set,
+    # t1/t3 don't and should carry None rather than omit the key).
+    by_qid = {r.question_id: r for r in rows}
+    assert by_qid["mt-f-01_t2"].context["ground_truth_stability"] == "time_bound"
+    assert by_qid["mt-f-01_t1"].context["ground_truth_stability"] is None
 
 
 @pytest.mark.asyncio

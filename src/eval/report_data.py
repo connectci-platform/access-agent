@@ -33,16 +33,21 @@ def _parse_since(since: str) -> datetime:
 def _index_runs(db: EvalDB, scores: list[Any]) -> tuple[dict[str, datetime], dict[str, str | None]]:
     """Memoized run lookup: run_id -> created_at (ordering) and run_id -> mode (fail-closed filter).
 
-    One db.get_run per unique run_id. A run_id present in run_mode means the run row
-    was FOUND — that's the "found" test the fail-closed filter relies on. A missing
-    run is logged and simply absent from both maps.
+    One db.get_run per unique run_id — including run_ids whose lookup comes back
+    missing, tracked in ``seen`` so a second score referencing the same orphaned
+    run_id doesn't trigger another db.get_run call or another warning. A run_id
+    present in run_mode means the run row was FOUND — that's the "found" test the
+    fail-closed filter relies on. A missing run is logged (once) and simply absent
+    from both maps.
     """
     run_created: dict[str, datetime] = {}
     run_mode: dict[str, str | None] = {}
+    seen: set[str] = set()
     for s in scores:
         rid = str(s.run_id)
-        if rid in run_mode:
+        if rid in seen:
             continue
+        seen.add(rid)
         run = db.get_run(rid)
         if run is None:
             logger.warning(f"Score {s.question_id} references missing run {rid}; excluded")

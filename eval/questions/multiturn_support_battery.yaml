@@ -78,6 +78,8 @@
       if no authoritative timeline exists (AUTHOR: verify whether docs state one)."
     ground_truth_stability: stable
 
+# 2 turns is deliberate here: the clarification scenario completes naturally once the
+# user disambiguates and gets an answer (spec's 3-5 turn guidance is a range, not a floor).
 - thread_id: mt-clarify-02
   description: Underspecified access ask — 'get access' has several meanings.
   scenario: clarification
@@ -120,6 +122,8 @@
       seeded list), excluding ones already discussed."
     ground_truth_stability: time_bound
 
+# 2 turns is deliberate here: the inverted-dependency scenario (authenticated read ->
+# dependent lookup) completes naturally in two turns (spec's 3-5 turn guidance is a range).
 - thread_id: mt-action-02
   description: Authenticated read first, then a dependent public lookup — inverted dependency.
   scenario: action
