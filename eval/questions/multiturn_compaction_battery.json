@@ -29,7 +29,12 @@
       },
       {
         "turn_id": "t7",
-        "question": "How does that compare to Delta? What software does Delta have that Anvil doesn't?"
+        "question": "How does that compare to Delta? What software does Delta have that Anvil doesn't?",
+        "required_facts": [
+          "Answer actually compares Delta against Anvil (resolves 'that' to t6's Anvil software list) rather than describing Delta in isolation — the post-compaction recovery check.",
+          "Answer names real Delta-only software per compare_software_availability (AUTHOR: verify 2-3 anchor packages live at authoring time).",
+          "Answer does not fabricate Anvil packages absent from its own t6 answer."
+        ]
       },
       {
         "turn_id": "t8",
