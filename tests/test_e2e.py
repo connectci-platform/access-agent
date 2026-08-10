@@ -61,10 +61,24 @@ async def tool_catalog():
     transient fetch failure silently shrank that test's catalog."""
     global _catalog_cache
     if _catalog_cache is None:
+        import asyncio
+
+        from src.config import settings
         from src.tools import CatalogAggregator
 
         aggregator = CatalogAggregator(timeout=15.0)
-        _catalog_cache = await aggregator.fetch_catalog()
+        expected = len(settings.mcp_server_urls)
+        best: dict = {}
+        for attempt in range(1, 4):
+            catalog = await aggregator.fetch_catalog(force_refresh=True)
+            got = catalog.get("servers_available", 0)
+            print(f"[catalog] attempt {attempt}: {got}/{expected} servers available")
+            if got > best.get("servers_available", -1):
+                best = catalog
+            if got == expected:
+                break
+            await asyncio.sleep(5)
+        _catalog_cache = best
     return _catalog_cache
 
 
