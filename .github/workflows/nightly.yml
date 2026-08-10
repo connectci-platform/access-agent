@@ -7,7 +7,9 @@ on:
 
 jobs:
   e2e:
-    runs-on: ubuntu-latest
+    # Self-hosted on the mcp box: Linode's edge mitigation drops hosted-runner
+    # connections to the MCP ports (verified by packet capture 2026-08-10).
+    runs-on: [self-hosted, nightly-e2e]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
