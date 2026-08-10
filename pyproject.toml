@@ -100,6 +100,7 @@ select = [
 ]
 ignore = [
     "PLR0913",  # Too many arguments
+    "PLR0917",  # Too many positional arguments (same intent as PLR0913 above)
     "PLR2004",  # Magic value comparison
     "PLR0911",  # Too many return statements
     "TRY003",   # Long exception messages
