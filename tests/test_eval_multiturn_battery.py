@@ -74,3 +74,35 @@ def test_empty_question_rejected(tmp_path):
     bad = [{"thread_id": "t", "questions": [{"turn_id": "t1", "question": "  "}]}]
     with pytest.raises(ValueError, match="empty question"):
         load_thread_battery(_write(tmp_path, "b.yaml", bad))
+
+
+STATE = {"final_answer": "ok", "tools_used": [], "messages": []}
+
+
+@pytest.mark.asyncio
+async def test_session_ids_disjoint_across_battery_runs(tmp_path):
+    from unittest.mock import AsyncMock, patch
+
+    from src.eval.multiturn import run_battery
+
+    battery = _write(tmp_path, "b.json", VALID)
+    seen: list[str] = []
+
+    async def fake_run_agent(**kwargs):
+        seen.append(kwargs["session_id"])
+        return STATE
+
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(side_effect=fake_run_agent)),
+        patch("src.eval.multiturn.get_catalog_aggregator") as agg,
+    ):
+        agg.return_value.fetch_catalog = AsyncMock(return_value={"tools": []})
+        await run_battery(battery_path=battery)
+        first = set(seen)
+        seen.clear()
+        await run_battery(battery_path=battery)
+        second = set(seen)
+
+    assert first and second
+    assert first.isdisjoint(second)  # D2a: runs never resume each other's checkpoints
+    assert all(s.startswith("eval_") and s.endswith("_mt-x-01") for s in first | second)

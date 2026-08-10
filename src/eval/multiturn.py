@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -105,19 +106,22 @@ def load_thread_battery(path: str) -> list[dict[str, Any]]:
 async def run_thread(
     thread_spec: dict[str, Any],
     tool_catalog: Any,
+    *,
+    session_namespace: str,
     acting_user: str | None = None,
     resource_context: str | None = None,
 ) -> ThreadResult:
     """Run all questions in a thread sequentially in one checkpointed session.
 
     Each turn calls ``run_agent(use_checkpointing=True)`` with a stable
-    ``session_id`` taken from ``thread_spec["thread_id"]``. The LangGraph
+    ``session_id`` formed from the session namespace and thread_id. The LangGraph
     checkpointer loads prior messages before each turn so the agent sees the
     full conversation context.
 
     Args:
         thread_spec: Dict with ``thread_id``, ``description``, and ``questions``.
         tool_catalog: MCP tool catalog (passed to run_agent each turn).
+        session_namespace: Namespace for this battery run, ensuring disjoint sessions across runs.
         acting_user: Optional ACCESS ID for personalized tool calls.
         resource_context: Optional RP slug; constant across the thread.
 
@@ -129,7 +133,7 @@ async def run_thread(
     questions = thread_spec["questions"]
 
     result = ThreadResult(thread_id=thread_id, description=description)
-    session_id = thread_id  # stable across the thread; drives checkpoint thread_id
+    session_id = f"eval_{session_namespace}_{thread_id}"
 
     logger.info(f"=== Thread {thread_id}: {description} ===")
     logger.info(f"Turns: {len(questions)}")
@@ -200,11 +204,14 @@ async def run_battery(
     registry = ToolRegistry(catalog=catalog)
     tool_catalog = registry.catalog
 
+    session_namespace = secrets.token_hex(4)
+
     results: list[ThreadResult] = []
     for thread_spec in threads:
         thread_result = await run_thread(
             thread_spec,
             tool_catalog=tool_catalog,
+            session_namespace=session_namespace,
             acting_user=acting_user,
             resource_context=resource_context,
         )
