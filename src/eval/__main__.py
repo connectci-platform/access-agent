@@ -32,16 +32,18 @@ def _handle_run(args: argparse.Namespace) -> None:
 
 
 def _handle_multiturn(args: argparse.Namespace) -> None:
-    from .multiturn import print_summary, run_battery
+    from . import multiturn
 
     results, summary = asyncio.run(
-        run_battery(
+        multiturn.run_battery(
             battery_path=args.threads,
             acting_user=args.acting_user,
             resource_context=args.resource,
+            score=args.score,
+            judge_model=args.judge_model,
         )
     )
-    print_summary(results, summary)
+    multiturn.print_summary(results, summary)
 
 
 def _handle_compare(args: argparse.Namespace) -> None:
@@ -545,6 +547,17 @@ def main() -> None:  # noqa: PLR0915  # CLI dispatcher, statements not meaningfu
         "--resource",
         default=None,
         help="Optional RP slug applied as resource_context for the thread",
+    )
+    multiturn_parser.add_argument(
+        "--score",
+        action="store_true",
+        help="Judge each turn and persist to eval_runs/eval_scores (requires DATABASE_URL)",
+    )
+    multiturn_parser.add_argument(
+        "--judge-model",
+        default=None,
+        dest="judge_model",
+        help="Override judge model (default: from config)",
     )
 
     # Production scoring is deferred — requires on-premise LLM or updated privacy policy

@@ -106,3 +106,23 @@ async def test_session_ids_disjoint_across_battery_runs(tmp_path):
     assert first and second
     assert first.isdisjoint(second)  # D2a: runs never resume each other's checkpoints
     assert all(s.startswith("eval_") and s.endswith("_mt-x-01") for s in first | second)
+
+
+def test_cli_multiturn_flags_reach_run_battery(monkeypatch):
+    import sys
+    from unittest.mock import AsyncMock
+
+    import src.eval.__main__ as cli
+    import src.eval.multiturn as mt
+
+    mock = AsyncMock(return_value=([], None))
+    monkeypatch.setattr(mt, "run_battery", mock)
+    monkeypatch.setattr(mt, "print_summary", lambda *a, **k: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["eval", "multiturn", "--threads", "b.yaml", "--score", "--judge-model", "m"],
+    )
+    cli.main()
+    assert mock.call_args.kwargs["score"] is True
+    assert mock.call_args.kwargs["judge_model"] == "m"
