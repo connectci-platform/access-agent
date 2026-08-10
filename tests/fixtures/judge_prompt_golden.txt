@@ -1,0 +1,109 @@
+You are evaluating the quality of an AI agent's answer to a user question.
+
+## Mission
+
+This agent supports researchers using ACCESS-CI (the US national cyberinfrastructure allocation system). Users ask about compute resources, software availability, allocations, system status, events, and how to get help. They need specific, current, actionable information — named resources, software versions, event dates, ticket confirmations, exact counts. Generic how-to guidance is less valuable than concrete data, because the user's goal is usually to DO something (run a job, request help, find a resource) not to read documentation.
+
+When the system takes an action on the user's behalf (creates a support ticket, looks up live allocation data), that is a meaningfully better outcome than pointing the user at a URL and asking them to do it themselves.
+
+## How to read the context sections
+
+You will see up to three kinds of context the agent had:
+
+- **RAG Documents Retrieved**: curated Q&A snippets from documentation. Static; not live. May be stale.
+- **Tool Results**: structured records of live tool calls, one record per call. Each record includes the tool name, the arguments the agent passed, whether the call succeeded, how long it took, an explicit `result_count` and `empty` flag, and the raw data. Use these to judge whether the agent called the right tool with the right arguments, whether the tool returned useful data, and whether the agent represented that data faithfully in its answer. An `empty: true` record means the tool returned no data on its own terms — not that there is no data on the topic anywhere.
+- **Agent Decision Trace**: a record from the agent's `tool_calling_loop` node, with the number of tool calls it made, which tools it called, and how many tool results it received.
+
+**Treat the context as your source of truth, not the answer.** The agent's answer is what you are grading. When the answer makes a specific factual claim — names a resource, group, person, software version, count, date, URL, ticket number — that claim must be supported either by the Tool Results, by the RAG Documents, or by widely known ACCESS-CI facts you are confident about. A specific name or number that appears only in the answer and nowhere in the context is unsupported, and should be treated as a hallucination. Penalize unsupported specifics in the relevant rubric dimensions and in the per-fact verdicts below.
+
+## Answerability screen (do this FIRST, before scoring)
+
+Decide whether this is a fair, answerable question:
+- "Fair" — a reasonable question the system could answer.
+- "Unfair" — off-topic, adversarial, or unanswerable without context the system lacks.
+If "Unfair", still return the screen but the dimension scores will be ignored.
+
+## Scoring Rubric
+
+Choose exactly one labeled value per dimension (use the anchor label strings verbatim):
+
+- **correctness**: Are the answer's claims true, judged against the question's authored required_facts (the ground truth), NOT surface plausibility?
+  Values (best to worst): Correct / Partial / Incorrect
+- **specificity**: Does the answer give concrete, actionable info (named resources, versions, dates, counts, live values) vs. generic guidance? Scored independently of correctness. 'N/A' when the question does not call for specifics.
+  Values (best to worst): Actionable / Mixed / Generic / N/A (question doesn't call for specifics)
+- **relevance**: Does the answer address the question without padding?
+  Values (best to worst): On-target / Partial / Off
+- **citation_quality**: Are source URLs present, valid, and drawn from the actual source material?
+  Values (best to worst): Good / Fair / Poor
+- **hedging**: Does the answer honestly signal how much to trust it, to a user who cannot verify it? Over-confident on shaky claims OR needless hedging = miscalibrated.
+  Values (best to worst): Calibrated / Miscalibrated
+
+For `correctness`, base your label on the per-fact required_facts verdicts below:
+mostly-supported -> "Correct", mixed -> "Partial", missing/contradicted key facts -> "Incorrect".
+For `specificity`, use "N/A" only when the question is a process/how-to that does not call
+for concrete named specifics.
+
+## Important
+
+- Judge whether the agent accurately represented the information it HAD ACCESS TO.
+- If the source documents contain outdated information and the agent faithfully reported it, that is Correct on correctness. Data quality is not the agent's fault.
+- If the agent added information not in the sources, that is a hallucination (Incorrect on correctness).
+- CRITICAL: Tool Results are LIVE DATA from real-time APIs and are MORE CURRENT than RAG Documents. When tool results return POSITIVE DATA that conflicts with RAG documents (e.g., tool says "Delta has 4 GPU nodes" but RAG says 8), the agent is CORRECT to trust the tool results. Score the agent based on whether it accurately represented the tool results.
+- HOWEVER: Tool results returning 0 items or empty results represent ABSENCE of data, not contradiction of other sources. Do not penalize an answer for relying on RAG documents just because a tool search returned no results — the search may not have matched, or the data may not be in that tool's scope. Only treat tool results as overriding RAG when the tool returns positive data that conflicts with the RAG answer.
+- If tool results show 0 items AND the RAG documents have relevant content, the agent is CORRECT to use the RAG content. Do not penalize this.
+
+## User Question
+
+Which ACCESS resources have PyTorch installed?
+
+## Agent Answer
+
+Delta and Anvil have PyTorch available via modules.
+
+## Context the Agent Had Access To
+
+## RAG Documents Retrieved
+Score: 0.9
+PyTorch is available on several ACCESS resources.
+
+## Tool Results
+### Tool call: search_software
+- arguments: {"query": "pytorch"}
+- success: True
+- duration_ms: 120
+- result_count: 2
+- empty: False
+- data:
+[{'resource': 'Delta'}, {'resource': 'Anvil'}]
+
+## Agent Decision Trace
+[{"node": "tool_calling_loop", "tool_calls": 1}]
+
+## Required Facts
+
+A correct answer for this question must support each of the following claims. For each one, rate whether the agent's answer supports it:
+- "yes" — the answer states the claim AND the claim is supported by the Tool Results, RAG Documents, or well-known ACCESS-CI facts. A specific name or number stated only in the answer (not in the context) is not evidence — that is a hallucination, score it accordingly on the relevant fact.
+- "partial" — the answer touches on the claim but is incomplete, vague, imprecise, OR mixes a correct statement with hallucinated specifics
+- "no" — the answer omits or contradicts the claim. If the answer is silent on the claim, that is "no", not "yes" — do not infer support from absence of contradiction
+
+golden-f1. Answer names Delta among PyTorch resources.
+F1. Answer does not invent versions not present in tool results.
+
+
+## Your Response
+
+Return a JSON object with this exact structure (no other text):
+```json
+{
+  "answerable": "<Fair|Unfair>",
+  "correctness": {"value": "<Correct|Partial|Incorrect>", "justification": "<brief>"},
+  "specificity": {"value": "<Actionable|Mixed|Generic|N/A>", "justification": "<brief>"},
+  "relevance": {"value": "<On-target|Partial|Off>", "justification": "<brief>"},
+  "citation_quality": {"value": "<Good|Fair|Poor>", "justification": "<brief>"},
+  "hedging": {"value": "<Calibrated|Miscalibrated>", "justification": "<brief>"},
+  "required_facts": [
+    {"id": "golden-f1", "verdict": "<yes|partial|no>", "justification": "<brief>"},
+    {"id": "F1", "verdict": "<yes|partial|no>", "justification": "<brief>"}
+  ]
+}
+```
