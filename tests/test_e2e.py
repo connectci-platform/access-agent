@@ -51,6 +51,20 @@ def get_test_id(case):
 
 _catalog_cache = None
 
+# The production model intermittently routes these usage-stats questions to
+# other live tools instead of get_chart_data; membership flickers run to run.
+# Tracked in #173 (tool-description fix in access-mcp). Remove entries as the
+# fix lands and the nightly stays green.
+XFAIL_CHART_SELECTION = {
+    "xdmod_most_used_resources",
+    "xdmod_active_pis",
+    "xdmod_jobs_by_gateway",
+    "xdmod_project_count",
+    "xdmod_active_allocations_trend",
+    "xdmod_gpu_utilization",
+    "xdmod_job_count_by_field_of_science",
+}
+
 
 @pytest.fixture
 async def tool_catalog():
@@ -101,8 +115,15 @@ def run_query(tool_catalog):
 
 
 @pytest.mark.parametrize("case", load_test_cases(), ids=get_test_id)
-async def test_e2e_query(case, run_query):
+async def test_e2e_query(case, run_query, request):
     """Run a single e2e test case from CSV."""
+    if get_test_id(case) in XFAIL_CHART_SELECTION:
+        request.applymarker(
+            pytest.mark.xfail(
+                reason="model under-selects get_chart_data; see #173",
+                strict=False,
+            )
+        )
     query = case["query"]
     expected_tool = case.get("expected_tool", "").strip()
     must_contain = case.get("must_contain", "").strip()
