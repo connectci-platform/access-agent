@@ -40,7 +40,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
@@ -48,9 +48,31 @@ from src.agent.graph import run_agent
 from src.config import settings
 from src.tools import ToolRegistry, get_catalog_aggregator
 
+from .formatting import format_node_trace, format_rag_matches, format_tool_results
+from .question_facts import resolve_required_facts
+from .runner import report_battery_turn
+from .scoring import persist_skipped_turn, score_and_persist_turn
+
+if TYPE_CHECKING:
+    from src.agent.state import AgentState
+
+    from .db import EvalDB
+    from .judge import Judge
+
 logger = logging.getLogger(__name__)
 
 MAX_QUESTION_ID_LEN = 64  # eval_scores.question_id is String(64)
+FAILED_TURN_MARKER = "(no answer — turn failed)"
+
+
+@dataclass
+class ScoringContext:
+    """Injected by run_battery; never constructed inside run_thread (testability seam)."""
+
+    db: EvalDB
+    judge: Judge
+    run_id: str
+    battery_id: str
 
 
 @dataclass
@@ -65,6 +87,8 @@ class TurnResult:
     duration_ms: float = 0.0
     success: bool = True
     error: str | None = None
+    composite: float | None = None
+    score_source: str | None = None
 
 
 @dataclass
@@ -110,6 +134,7 @@ async def run_thread(
     session_namespace: str,
     acting_user: str | None = None,
     resource_context: str | None = None,
+    scoring: ScoringContext | None = None,
 ) -> ThreadResult:
     """Run all questions in a thread sequentially in one checkpointed session.
 
@@ -124,6 +149,9 @@ async def run_thread(
         session_namespace: Namespace for this battery run, ensuring disjoint sessions across runs.
         acting_user: Optional ACCESS ID for personalized tool calls.
         resource_context: Optional RP slug; constant across the thread.
+        scoring: When provided, each successful turn is judged and persisted
+            (with prior turns as conversation history) and a battery turn
+            report is written; failed turns are persisted as skipped.
 
     Returns:
         ThreadResult with one TurnResult per question.
@@ -134,6 +162,7 @@ async def run_thread(
 
     result = ThreadResult(thread_id=thread_id, description=description)
     session_id = f"eval_{session_namespace}_{thread_id}"
+    history: list[tuple[str, str]] = []
 
     logger.info(f"=== Thread {thread_id}: {description} ===")
     logger.info(f"Turns: {len(questions)}")
@@ -146,6 +175,7 @@ async def run_thread(
         logger.info(f"[turn {i}/{len(questions)}] {turn_id}: {question_text[:80]}")
 
         start = time.monotonic()
+        state: dict[str, Any] | AgentState = {}
         try:
             state = await run_agent(
                 query=question_text,
@@ -185,6 +215,58 @@ async def run_thread(
                 success=False,
                 error=str(e),
             )
+
+        if scoring is not None:
+            if turn_result.success:
+                yaml_facts = q.get("required_facts")
+                required_facts = resolve_required_facts(scoring.db, question_id, yaml_facts)
+                judge_result = await score_and_persist_turn(
+                    scoring.db,
+                    scoring.judge,
+                    run_id=scoring.run_id,
+                    question_id=question_id,
+                    question_text=question_text,
+                    answer=turn_result.answer,
+                    rag_context=format_rag_matches(state),
+                    tool_results=format_tool_results(state),
+                    node_trace=format_node_trace(state),
+                    required_facts=required_facts,
+                    conversation_history=list(history) or None,
+                    extra_context={"thread_id": thread_id, "turn_index": i},
+                    duration_ms=turn_result.duration_ms,
+                )
+                if judge_result is not None:
+                    turn_result.composite = judge_result.composite
+                    turn_result.score_source = "judge"
+                else:
+                    turn_result.score_source = "judge_error"
+            else:
+                persist_skipped_turn(
+                    scoring.db,
+                    run_id=scoring.run_id,
+                    question_id=question_id,
+                    question_text=question_text,
+                    error=turn_result.error,
+                    duration_ms=turn_result.duration_ms,
+                    extra_context={"thread_id": thread_id, "turn_index": i},
+                )
+                turn_result.score_source = "skipped"
+
+            await report_battery_turn(
+                state=state if turn_result.success else {},
+                session_id=session_id,
+                question_id=question_id,
+                query_text=question_text,
+                duration_ms=turn_result.duration_ms,
+                battery_id=scoring.battery_id,
+                battery_run_id=scoring.run_id,
+                success=turn_result.success,
+                turn_index=i,
+            )
+
+        history.append(
+            (question_text, turn_result.answer if turn_result.success else FAILED_TURN_MARKER)
+        )
 
         result.turns.append(turn_result)
 

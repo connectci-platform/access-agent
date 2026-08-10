@@ -158,7 +158,7 @@ async def _run_raw_rag(
         # Mirror the agent path: a failed battery question must be
         # distinguishable from one that never ran.
         if battery_run_id:
-            await _report_battery_turn(
+            await report_battery_turn(
                 state={},
                 session_id=session_id,
                 question_id=question_id,
@@ -170,7 +170,7 @@ async def _run_raw_rag(
             )
         raise
     if battery_run_id:
-        await _report_battery_turn(
+        await report_battery_turn(
             state={"final_answer": uky_response.response},
             session_id=session_id,
             question_id=question_id,
@@ -220,7 +220,7 @@ async def _run_agent(
         # Mirror src/api/routes.py's failure write: a failed battery question
         # must be distinguishable from one that never ran.
         if battery_run_id:
-            await _report_battery_turn(
+            await report_battery_turn(
                 state={},
                 session_id=session_id,
                 question_id=question_id,
@@ -235,7 +235,7 @@ async def _run_agent(
 
     answer = state.get("final_answer", "")
     if battery_run_id:
-        await _report_battery_turn(
+        await report_battery_turn(
             state=state,
             session_id=session_id,
             question_id=question_id,
@@ -257,7 +257,7 @@ async def _run_agent(
     )
 
 
-async def _report_battery_turn(
+async def report_battery_turn(
     *,
     state: dict[str, Any] | AgentState,
     session_id: str,
@@ -267,6 +267,7 @@ async def _report_battery_turn(
     battery_id: str | None,
     battery_run_id: str,
     success: bool,
+    turn_index: int = 1,
 ) -> None:
     """Best-effort: a reporting failure must never fail the eval run."""
     try:
@@ -274,7 +275,7 @@ async def _report_battery_turn(
         get_turn_reporter().log_turn_report(
             final_state=state,
             session_id=session_id,
-            turn_index=1,  # battery questions are single-turn sessions
+            turn_index=turn_index,
             question_id=question_id,
             query_text=query_text,
             duration_ms=duration_ms,
