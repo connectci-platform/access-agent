@@ -13,7 +13,7 @@ from .judge import Judge
 from .question_facts import resolve_required_facts
 from .questions import load_questions
 from .rubric import DIMENSION_NAMES, compute_composite
-from .runner import SystemMode, gen_semantic_run_id, get_git_info, run_question
+from .runner import SYSTEM_SHORTCODES, SystemMode, gen_semantic_run_id, get_git_info, run_question
 from .scoring import persist_skipped_turn, score_and_persist_turn
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,7 @@ async def run_eval(
     )
 
     run = db.create_run(
-        id=gen_semantic_run_id(system),
+        id=gen_semantic_run_id(SYSTEM_SHORTCODES[system]),
         run_type="pre_production",
         agent_commit=git_info.get("commit"),
         agent_branch=git_info.get("branch"),

@@ -1,5 +1,6 @@
 """Scored multiturn path: per-turn judging, persistence, history propagation."""
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -110,3 +111,113 @@ async def test_turn_reports_carry_real_turn_index(tmp_path):
 
     indexes = [c.kwargs["turn_index"] for c in reporter.call_args_list]
     assert indexes == [1, 2, 3]
+
+
+@pytest.mark.asyncio
+async def test_scored_battery_creates_run_and_composites(tmp_path):
+    from src.eval import multiturn
+
+    battery = tmp_path / "b.json"
+    battery.write_text(json.dumps([THREAD, {**THREAD, "thread_id": "mt-f-02"}]))
+    db_url = f"sqlite:///{tmp_path}/eval.db"
+
+    judge = MagicMock()
+    judge.score = AsyncMock(return_value=GOOD)
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(return_value=STATE)),
+        patch("src.eval.multiturn.report_battery_turn", new=AsyncMock()),
+        patch("src.eval.multiturn.get_catalog_aggregator") as agg,
+        patch("src.eval.multiturn._build_judge", return_value=judge),
+    ):
+        agg.return_value.fetch_catalog = AsyncMock(return_value={"tools": []})
+        _, summary = await multiturn.run_battery(
+            battery_path=str(battery), score=True, database_url=db_url
+        )
+
+    assert summary is not None
+    assert summary["run_id"].startswith("mtloop-")
+    assert summary["composite_score"] == pytest.approx(0.9)
+    assert summary["thread_composites"] == {
+        "mt-f-01": pytest.approx(0.9),
+        "mt-f-02": pytest.approx(0.9),
+    }
+    db = EvalDB(db_url)
+    run = db.get_run(summary["run_id"])
+    assert run.metadata_["mode"] == "multiturn"
+    assert run.question_count == 6
+
+
+@pytest.mark.asyncio
+async def test_all_failed_thread_excluded_from_run_composite(tmp_path):
+    from src.eval import multiturn
+
+    battery = tmp_path / "b.json"
+    battery.write_text(json.dumps([THREAD, {**THREAD, "thread_id": "mt-dead"}]))
+    db_url = f"sqlite:///{tmp_path}/eval.db"
+
+    async def agent_by_thread(**kwargs):
+        if "mt-dead" in kwargs["session_id"]:
+            raise RuntimeError("dead thread")
+        return STATE
+
+    judge = MagicMock()
+    judge.score = AsyncMock(return_value=GOOD)
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(side_effect=agent_by_thread)),
+        patch("src.eval.multiturn.report_battery_turn", new=AsyncMock()),
+        patch("src.eval.multiturn.get_catalog_aggregator") as agg,
+        patch("src.eval.multiturn._build_judge", return_value=judge),
+    ):
+        agg.return_value.fetch_catalog = AsyncMock(return_value={"tools": []})
+        _, summary = await multiturn.run_battery(
+            battery_path=str(battery), score=True, database_url=db_url
+        )
+
+    assert summary["unscored_threads"] == ["mt-dead"]
+    assert summary["composite_score"] == pytest.approx(0.9)  # dead thread excluded, not 0.45
+
+
+@pytest.mark.asyncio
+async def test_run_composite_is_mean_of_thread_means_not_turns(tmp_path):
+    """Long-thread non-dominance: a 3-turn thread and a 1-turn thread weigh equally."""
+    from src.eval import multiturn
+    from src.eval.judge import JudgeResult
+
+    short_thread = {
+        "thread_id": "mt-short",
+        "questions": [{"turn_id": "t1", "question": "One?"}],
+    }
+    battery = tmp_path / "b.json"
+    battery.write_text(json.dumps([THREAD, short_thread]))  # 3 turns + 1 turn
+    db_url = f"sqlite:///{tmp_path}/eval.db"
+
+    def _result(composite):
+        return JudgeResult(
+            scores={
+                "correctness": 2,
+                "specificity": 2,
+                "relevance": 2,
+                "citation_quality": 2,
+                "hedging": 1,
+            },
+            justifications={},
+            composite=composite,
+            answerable=True,
+        )
+
+    # 3-turn thread scores 0.3 per turn; 1-turn thread scores 0.9.
+    judge = MagicMock()
+    judge.score = AsyncMock(side_effect=[_result(0.3)] * 3 + [_result(0.9)])
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(return_value=STATE)),
+        patch("src.eval.multiturn.report_battery_turn", new=AsyncMock()),
+        patch("src.eval.multiturn.get_catalog_aggregator") as agg,
+        patch("src.eval.multiturn._build_judge", return_value=judge),
+    ):
+        agg.return_value.fetch_catalog = AsyncMock(return_value={"tools": []})
+        _, summary = await multiturn.run_battery(
+            battery_path=str(battery), score=True, database_url=db_url
+        )
+
+    # Mean of thread means = (0.3 + 0.9) / 2 = 0.6; mean of turns would be 0.45.
+    assert summary["composite_score"] == pytest.approx(0.6)

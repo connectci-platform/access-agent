@@ -30,7 +30,7 @@ SYSTEM_SHORTCODES: dict[SystemMode, str] = {
 }
 
 
-def gen_semantic_run_id(system: SystemMode) -> str:
+def gen_semantic_run_id(shortcode: str) -> str:
     """Generate a semantic run ID of form `{shortcode}-{YYYYMMDD}-{HHMMSS}-{hash6}`.
 
     Lex-sortable by time. Fits in the existing String(36) column. Collision-safe
@@ -43,7 +43,6 @@ def gen_semantic_run_id(system: SystemMode) -> str:
     import secrets
     from datetime import UTC, datetime
 
-    shortcode = SYSTEM_SHORTCODES[system]
     ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     suffix = secrets.token_hex(3)
     return f"{shortcode}-{ts}-{suffix}"

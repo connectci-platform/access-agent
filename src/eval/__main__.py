@@ -34,14 +34,14 @@ def _handle_run(args: argparse.Namespace) -> None:
 def _handle_multiturn(args: argparse.Namespace) -> None:
     from .multiturn import print_summary, run_battery
 
-    results = asyncio.run(
+    results, summary = asyncio.run(
         run_battery(
             battery_path=args.threads,
             acting_user=args.acting_user,
             resource_context=args.resource,
         )
     )
-    print_summary(results)
+    print_summary(results, summary)
 
 
 def _handle_compare(args: argparse.Namespace) -> None:

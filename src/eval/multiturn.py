@@ -48,16 +48,15 @@ from src.agent.graph import run_agent
 from src.config import settings
 from src.tools import ToolRegistry, get_catalog_aggregator
 
+from .db import EvalDB
 from .formatting import format_node_trace, format_rag_matches, format_tool_results
+from .judge import Judge
 from .question_facts import resolve_required_facts
 from .runner import report_battery_turn
 from .scoring import persist_skipped_turn, score_and_persist_turn
 
 if TYPE_CHECKING:
     from src.agent.state import AgentState
-
-    from .db import EvalDB
-    from .judge import Judge
 
 logger = logging.getLogger(__name__)
 
@@ -273,12 +272,31 @@ async def run_thread(
     return result
 
 
+def _build_judge(judge_model: str | None) -> Judge:
+    """Judge construction isolated for test injection."""
+    return Judge(
+        base_url=settings.EVAL_JUDGE_BASE_URL or None,
+        api_key=settings.EVAL_JUDGE_API_KEY or settings.OPENAI_API_KEY,
+        model=judge_model or settings.EVAL_JUDGE_MODEL,
+        thinking=settings.EVAL_JUDGE_THINKING,
+    )
+
+
 async def run_battery(
     battery_path: str,
     acting_user: str | None = None,
     resource_context: str | None = None,
-) -> list[ThreadResult]:
-    """Load a multi-turn battery JSON file and run every thread in it."""
+    *,
+    score: bool = False,
+    judge_model: str | None = None,
+    database_url: str | None = None,
+) -> tuple[list[ThreadResult], dict[str, Any] | None]:
+    """Load a multi-turn battery JSON file and run every thread in it.
+
+    When ``score`` is set, each turn is judged and persisted under a new
+    eval_runs row, and a run-level summary (thread + run composites) is
+    returned alongside the per-thread results.
+    """
     threads = load_thread_battery(battery_path)
 
     aggregator = get_catalog_aggregator()
@@ -286,33 +304,105 @@ async def run_battery(
     registry = ToolRegistry(catalog=catalog)
     tool_catalog = registry.catalog
 
-    session_namespace = secrets.token_hex(4)
+    scoring: ScoringContext | None = None
+    if score:
+        from src.llm.providers import active_model_name
+
+        from .runner import gen_semantic_run_id, get_git_info
+
+        db = EvalDB(database_url or settings.DATABASE_URL)
+        git_info = get_git_info()
+        run = db.create_run(
+            id=gen_semantic_run_id("mtloop"),
+            run_type="pre_production",
+            agent_commit=git_info.get("commit"),
+            agent_branch=git_info.get("branch"),
+            tool_catalog={
+                "tool_count": registry.tool_count,
+                "tools": [
+                    t.get("name", "unknown") for t in (registry.catalog or {}).get("tools", [])
+                ],
+            },
+            llm_model=active_model_name(),
+            judge_model=judge_model or settings.EVAL_JUDGE_MODEL,
+            question_set=battery_path,
+            question_count=sum(len(t["questions"]) for t in threads),
+            metadata_={"system": "agent_full", "mode": "multiturn"},
+        )
+        scoring = ScoringContext(
+            db=db,
+            judge=_build_judge(judge_model),
+            run_id=str(run.id),
+            battery_id=Path(battery_path).stem,
+        )
+        session_namespace = str(run.id)
+    else:
+        session_namespace = secrets.token_hex(4)
 
     results: list[ThreadResult] = []
     for thread_spec in threads:
-        thread_result = await run_thread(
-            thread_spec,
-            tool_catalog=tool_catalog,
-            session_namespace=session_namespace,
-            acting_user=acting_user,
-            resource_context=resource_context,
+        results.append(
+            await run_thread(
+                thread_spec,
+                tool_catalog=tool_catalog,
+                acting_user=acting_user,
+                resource_context=resource_context,
+                session_namespace=session_namespace,
+                scoring=scoring,
+            )
         )
-        results.append(thread_result)
 
-    return results
+    summary: dict[str, Any] | None = None
+    if scoring is not None:
+        thread_composites: dict[str, float] = {}
+        unscored_threads: list[str] = []
+        for thread in results:
+            scored = [t.composite for t in thread.turns if t.composite is not None]
+            if scored:
+                thread_composites[thread.thread_id] = sum(scored) / len(scored)
+            else:
+                unscored_threads.append(thread.thread_id)
+        run_composite = (
+            sum(thread_composites.values()) / len(thread_composites) if thread_composites else 0.0
+        )
+        scores_summary = {
+            "thread_composites": thread_composites,
+            "unscored_threads": unscored_threads,
+        }
+        scoring.db.update_run_summary(scoring.run_id, scores_summary, run_composite)
+        summary = {
+            "run_id": scoring.run_id,
+            "composite_score": run_composite,
+            "thread_composites": thread_composites,
+            "unscored_threads": unscored_threads,
+        }
+
+    return results, summary
 
 
-def print_summary(results: list[ThreadResult]) -> None:
+def print_summary(results: list[ThreadResult], summary: dict[str, Any] | None = None) -> None:
     """Print a human-friendly summary of thread + per-turn outcomes."""
     for thread in results:
         print(f"\n=== Thread {thread.thread_id} ===")
         if thread.description:
             print(f"  {thread.description}")
-        print(f"  {'turn':<10} {'tools':<6} {'msgs':<6} {'ans_len':<8} {'dur_ms':<8} status")
+        print(
+            f"  {'turn':<10} {'tools':<6} {'msgs':<6} {'ans_len':<8} "
+            f"{'dur_ms':<8} {'comp':<6} status"
+        )
         for turn in thread.turns:
             status = "ok" if turn.success else f"FAIL: {turn.error}"
+            comp = f"{turn.composite:.2f}" if turn.composite is not None else "-"
             print(
                 f"  {turn.turn_id:<10} {len(turn.tools_used):<6} "
                 f"{turn.message_count:<6} {len(turn.answer):<8} "
-                f"{int(turn.duration_ms):<8} {status}"
+                f"{int(turn.duration_ms):<8} {comp:<6} {status}"
             )
+
+    if summary is not None:
+        print(f"\n=== Run {summary['run_id']} ===")
+        for thread_id, composite in summary["thread_composites"].items():
+            print(f"  {thread_id}: {composite:.2f}")
+        if summary["unscored_threads"]:
+            print(f"  unscored: {', '.join(summary['unscored_threads'])}")
+        print(f"  run composite: {summary['composite_score']:.2f}")
