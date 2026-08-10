@@ -14,6 +14,7 @@ from .question_facts import resolve_required_facts
 from .questions import load_questions
 from .rubric import DIMENSION_NAMES, compute_composite
 from .runner import SystemMode, gen_semantic_run_id, get_git_info, run_question
+from .scoring import persist_skipped_turn, score_and_persist_turn
 
 logger = logging.getLogger(__name__)
 
@@ -87,69 +88,32 @@ async def run_eval(
         required_facts = resolve_required_facts(db, q.id, q.metadata.get("required_facts"))
 
         if not result.success:
-            db.add_score(
-                run_id=run.id,
+            persist_skipped_turn(
+                db,
+                run_id=str(run.id),
                 question_id=q.id,
-                source="skipped",
                 question_text=q.question,
-                answer_text=result.error or "Agent failed",
+                error=result.error,
                 duration_ms=result.duration_ms,
-                justifications={"error": result.error},
             )
             continue
 
-        judge_result = await judge.score(
-            query=q.question,
+        judge_result = await score_and_persist_turn(
+            db,
+            judge,
+            run_id=str(run.id),
+            question_id=q.id,
+            question_text=q.question,
             answer=result.answer,
             rag_context=result.rag_context,
             tool_results=result.tool_results,
             node_trace=result.node_trace,
             required_facts=required_facts,
-        )
-
-        if judge_result is None:
-            db.add_score(
-                run_id=run.id,
-                question_id=q.id,
-                source="judge_error",
-                question_text=q.question,
-                answer_text=result.answer,
-                duration_ms=result.duration_ms,
-                context={
-                    "rag_context": result.rag_context,
-                    "tool_results": result.tool_results,
-                },
-                justifications={"error": "Judge failed to produce valid scores"},
-            )
-            continue
-
-        db.add_score(
-            run_id=run.id,
-            question_id=q.id,
-            source="judge",
-            question_text=q.question,
-            answer_text=result.answer,
-            context={
-                "rag_context": result.rag_context,
-                "tool_results": result.tool_results,
-                "node_trace": result.node_trace,
-                "required_facts": required_facts,
-                "fact_verdicts": judge_result.fact_verdicts,
-                "ground_truth_stability": q.metadata.get("ground_truth_stability"),
-            },
-            context_completeness="full" if result.rag_context or result.tool_results else "partial",
-            correctness=judge_result.scores["correctness"],
-            specificity=judge_result.scores["specificity"],
-            specificity_na=judge_result.specificity_na,
-            answerable=judge_result.answerable,
-            rubric_version=2,
-            relevance=judge_result.scores["relevance"],
-            citation_quality=judge_result.scores["citation_quality"],
-            hedging=judge_result.scores["hedging"],
-            composite_score=judge_result.composite,
+            extra_context={"ground_truth_stability": q.metadata.get("ground_truth_stability")},
             duration_ms=result.duration_ms,
-            justifications=judge_result.justifications,
         )
+        if judge_result is None:
+            continue
         all_scores.append(judge_result.scores)
 
     if all_scores:
