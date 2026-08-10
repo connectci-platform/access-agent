@@ -26,7 +26,13 @@ jobs:
       - name: Run e2e tests
         run: uv run pytest tests/ -m e2e -v
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # Production parity: the nightly exercises the same provider, endpoint,
+          # and model the deployed loop runs. No OpenAI key on purpose — a code
+          # path that silently falls back to OpenAI should fail loudly here.
+          LLM_PROVIDER: vllm
+          VLLM_BASE_URL: https://jump-external.ccs.uky.edu/v1
+          VLLM_MODEL_NAME: ccs/Qwen/Qwen3.6-35B-A3B-FP8
+          VLLM_API_KEY: ${{ secrets.VLLM_API_KEY }}
           ACCESS_AI_API_KEY: ${{ secrets.ACCESS_AI_API_KEY }}
           # e2e tests live-aggregate the catalog from the prod MCP servers
           # (CatalogAggregator), so point them at the prod host.
