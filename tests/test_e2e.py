@@ -49,13 +49,23 @@ def get_test_id(case):
     return case.get("description", "unknown").replace(" ", "_").lower()
 
 
+_catalog_cache = None
+
+
 @pytest.fixture
 async def tool_catalog():
-    """Fetch live tool catalog from MCP servers."""
-    from src.tools import CatalogAggregator
+    """Fetch the live tool catalog once per session, mirroring production.
 
-    aggregator = CatalogAggregator(timeout=15.0)
-    return await aggregator.fetch_catalog()
+    The deployed loop aggregates the catalog once at startup; fetching per
+    test hammered every server's /tools endpoint 34 times per run, and any
+    transient fetch failure silently shrank that test's catalog."""
+    global _catalog_cache
+    if _catalog_cache is None:
+        from src.tools import CatalogAggregator
+
+        aggregator = CatalogAggregator(timeout=15.0)
+        _catalog_cache = await aggregator.fetch_catalog()
+    return _catalog_cache
 
 
 @pytest.fixture
