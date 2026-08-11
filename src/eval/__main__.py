@@ -41,6 +41,7 @@ def _handle_multiturn(args: argparse.Namespace) -> None:
             resource_context=args.resource,
             score=args.score,
             judge_model=args.judge_model,
+            allow_draft_facts=args.allow_draft_facts,
         )
     )
     multiturn.print_summary(results, summary)
@@ -62,15 +63,31 @@ def _handle_compare(args: argparse.Namespace) -> None:
         "run_id": run_a.id,
         "agent_branch": run_a.agent_branch,
         "composite_score": run_a.composite_score or 0.0,
-        "per_dimension": run_a.scores_summary or {},
+        "per_dimension": _per_dimension(run_a.scores_summary),
     }
     summary_b: dict[str, Any] = {
         "run_id": run_b.id,
         "agent_branch": run_b.agent_branch,
         "composite_score": run_b.composite_score or 0.0,
-        "per_dimension": run_b.scores_summary or {},
+        "per_dimension": _per_dimension(run_b.scores_summary),
     }
     print_comparison(summary_a, summary_b)
+
+
+def _per_dimension(scores_summary: Any) -> dict[str, Any]:
+    """Read the per-dimension means out of a run's scores_summary.
+
+    Single-turn runs store the dimension means as scores_summary itself;
+    multiturn runs store a richer contract with the means under
+    ``per_dimension`` alongside thread composites and turn counts. Feature-detect
+    by key so both shapes render real values.
+    """
+    if not isinstance(scores_summary, dict):
+        return {}
+    nested = scores_summary.get("per_dimension")
+    if isinstance(nested, dict):
+        return nested
+    return scores_summary
 
 
 def _handle_report(args: argparse.Namespace) -> None:
@@ -558,6 +575,15 @@ def main() -> None:  # noqa: PLR0915  # CLI dispatcher, statements not meaningfu
         default=None,
         dest="judge_model",
         help="Override judge model (default: from config)",
+    )
+    multiturn_parser.add_argument(
+        "--allow-draft-facts",
+        action="store_true",
+        dest="allow_draft_facts",
+        help=(
+            "Score against facts that still contain 'AUTHOR:' placeholders "
+            "(smoke tests only — placeholders make correctness verdicts arbitrary)"
+        ),
     )
 
     # Production scoring is deferred — requires on-premise LLM or updated privacy policy
