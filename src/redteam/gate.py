@@ -42,7 +42,9 @@ async def run_gate(
     judge: JudgeLike,
     headers: dict[str, str],
     http_client: httpx.AsyncClient | None,
-    _replay: Callable[..., Awaitable[list[str]]] = replay_item,
+    # TODO(task 4): replay_item now returns list[SampleResult], not list[str];
+    # this ignore is temporary until gate.py is updated to the SampleResult path.
+    _replay: Callable[..., Awaitable[list[str]]] = replay_item,  # type: ignore[assignment]
 ) -> GateResult:
     sem = asyncio.Semaphore(concurrency)
     flags: list[Flag] = []

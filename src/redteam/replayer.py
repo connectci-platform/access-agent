@@ -7,10 +7,12 @@ import json
 import uuid
 from typing import TYPE_CHECKING
 
+import httpx
+
+from .sample import SampleResult
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
-
-    import httpx
 
     from .suite import SuiteItem
 
@@ -31,39 +33,50 @@ async def post_query(
     prompt_text: str,
     session_id: str,
     headers: dict[str, str],
-) -> str:
-    """POST and parse the SSE stream; return the final answer text.
-
-    Protocol (verified against src/api/routes.py:224-351): named-event SSE,
-    each event is `event: <name>\\ndata: <json>\\n\\n`. The final answer is in
-    the `done` event under key `response` (routes.py:330). `token` events carry
-    incremental `content` and are a fallback if `done` is missing.
-    """
+) -> SampleResult:
+    """POST and parse the SSE stream. Returns SampleResult(text) on a real answer,
+    SampleResult.error() on an agent `error` event, a failed/empty `done`, or an
+    HTTP error. See src/api/routes.py:224-351 for the event shapes."""
     payload = {"query": prompt_text, "session_id": session_id}
     final = ""
     tokens: list[str] = []
     cur_event = ""
-    async with client.stream(
-        "POST", f"{base_url}/api/v1/query", json=payload, headers=headers, timeout=120.0
-    ) as resp:
-        async for line in resp.aiter_lines():
-            if line.startswith("event:"):
-                cur_event = line[len("event:") :].strip()
-                continue
-            if not line.startswith("data:"):
-                continue
-            data = line[len("data:") :].strip()
-            if not data:
-                continue
-            try:
-                evt = json.loads(data)
-            except json.JSONDecodeError:
-                continue
-            if cur_event == "done" and isinstance(evt, dict):
-                final = evt.get("response") or final
-            elif cur_event == "token" and isinstance(evt, dict):
-                tokens.append(evt.get("content", ""))
-    return final or "".join(tokens)
+    saw_error = False
+    try:
+        async with client.stream(
+            "POST", f"{base_url}/api/v1/query", json=payload, headers=headers, timeout=120.0
+        ) as resp:
+            async for line in resp.aiter_lines():
+                if line.startswith("event:"):
+                    cur_event = line[len("event:") :].strip()
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                data = line[len("data:") :].strip()
+                if not data:
+                    continue
+                try:
+                    evt = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(evt, dict):
+                    continue
+                if cur_event == "error":
+                    saw_error = True
+                elif cur_event == "done":
+                    if evt.get("success") is False:
+                        saw_error = True
+                    final = evt.get("response") or final
+                elif cur_event == "token":
+                    tokens.append(evt.get("content", ""))
+    except httpx.HTTPError:
+        return SampleResult.error()
+    text = final or "".join(tokens)
+    if saw_error or not text:
+        # an error event, a failed `done`, or no answer text at all -> errored,
+        # NOT a real empty answer to be judged.
+        return SampleResult.error()
+    return SampleResult(text=text)
 
 
 async def replay_item(
@@ -74,13 +87,16 @@ async def replay_item(
     concurrency_sem: asyncio.Semaphore,
     headers: dict[str, str],
     http_client: httpx.AsyncClient | None,
-    _post: Callable[..., Awaitable[str]] = post_query,
-) -> list[str]:
-    """Replay one item N times, fresh session each; return N response texts."""
+    _post: Callable[..., Awaitable[SampleResult]] = post_query,
+) -> list[SampleResult]:
+    """Replay one item N times, fresh session each; return N SampleResults."""
 
-    async def one() -> str:
+    async def one() -> SampleResult:
         session_id = f"{RUN_TAG}__{item.id}__{uuid.uuid4().hex[:8]}"
         async with concurrency_sem:
-            return await _post(http_client, base_url, item.text, session_id, headers)
+            try:
+                return await _post(http_client, base_url, item.text, session_id, headers)
+            except Exception:  # one dead replay must not abort the batch
+                return SampleResult.error()
 
     return list(await asyncio.gather(*[one() for _ in range(n)]))
