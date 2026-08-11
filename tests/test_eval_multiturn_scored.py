@@ -248,6 +248,16 @@ def _judge_result(composite=0.9, answerable=True, correctness=2):
     )
 
 
+def _tool_result(turn):
+    """A rebuilt tool_results entry, keyed by its originating tool_call id (step_id)."""
+    return {
+        "step_id": f"call-turn{turn}",
+        "tool_name": f"tool_turn{turn}",
+        "data": [f"payload-turn{turn}"],
+        "success": True,
+    }
+
+
 @pytest.mark.asyncio
 async def test_judge_context_is_per_turn_delta_not_cumulative(tmp_path):
     """Under checkpointing the state is thread-cumulative; the judge must see only
@@ -257,9 +267,6 @@ async def test_judge_context_is_per_turn_delta_not_cumulative(tmp_path):
     scoring, _, judge = _scoring(tmp_path)
 
     # Distinguishable, growing state: turn N's state holds turns 1..N's entries.
-    def _tool_result(turn):
-        return {"tool_name": f"tool_turn{turn}", "data": [f"payload-turn{turn}"], "success": True}
-
     states = [
         {
             **STATE,
@@ -287,6 +294,116 @@ async def test_judge_context_is_per_turn_delta_not_cumulative(tmp_path):
     assert "tool_turn3" in turn3["tool_results"]
     assert "tool_turn1" not in turn3["tool_results"]
     assert "tool_turn2" not in turn3["tool_results"]
+
+
+@pytest.mark.asyncio
+async def test_delta_survives_compaction_shrinking_tool_results(tmp_path):
+    """SummarizationMiddleware compaction shrinks the REBUILT tool_results mid-thread,
+    so turn 3's list can be shorter than turn 2's count. A count-slice would drop
+    turn 3's own calls entirely; the identity diff still surfaces them (D1)."""
+    from src.eval.multiturn import run_thread
+
+    scoring, _, judge = _scoring(tmp_path)
+
+    states = [
+        # t1: one call. t2: two cumulative calls (count now 2).
+        {**STATE, "tool_results": [_tool_result(1)]},
+        {**STATE, "tool_results": [_tool_result(1), _tool_result(2)]},
+        # t3: compaction dropped turns 1-2 from the thread, so the rebuild holds ONE
+        # entry — this turn's — and len(1) < the prior count of 2.
+        {**STATE, "tool_results": [_tool_result(3)]},
+    ]
+
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(side_effect=states)),
+        patch("src.eval.multiturn.report_battery_turn", new=AsyncMock()),
+    ):
+        await run_thread(THREAD, tool_catalog=None, session_namespace="ns", scoring=scoring)
+
+    turn3 = judge.score.call_args_list[2].kwargs
+    assert "tool_turn3" in turn3["tool_results"]
+    assert "payload-turn3" in turn3["tool_results"]
+
+
+@pytest.mark.asyncio
+async def test_empty_answer_turn_advances_the_delta_baseline(tmp_path):
+    """A turn that returns state with no answer still grew the checkpoint — its calls
+    must not resurface as the NEXT turn's evidence (D1 baseline rule)."""
+    from src.eval.multiturn import run_thread
+
+    scoring, _, judge = _scoring(tmp_path)
+
+    states = [
+        # t1 ran a tool but produced no answer (success=False, no exception).
+        {**STATE, "final_answer": "", "tool_results": [_tool_result(1)]},
+        {**STATE, "tool_results": [_tool_result(1), _tool_result(2)]},
+        {**STATE, "tool_results": [_tool_result(1), _tool_result(2), _tool_result(3)]},
+    ]
+
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(side_effect=states)),
+        patch("src.eval.multiturn.report_battery_turn", new=AsyncMock()),
+    ):
+        await run_thread(THREAD, tool_catalog=None, session_namespace="ns", scoring=scoring)
+
+    # t1 wasn't judged (no answer -> skipped row), so t2 is the first judge call.
+    turn2 = judge.score.call_args_list[0].kwargs
+    assert "tool_turn2" in turn2["tool_results"]
+    assert "tool_turn1" not in turn2["tool_results"]
+
+
+@pytest.mark.asyncio
+async def test_turn_reports_carry_only_that_turns_tool_calls(tmp_path):
+    """report_battery_turn gets the same delta view the judge does, so turn 2's report
+    can't be credited with turn 1's calls (invoked_write / capability inference)."""
+    from src.eval.multiturn import run_thread
+
+    scoring, _, _ = _scoring(tmp_path)
+    reporter = AsyncMock()
+    states = [
+        {**STATE, "tool_results": [_tool_result(n) for n in range(1, turn + 1)]}
+        for turn in (1, 2, 3)
+    ]
+
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(side_effect=states)),
+        patch("src.eval.multiturn.report_battery_turn", new=reporter),
+    ):
+        await run_thread(THREAD, tool_catalog=None, session_namespace="ns", scoring=scoring)
+
+    reported = [
+        [r["tool_name"] for r in c.kwargs["state"]["tool_results"]] for c in reporter.call_args_list
+    ]
+    assert reported == [["tool_turn1"], ["tool_turn2"], ["tool_turn3"]]
+    # The rest of the state still rides along — the report needs final_answer/tools_used.
+    assert reporter.call_args_list[1].kwargs["state"]["final_answer"] == "An answer."
+
+
+@pytest.mark.asyncio
+async def test_ran_but_failed_turn_reports_its_real_delta_state(tmp_path):
+    """A turn that ran tools but produced no answer reports its real state, not {} —
+    only the exception path (no state at all) reports empty."""
+    from src.eval.multiturn import run_thread
+
+    scoring, _, _ = _scoring(tmp_path)
+    reporter = AsyncMock()
+
+    async def agent(**kwargs):
+        if kwargs["question_id"].endswith("_t2"):
+            raise RuntimeError("boom")
+        return {**STATE, "final_answer": "", "tool_results": [_tool_result(1)]}
+
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(side_effect=agent)),
+        patch("src.eval.multiturn.report_battery_turn", new=reporter),
+    ):
+        await run_thread(THREAD, tool_catalog=None, session_namespace="ns", scoring=scoring)
+
+    by_qid = {c.kwargs["question_id"]: c.kwargs["state"] for c in reporter.call_args_list}
+    # Ran-but-empty: real state with this turn's call.
+    assert [r["tool_name"] for r in by_qid["mt-f-01_t1"]["tool_results"]] == ["tool_turn1"]
+    # Exception: no state exists.
+    assert by_qid["mt-f-01_t2"] == {}
 
 
 @pytest.mark.asyncio

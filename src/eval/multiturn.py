@@ -40,10 +40,13 @@ persisted to eval_runs/eval_scores.
 Judge context is per-turn, not cumulative. Under checkpointing the agent state
 grows across the thread (``tool_results`` is rebuilt each turn from the full
 ordered message thread; ``node_trace`` appends via its reducer), so the runner
-tracks the previous turn's post-state counts and formats only this turn's new
-entries. Prior turns reach the judge only through the conversation history —
-cumulative tool payloads would present old calls as support for the current
-answer.
+formats only this turn's new entries: ``tool_results`` diffed by tool-call
+identity (compaction can SHRINK the rebuilt list, so a count-slice would hide
+the current turn's calls) and ``node_trace`` by count (reducer-appended, never
+rebuilt). The same delta view feeds the turn report, so a turn's
+``invoked_write``/capabilities are never inherited from an earlier turn. Prior
+turns reach the judge only through the conversation history — cumulative tool
+payloads would present old calls as support for the current answer.
 
 Composites are macro and Fair-only. A thread composite is the mean over its
 turns that were judged AND not screened ``answerable=False`` ("Unfair"); the run
@@ -99,23 +102,57 @@ FAILED_TURN_MARKER = "(no answer — turn failed)"
 DRAFT_FACT_MARKER = "AUTHOR:"
 
 
-def _turn_delta_state(state: Any, prior_tool_results: int, prior_node_trace: int) -> dict[str, Any]:
+def _tool_call_identity(entry: Any) -> str | None:
+    """The tool-call id a rebuilt tool_results entry carries.
+
+    ``_build_tool_results`` (src/agent/nodes/tool_calling_loop.py) anchors every
+    entry to its originating AIMessage tool_call and stores that id as
+    ``step_id`` — orphan ToolMessages are dropped rather than given a synthetic
+    id, so every surviving entry has one. Entries arrive as ToolResult models
+    from the agent and as plain dicts from tests/fixtures.
+    """
+    value = entry.get("step_id") if isinstance(entry, dict) else getattr(entry, "step_id", None)
+    return str(value) if value else None
+
+
+def _turn_delta_state(
+    state: Any, seen_tool_call_ids: set[str], prior_node_trace: int
+) -> dict[str, Any]:
     """Project the cumulative agent state down to THIS turn's new activity (D1).
 
     Under checkpointing the state the agent returns is thread-cumulative:
-    ``tool_results`` is rebuilt each turn from the full ordered message thread
-    and ``node_trace`` appends via its ``operator.add`` reducer. Both are
-    append-ordered, so the current turn's entries are exactly the tail beyond
-    the previous turn's post-state counts.
+    ``tool_results`` is *rebuilt* each turn from the full ordered message thread
+    and ``node_trace`` appends via its ``operator.add`` reducer.
 
-    ``rag_matches`` is NOT sliced: no node on the current path writes it (see
-    src/agent/state.py), so it is always the empty per-turn default. Should a
-    node start populating it cumulatively, it needs the same treatment.
+    ``tool_results`` is diffed by tool-call **identity**, not by count.
+    SummarizationMiddleware compaction shrinks the rebuilt thread mid-run, so a
+    prior turn's count can exceed the post-compaction rebuild and a count-slice
+    would drop the current turn's own calls — on exactly the post-compaction
+    turn the compaction battery exists to measure. ``node_trace`` is never
+    rebuilt from messages (it is reducer-appended and compaction-immune), so
+    count-slicing stays valid there.
+
+    An entry with no resolvable identity is treated as new: presenting an
+    unattributable call to the judge is the safer failure than hiding this
+    turn's evidence.
+
+    The result is a shallow copy of the full state with those two lists
+    replaced, so downstream consumers (judge formatting AND the turn report)
+    still see ``final_answer``/``tools_used``/``total_tokens`` while seeing only
+    this turn's tool activity. ``rag_matches`` is NOT sliced: no node on the
+    current path writes it (see src/agent/state.py), so it is always the empty
+    per-turn default. Should a node start populating it cumulatively, it needs
+    the same treatment.
     """
+    delta_tool_results = [
+        entry
+        for entry in state.get("tool_results", []) or []
+        if (identity := _tool_call_identity(entry)) is None or identity not in seen_tool_call_ids
+    ]
     return {
-        "rag_matches": state.get("rag_matches", []),
-        "tool_results": list(state.get("tool_results", []))[prior_tool_results:],
-        "node_trace": list(state.get("node_trace", []))[prior_node_trace:],
+        **dict(state),
+        "tool_results": delta_tool_results,
+        "node_trace": list(state.get("node_trace", []) or [])[prior_node_trace:],
     }
 
 
@@ -229,9 +266,9 @@ async def run_thread(
     result = ThreadResult(thread_id=thread_id, description=description)
     session_id = f"eval_{session_namespace}_{thread_id}"
     history: list[tuple[str, str]] = []
-    # Post-state counts after the previous turn, so each turn's judge context is a
-    # delta over the thread-cumulative agent state (D1).
-    prior_tool_results = 0
+    # Delta baseline over the thread-cumulative agent state (D1): tool_results is
+    # diffed by tool-call identity (compaction-safe), node_trace by count.
+    seen_tool_call_ids: set[str] = set()
     prior_node_trace = 0
 
     logger.info(f"=== Thread {thread_id}: {description} ===")
@@ -246,6 +283,7 @@ async def run_thread(
 
         start = time.monotonic()
         state: dict[str, Any] | AgentState = {}
+        returned_state = False
         # Per-turn capture (summarized flag, tool timings, retrieved chunks) —
         # mirrors the single-turn runner so turn_reports carry this turn's data only.
         reset_turn_capture()
@@ -260,6 +298,7 @@ async def run_thread(
                 use_checkpointing=True,
                 db_uri=settings.DATABASE_URL,
             )
+            returned_state = True
             duration_ms = (time.monotonic() - start) * 1000
             messages = state.get("messages", [])
             tools_used = state.get("tools_used", [])
@@ -289,26 +328,35 @@ async def run_thread(
                 error=str(e),
             )
 
+        # This turn's activity only — the same view the judge and the turn report see,
+        # so a turn's report can't be credited with an earlier turn's tool calls.
+        # On the exception path there is no state, so the delta is empty by construction.
+        turn_state = (
+            _turn_delta_state(state, seen_tool_call_ids, prior_node_trace) if returned_state else {}
+        )
+
         if scoring is not None:
             await _score_turn(
                 scoring,
                 turn_result,
                 turn_spec=q,
-                state=state,
+                turn_state=turn_state,
                 thread_id=thread_id,
                 session_id=session_id,
                 question_id=question_id,
                 turn_index=i,
                 history=history,
-                delta_baseline=(prior_tool_results, prior_node_trace),
                 resolved_facts=resolved_facts,
             )
 
-        # Advance the delta baseline to this turn's post-state. A failed turn leaves
-        # `state` empty and the checkpoint untouched, so the baseline stays put.
-        if turn_result.success:
-            prior_tool_results = len(state.get("tool_results", []))
-            prior_node_trace = len(state.get("node_trace", []))
+        # Advance the delta baseline whenever run_agent RETURNED state — an
+        # empty-answer turn still grew the checkpoint, so its calls must not resurface
+        # as the next turn's context. Only the exception path (no state) leaves it put.
+        if returned_state:
+            for entry in state.get("tool_results", []) or []:
+                if (identity := _tool_call_identity(entry)) is not None:
+                    seen_tool_call_ids.add(identity)
+            prior_node_trace = len(state.get("node_trace", []) or [])
 
         history.append(
             (question_text, turn_result.answer if turn_result.success else FAILED_TURN_MARKER)
@@ -324,16 +372,21 @@ async def _score_turn(
     turn_result: TurnResult,
     *,
     turn_spec: dict[str, Any],
-    state: Any,
+    turn_state: dict[str, Any],
     thread_id: str,
     session_id: str,
     question_id: str,
     turn_index: int,
     history: list[tuple[str, str]],
-    delta_baseline: tuple[int, int],
     resolved_facts: dict[str, list[Any] | None] | None,
 ) -> None:
     """Judge + persist one turn, then write its battery turn report.
+
+    ``turn_state`` is the per-turn delta view (D1) — this turn's tool results and
+    trace entries over the full state — and feeds BOTH the judge context and the
+    turn report, so ``invoked_write`` and capability inference are never
+    misattributed from an earlier turn. A turn that ran but produced no answer
+    still passes its real delta state; only the exception path is empty.
 
     Mutates ``turn_result`` with the judge verdict (composite, answerable, raw
     dimension scores, score source). A failed turn is persisted as ``skipped``
@@ -347,7 +400,6 @@ async def _score_turn(
             required_facts = resolve_required_facts(
                 scoring.db, question_id, turn_spec.get("required_facts")
             )
-        turn_state = _turn_delta_state(state, *delta_baseline)
         judge_result = await score_and_persist_turn(
             scoring.db,
             scoring.judge,
@@ -387,7 +439,7 @@ async def _score_turn(
         turn_result.score_source = "skipped"
 
     await report_battery_turn(
-        state=state if turn_result.success else {},
+        state=turn_state,
         session_id=session_id,
         question_id=question_id,
         query_text=turn_result.question,
