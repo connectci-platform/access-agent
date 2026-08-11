@@ -1,10 +1,10 @@
-"""Guard logic in scripts/insert-multiturn-facts.py, exercised over SQLite.
+"""Upsert logic in scripts/insert-multiturn-facts.py, exercised over SQLite.
 
-Positional fact_ids make a turn's fact list append-only, so the script's job is
-less "insert rows" than "refuse the edits that would silently remap ids". These
-tests drive the guard functions directly against a SQLite fixture shaped like
-reporting.question_facts, since the branch each guard takes depends on the DB's
-latest version and status for a fact.
+Facts carry explicit fact_ids, so the script's whole job is the per-id branch:
+insert, version up a draft, refuse to overwrite reviewed text, or do nothing.
+Each branch depends on the DB's latest version and status for that id, so the
+tests drive the functions against a SQLite fixture shaped like
+reporting.question_facts.
 
 The script is a hyphenated filename, so it is loaded via importlib rather than a
 plain import; that load also asserts the module is importable without running
@@ -12,7 +12,10 @@ main().
 """
 
 import importlib.util
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -33,11 +36,10 @@ script = _load_script()
 
 def test_script_imports_without_running_main():
     """The module is importable (main() sits behind the __main__ guard), which is
-    what makes these guard functions testable at all."""
+    what makes these functions testable at all."""
     assert callable(script.main)
-    assert callable(script.shrunken_questions)
-    assert callable(script.remap_suspects)
-    assert callable(script.bulk_edited_questions)
+    assert callable(script.build_rows)
+    assert callable(script.apply_rows)
 
 
 @pytest.fixture
@@ -77,7 +79,7 @@ def _seed(conn, question_id, fact_id, fact_text, *, status="draft", version=1, o
     )
 
 
-def _row(question_id, fact_id, fact_text, order):
+def _row(question_id, fact_id, fact_text, order=1):
     return {
         "question_id": question_id,
         "fact_id": fact_id,
@@ -86,202 +88,164 @@ def _row(question_id, fact_id, fact_text, order):
     }
 
 
-# --- shrink guard (fix 9) ---------------------------------------------------
+def _versions(conn, fact_id):
+    return conn.execute(
+        text(
+            "SELECT version, fact_text, status FROM reporting.question_facts "
+            "WHERE fact_id = :f ORDER BY version"
+        ),
+        {"f": fact_id},
+    ).fetchall()
 
 
-def test_shrink_guard_counts_only_live_facts(conn):
-    """Flagging a fact in the dashboard then dropping it from the YAML is the
-    SANCTIONED retirement path. The guard counts live (latest-not-flagged) facts,
-    so that sequence must not trip it."""
-    _seed(conn, "q1", "q1-f1", "kept", order=1)
-    _seed(conn, "q1", "q1-f2", "retired", status="flagged", order=2)
-
-    # YAML now holds one fact; the DB holds two fact_ids but only one is live.
-    assert script.shrunken_questions(conn, {"q1": 1}) == []
+# --- the four upsert branches ------------------------------------------------
 
 
-def test_shrink_guard_uses_the_latest_version_status(conn):
-    """A fact flagged at v1 and re-authored as a draft v2 is live again — the guard
-    reads the LATEST version's status, not any version's."""
-    _seed(conn, "q1", "q1-f1", "kept", order=1)
-    _seed(conn, "q1", "q1-f2", "old", status="flagged", version=1, order=2)
-    _seed(conn, "q1", "q1-f2", "re-authored", status="draft", version=2, order=2)
+def test_absent_fact_inserts_version_one_as_draft(conn):
+    counts = script.apply_rows(conn, [_row("q1", "q1-new", "brand new")])
 
-    offending = script.shrunken_questions(conn, {"q1": 1})
-    assert len(offending) == 1
-    assert "live_db=2" in offending[0]
-
-
-def test_shrink_guard_still_refuses_a_real_deletion(conn):
-    """Removing a live fact from the YAML without flagging it is still refused."""
-    _seed(conn, "q1", "q1-f1", "one", order=1)
-    _seed(conn, "q1", "q1-f2", "two", order=2)
-
-    offending = script.shrunken_questions(conn, {"q1": 1})
-    assert len(offending) == 1
-    assert "q1: yaml=1 live_db=2" in offending[0]
-
-
-def test_shrink_guard_catches_a_turn_losing_all_its_facts(conn):
-    """Zero YAML facts against live DB facts is the same deletion, and turns with no
-    facts are in the count map precisely so this is reachable."""
-    _seed(conn, "q1", "q1-f1", "one", order=1)
-    assert script.shrunken_questions(conn, {"q1": 0}) != []
-
-
-def test_shrink_guard_allows_growth(conn):
-    """Appending facts is always fine — positional ids stay stable."""
-    _seed(conn, "q1", "q1-f1", "one", order=1)
-    assert script.shrunken_questions(conn, {"q1": 3}) == []
-
-
-# --- delete-shift guard (fix 10a) -------------------------------------------
-
-
-def test_delete_shift_signature_is_refused(conn):
-    """Deleting the middle fact slides later facts up one id. Position 1's new YAML
-    text is then the DB text of position 2, which would rewrite each fact under its
-    neighbour's id."""
-    _seed(conn, "q1", "q1-f1", "alpha", order=1)
-    _seed(conn, "q1", "q1-f2", "beta", order=2)
-    _seed(conn, "q1", "q1-f3", "gamma", order=3)
-
-    # Author deleted "alpha"; beta/gamma shifted up into f1/f2.
-    rows = [_row("q1", "q1-f1", "beta", 1), _row("q1", "q1-f2", "gamma", 2)]
-
-    # f1's new text is f2's DB text, which is enough to refuse. f2 is the LAST
-    # YAML position, so it has no next position to compare against — the guard
-    # only needs one hit to stop the run, not a finding per shifted fact.
-    findings = script.remap_suspects(conn, rows)
-    assert len(findings) == 1
-    assert "q1/q1-f1" in findings[0]
-    assert "q1-f2" in findings[0]
-    assert "deleted and the rest shifted up" in findings[0]
-
-
-def test_delete_shift_flags_every_detectable_position(conn):
-    """With a longer list, each shifted position except the last matches its
-    neighbour's DB text, so the refusal names them all."""
-    for n, txt in enumerate(("alpha", "beta", "gamma", "delta"), 1):
-        _seed(conn, "q1", f"q1-f{n}", txt, order=n)
-
-    # "alpha" deleted; beta/gamma/delta shifted up into f1/f2/f3.
-    rows = [
-        _row("q1", "q1-f1", "beta", 1),
-        _row("q1", "q1-f2", "gamma", 2),
-        _row("q1", "q1-f3", "delta", 3),
+    assert counts["inserted"] == 1
+    assert [(v.version, v.fact_text, v.status) for v in _versions(conn, "q1-new")] == [
+        (1, "brand new", "draft")
     ]
-    findings = script.remap_suspects(conn, rows)
-    assert len(findings) == 2  # f1 vs f2, f2 vs f3; f3 is last with no successor
 
 
-def test_genuine_edit_is_not_a_delete_shift(conn):
-    """Rewording one fact in place does not match any neighbour's text."""
-    _seed(conn, "q1", "q1-f1", "alpha", order=1)
-    _seed(conn, "q1", "q1-f2", "beta", order=2)
-
-    rows = [_row("q1", "q1-f1", "alpha, clarified", 1), _row("q1", "q1-f2", "beta", 2)]
-    assert script.remap_suspects(conn, rows) == []
-
-
-def test_new_facts_are_not_delete_shifts(conn):
-    """A fact with no DB row yet is an append, never a remap."""
-    _seed(conn, "q1", "q1-f1", "alpha", order=1)
-    rows = [_row("q1", "q1-f1", "alpha", 1), _row("q1", "q1-f2", "brand new", 2)]
-    assert script.remap_suspects(conn, rows) == []
-
-
-def test_delete_shift_does_not_cross_questions(conn):
-    """The neighbour comparison is per question_id — an unrelated turn's text
-    matching is coincidence, not a shift."""
-    _seed(conn, "q1", "q1-f1", "alpha", order=1)
-    _seed(conn, "q2", "q2-f1", "beta", order=1)
-
-    rows = [_row("q1", "q1-f1", "beta", 1)]
-    assert script.remap_suspects(conn, rows) == []
-
-
-def test_delete_shift_catches_what_the_shrink_guard_cannot(conn):
-    """The two guards are not redundant. Deleting one fact AND appending another
-    keeps the YAML count stable, so the shrink guard passes — only the delete-shift
-    signature sees that every surviving fact moved to its neighbour's id."""
-    for n, txt in enumerate(("alpha", "beta", "gamma"), 1):
-        _seed(conn, "q1", f"q1-f{n}", txt, order=n)
-
-    # "alpha" deleted, beta/gamma shift up, "delta" appended — still 3 facts.
-    rows = [
-        _row("q1", "q1-f1", "beta", 1),
-        _row("q1", "q1-f2", "gamma", 2),
-        _row("q1", "q1-f3", "delta", 3),
-    ]
-    assert script.shrunken_questions(conn, {"q1": 3}) == []  # shrink guard blind here
-    assert script.remap_suspects(conn, rows) != []
-
-
-# --- bulk-edit guard (fix 10b) ----------------------------------------------
-
-
-def test_two_changed_positions_in_one_turn_are_flagged(conn):
-    _seed(conn, "q1", "q1-f1", "alpha", order=1)
-    _seed(conn, "q1", "q1-f2", "beta", order=2)
-
-    rows = [_row("q1", "q1-f1", "alpha v2", 1), _row("q1", "q1-f2", "beta v2", 2)]
-    bulk = script.bulk_edited_questions(conn, rows)
-    assert len(bulk) == 1
-    assert "q1-f1" in bulk[0] and "q1-f2" in bulk[0]
-
-
-def test_single_changed_position_is_not_bulk(conn):
-    _seed(conn, "q1", "q1-f1", "alpha", order=1)
-    _seed(conn, "q1", "q1-f2", "beta", order=2)
-
-    rows = [_row("q1", "q1-f1", "alpha v2", 1), _row("q1", "q1-f2", "beta", 2)]
-    assert script.bulk_edited_questions(conn, rows) == []
-
-
-def test_bulk_guard_counts_per_question_not_across_the_run(conn):
-    """One edit in each of two turns is a normal pass, not a bulk edit."""
-    _seed(conn, "q1", "q1-f1", "alpha", order=1)
-    _seed(conn, "q2", "q2-f1", "beta", order=1)
-
-    rows = [_row("q1", "q1-f1", "alpha v2", 1), _row("q2", "q2-f1", "beta v2", 1)]
-    assert script.bulk_edited_questions(conn, rows) == []
-
-
-# --- apply_rows outcomes (drives the exit code) -----------------------------
-
-
-def test_apply_rows_versions_a_draft_edit(conn):
-    _seed(conn, "q1", "q1-f1", "alpha", status="draft", version=1, order=1)
-    counts = script.apply_rows(conn, [_row("q1", "q1-f1", "alpha v2", 1)])
+def test_edited_draft_versions_up(conn):
+    """The resolver serves the latest non-flagged version, so bumping is how an
+    AUTHOR-pass edit actually reaches the judge."""
+    _seed(conn, "q1", "q1-a", "alpha", status="draft", version=1)
+    counts = script.apply_rows(conn, [_row("q1", "q1-a", "alpha v2")])
 
     assert counts["bumped"] == 1
-    latest = conn.execute(
-        text(
-            "SELECT fact_text, version, status FROM reporting.question_facts "
-            "WHERE fact_id = 'q1-f1' ORDER BY version DESC LIMIT 1"
-        )
-    ).fetchone()
-    assert (latest.fact_text, latest.version, latest.status) == ("alpha v2", 2, "draft")
+    assert [(v.version, v.fact_text, v.status) for v in _versions(conn, "q1-a")] == [
+        (1, "alpha", "draft"),
+        (2, "alpha v2", "draft"),
+    ]
 
 
-def test_apply_rows_skips_confirmed_edits_as_stale(conn):
-    """Reviewed content is authoritative — the edit is DROPPED, which is what makes
-    the non-zero exit necessary."""
-    _seed(conn, "q1", "q1-f1", "reviewed text", status="confirmed", version=1, order=1)
-    counts = script.apply_rows(conn, [_row("q1", "q1-f1", "yaml text", 1)])
+@pytest.mark.parametrize("status", ["confirmed", "flagged"])
+def test_edited_non_draft_latest_is_skipped_as_stale(conn, capsys, status):
+    """Reviewed content is authoritative — the edit is DROPPED, and the warning
+    states the two remedies that actually work."""
+    _seed(conn, "q1", "q1-a", "reviewed text", status=status, version=1)
+    counts = script.apply_rows(conn, [_row("q1", "q1-a", "yaml text")])
 
     assert counts["skipped_stale"] == 1
     assert counts["bumped"] == 0
-    rows = conn.execute(
-        text("SELECT COUNT(*) FROM reporting.question_facts WHERE fact_id = 'q1-f1'")
-    ).scalar_one()
-    assert rows == 1  # nothing inserted over the reviewed row
+    assert len(_versions(conn, "q1-a")) == 1  # nothing inserted over the reviewed row
+
+    warning = capsys.readouterr().err
+    assert "q1/q1-a" in warning
+    assert "update the YAML to the reviewed text" in warning
+    assert "new draft version in the dashboard" in warning
 
 
-def test_apply_rows_inserts_new_and_skips_unchanged(conn):
-    _seed(conn, "q1", "q1-f1", "alpha", order=1)
+def test_identical_text_is_skipped_silently(conn, capsys):
+    _seed(conn, "q1", "q1-a", "alpha", status="confirmed", version=1)
+    counts = script.apply_rows(conn, [_row("q1", "q1-a", "alpha")])
+
+    assert counts == {"inserted": 0, "bumped": 0, "skipped_same": 1, "skipped_stale": 0}
+    assert capsys.readouterr().err == ""
+
+
+# --- identity is the id, not the position ------------------------------------
+
+
+def test_reordering_and_deleting_facts_touches_nothing_else(conn):
+    """Positional remap defects cannot exist: a fact dropped from the YAML is left
+    alone, and the survivors match on their ids regardless of new positions."""
+    _seed(conn, "q1", "q1-a", "alpha", order=1)
+    _seed(conn, "q1", "q1-b", "beta", order=2)
+    _seed(conn, "q1", "q1-c", "gamma", order=3)
+
+    # "alpha" removed from the YAML; the rest reordered.
     counts = script.apply_rows(
-        conn, [_row("q1", "q1-f1", "alpha", 1), _row("q1", "q1-f2", "brand new", 2)]
+        conn, [_row("q1", "q1-c", "gamma", 1), _row("q1", "q1-b", "beta", 2)]
     )
-    assert counts == {"inserted": 1, "bumped": 0, "skipped_same": 1, "skipped_stale": 0}
+
+    assert counts == {"inserted": 0, "bumped": 0, "skipped_same": 2, "skipped_stale": 0}
+    # The dropped fact keeps its row untouched — retirement is flagging, not deletion.
+    assert [(v.version, v.fact_text) for v in _versions(conn, "q1-a")] == [(1, "alpha")]
+
+
+def test_latest_version_status_drives_the_branch(conn):
+    """A fact confirmed at v1 and re-authored as draft v2 versions up again; the
+    branch reads the LATEST version's status, not any version's."""
+    _seed(conn, "q1", "q1-a", "v1 text", status="confirmed", version=1)
+    _seed(conn, "q1", "q1-a", "v2 text", status="draft", version=2)
+
+    counts = script.apply_rows(conn, [_row("q1", "q1-a", "v3 text")])
+    assert counts["bumped"] == 1
+    assert _versions(conn, "q1-a")[-1].version == 3
+
+
+def test_one_latest_fetch_per_fact(conn):
+    """The branch and the next version both come from a single read per fact."""
+    _seed(conn, "q1", "q1-a", "alpha")
+    rows = [_row("q1", "q1-a", "alpha v2"), _row("q1", "q1-b", "new")]
+
+    with patch.object(script, "_latest", wraps=script._latest) as spy:
+        script.apply_rows(conn, rows)
+
+    assert spy.call_count == len(rows)
+
+
+# --- exit codes --------------------------------------------------------------
+
+
+@contextmanager
+def _noop_transaction(conn):
+    """Stand in for engine.begin(): the fixture connection is already in one."""
+    yield conn
+
+
+def _run_main(conn, rows, monkeypatch):
+    """Drive main() against the SQLite fixture, bypassing the real engine."""
+    engine = SimpleNamespace(begin=lambda: _noop_transaction(conn))
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://ignored/db")
+    monkeypatch.setattr(script.sys, "argv", ["insert-multiturn-facts.py"])
+    with (
+        patch.object(script, "build_rows", return_value=rows),
+        patch.object(script, "create_engine", return_value=engine),
+    ):
+        return script.main()
+
+
+def test_main_exits_2_when_an_edit_was_dropped_as_stale(conn, monkeypatch, capsys):
+    """A dropped edit must not report green — but everything else still lands."""
+    _seed(conn, "q1", "q1-a", "reviewed", status="confirmed", version=1)
+    rows = [_row("q1", "q1-a", "stale yaml"), _row("q1", "q1-b", "brand new")]
+
+    assert _run_main(conn, rows, monkeypatch) == 2
+    assert "EXIT 2" in capsys.readouterr().err
+    # The other work completed before the non-zero exit.
+    assert [(v.version, v.fact_text) for v in _versions(conn, "q1-b")] == [(1, "brand new")]
+
+
+def test_main_exits_0_on_a_clean_run(conn, monkeypatch):
+    assert _run_main(conn, [_row("q1", "q1-b", "brand new")], monkeypatch) == 0
+
+
+def test_dry_run_is_db_free(monkeypatch, capsys):
+    """--dry-run makes no connection, so it works without DATABASE_URL."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(script.sys, "argv", ["insert-multiturn-facts.py", "--dry-run"])
+
+    with patch.object(script, "create_engine", side_effect=AssertionError("connected")):
+        assert script.main() == 0
+
+    assert "fact rows from" in capsys.readouterr().out
+
+
+def test_build_rows_uses_the_authored_fact_ids():
+    """The real batteries: every row carries its explicit id, ids are unique, and
+    display_order is per-turn position."""
+    rows = script.build_rows(script.BATTERIES)
+
+    assert len(rows) == 36
+    assert len({(r["question_id"], r["fact_id"]) for r in rows}) == len(rows)
+    assert all(r["fact_id"].startswith(r["question_id"].replace("_", "-")) for r in rows)
+    first = next(r for r in rows if r["question_id"] == "mt-followup-01_t2")
+    assert first["fact_id"] == "mt-followup-01-t2-subset"
+    assert first["display_order"] == 1
