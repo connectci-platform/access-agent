@@ -55,6 +55,15 @@ class ToolResult(BaseModel):
     arguments: ToolArguments = Field(
         default_factory=dict, description="Arguments the tool was called with"
     )
+    message_index: int = Field(
+        default=-1,
+        description=(
+            "Index of the source ToolMessage in the message thread this entry was "
+            "rebuilt from. Lets multi-turn consumers slice the cumulative, rebuilt "
+            "tool_results down to one turn by position relative to the last "
+            "HumanMessage. Additive metadata; -1 means 'not positioned'."
+        ),
+    )
 
 
 class RAGMatch(BaseModel):
