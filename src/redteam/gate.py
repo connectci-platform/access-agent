@@ -57,7 +57,9 @@ async def run_gate(
             http_client=http_client,
         )
         # Pair responses with verdicts ONCE (avoids a second fragile zip below).
-        scored = [(r, await score_sample(r, item.text, judge)) for r in responses]
+        # TODO(task 4): _replay/responses still yield bare str, not SampleResult;
+        # this ignore is temporary until gate.py is updated to the SampleResult path.
+        scored = [(r, await score_sample(r, item.text, judge)) for r in responses]  # type: ignore[arg-type]
         for r, v in scored:
             records.append({"id": item.id, "response": r, "verdict": v})
         kind = decide(item.expected, [v for _, v in scored])
