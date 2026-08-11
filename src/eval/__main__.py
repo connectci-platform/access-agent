@@ -71,9 +71,10 @@ def _handle_compare(args: argparse.Namespace) -> None:
         "composite_score": run_b.composite_score or 0.0,
         "per_dimension": _per_dimension(run_b.scores_summary),
     }
-    # Composite semantics are per-run: multiturn is a macro mean over Fair-only
-    # thread composites, single-turn a micro average over questions. Comparing
-    # across the two is not meaningful, so the composite row is annotated instead.
+    # Scoring semantics are per-run: multiturn is a macro mean over Fair-only
+    # thread composites, single-turn a micro average over questions — and the
+    # per-dimension means differ in population the same way. Comparing across the
+    # two is not like-for-like, so print_comparison annotates BOTH sections.
     commensurable = _is_macro_composite(run_a.scores_summary) == _is_macro_composite(
         run_b.scores_summary
     )
