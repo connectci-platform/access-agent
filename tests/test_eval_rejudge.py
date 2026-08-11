@@ -7,6 +7,7 @@ v2 fields (specificity, specificity_na, answerable, rubric_version=2, composite)
 """
 
 import json
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -566,3 +567,150 @@ async def test_rejudge_single_turn_passes_no_history(mock_db):
     assert judge.score.call_args.kwargs["conversation_history"] is None
     # No mode on the source run means no mode key invented on the rejudge run.
     assert "mode" not in (db.get_run(str(summary["new_run_id"])).metadata_ or {})
+
+
+async def test_rejudge_materializes_judge_error_rows_so_failed_turns_survive(mock_db):
+    """judge_error originals are as un-rejudgeable as skipped ones — there is no
+    answer the new judge could score differently. Leaving them out would decay
+    failed_turns to zero across generations exactly like a dropped skipped row."""
+    db = EvalDB(mock_db)
+    original = db.create_run(
+        run_type="pre_production",
+        llm_model="qwen",
+        question_set="mt.yaml",
+        question_count=2,
+        metadata_={"system": "agent_full", "mode": "multiturn"},
+    )
+    db.add_score(
+        run_id=original.id,
+        question_id="mt-a_t1",
+        source="judge",
+        question_text="q1",
+        answer_text="a1",
+        context={"thread_id": "mt-a", "turn_index": 1},
+        composite_score=1.0,
+    )
+    db.add_score(
+        run_id=original.id,
+        question_id="mt-a_t2",
+        source="judge_error",
+        question_text="q2",
+        answer_text="a2",
+        context={"thread_id": "mt-a", "turn_index": 2, "node_trace": "trace"},
+        justifications={"error": "judge returned nothing"},
+    )
+
+    with patch("src.eval.judge.AsyncOpenAI") as mock_openai_cls:
+        mock_client = mock_openai_cls.return_value
+        mock_client.chat.completions.create = AsyncMock(return_value=_completion(MOCK_JUDGE_BEST))
+        gen1 = await rejudge_run(original_run_id=str(original.id), database_url=mock_db)
+
+    gen1_id = str(gen1["new_run_id"])
+    assert db.get_run(gen1_id).scores_summary["failed_turns"] == {"mt-a": 1}
+
+    carried = [s for s in db.get_scores_for_run(gen1_id) if s.source == "judge_error"]
+    assert len(carried) == 1
+    assert carried[0].question_id == "mt-a_t2"
+    assert carried[0].answer_text == "a2"
+    assert carried[0].context["thread_id"] == "mt-a"
+    assert carried[0].context["node_trace"] == "trace"
+
+    # The next generation reports the SAME failed_turns — self-contained, no decay.
+    with patch("src.eval.judge.AsyncOpenAI") as mock_openai_cls:
+        mock_client = mock_openai_cls.return_value
+        mock_client.chat.completions.create = AsyncMock(return_value=_completion(MOCK_JUDGE_BEST))
+        gen2 = await rejudge_run(original_run_id=gen1_id, database_url=mock_db)
+
+    assert db.get_run(str(gen2["new_run_id"])).scores_summary["failed_turns"] == {"mt-a": 1}
+
+
+async def test_rejudge_error_row_drops_the_source_fact_verdicts(mock_db):
+    """A row that FAILS under the new judge writes a fresh judge_error row. The new
+    judge produced no verdicts, so the row carries none — keeping the source row's
+    would present the old judge's per-fact calls as this generation's."""
+    db = EvalDB(mock_db)
+    original = db.create_run(
+        run_type="pre_production",
+        llm_model="qwen",
+        question_set="tiny",
+        question_count=1,
+        metadata_={"system": "access-agent"},
+    )
+    db.add_score(
+        run_id=original.id,
+        question_id="q1",
+        source="judge",
+        question_text="What is ACCESS?",
+        answer_text="A program.",
+        context={
+            "rag_context": "docs",
+            "required_facts": [{"fact_id": "f1", "fact_text": "ACCESS allocates HPC"}],
+            "conversation_history": [["earlier q", "earlier a"]],
+            "fact_verdicts": [{"id": "f1", "verdict": "yes", "justification": "old judge"}],
+        },
+        composite_score=0.5,
+    )
+
+    judge = MagicMock()
+    judge.score = AsyncMock(return_value=None)  # the new judge fails on this row
+    with patch("src.eval.rejudge.Judge", return_value=judge):
+        summary = await rejudge_run(original_run_id=str(original.id), database_url=mock_db)
+
+    row = db.get_scores_for_run(str(summary["new_run_id"]))[0]
+    assert row.source == "judge_error"
+    assert "fact_verdicts" not in row.context
+    # Everything else replayed stays, so the row is manually re-scorable.
+    assert row.context["rag_context"] == "docs"
+    assert row.context["conversation_history"] == [["earlier q", "earlier a"]]
+    assert row.context["required_facts"][0]["fact_id"] == "f1"
+
+
+async def test_rejudge_warns_about_turn_rows_without_a_thread_id(mock_db, caplog):
+    """A turn row with no thread_id cannot reach any composite. It must not vanish
+    silently, and it must not invent a phantom thread either."""
+    db = EvalDB(mock_db)
+    original = db.create_run(
+        run_type="pre_production",
+        llm_model="qwen",
+        question_set="mt.yaml",
+        question_count=2,
+        metadata_={"system": "agent_full", "mode": "multiturn"},
+    )
+    db.add_score(
+        run_id=original.id,
+        question_id="mt-a_t1",
+        source="judge",
+        question_text="q1",
+        answer_text="a1",
+        context={"thread_id": "mt-a", "turn_index": 1},
+        composite_score=1.0,
+    )
+    db.add_score(
+        run_id=original.id,
+        question_id="orphan_t1",
+        source="judge",
+        question_text="q2",
+        answer_text="a2",
+        context={"turn_index": 1},  # no thread_id
+        composite_score=1.0,
+    )
+
+    with (
+        patch("src.eval.judge.AsyncOpenAI") as mock_openai_cls,
+        caplog.at_level(logging.WARNING, logger="src.eval.rejudge"),
+    ):
+        mock_client = mock_openai_cls.return_value
+        mock_client.chat.completions.create = AsyncMock(return_value=_completion(MOCK_JUDGE_BEST))
+        summary = await rejudge_run(original_run_id=str(original.id), database_url=mock_db)
+
+    assert "orphan_t1" in caplog.text
+    assert "no context.thread_id" in caplog.text
+
+    stored = db.get_run(str(summary["new_run_id"])).scores_summary
+    assert list(stored["thread_composites"]) == ["mt-a"]  # no phantom thread
+    assert stored["unscored_threads"] == []
+    # The row itself is still persisted in the new run — excluded from the summary,
+    # not from the data.
+    assert any(
+        s.question_id == "orphan_t1" for s in db.get_scores_for_run(str(summary["new_run_id"]))
+    )

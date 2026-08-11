@@ -11,13 +11,20 @@ Fair-only thread composites plus a macro run composite (the full
 statistics. Single-turn runs keep the flat micro-averaged dimension map. Only
 rows that represent a turn feed that rebuild (see ``TURN_SOURCES``): human
 review rows and rows without a ``thread_id`` are left out entirely rather than
-pooled into a synthetic thread.
+pooled into a synthetic thread — and a turn row missing its ``thread_id`` is
+named in a logged warning, since an unexplained gap in a thread's turns would
+otherwise be untraceable.
 
 A rejudged row's context is the ORIGINAL row's replayed transcript with one
-exception — ``fact_verdicts`` is a judge OUTPUT, so it is replaced with the new
-judge's verdicts. ``skipped`` rows are not judgeable but are copied forward into
-the rejudged run, so a thread's ``failed_turns`` survives across successive
-rejudge generations instead of decaying to a clean-looking zero.
+exception — ``fact_verdicts`` is a judge OUTPUT, so the new judge's verdicts are
+the only ones a rejudged row ever carries. On the row's own judge-failure path
+there are none, so the key is dropped rather than inherited.
+
+Rejudge generations are self-contained: BOTH non-rejudgeable turn classes
+(``skipped`` and ``judge_error`` originals) are copied forward into the rejudged
+run, so a thread's ``failed_turns`` survives successive generations instead of
+decaying to a clean-looking zero. A row that fails under the NEW judge is a
+different thing — it is written fresh as ``judge_error``, not carried.
 
 Limitation: the stored `tool_results` field is pre-formatted text produced by
 the formatter that was current at original-run time. Rubric prompt changes
@@ -59,11 +66,19 @@ def _replay_history(stored: Any) -> list[tuple[str, str]] | None:
 # ingesting them would double-count a turn or invent a thread that never ran.
 TURN_SOURCES = ("judge", "judge_error", "skipped")
 
+# Turn sources that carry no judgeable answer of their own, so a rejudge cannot
+# re-score them — it copies them into the new run instead. Both classes matter:
+# dropping either lets a thread's failed_turns decay toward zero across
+# successive rejudge generations, reporting a run cleaner than it ran.
+NON_REJUDGEABLE_TURN_SOURCES = ("skipped", "judge_error")
+
 
 def _turn_record(
     context: dict[str, Any],
     *,
     source: str,
+    question_id: str,
+    threadless: list[str],
     composite: float | None = None,
     answerable: bool | None = None,
     scores: dict[str, int | None] | None = None,
@@ -76,11 +91,17 @@ def _turn_record(
     "(no thread)" bucket and be reported as a real unscored thread — a human
     row on one question would make the run look like it had a thread that never
     produced a Fair turn.
+
+    A TURN-sourced row without a thread_id is a different case: it *is* a turn,
+    but nothing says which thread it belongs to, so it cannot enter a composite.
+    Its question_id is collected in ``threadless`` for the caller to log —
+    excluding a turn from the summary must never be silent.
     """
     if source not in TURN_SOURCES:
         return None
     thread_id = context.get("thread_id")
     if not thread_id:
+        threadless.append(question_id)
         return None
     return TurnRecord(
         thread_id=str(thread_id),
@@ -183,6 +204,9 @@ async def rejudge_run(
     all_scores: list[dict[str, int | None]] = []
     # Per-turn records for the multiturn summary rebuild (thread-grouped, Fair-only).
     turn_records: list[TurnRecord] = []
+    # Turn rows carrying no context.thread_id: excluded from the rebuilt summary,
+    # but named in a warning at the end — never dropped silently.
+    threadless: list[str] = []
     rescored = 0
     skipped = 0
     errors = 0
@@ -195,19 +219,31 @@ async def rejudge_run(
             # Not rejudged, but a multiturn summary must still count it against its
             # thread's failed_turns — composites exclude failed turns, so a run that
             # crashed half a thread would otherwise look clean.
-            _add_turn_record(turn_records, _turn_record(context, source=str(score.source)))
-            if score.source == "skipped":
+            _add_turn_record(
+                turn_records,
+                _turn_record(
+                    context,
+                    source=str(score.source),
+                    question_id=str(score.question_id),
+                    threadless=threadless,
+                ),
+            )
+            if score.source in NON_REJUDGEABLE_TURN_SOURCES:
                 # Materialize the failure into the new run. Without this row the
                 # rejudged run has no record that the turn failed, so rejudging the
                 # rejudge (or any later read of the new run's rows) reports a clean
-                # thread — failed_turns would decay to zero across generations.
+                # thread — failed_turns would decay to zero across generations. Both
+                # non-rejudgeable classes carry forward: a judge_error original has
+                # no scores to replay either, so leaving it out would decay exactly
+                # like a dropped skipped row.
                 db.add_score(
                     run_id=new_run.id,
                     question_id=score.question_id,
-                    source="skipped",
+                    source=str(score.source),
                     question_text=score.question_text,
                     answer_text=score.answer_text,
                     context=context,
+                    context_completeness=score.context_completeness,
                     duration_ms=score.duration_ms,
                     justifications=score.justifications,
                 )
@@ -234,14 +270,28 @@ async def rejudge_run(
 
         if judge_result is None:
             errors += 1
-            _add_turn_record(turn_records, _turn_record(context, source="judge_error"))
+            _add_turn_record(
+                turn_records,
+                _turn_record(
+                    context,
+                    source="judge_error",
+                    question_id=str(score.question_id),
+                    threadless=threadless,
+                ),
+            )
+            # The new judge's output is the only fact-verdict source on every path.
+            # It produced none here, so the row carries none: keeping the source
+            # row's verdicts would present the OLD judge's per-fact calls as this
+            # generation's. Everything else replayed (history, facts, transcripts)
+            # stays, so the row can be manually re-scored from its own context.
+            error_context = {k: v for k, v in context.items() if k != "fact_verdicts"}
             db.add_score(
                 run_id=new_run.id,
                 question_id=score.question_id,
                 source="judge_error",
                 question_text=score.question_text,
                 answer_text=score.answer_text,
-                context=context,
+                context=error_context,
                 context_completeness=score.context_completeness,
                 duration_ms=score.duration_ms,
                 justifications={"error": "Rejudge failed to produce valid scores"},
@@ -280,12 +330,24 @@ async def rejudge_run(
             _turn_record(
                 context,
                 source="judge",
+                question_id=str(score.question_id),
+                threadless=threadless,
                 composite=judge_result.composite,
                 answerable=judge_result.answerable,
                 scores=judge_result.scores,
             ),
         )
         rescored += 1
+
+    if threadless and is_multiturn:
+        # These rows persist in the new run; they just cannot be grouped into a
+        # thread, so they reach no composite. Naming them is the only way an
+        # unexplained drop in a thread's turn count is traceable.
+        logger.warning(
+            f"Rejudge run {new_run.id}: {len(threadless)} turn row(s) have no "
+            f"context.thread_id and are excluded from the multiturn summary: "
+            f"{', '.join(threadless)}"
+        )
 
     new_summary, avg_scores, avg_composite = _rebuild_summary(
         all_scores, turn_records, is_multiturn=is_multiturn
