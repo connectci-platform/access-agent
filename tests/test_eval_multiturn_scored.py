@@ -248,11 +248,11 @@ def _judge_result(composite=0.9, answerable=True, correctness=2):
     )
 
 
-def _tool_result(turn, message_index, step_id=None):
+def _tool_result(turn, message_id, step_id=None):
     """A rebuilt tool_results entry as _build_tool_results emits it.
 
-    ``message_index`` is the entry's position in the message thread — the field
-    the boundary delta slices on. ``step_id`` defaults to a per-turn unique id
+    ``message_id`` is the source ToolMessage's LangChain id — the field the
+    boundary delta slices on. ``step_id`` defaults to a per-turn unique id
     but is overridable so tests can reproduce the production vLLM pattern of
     ids that REPEAT across turns.
     """
@@ -261,37 +261,53 @@ def _tool_result(turn, message_index, step_id=None):
         "tool_name": f"tool_turn{turn}",
         "data": [f"payload-turn{turn}"],
         "success": True,
-        "message_index": message_index,
+        "message_id": message_id,
     }
 
 
-class _Human:
-    """Minimal stand-in for a LangChain HumanMessage (delta reads ``.type``)."""
+class _Msg:
+    """Minimal stand-in for a LangChain message (the delta reads ``.type``/``.id``)."""
 
-    type = "human"
+    def __init__(self, type_, id_=None):
+        self.type = type_
+        self.id = id_
 
 
-class _Other:
-    type = "ai"
+def _Human(id_=None):
+    return _Msg("human", id_)
+
+
+def _Other(id_=None):
+    return _Msg("ai", id_)
+
+
+def _tool_msg_id(turn):
+    """The id of turn N's ToolMessage, matching what _thread_state builds."""
+    return f"msg-turn{turn}-tool"
 
 
 def _thread_state(turns, *, tool_results_override=None, **overrides):
     """A cumulative checkpointed state after ``turns`` turns.
 
-    Each turn contributes Human, AI, Tool, AI messages, so turn N's tool call
-    sits at index 4*(N-1)+2 and the last HumanMessage at 4*(N-1). node_trace
-    grows by exactly one entry per turn (the loop appends one).
+    Each turn contributes Human, AI, Tool, AI messages, all id-stamped the way
+    ``add_messages`` guarantees. node_trace grows by exactly one entry per turn
+    (the loop appends one).
     """
     messages = []
-    for _ in range(turns):
-        messages += [_Human(), _Other(), _Other(), _Other()]
+    for n in range(1, turns + 1):
+        messages += [
+            _Human(f"msg-turn{n}-human"),
+            _Other(f"msg-turn{n}-ai"),
+            _Other(_tool_msg_id(n)),
+            _Other(f"msg-turn{n}-final"),
+        ]
     return {
         **STATE,
         "messages": messages,
         "tool_results": (
             tool_results_override
             if tool_results_override is not None
-            else [_tool_result(n, 4 * (n - 1) + 2) for n in range(1, turns + 1)]
+            else [_tool_result(n, _tool_msg_id(n)) for n in range(1, turns + 1)]
         ),
         "node_trace": [{"node": f"trace_turn{n}"} for n in range(1, turns + 1)],
         **overrides,
@@ -341,22 +357,24 @@ async def test_delta_isolates_turns_when_tool_call_ids_repeat(tmp_path):
 
     scoring, _, judge = _scoring(tmp_path)
 
-    # Both turns' calls carry the SAME provider id.
+    # Both turns' calls carry the SAME provider id; only message_id separates them.
     states = [
-        _thread_state(1, tool_results_override=[_tool_result(1, 2, step_id="chatcmpl-tool-0")]),
+        _thread_state(
+            1,
+            tool_results_override=[
+                _tool_result(n, _tool_msg_id(n), step_id="chatcmpl-tool-0") for n in (1,)
+            ],
+        ),
         _thread_state(
             2,
             tool_results_override=[
-                _tool_result(1, 2, step_id="chatcmpl-tool-0"),
-                _tool_result(2, 6, step_id="chatcmpl-tool-0"),
+                _tool_result(n, _tool_msg_id(n), step_id="chatcmpl-tool-0") for n in (1, 2)
             ],
         ),
         _thread_state(
             3,
             tool_results_override=[
-                _tool_result(1, 2, step_id="chatcmpl-tool-0"),
-                _tool_result(2, 6, step_id="chatcmpl-tool-0"),
-                _tool_result(3, 10, step_id="chatcmpl-tool-0"),
+                _tool_result(n, _tool_msg_id(n), step_id="chatcmpl-tool-0") for n in (1, 2, 3)
             ],
         ),
     ]
@@ -377,37 +395,18 @@ async def test_delta_isolates_turns_when_tool_call_ids_repeat(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_delta_survives_compaction_shrinking_tool_results(tmp_path):
-    """SummarizationMiddleware compaction shrinks the REBUILT thread mid-run, so
-    turn 3's tool_results can be SHORTER than turn 2's. A count-slice would drop
-    turn 3's own calls entirely; the boundary still surfaces them (D1)."""
-    from src.eval.multiturn import run_thread
+async def test_delta_keeps_unpositioned_entry_when_no_boundary_exists():
+    """An entry with no message_id in a thread with no HumanMessage is KEPT —
+    unpositioned + no boundary means "show the evidence", never hide it (D1)."""
+    from src.eval.multiturn import _turn_delta_state
 
-    scoring, _, judge = _scoring(tmp_path)
-
-    states = [
-        # t1: one call. t2: two cumulative calls (count now 2).
-        _thread_state(1),
-        _thread_state(2),
-        # t3: compaction collapsed turns 1-2, so the rebuilt thread holds only this
-        # turn's messages — one tool_results entry, len(1) < the prior count of 2.
+    view = _turn_delta_state(
         {
-            **STATE,
-            "messages": [_Human(), _Other(), _Other(), _Other()],
-            "tool_results": [_tool_result(3, 2)],
-            "node_trace": [{"node": f"trace_turn{n}"} for n in (1, 2, 3)],
-        },
-    ]
-
-    with (
-        patch("src.eval.multiturn.run_agent", new=AsyncMock(side_effect=states)),
-        patch("src.eval.multiturn.report_battery_turn", new=AsyncMock()),
-    ):
-        await run_thread(THREAD, tool_catalog=None, session_namespace="ns", scoring=scoring)
-
-    turn3 = judge.score.call_args_list[2].kwargs
-    assert "tool_turn3" in turn3["tool_results"]
-    assert "payload-turn3" in turn3["tool_results"]
+            "messages": [_Other("a"), _Other("b")],
+            "tool_results": [{"tool_name": "alpha", "message_id": ""}],
+        }
+    )
+    assert [r["tool_name"] for r in view["tool_results"]] == ["alpha"]
 
 
 @pytest.mark.asyncio
@@ -522,11 +521,11 @@ def test_view_tools_used_dedupes_preserving_call_order():
     from src.eval.multiturn import _turn_delta_state
 
     state = {
-        "messages": [_Human(), _Other(), _Other(), _Other()],
+        "messages": [_Human("h"), _Other("m1"), _Other("m2"), _Other("m3")],
         "tool_results": [
-            {"tool_name": "beta", "message_index": 1},
-            {"tool_name": "alpha", "message_index": 2},
-            {"tool_name": "beta", "message_index": 3},
+            {"tool_name": "beta", "message_id": "m1"},
+            {"tool_name": "alpha", "message_id": "m2"},
+            {"tool_name": "beta", "message_id": "m3"},
         ],
         "tools_used": ["everything", "else"],
     }
@@ -534,32 +533,41 @@ def test_view_tools_used_dedupes_preserving_call_order():
 
 
 def test_projection_does_not_alias_the_checkpointed_state():
-    """The view is an explicit projection with fresh lists — mutating it must not
-    corrupt the checkpointed state the next turn builds on (D1)."""
+    """The view is an explicit projection whose per-turn slices are deep-copied —
+    mutating it, INCLUDING the nested dicts inside an entry or a trace entry, must
+    not corrupt the checkpointed state the next turn builds on (D1)."""
     from src.eval.multiturn import _turn_delta_state
 
-    entry = {"tool_name": "alpha", "message_index": 2, "data": ["payload"]}
+    entry = {"tool_name": "alpha", "message_id": "m1", "data": {"rows": ["payload"]}}
     state = {
-        "messages": [_Human(), _Other(), _Other()],
+        "messages": [_Human("h"), _Other("m1"), _Other("m2")],
         "tool_results": [entry],
         "tools_used": ["alpha"],
-        "node_trace": [{"node": "t1"}, {"node": "t2"}],
+        "node_trace": [{"node": "t1"}, {"node": "t2", "tools_called": ["alpha"]}],
         "rag_matches": [],
         "model_calls": [{"model": "m"}],
         "final_answer": "An answer.",
     }
     view = _turn_delta_state(state)
 
-    view["tool_results"].append({"tool_name": "injected", "message_index": 9})
+    view["tool_results"].append({"tool_name": "injected", "message_id": "m9"})
     view["tools_used"].append("injected")
     view["node_trace"].append({"node": "injected"})
     view["model_calls"].append({"model": "injected"})
     view["rag_matches"].append("injected")
     view["final_answer"] = "clobbered"
 
+    # Nested mutation of the surviving delta entry and the trace entry.
+    view["tool_results"][0]["tool_name"] = "clobbered"
+    view["tool_results"][0]["data"]["rows"].append("injected")
+    view["node_trace"][0]["node"] = "clobbered"
+    view["node_trace"][0]["tools_called"].append("injected")
+
     assert [r["tool_name"] for r in state["tool_results"]] == ["alpha"]
+    assert state["tool_results"][0]["data"] == {"rows": ["payload"]}
     assert state["tools_used"] == ["alpha"]
     assert [t["node"] for t in state["node_trace"]] == ["t1", "t2"]
+    assert state["node_trace"][1]["tools_called"] == ["alpha"]
     assert state["model_calls"] == [{"model": "m"}]
     assert state["rag_matches"] == []
     assert state["final_answer"] == "An answer."

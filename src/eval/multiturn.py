@@ -42,12 +42,13 @@ grows across the thread (``tool_results`` is rebuilt each turn from the full
 ordered message thread; ``node_trace`` appends via its reducer), so the runner
 formats only this turn's new entries. The delta is boundary-based and
 stateless: every turn starts with the user's HumanMessage, so this turn's tool
-results are those whose ``message_index`` falls past the LAST HumanMessage in
-the thread, its trace is the final ``node_trace`` entry, and its ``tools_used``
-is derived from that delta. No cross-turn baseline exists to go stale — which
-matters because provider tool_call_ids repeat on the production vLLM path,
-compaction shrinks the rebuilt list, and a turn can raise after its calls were
-already checkpointed. The same delta view feeds the turn report, so a turn's
+results are those whose source ``message_id`` appears past the LAST HumanMessage
+in the outer merged thread, its trace is the final ``node_trace`` entry, and its
+``tools_used`` is derived from that delta. Message ids, not positions, are what
+survive the ``add_messages`` merge and compaction's rewrite of the inner list.
+No cross-turn baseline exists to go stale — which matters because provider
+tool_call_ids repeat on the production vLLM path, compaction shrinks the rebuilt
+list, and a turn can raise after its calls were already checkpointed. The same delta view feeds the turn report, so a turn's
 ``invoked_write``/capabilities are never inherited from an earlier turn. Prior
 turns reach the judge only through the conversation history — cumulative tool
 payloads would present old calls as support for the current answer.
@@ -73,6 +74,7 @@ The harness writes to ``stdout`` and returns a structured result list and
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import secrets
@@ -135,6 +137,22 @@ def _last_human_index(messages: Any) -> int:
     return boundary
 
 
+def _current_turn_message_ids(messages: Any) -> set[str]:
+    """Ids of the messages appearing AFTER the last HumanMessage in ``messages``.
+
+    ``messages`` must be the OUTER merged ``state["messages"]`` — the list whose
+    ids ``tool_results`` entries are compared against.
+    """
+    ordered = list(messages or [])
+    boundary = _last_human_index(ordered)
+    ids: set[str] = set()
+    for msg in ordered[boundary + 1 :]:
+        msg_id = msg.get("id") if isinstance(msg, dict) else getattr(msg, "id", None)
+        if msg_id:
+            ids.add(str(msg_id))
+    return ids
+
+
 def _turn_delta_state(state: Any) -> dict[str, Any]:
     """Project the cumulative agent state down to THIS turn's new activity (D1).
 
@@ -145,14 +163,34 @@ def _turn_delta_state(state: Any) -> dict[str, Any]:
     The slice is **boundary-based and stateless** — derived wholly from the
     state at hand, with no cross-turn bookkeeping that could go stale:
 
-    - ``tool_results``: entries whose ``message_index`` (written by
-      ``_build_tool_results``) is past the last HumanMessage in
-      ``state["messages"]``. Identity diffing would be wrong — the production
-      vLLM path emits deterministic tool_call ids (``chatcmpl-tool-0``) that
-      repeat every turn, which would silently empty the delta. Count-slicing
-      would be wrong — compaction shrinks the rebuilt list. An advancing
-      baseline would be wrong — a turn can raise *after* the checkpoint durably
-      committed its calls, leaking them into the next turn's delta.
+    - ``tool_results``: entries whose ``message_id`` (their source ToolMessage's
+      LangChain id, written by ``_build_tool_results``) is in the set of ids
+      appearing after the last HumanMessage of ``state["messages"]``.
+
+      The id — not a position — is what crosses the two lists. ``_build_tool_results``
+      stamps against the INNER list ``create_agent`` returns, which compaction may
+      have rewritten; the boundary here reads the OUTER merged list, which never
+      shrinks (compaction's ``RemoveMessage`` is consumed inside the inner subgraph)
+      and adopts the summary HumanMessage as its last human. Comparing positions
+      across the two silently empties every post-compaction turn's delta. Under the
+      id-keyed ``add_messages`` merge, preserved old messages keep their original
+      pre-boundary positions while this turn's messages append after the boundary,
+      so the slice is correct with and without compaction.
+
+      Diffing on ``step_id`` (the provider tool_call_id) would be wrong — the
+      production vLLM path emits deterministic ids (``chatcmpl-tool-0``) that repeat
+      every turn, silently emptying the delta. Count-slicing would be wrong —
+      compaction shrinks the rebuilt list. An advancing baseline would be wrong — a
+      turn can raise *after* the checkpoint durably committed its calls, leaking them
+      into the next turn's delta.
+
+      An entry with a missing/empty ``message_id`` is KEPT, whether or not a
+      HumanMessage boundary exists. With no boundary the spec is explicit
+      (unpositioned + no human → show the evidence rather than hide it); with a
+      boundary present, an unpositioned entry still cannot be *attributed* to a
+      prior turn, so keeping it stays conservative toward showing this turn's
+      evidence. Over-showing costs judge-prompt noise; under-showing would present
+      a turn as unsupported when it actually called tools.
     - ``node_trace``: the loop appends exactly one entry per turn (a single
       literal in tool_calling_loop's return, and the loop is the only graph
       node), so this turn's trace is the final entry.
@@ -160,9 +198,13 @@ def _turn_delta_state(state: Any) -> dict[str, Any]:
       The state's own ``tools_used`` is a full-thread rescan and must not reach
       the judge or the turn reports.
 
-    The projection is **explicit**, not a shallow copy: it aliases nothing in
-    the checkpointed state, so a consumer mutating it cannot corrupt the next
-    turn. Keys are exactly what the two consumers read —
+    The projection is **explicit**, not a shallow copy, and it aliases nothing a
+    consumer could reach: the ``tool_results`` and ``node_trace`` slices are
+    deep-copied, so mutating the view — including the nested dicts inside an entry
+    — cannot corrupt the checkpointed state the next turn builds on.
+    ``rag_matches`` and ``model_calls`` are fresh lists whose elements are still
+    shared; neither consumer mutates them, and both are pass-throughs rather than
+    per-turn slices. Keys are exactly what the two consumers read —
     ``src/eval/formatting.py`` (``rag_matches``, ``tool_results``,
     ``node_trace``) and ``report_battery_turn`` → ``_assemble_turn_report``
     (``tool_results``, ``tools_used``, ``resource_context``, ``total_tokens``,
@@ -174,11 +216,14 @@ def _turn_delta_state(state: Any) -> dict[str, Any]:
     default. Should a node start populating it cumulatively, it needs the same
     boundary treatment.
     """
-    boundary = _last_human_index(state.get("messages", []))
+    turn_message_ids = _current_turn_message_ids(state.get("messages", []))
     delta_tool_results = [
-        entry
+        copy.deepcopy(entry)
         for entry in state.get("tool_results", []) or []
-        if _entry_field(entry, "message_index", -1) > boundary
+        # Unpositioned entries are kept (see docstring); positioned ones must
+        # belong to a message that appears after this turn's boundary.
+        if not _entry_field(entry, "message_id", "")
+        or str(_entry_field(entry, "message_id", "")) in turn_message_ids
     ]
 
     delta_tools_used: list[str] = []
@@ -192,7 +237,7 @@ def _turn_delta_state(state: Any) -> dict[str, Any]:
         "final_answer": state.get("final_answer"),
         "tool_results": delta_tool_results,
         "tools_used": delta_tools_used,
-        "node_trace": node_trace[-1:],
+        "node_trace": copy.deepcopy(node_trace[-1:]),
         "rag_matches": list(state.get("rag_matches", []) or []),
         "model_calls": list(state.get("model_calls", []) or []),
         "resource_context": state.get("resource_context"),
