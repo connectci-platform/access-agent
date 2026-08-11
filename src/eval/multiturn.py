@@ -40,10 +40,14 @@ persisted to eval_runs/eval_scores.
 Judge context is per-turn, not cumulative. Under checkpointing the agent state
 grows across the thread (``tool_results`` is rebuilt each turn from the full
 ordered message thread; ``node_trace`` appends via its reducer), so the runner
-formats only this turn's new entries: ``tool_results`` diffed by tool-call
-identity (compaction can SHRINK the rebuilt list, so a count-slice would hide
-the current turn's calls) and ``node_trace`` by count (reducer-appended, never
-rebuilt). The same delta view feeds the turn report, so a turn's
+formats only this turn's new entries. The delta is boundary-based and
+stateless: every turn starts with the user's HumanMessage, so this turn's tool
+results are those whose ``message_index`` falls past the LAST HumanMessage in
+the thread, its trace is the final ``node_trace`` entry, and its ``tools_used``
+is derived from that delta. No cross-turn baseline exists to go stale — which
+matters because provider tool_call_ids repeat on the production vLLM path,
+compaction shrinks the rebuilt list, and a turn can raise after its calls were
+already checkpointed. The same delta view feeds the turn report, so a turn's
 ``invoked_write``/capabilities are never inherited from an earlier turn. Prior
 turns reach the judge only through the conversation history — cumulative tool
 payloads would present old calls as support for the current answer.
@@ -102,57 +106,97 @@ FAILED_TURN_MARKER = "(no answer — turn failed)"
 DRAFT_FACT_MARKER = "AUTHOR:"
 
 
-def _tool_call_identity(entry: Any) -> str | None:
-    """The tool-call id a rebuilt tool_results entry carries.
+def _entry_field(entry: Any, name: str, default: Any) -> Any:
+    """Read a field off a rebuilt tool_results entry.
 
-    ``_build_tool_results`` (src/agent/nodes/tool_calling_loop.py) anchors every
-    entry to its originating AIMessage tool_call and stores that id as
-    ``step_id`` — orphan ToolMessages are dropped rather than given a synthetic
-    id, so every surviving entry has one. Entries arrive as ToolResult models
-    from the agent and as plain dicts from tests/fixtures.
+    Entries arrive as ``ToolResult`` models from the agent and as plain dicts
+    from tests/fixtures, so both shapes are read the same way.
     """
-    value = entry.get("step_id") if isinstance(entry, dict) else getattr(entry, "step_id", None)
-    return str(value) if value else None
+    value = entry.get(name, default) if isinstance(entry, dict) else getattr(entry, name, default)
+    return default if value is None else value
 
 
-def _turn_delta_state(
-    state: Any, seen_tool_call_ids: set[str], prior_node_trace: int
-) -> dict[str, Any]:
+def _last_human_index(messages: Any) -> int:
+    """Index of the LAST HumanMessage in the thread, or -1 if there is none.
+
+    Every turn begins with the user's HumanMessage, so this index is the
+    turn boundary: everything after it is this turn's activity. Recognises
+    LangChain message objects (``type == "human"``) and the dict form
+    (``{"role"|"type": "human"|"user"}``) that fixtures use.
+    """
+    boundary = -1
+    for i, msg in enumerate(messages or []):
+        if isinstance(msg, dict):
+            kind = msg.get("type") or msg.get("role")
+        else:
+            kind = getattr(msg, "type", None)
+        if kind in ("human", "user"):
+            boundary = i
+    return boundary
+
+
+def _turn_delta_state(state: Any) -> dict[str, Any]:
     """Project the cumulative agent state down to THIS turn's new activity (D1).
 
     Under checkpointing the state the agent returns is thread-cumulative:
     ``tool_results`` is *rebuilt* each turn from the full ordered message thread
     and ``node_trace`` appends via its ``operator.add`` reducer.
 
-    ``tool_results`` is diffed by tool-call **identity**, not by count.
-    SummarizationMiddleware compaction shrinks the rebuilt thread mid-run, so a
-    prior turn's count can exceed the post-compaction rebuild and a count-slice
-    would drop the current turn's own calls — on exactly the post-compaction
-    turn the compaction battery exists to measure. ``node_trace`` is never
-    rebuilt from messages (it is reducer-appended and compaction-immune), so
-    count-slicing stays valid there.
+    The slice is **boundary-based and stateless** — derived wholly from the
+    state at hand, with no cross-turn bookkeeping that could go stale:
 
-    An entry with no resolvable identity is treated as new: presenting an
-    unattributable call to the judge is the safer failure than hiding this
-    turn's evidence.
+    - ``tool_results``: entries whose ``message_index`` (written by
+      ``_build_tool_results``) is past the last HumanMessage in
+      ``state["messages"]``. Identity diffing would be wrong — the production
+      vLLM path emits deterministic tool_call ids (``chatcmpl-tool-0``) that
+      repeat every turn, which would silently empty the delta. Count-slicing
+      would be wrong — compaction shrinks the rebuilt list. An advancing
+      baseline would be wrong — a turn can raise *after* the checkpoint durably
+      committed its calls, leaking them into the next turn's delta.
+    - ``node_trace``: the loop appends exactly one entry per turn (a single
+      literal in tool_calling_loop's return, and the loop is the only graph
+      node), so this turn's trace is the final entry.
+    - ``tools_used``: derived from the delta tool_results in call order, deduped.
+      The state's own ``tools_used`` is a full-thread rescan and must not reach
+      the judge or the turn reports.
 
-    The result is a shallow copy of the full state with those two lists
-    replaced, so downstream consumers (judge formatting AND the turn report)
-    still see ``final_answer``/``tools_used``/``total_tokens`` while seeing only
-    this turn's tool activity. ``rag_matches`` is NOT sliced: no node on the
-    current path writes it (see src/agent/state.py), so it is always the empty
-    per-turn default. Should a node start populating it cumulatively, it needs
-    the same treatment.
+    The projection is **explicit**, not a shallow copy: it aliases nothing in
+    the checkpointed state, so a consumer mutating it cannot corrupt the next
+    turn. Keys are exactly what the two consumers read —
+    ``src/eval/formatting.py`` (``rag_matches``, ``tool_results``,
+    ``node_trace``) and ``report_battery_turn`` → ``_assemble_turn_report``
+    (``tool_results``, ``tools_used``, ``resource_context``, ``total_tokens``,
+    ``final_answer``, ``node_trace``, ``model_calls``). Adding a key here is
+    required when either consumer starts reading a new one.
+
+    ``rag_matches`` is passed through un-sliced: no node on the current path
+    writes it (see src/agent/state.py), so it is always the empty per-turn
+    default. Should a node start populating it cumulatively, it needs the same
+    boundary treatment.
     """
+    boundary = _last_human_index(state.get("messages", []))
     delta_tool_results = [
         entry
         for entry in state.get("tool_results", []) or []
-        if (identity := _tool_call_identity(entry)) is None or identity not in seen_tool_call_ids
+        if _entry_field(entry, "message_index", -1) > boundary
     ]
+
+    delta_tools_used: list[str] = []
+    for entry in delta_tool_results:
+        name = _entry_field(entry, "tool_name", None)
+        if name and name not in delta_tools_used:
+            delta_tools_used.append(str(name))
+
+    node_trace = list(state.get("node_trace", []) or [])
     return {
-        **dict(state),
+        "final_answer": state.get("final_answer"),
         "tool_results": delta_tool_results,
-        "node_trace": list(state.get("node_trace", []) or [])[prior_node_trace:],
+        "tools_used": delta_tools_used,
+        "node_trace": node_trace[-1:],
+        "rag_matches": list(state.get("rag_matches", []) or []),
+        "model_calls": list(state.get("model_calls", []) or []),
+        "resource_context": state.get("resource_context"),
+        "total_tokens": state.get("total_tokens"),
     }
 
 
@@ -266,10 +310,6 @@ async def run_thread(
     result = ThreadResult(thread_id=thread_id, description=description)
     session_id = f"eval_{session_namespace}_{thread_id}"
     history: list[tuple[str, str]] = []
-    # Delta baseline over the thread-cumulative agent state (D1): tool_results is
-    # diffed by tool-call identity (compaction-safe), node_trace by count.
-    seen_tool_call_ids: set[str] = set()
-    prior_node_trace = 0
 
     logger.info(f"=== Thread {thread_id}: {description} ===")
     logger.info(f"Turns: {len(questions)}")
@@ -330,10 +370,8 @@ async def run_thread(
 
         # This turn's activity only — the same view the judge and the turn report see,
         # so a turn's report can't be credited with an earlier turn's tool calls.
-        # On the exception path there is no state, so the delta is empty by construction.
-        turn_state = (
-            _turn_delta_state(state, seen_tool_call_ids, prior_node_trace) if returned_state else {}
-        )
+        # On the exception path there is no state at all, so the view is empty.
+        turn_state = _turn_delta_state(state) if returned_state else {}
 
         if scoring is not None:
             await _score_turn(
@@ -348,15 +386,6 @@ async def run_thread(
                 history=history,
                 resolved_facts=resolved_facts,
             )
-
-        # Advance the delta baseline whenever run_agent RETURNED state — an
-        # empty-answer turn still grew the checkpoint, so its calls must not resurface
-        # as the next turn's context. Only the exception path (no state) leaves it put.
-        if returned_state:
-            for entry in state.get("tool_results", []) or []:
-                if (identity := _tool_call_identity(entry)) is not None:
-                    seen_tool_call_ids.add(identity)
-            prior_node_trace = len(state.get("node_trace", []) or [])
 
         history.append(
             (question_text, turn_result.answer if turn_result.success else FAILED_TURN_MARKER)

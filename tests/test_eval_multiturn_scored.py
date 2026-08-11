@@ -248,13 +248,53 @@ def _judge_result(composite=0.9, answerable=True, correctness=2):
     )
 
 
-def _tool_result(turn):
-    """A rebuilt tool_results entry, keyed by its originating tool_call id (step_id)."""
+def _tool_result(turn, message_index, step_id=None):
+    """A rebuilt tool_results entry as _build_tool_results emits it.
+
+    ``message_index`` is the entry's position in the message thread — the field
+    the boundary delta slices on. ``step_id`` defaults to a per-turn unique id
+    but is overridable so tests can reproduce the production vLLM pattern of
+    ids that REPEAT across turns.
+    """
     return {
-        "step_id": f"call-turn{turn}",
+        "step_id": step_id or f"call-turn{turn}",
         "tool_name": f"tool_turn{turn}",
         "data": [f"payload-turn{turn}"],
         "success": True,
+        "message_index": message_index,
+    }
+
+
+class _Human:
+    """Minimal stand-in for a LangChain HumanMessage (delta reads ``.type``)."""
+
+    type = "human"
+
+
+class _Other:
+    type = "ai"
+
+
+def _thread_state(turns, *, tool_results_override=None, **overrides):
+    """A cumulative checkpointed state after ``turns`` turns.
+
+    Each turn contributes Human, AI, Tool, AI messages, so turn N's tool call
+    sits at index 4*(N-1)+2 and the last HumanMessage at 4*(N-1). node_trace
+    grows by exactly one entry per turn (the loop appends one).
+    """
+    messages = []
+    for _ in range(turns):
+        messages += [_Human(), _Other(), _Other(), _Other()]
+    return {
+        **STATE,
+        "messages": messages,
+        "tool_results": (
+            tool_results_override
+            if tool_results_override is not None
+            else [_tool_result(n, 4 * (n - 1) + 2) for n in range(1, turns + 1)]
+        ),
+        "node_trace": [{"node": f"trace_turn{n}"} for n in range(1, turns + 1)],
+        **overrides,
     }
 
 
@@ -267,14 +307,7 @@ async def test_judge_context_is_per_turn_delta_not_cumulative(tmp_path):
     scoring, _, judge = _scoring(tmp_path)
 
     # Distinguishable, growing state: turn N's state holds turns 1..N's entries.
-    states = [
-        {
-            **STATE,
-            "tool_results": [_tool_result(n) for n in range(1, turn + 1)],
-            "node_trace": [{"node": f"trace_turn{n}"} for n in range(1, turn + 1)],
-        }
-        for turn in (1, 2, 3)
-    ]
+    states = [_thread_state(turn) for turn in (1, 2, 3)]
 
     with (
         patch("src.eval.multiturn.run_agent", new=AsyncMock(side_effect=states)),
@@ -287,6 +320,7 @@ async def test_judge_context_is_per_turn_delta_not_cumulative(tmp_path):
     assert "payload-turn2" in turn2["tool_results"]
     # Turn 1's cumulative entries must NOT appear as support for turn 2's answer.
     assert "tool_turn1" not in turn2["tool_results"]
+    # node_trace delta is the FINAL entry (the loop appends exactly one per turn).
     assert "trace_turn2" in turn2["node_trace"]
     assert "trace_turn1" not in turn2["node_trace"]
 
@@ -294,24 +328,75 @@ async def test_judge_context_is_per_turn_delta_not_cumulative(tmp_path):
     assert "tool_turn3" in turn3["tool_results"]
     assert "tool_turn1" not in turn3["tool_results"]
     assert "tool_turn2" not in turn3["tool_results"]
+    assert "trace_turn3" in turn3["node_trace"]
+    assert "trace_turn2" not in turn3["node_trace"]
+
+
+@pytest.mark.asyncio
+async def test_delta_isolates_turns_when_tool_call_ids_repeat(tmp_path):
+    """The production vLLM path emits deterministic tool_call ids (chatcmpl-tool-0)
+    that REPEAT every turn. An identity diff would silently empty turn 2's delta;
+    the boundary mechanism doesn't consult ids at all (D1)."""
+    from src.eval.multiturn import run_thread
+
+    scoring, _, judge = _scoring(tmp_path)
+
+    # Both turns' calls carry the SAME provider id.
+    states = [
+        _thread_state(1, tool_results_override=[_tool_result(1, 2, step_id="chatcmpl-tool-0")]),
+        _thread_state(
+            2,
+            tool_results_override=[
+                _tool_result(1, 2, step_id="chatcmpl-tool-0"),
+                _tool_result(2, 6, step_id="chatcmpl-tool-0"),
+            ],
+        ),
+        _thread_state(
+            3,
+            tool_results_override=[
+                _tool_result(1, 2, step_id="chatcmpl-tool-0"),
+                _tool_result(2, 6, step_id="chatcmpl-tool-0"),
+                _tool_result(3, 10, step_id="chatcmpl-tool-0"),
+            ],
+        ),
+    ]
+
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(side_effect=states)),
+        patch("src.eval.multiturn.report_battery_turn", new=AsyncMock()),
+    ):
+        await run_thread(THREAD, tool_catalog=None, session_namespace="ns", scoring=scoring)
+
+    turn2 = judge.score.call_args_list[1].kwargs
+    assert "tool_turn2" in turn2["tool_results"]
+    assert "tool_turn1" not in turn2["tool_results"]
+
+    turn3 = judge.score.call_args_list[2].kwargs
+    assert "tool_turn3" in turn3["tool_results"]
+    assert "tool_turn2" not in turn3["tool_results"]
 
 
 @pytest.mark.asyncio
 async def test_delta_survives_compaction_shrinking_tool_results(tmp_path):
-    """SummarizationMiddleware compaction shrinks the REBUILT tool_results mid-thread,
-    so turn 3's list can be shorter than turn 2's count. A count-slice would drop
-    turn 3's own calls entirely; the identity diff still surfaces them (D1)."""
+    """SummarizationMiddleware compaction shrinks the REBUILT thread mid-run, so
+    turn 3's tool_results can be SHORTER than turn 2's. A count-slice would drop
+    turn 3's own calls entirely; the boundary still surfaces them (D1)."""
     from src.eval.multiturn import run_thread
 
     scoring, _, judge = _scoring(tmp_path)
 
     states = [
         # t1: one call. t2: two cumulative calls (count now 2).
-        {**STATE, "tool_results": [_tool_result(1)]},
-        {**STATE, "tool_results": [_tool_result(1), _tool_result(2)]},
-        # t3: compaction dropped turns 1-2 from the thread, so the rebuild holds ONE
-        # entry — this turn's — and len(1) < the prior count of 2.
-        {**STATE, "tool_results": [_tool_result(3)]},
+        _thread_state(1),
+        _thread_state(2),
+        # t3: compaction collapsed turns 1-2, so the rebuilt thread holds only this
+        # turn's messages — one tool_results entry, len(1) < the prior count of 2.
+        {
+            **STATE,
+            "messages": [_Human(), _Other(), _Other(), _Other()],
+            "tool_results": [_tool_result(3, 2)],
+            "node_trace": [{"node": f"trace_turn{n}"} for n in (1, 2, 3)],
+        },
     ]
 
     with (
@@ -326,18 +411,18 @@ async def test_delta_survives_compaction_shrinking_tool_results(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_empty_answer_turn_advances_the_delta_baseline(tmp_path):
+async def test_empty_answer_turns_calls_do_not_leak_into_the_next_turn(tmp_path):
     """A turn that returns state with no answer still grew the checkpoint — its calls
-    must not resurface as the NEXT turn's evidence (D1 baseline rule)."""
+    must not resurface as the NEXT turn's evidence (D1)."""
     from src.eval.multiturn import run_thread
 
     scoring, _, judge = _scoring(tmp_path)
 
     states = [
         # t1 ran a tool but produced no answer (success=False, no exception).
-        {**STATE, "final_answer": "", "tool_results": [_tool_result(1)]},
-        {**STATE, "tool_results": [_tool_result(1), _tool_result(2)]},
-        {**STATE, "tool_results": [_tool_result(1), _tool_result(2), _tool_result(3)]},
+        _thread_state(1, final_answer=""),
+        _thread_state(2),
+        _thread_state(3),
     ]
 
     with (
@@ -353,6 +438,38 @@ async def test_empty_answer_turn_advances_the_delta_baseline(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_post_checkpoint_exception_does_not_leak_into_next_turn(tmp_path):
+    """Turn N's calls can be durably checkpointed BEFORE turn N raises (the graph
+    writes state before tail work that can fail), so they show up in turn N+1's
+    cumulative state. Any advancing baseline would miss them because the raising
+    turn never advanced it; the boundary derivation never had one (D1)."""
+    from src.eval.multiturn import run_thread
+
+    scoring, _, judge = _scoring(tmp_path)
+
+    async def agent(**kwargs):
+        if kwargs["question_id"].endswith("_t2"):
+            # t2's calls WERE committed to the checkpoint, then the turn raised.
+            raise RuntimeError("boom after checkpoint write")
+        if kwargs["question_id"].endswith("_t1"):
+            return _thread_state(1)
+        # t3's cumulative state carries t2's committed messages AND results.
+        return _thread_state(3)
+
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(side_effect=agent)),
+        patch("src.eval.multiturn.report_battery_turn", new=AsyncMock()),
+    ):
+        await run_thread(THREAD, tool_catalog=None, session_namespace="ns", scoring=scoring)
+
+    # t2 raised (persisted skipped, not judged), so t3 is the second judge call.
+    turn3 = judge.score.call_args_list[1].kwargs
+    assert "tool_turn3" in turn3["tool_results"]
+    assert "tool_turn2" not in turn3["tool_results"]
+    assert "tool_turn1" not in turn3["tool_results"]
+
+
+@pytest.mark.asyncio
 async def test_turn_reports_carry_only_that_turns_tool_calls(tmp_path):
     """report_battery_turn gets the same delta view the judge does, so turn 2's report
     can't be credited with turn 1's calls (invoked_write / capability inference)."""
@@ -360,10 +477,7 @@ async def test_turn_reports_carry_only_that_turns_tool_calls(tmp_path):
 
     scoring, _, _ = _scoring(tmp_path)
     reporter = AsyncMock()
-    states = [
-        {**STATE, "tool_results": [_tool_result(n) for n in range(1, turn + 1)]}
-        for turn in (1, 2, 3)
-    ]
+    states = [_thread_state(turn) for turn in (1, 2, 3)]
 
     with (
         patch("src.eval.multiturn.run_agent", new=AsyncMock(side_effect=states)),
@@ -375,8 +489,80 @@ async def test_turn_reports_carry_only_that_turns_tool_calls(tmp_path):
         [r["tool_name"] for r in c.kwargs["state"]["tool_results"]] for c in reporter.call_args_list
     ]
     assert reported == [["tool_turn1"], ["tool_turn2"], ["tool_turn3"]]
-    # The rest of the state still rides along — the report needs final_answer/tools_used.
+    # The rest of the projection still rides along — the report needs final_answer.
     assert reporter.call_args_list[1].kwargs["state"]["final_answer"] == "An answer."
+
+
+@pytest.mark.asyncio
+async def test_view_tools_used_is_turn_scoped_not_the_cumulative_rescan(tmp_path):
+    """state["tools_used"] is a full-thread rescan; the per-turn view derives its own
+    from the delta tool_results, order-preserving and deduped (D1)."""
+    from src.eval.multiturn import run_thread
+
+    scoring, _, _ = _scoring(tmp_path)
+    reporter = AsyncMock()
+    # The cumulative rescan names every tool the thread ever called.
+    states = [
+        _thread_state(turn, tools_used=[f"tool_turn{n}" for n in range(1, turn + 1)])
+        for turn in (1, 2, 3)
+    ]
+
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(side_effect=states)),
+        patch("src.eval.multiturn.report_battery_turn", new=reporter),
+    ):
+        await run_thread(THREAD, tool_catalog=None, session_namespace="ns", scoring=scoring)
+
+    reported = [c.kwargs["state"]["tools_used"] for c in reporter.call_args_list]
+    assert reported == [["tool_turn1"], ["tool_turn2"], ["tool_turn3"]]
+
+
+def test_view_tools_used_dedupes_preserving_call_order():
+    """Two calls to the same tool in one turn collapse to one name, in call order."""
+    from src.eval.multiturn import _turn_delta_state
+
+    state = {
+        "messages": [_Human(), _Other(), _Other(), _Other()],
+        "tool_results": [
+            {"tool_name": "beta", "message_index": 1},
+            {"tool_name": "alpha", "message_index": 2},
+            {"tool_name": "beta", "message_index": 3},
+        ],
+        "tools_used": ["everything", "else"],
+    }
+    assert _turn_delta_state(state)["tools_used"] == ["beta", "alpha"]
+
+
+def test_projection_does_not_alias_the_checkpointed_state():
+    """The view is an explicit projection with fresh lists — mutating it must not
+    corrupt the checkpointed state the next turn builds on (D1)."""
+    from src.eval.multiturn import _turn_delta_state
+
+    entry = {"tool_name": "alpha", "message_index": 2, "data": ["payload"]}
+    state = {
+        "messages": [_Human(), _Other(), _Other()],
+        "tool_results": [entry],
+        "tools_used": ["alpha"],
+        "node_trace": [{"node": "t1"}, {"node": "t2"}],
+        "rag_matches": [],
+        "model_calls": [{"model": "m"}],
+        "final_answer": "An answer.",
+    }
+    view = _turn_delta_state(state)
+
+    view["tool_results"].append({"tool_name": "injected", "message_index": 9})
+    view["tools_used"].append("injected")
+    view["node_trace"].append({"node": "injected"})
+    view["model_calls"].append({"model": "injected"})
+    view["rag_matches"].append("injected")
+    view["final_answer"] = "clobbered"
+
+    assert [r["tool_name"] for r in state["tool_results"]] == ["alpha"]
+    assert state["tools_used"] == ["alpha"]
+    assert [t["node"] for t in state["node_trace"]] == ["t1", "t2"]
+    assert state["model_calls"] == [{"model": "m"}]
+    assert state["rag_matches"] == []
+    assert state["final_answer"] == "An answer."
 
 
 @pytest.mark.asyncio
@@ -391,7 +577,7 @@ async def test_ran_but_failed_turn_reports_its_real_delta_state(tmp_path):
     async def agent(**kwargs):
         if kwargs["question_id"].endswith("_t2"):
             raise RuntimeError("boom")
-        return {**STATE, "final_answer": "", "tool_results": [_tool_result(1)]}
+        return _thread_state(1, final_answer="")
 
     with (
         patch("src.eval.multiturn.run_agent", new=AsyncMock(side_effect=agent)),
