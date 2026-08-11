@@ -76,6 +76,85 @@ def test_empty_question_rejected(tmp_path):
         load_thread_battery(_write(tmp_path, "b.yaml", bad))
 
 
+def test_bare_string_fact_rejected(tmp_path):
+    """Identity must be the fact_id, never the position — a bare string would be
+    numbered F1, F2, ... and reintroduce positional identity."""
+    from src.eval.multiturn import load_thread_battery
+
+    bad = [
+        {
+            "thread_id": "t",
+            "questions": [
+                {"turn_id": "t1", "question": "a?", "required_facts": ["a bare string fact"]}
+            ],
+        }
+    ]
+    with pytest.raises(ValueError, match="must be a mapping with 'fact_id' and 'fact_text'"):
+        load_thread_battery(_write(tmp_path, "b.yaml", bad))
+
+
+def test_fact_missing_fact_text_rejected(tmp_path):
+    from src.eval.multiturn import load_thread_battery
+
+    bad = [
+        {
+            "thread_id": "t",
+            "questions": [
+                {"turn_id": "t1", "question": "a?", "required_facts": [{"fact_id": "t-t1-a"}]}
+            ],
+        }
+    ]
+    with pytest.raises(ValueError, match="fact_text"):
+        load_thread_battery(_write(tmp_path, "b.yaml", bad))
+
+
+def test_duplicate_fact_ids_within_a_turn_rejected(tmp_path):
+    """Two facts sharing an id collapse to one DB row and one verdict."""
+    from src.eval.multiturn import load_thread_battery
+
+    bad = [
+        {
+            "thread_id": "t",
+            "questions": [
+                {
+                    "turn_id": "t1",
+                    "question": "a?",
+                    "required_facts": [
+                        {"fact_id": "t-t1-a", "fact_text": "one"},
+                        {"fact_id": "t-t1-a", "fact_text": "two"},
+                    ],
+                }
+            ],
+        }
+    ]
+    with pytest.raises(ValueError, match="duplicate fact_id 't-t1-a'"):
+        load_thread_battery(_write(tmp_path, "b.yaml", bad))
+
+
+def test_same_fact_id_across_turns_allowed(tmp_path):
+    """Uniqueness is per turn — ids are namespaced by question_id in the DB."""
+    from src.eval.multiturn import load_thread_battery
+
+    data = [
+        {
+            "thread_id": "t",
+            "questions": [
+                {
+                    "turn_id": "t1",
+                    "question": "a?",
+                    "required_facts": [{"fact_id": "f", "fact_text": "x"}],
+                },
+                {
+                    "turn_id": "t2",
+                    "question": "b?",
+                    "required_facts": [{"fact_id": "f", "fact_text": "y"}],
+                },
+            ],
+        }
+    ]
+    assert len(load_thread_battery(_write(tmp_path, "b.yaml", data))) == 1
+
+
 def test_top_level_mapping_rejected(tmp_path):
     from src.eval.multiturn import load_thread_battery
 
@@ -193,3 +272,29 @@ def test_support_battery_file_is_valid():
     assert scenarios.count("action") == 2
     assert scenarios.count("topic_switch") == 2
     assert scenarios.count("mixed") == 1
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "eval/questions/multiturn_support_battery.yaml",
+        "eval/questions/multiturn_compaction_battery.json",
+    ],
+)
+def test_shipped_battery_facts_carry_convention_ids(path):
+    """Every shipped fact is a {fact_id, fact_text} pair whose id follows the
+    <thread_id>-<turn_id>-<slug> convention and is unique across the battery."""
+    from src.eval.multiturn import load_thread_battery
+
+    seen: set[str] = set()
+    facts = 0
+    for thread in load_thread_battery(path):
+        for q in thread["questions"]:
+            for fact in q.get("required_facts") or []:
+                facts += 1
+                fact_id = fact["fact_id"]
+                assert fact_id.startswith(f"{thread['thread_id']}-{q['turn_id']}-")
+                assert fact_id not in seen
+                seen.add(fact_id)
+                assert fact["fact_text"].strip()
+    assert facts

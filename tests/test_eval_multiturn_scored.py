@@ -844,9 +844,15 @@ async def test_scored_run_refuses_draft_author_facts(tmp_path):
             {
                 "turn_id": "t1",
                 "question": "Q1?",
-                "required_facts": ["Answer names X (AUTHOR: TBD)"],
+                "required_facts": [
+                    {"fact_id": "mt-draft-t1-x", "fact_text": "Answer names X (AUTHOR: TBD)"}
+                ],
             },
-            {"turn_id": "t2", "question": "Q2?", "required_facts": ["Answer names Y."]},
+            {
+                "turn_id": "t2",
+                "question": "Q2?",
+                "required_facts": [{"fact_id": "mt-draft-t2-y", "fact_text": "Answer names Y."}],
+            },
         ],
     }
     battery = tmp_path / "b.json"
@@ -890,7 +896,7 @@ async def test_draft_guard_ignores_authoring_notes(tmp_path):
             {
                 "turn_id": "t1",
                 "question": "Q1?",
-                "required_facts": ["Answer names X."],
+                "required_facts": [{"fact_id": "mt-notes-t1-x", "fact_text": "Answer names X."}],
                 "authoring_notes": ["AUTHOR: verify the list live before the run"],
             }
         ],
@@ -923,8 +929,16 @@ async def test_facts_resolved_once_and_reused_per_turn(tmp_path):
     thread = {
         "thread_id": "mt-reuse",
         "questions": [
-            {"turn_id": "t1", "question": "Q1?", "required_facts": ["Fact A."]},
-            {"turn_id": "t2", "question": "Q2?", "required_facts": ["Fact B."]},
+            {
+                "turn_id": "t1",
+                "question": "Q1?",
+                "required_facts": [{"fact_id": "mt-reuse-t1-a", "fact_text": "Fact A."}],
+            },
+            {
+                "turn_id": "t2",
+                "question": "Q2?",
+                "required_facts": [{"fact_id": "mt-reuse-t2-b", "fact_text": "Fact B."}],
+            },
         ],
     }
     battery = tmp_path / "b.json"
@@ -945,8 +959,12 @@ async def test_facts_resolved_once_and_reused_per_turn(tmp_path):
         await multiturn.run_battery(battery_path=str(battery), score=True, database_url=db_url)
 
     assert resolver.call_count == 2  # pre-flight only; the run reuses the map
-    assert judge.score.call_args_list[0].kwargs["required_facts"] == ["Fact A."]
-    assert judge.score.call_args_list[1].kwargs["required_facts"] == ["Fact B."]
+    assert judge.score.call_args_list[0].kwargs["required_facts"] == [
+        {"fact_id": "mt-reuse-t1-a", "fact_text": "Fact A."}
+    ]
+    assert judge.score.call_args_list[1].kwargs["required_facts"] == [
+        {"fact_id": "mt-reuse-t2-b", "fact_text": "Fact B."}
+    ]
 
 
 def test_compare_renders_per_dimension_for_both_summary_shapes(tmp_path, capsys):

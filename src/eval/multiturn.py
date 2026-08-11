@@ -57,9 +57,9 @@ support for the current answer.
 The full projection deep-copies every tool payload, so it is built ONLY on the
 scored path, where its two consumers (judge context, turn report) live. The
 per-turn ``tools_used`` reported for EVERY turn — scored or not — comes from the
-same boundary slice read for names only (``_turn_tool_names``), which is why a
-no-tool turn mid-thread correctly reports zero tools rather than inheriting the
-thread-cumulative ``state["tools_used"]`` rescan.
+same boundary slice (``_turn_tool_entries``, computed once per turn) read for
+names only, which is why a no-tool turn mid-thread correctly reports zero tools
+rather than inheriting the thread-cumulative ``state["tools_used"]`` rescan.
 
 A turn that ran but produced no answer is persisted as ``skipped`` with its
 formatted delta transcript (``tool_results``, ``node_trace``) in context, so the
@@ -177,27 +177,64 @@ def _is_turn_entry(entry: Any, turn_message_ids: set[str]) -> bool:
     return not message_id or str(message_id) in turn_message_ids
 
 
-def _turn_tool_names(state: Any) -> list[str]:
-    """This turn's tool names, in call order, deduped — without copying payloads.
+def _turn_tool_entries(state: Any) -> list[Any]:
+    """This turn's ``tool_results`` entries, in call order — the boundary slice.
 
-    ``state["tools_used"]`` is a full-thread rescan under checkpointing, so a turn
-    that called nothing would inherit every earlier turn's tools. The names are
-    derived from the same boundary slice the full projection uses, but reading
-    only ``tool_name`` off each entry, so the UNSCORED path gets correct per-turn
-    tools without paying for the deepcopy of every tool payload.
+    Computed once per turn and threaded through both consumers: the names
+    (``_tool_names``, needed on EVERY turn) and the full projection
+    (``_turn_delta_state``, scored path only). ``state["tool_results"]`` is a
+    full-thread rebuild under checkpointing, so a turn that called nothing would
+    otherwise inherit every earlier turn's entries.
+
+    An entry belongs to this turn when its ``message_id`` (its source
+    ToolMessage's LangChain id, written by ``_build_tool_results``) is among the
+    ids appearing after the last HumanMessage of ``state["messages"]``.
+
+    The id — not a position — is what crosses the two lists. ``_build_tool_results``
+    stamps against the INNER list ``create_agent`` returns, which compaction may
+    have rewritten; the boundary here reads the OUTER merged list, which never
+    shrinks (compaction's ``RemoveMessage`` is consumed inside the inner subgraph)
+    and adopts the summary HumanMessage as its last human. Comparing positions
+    across the two silently empties every post-compaction turn's delta. Under the
+    id-keyed ``add_messages`` merge, preserved old messages keep their original
+    pre-boundary positions while this turn's messages append after the boundary,
+    so the slice is correct with and without compaction.
+
+    Diffing on ``step_id`` (the provider tool_call_id) would be wrong — the
+    production vLLM path emits deterministic ids (``chatcmpl-tool-0``) that repeat
+    every turn, silently emptying the delta. Count-slicing would be wrong —
+    compaction shrinks the rebuilt list. An advancing baseline would be wrong — a
+    turn can raise *after* the checkpoint durably committed its calls, leaking them
+    into the next turn's delta.
+
+    The entries are the state's own objects — callers that hand them to a
+    consumer must copy first (``_turn_delta_state`` does).
     """
     turn_message_ids = _current_turn_message_ids(state.get("messages", []))
+    return [
+        entry
+        for entry in state.get("tool_results", []) or []
+        # Unpositioned entries are kept (see _is_turn_entry); positioned ones must
+        # belong to a message that appears after this turn's boundary.
+        if _is_turn_entry(entry, turn_message_ids)
+    ]
+
+
+def _tool_names(entries: list[Any]) -> list[str]:
+    """Tool names off delta entries, in call order, deduped.
+
+    Reads only ``tool_name``, so the UNSCORED path gets correct per-turn tools
+    without paying for the deepcopy of every tool payload.
+    """
     names: list[str] = []
-    for entry in state.get("tool_results", []) or []:
-        if not _is_turn_entry(entry, turn_message_ids):
-            continue
+    for entry in entries:
         name = _entry_field(entry, "tool_name", None)
         if name and str(name) not in names:
             names.append(str(name))
     return names
 
 
-def _turn_delta_state(state: Any) -> dict[str, Any]:
+def _turn_delta_state(state: Any, turn_tool_entries: list[Any] | None = None) -> dict[str, Any]:
     """Project the cumulative agent state down to THIS turn's new activity (D1).
 
     Under checkpointing the state the agent returns is thread-cumulative:
@@ -207,34 +244,11 @@ def _turn_delta_state(state: Any) -> dict[str, Any]:
     The slice is **boundary-based and stateless** — derived wholly from the
     state at hand, with no cross-turn bookkeeping that could go stale:
 
-    - ``tool_results``: entries whose ``message_id`` (their source ToolMessage's
-      LangChain id, written by ``_build_tool_results``) is in the set of ids
-      appearing after the last HumanMessage of ``state["messages"]``.
-
-      The id — not a position — is what crosses the two lists. ``_build_tool_results``
-      stamps against the INNER list ``create_agent`` returns, which compaction may
-      have rewritten; the boundary here reads the OUTER merged list, which never
-      shrinks (compaction's ``RemoveMessage`` is consumed inside the inner subgraph)
-      and adopts the summary HumanMessage as its last human. Comparing positions
-      across the two silently empties every post-compaction turn's delta. Under the
-      id-keyed ``add_messages`` merge, preserved old messages keep their original
-      pre-boundary positions while this turn's messages append after the boundary,
-      so the slice is correct with and without compaction.
-
-      Diffing on ``step_id`` (the provider tool_call_id) would be wrong — the
-      production vLLM path emits deterministic ids (``chatcmpl-tool-0``) that repeat
-      every turn, silently emptying the delta. Count-slicing would be wrong —
-      compaction shrinks the rebuilt list. An advancing baseline would be wrong — a
-      turn can raise *after* the checkpoint durably committed its calls, leaking them
-      into the next turn's delta.
-
-      An entry with a missing/empty ``message_id`` is KEPT, whether or not a
-      HumanMessage boundary exists. With no boundary the spec is explicit
-      (unpositioned + no human → show the evidence rather than hide it); with a
-      boundary present, an unpositioned entry still cannot be *attributed* to a
-      prior turn, so keeping it stays conservative toward showing this turn's
-      evidence. Over-showing costs judge-prompt noise; under-showing would present
-      a turn as unsupported when it actually called tools.
+    - ``tool_results``: this turn's boundary slice from ``_turn_tool_entries``
+      (which owns the message-id rationale). The runner passes it in — computed
+      once per turn — so the names reported for every turn and the payloads
+      projected on the scored path come from ONE pass; omitting it recomputes
+      the same slice, which is what direct callers (tests) do.
     - ``node_trace``: the loop appends exactly one entry per turn (a single
       literal in tool_calling_loop's return, and the loop is the only graph
       node), so this turn's trace is the final entry.
@@ -260,20 +274,14 @@ def _turn_delta_state(state: Any) -> dict[str, Any]:
     default. Should a node start populating it cumulatively, it needs the same
     boundary treatment.
     """
-    turn_message_ids = _current_turn_message_ids(state.get("messages", []))
-    delta_tool_results = [
-        copy.deepcopy(entry)
-        for entry in state.get("tool_results", []) or []
-        # Unpositioned entries are kept (see docstring); positioned ones must
-        # belong to a message that appears after this turn's boundary.
-        if _is_turn_entry(entry, turn_message_ids)
-    ]
+    entries = _turn_tool_entries(state) if turn_tool_entries is None else turn_tool_entries
+    delta_tool_results = [copy.deepcopy(entry) for entry in entries]
 
     node_trace = list(state.get("node_trace", []) or [])
     return {
         "final_answer": state.get("final_answer"),
         "tool_results": delta_tool_results,
-        "tools_used": _turn_tool_names(state),
+        "tools_used": _tool_names(entries),
         "node_trace": copy.deepcopy(node_trace[-1:]),
         "rag_matches": list(state.get("rag_matches", []) or []),
         "model_calls": list(state.get("model_calls", []) or []),
@@ -349,7 +357,35 @@ def load_thread_battery(path: str) -> list[dict[str, Any]]:
                 raise ValueError(f"question_id {question_id!r} exceeds {MAX_QUESTION_ID_LEN} chars")
             if not str(q.get("question", "")).strip():
                 raise ValueError(f"empty question in thread {tid!r} turn {turn_id!r}")
+            _validate_turn_facts(q.get("required_facts"), thread_id=tid, turn_id=turn_id)
     return threads
+
+
+def _validate_turn_facts(facts: Any, *, thread_id: str, turn_id: str) -> None:
+    """Every fact in a multiturn battery carries an explicit, turn-unique ``fact_id``.
+
+    Identity is the id, never the position: with explicit ids a fact can be
+    reordered, deleted, or inserted in the file without remapping anything in
+    ``reporting.question_facts``. A bare string would reintroduce positional
+    identity — the whole class of remap defects — so it is refused here rather
+    than silently numbered F1, F2, ... by ``flatten_required_facts``. Duplicate
+    ids within a turn are refused for the same reason: two facts sharing an id
+    collapse to one row and one verdict.
+    """
+    seen: set[str] = set()
+    for fact in facts or []:
+        where = f"thread {thread_id!r} turn {turn_id!r}"
+        if not isinstance(fact, dict) or "fact_id" not in fact or "fact_text" not in fact:
+            # ValueError, not TypeError: every battery-shape error raises the same type.
+            raise ValueError(
+                f"required_facts entry in {where} must be a mapping with 'fact_id' and "
+                f"'fact_text' (bare strings are not allowed — facts need explicit, stable "
+                f"ids): {fact!r}"
+            )
+        fact_id = str(fact["fact_id"])
+        if fact_id in seen:
+            raise ValueError(f"duplicate fact_id {fact_id!r} in {where}")
+        seen.add(fact_id)
 
 
 async def run_thread(
@@ -406,6 +442,9 @@ async def run_thread(
         start = time.monotonic()
         state: dict[str, Any] | AgentState = {}
         returned_state = False
+        # This turn's tool_results slice, computed once and shared by the names
+        # (every turn) and the full delta projection (scored path).
+        turn_tool_entries: list[Any] = []
         # Per-turn capture (summarized flag, tool timings, retrieved chunks) —
         # mirrors the single-turn runner so turn_reports carry this turn's data only.
         reset_turn_capture()
@@ -426,7 +465,8 @@ async def run_thread(
             # THIS turn's tools, not state["tools_used"] — that is a full-thread
             # rescan under checkpointing, so a turn that called nothing would report
             # every earlier turn's tools. Names only: no payload copying needed.
-            tools_used = _turn_tool_names(state)
+            turn_tool_entries = _turn_tool_entries(state)
+            tools_used = _tool_names(turn_tool_entries)
             answer = state.get("final_answer", "") or ""
             turn_result = TurnResult(
                 turn_id=turn_id,
@@ -459,9 +499,9 @@ async def run_thread(
             # calls. On the exception path there is no state at all, so the view is
             # empty. Built ONLY on the scored path: it deep-copies every tool payload,
             # and its two consumers (judge context + turn report) both live under
-            # scoring. The unscored path still gets correct per-turn tools via
-            # _turn_tool_names, which reads names without copying.
-            turn_state = _turn_delta_state(state) if returned_state else {}
+            # scoring. The unscored path still gets correct per-turn tools from
+            # the same slice, read for names only without copying.
+            turn_state = _turn_delta_state(state, turn_tool_entries) if returned_state else {}
             await _score_turn(
                 scoring,
                 turn_result,
