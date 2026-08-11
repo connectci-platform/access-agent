@@ -48,10 +48,23 @@ in the outer merged thread, its trace is the final ``node_trace`` entry, and its
 survive the ``add_messages`` merge and compaction's rewrite of the inner list.
 No cross-turn baseline exists to go stale — which matters because provider
 tool_call_ids repeat on the production vLLM path, compaction shrinks the rebuilt
-list, and a turn can raise after its calls were already checkpointed. The same delta view feeds the turn report, so a turn's
-``invoked_write``/capabilities are never inherited from an earlier turn. Prior
-turns reach the judge only through the conversation history — cumulative tool
-payloads would present old calls as support for the current answer.
+list, and a turn can raise after its calls were already checkpointed. The same
+delta view feeds the turn report, so a turn's ``invoked_write``/capabilities are
+never inherited from an earlier turn. Prior turns reach the judge only through
+the conversation history — cumulative tool payloads would present old calls as
+support for the current answer.
+
+The full projection deep-copies every tool payload, so it is built ONLY on the
+scored path, where its two consumers (judge context, turn report) live. The
+per-turn ``tools_used`` reported for EVERY turn — scored or not — comes from the
+same boundary slice read for names only (``_turn_tool_names``), which is why a
+no-tool turn mid-thread correctly reports zero tools rather than inheriting the
+thread-cumulative ``state["tools_used"]`` rescan.
+
+A turn that ran but produced no answer is persisted as ``skipped`` with its
+formatted delta transcript (``tool_results``, ``node_trace``) in context, so the
+row shows what the agent tried before coming up empty. Exception-path turns have
+no state and carry only their thread/turn identity.
 
 Composites are macro and Fair-only. A thread composite is the mean over its
 turns that were judged AND not screened ``answerable=False`` ("Unfair"); the run
@@ -153,6 +166,37 @@ def _current_turn_message_ids(messages: Any) -> set[str]:
     return ids
 
 
+def _is_turn_entry(entry: Any, turn_message_ids: set[str]) -> bool:
+    """Whether a rebuilt tool_results entry belongs to THIS turn.
+
+    An entry with a missing/empty ``message_id`` is kept — it cannot be attributed
+    to a prior turn either, and over-showing costs judge-prompt noise while
+    under-showing would present a turn as unsupported when it did call tools.
+    """
+    message_id = _entry_field(entry, "message_id", "")
+    return not message_id or str(message_id) in turn_message_ids
+
+
+def _turn_tool_names(state: Any) -> list[str]:
+    """This turn's tool names, in call order, deduped — without copying payloads.
+
+    ``state["tools_used"]`` is a full-thread rescan under checkpointing, so a turn
+    that called nothing would inherit every earlier turn's tools. The names are
+    derived from the same boundary slice the full projection uses, but reading
+    only ``tool_name`` off each entry, so the UNSCORED path gets correct per-turn
+    tools without paying for the deepcopy of every tool payload.
+    """
+    turn_message_ids = _current_turn_message_ids(state.get("messages", []))
+    names: list[str] = []
+    for entry in state.get("tool_results", []) or []:
+        if not _is_turn_entry(entry, turn_message_ids):
+            continue
+        name = _entry_field(entry, "tool_name", None)
+        if name and str(name) not in names:
+            names.append(str(name))
+    return names
+
+
 def _turn_delta_state(state: Any) -> dict[str, Any]:
     """Project the cumulative agent state down to THIS turn's new activity (D1).
 
@@ -222,21 +266,14 @@ def _turn_delta_state(state: Any) -> dict[str, Any]:
         for entry in state.get("tool_results", []) or []
         # Unpositioned entries are kept (see docstring); positioned ones must
         # belong to a message that appears after this turn's boundary.
-        if not _entry_field(entry, "message_id", "")
-        or str(_entry_field(entry, "message_id", "")) in turn_message_ids
+        if _is_turn_entry(entry, turn_message_ids)
     ]
-
-    delta_tools_used: list[str] = []
-    for entry in delta_tool_results:
-        name = _entry_field(entry, "tool_name", None)
-        if name and name not in delta_tools_used:
-            delta_tools_used.append(str(name))
 
     node_trace = list(state.get("node_trace", []) or [])
     return {
         "final_answer": state.get("final_answer"),
         "tool_results": delta_tool_results,
-        "tools_used": delta_tools_used,
+        "tools_used": _turn_tool_names(state),
         "node_trace": copy.deepcopy(node_trace[-1:]),
         "rag_matches": list(state.get("rag_matches", []) or []),
         "model_calls": list(state.get("model_calls", []) or []),
@@ -386,7 +423,10 @@ async def run_thread(
             returned_state = True
             duration_ms = (time.monotonic() - start) * 1000
             messages = state.get("messages", [])
-            tools_used = state.get("tools_used", [])
+            # THIS turn's tools, not state["tools_used"] — that is a full-thread
+            # rescan under checkpointing, so a turn that called nothing would report
+            # every earlier turn's tools. Names only: no payload copying needed.
+            tools_used = _turn_tool_names(state)
             answer = state.get("final_answer", "") or ""
             turn_result = TurnResult(
                 turn_id=turn_id,
@@ -413,12 +453,15 @@ async def run_thread(
                 error=str(e),
             )
 
-        # This turn's activity only — the same view the judge and the turn report see,
-        # so a turn's report can't be credited with an earlier turn's tool calls.
-        # On the exception path there is no state at all, so the view is empty.
-        turn_state = _turn_delta_state(state) if returned_state else {}
-
         if scoring is not None:
+            # This turn's activity only — the same view the judge and the turn report
+            # see, so a turn's report can't be credited with an earlier turn's tool
+            # calls. On the exception path there is no state at all, so the view is
+            # empty. Built ONLY on the scored path: it deep-copies every tool payload,
+            # and its two consumers (judge context + turn report) both live under
+            # scoring. The unscored path still gets correct per-turn tools via
+            # _turn_tool_names, which reads names without copying.
+            turn_state = _turn_delta_state(state) if returned_state else {}
             await _score_turn(
                 scoring,
                 turn_result,
@@ -463,9 +506,10 @@ async def _score_turn(
     still passes its real delta state; only the exception path is empty.
 
     Mutates ``turn_result`` with the judge verdict (composite, answerable, raw
-    dimension scores, score source). A failed turn is persisted as ``skipped``
-    and the thread continues — a mid-thread failure degrading later turns is
-    itself multi-turn robustness signal.
+    dimension scores, score source). A failed turn is persisted as ``skipped``,
+    carrying its formatted delta transcript when the turn ran, and the thread
+    continues — a mid-thread failure degrading later turns is itself multi-turn
+    robustness signal.
     """
     if turn_result.success:
         if resolved_facts is not None and question_id in resolved_facts:
@@ -501,6 +545,11 @@ async def _score_turn(
         else:
             turn_result.score_source = "judge_error"
     else:
+        # A turn that RAN but returned no answer still has a real transcript. Persist
+        # it in the same formatted shape the judge path uses, so the row explains what
+        # the agent tried before coming up empty — the interesting failure mode, and
+        # otherwise unrecoverable since nothing else stores the delta. The exception
+        # path has no state, so turn_state is empty and these come out None.
         persist_skipped_turn(
             scoring.db,
             run_id=scoring.run_id,
@@ -508,7 +557,12 @@ async def _score_turn(
             question_text=turn_result.question,
             error=turn_result.error,
             duration_ms=turn_result.duration_ms,
-            extra_context={"thread_id": thread_id, "turn_index": turn_index},
+            extra_context={
+                "thread_id": thread_id,
+                "turn_index": turn_index,
+                "tool_results": format_tool_results(turn_state),
+                "node_trace": format_node_trace(turn_state),
+            },
         )
         turn_result.score_source = "skipped"
 

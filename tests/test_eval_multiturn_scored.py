@@ -601,6 +601,135 @@ async def test_ran_but_failed_turn_reports_its_real_delta_state(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_ran_but_failed_skipped_row_carries_its_tool_transcript(tmp_path):
+    """A turn that ran tools and came up empty is the interesting failure mode. Its
+    skipped row must carry the same formatted delta transcript the judge path uses —
+    nothing else stores it. Exception-path rows have no state and stay identity-only."""
+    from src.eval.multiturn import run_thread
+
+    scoring, db, _ = _scoring(tmp_path)
+
+    async def agent(**kwargs):
+        if kwargs["question_id"].endswith("_t2"):
+            raise RuntimeError("boom")
+        # t1 and t3 ran a tool but produced no answer.
+        return _thread_state(1, final_answer="")
+
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(side_effect=agent)),
+        patch("src.eval.multiturn.report_battery_turn", new=AsyncMock()),
+    ):
+        await run_thread(THREAD, tool_catalog=None, session_namespace="ns", scoring=scoring)
+
+    rows = {r.question_id: r for r in db.get_scores_for_run(scoring.run_id)}
+    assert all(r.source == "skipped" for r in rows.values())
+
+    ran = rows["mt-f-01_t1"].context
+    assert ran["thread_id"] == "mt-f-01"
+    assert ran["turn_index"] == 1
+    # Formatted the same way the judge sees it: the tool name and its payload.
+    assert "tool_turn1" in ran["tool_results"]
+    assert "payload-turn1" in ran["tool_results"]
+    assert "trace_turn1" in ran["node_trace"]
+
+    # Exception path: no state existed, so there is nothing to format.
+    crashed = rows["mt-f-01_t2"].context
+    assert crashed["thread_id"] == "mt-f-01"
+    assert crashed["turn_index"] == 2
+    assert crashed["tool_results"] is None
+    assert crashed["node_trace"] is None
+
+
+@pytest.mark.asyncio
+async def test_no_tool_turn_midthread_reports_zero_tools(tmp_path):
+    """TurnResult.tools_used is the per-turn delta, not state["tools_used"]. That
+    field is a full-thread rescan under checkpointing, so a turn that called nothing
+    would otherwise inherit every earlier turn's tools and print a nonzero count."""
+    from src.eval.multiturn import run_thread
+
+    scoring, _, _ = _scoring(tmp_path)
+
+    # Turn 2 adds no tool_results of its own, but the cumulative rescan still names
+    # turn 1's tool — and turn 2's messages carry no ToolMessage past the boundary.
+    def _state(turn, tool_turns):
+        messages = []
+        for n in range(1, turn + 1):
+            messages += [_Human(f"msg-turn{n}-human"), _Other(f"msg-turn{n}-final")]
+            if n in tool_turns:
+                messages.insert(-1, _Other(_tool_msg_id(n)))
+        return {
+            **STATE,
+            "messages": messages,
+            "tool_results": [_tool_result(n, _tool_msg_id(n)) for n in tool_turns],
+            "tools_used": [f"tool_turn{n}" for n in tool_turns],
+            "node_trace": [{"node": f"trace_turn{n}"} for n in range(1, turn + 1)],
+        }
+
+    states = [_state(1, [1]), _state(2, [1]), _state(3, [1, 3])]
+
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(side_effect=states)),
+        patch("src.eval.multiturn.report_battery_turn", new=AsyncMock()),
+    ):
+        result = await run_thread(
+            THREAD, tool_catalog=None, session_namespace="ns", scoring=scoring
+        )
+
+    assert [t.tools_used for t in result.turns] == [["tool_turn1"], [], ["tool_turn3"]]
+    # print_summary prints len(tools_used); the middle turn must read 0.
+    assert [len(t.tools_used) for t in result.turns] == [1, 0, 1]
+
+
+@pytest.mark.asyncio
+async def test_unscored_run_skips_the_deepcopy_projection(tmp_path):
+    """The full projection deep-copies every tool payload and exists only for the
+    judge context and the turn report, both of which live under scoring. An unscored
+    run must not pay for it — but must still report per-turn tools."""
+    from src.eval import multiturn
+    from src.eval.multiturn import run_thread
+
+    states = [_thread_state(turn) for turn in (1, 2, 3)]
+
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(side_effect=states)),
+        patch("src.eval.multiturn.report_battery_turn", new=AsyncMock()),
+        patch.object(
+            multiturn, "_turn_delta_state", wraps=multiturn._turn_delta_state
+        ) as projection,
+    ):
+        result = await run_thread(THREAD, tool_catalog=None, session_namespace="ns", scoring=None)
+
+    projection.assert_not_called()
+    # The cheap per-turn names path still ran.
+    assert [t.tools_used for t in result.turns] == [
+        ["tool_turn1"],
+        ["tool_turn2"],
+        ["tool_turn3"],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scored_run_still_builds_the_projection(tmp_path):
+    """The gate is on scoring, not on removal — the scored path still projects."""
+    from src.eval import multiturn
+    from src.eval.multiturn import run_thread
+
+    scoring, _, _ = _scoring(tmp_path)
+    states = [_thread_state(turn) for turn in (1, 2, 3)]
+
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(side_effect=states)),
+        patch("src.eval.multiturn.report_battery_turn", new=AsyncMock()),
+        patch.object(
+            multiturn, "_turn_delta_state", wraps=multiturn._turn_delta_state
+        ) as projection,
+    ):
+        await run_thread(THREAD, tool_catalog=None, session_namespace="ns", scoring=scoring)
+
+    assert projection.call_count == 3
+
+
+@pytest.mark.asyncio
 async def test_turn_capture_reset_per_turn(tmp_path):
     """turn_reports carry per-turn summarized/timings/chunks only if the capture is
     reset before each turn (mirrors the single-turn runner)."""
