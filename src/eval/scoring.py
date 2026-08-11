@@ -43,8 +43,19 @@ async def score_and_persist_turn(
         conversation_history=conversation_history,
     )
 
+    # A judge_error row carries the SAME context keys as a success row (only
+    # fact_verdicts, which need a verdict, are absent), so a transient judge outage
+    # leaves a row that can be manually re-scored with its full transcript.
+    context: dict[str, Any] = {
+        "rag_context": rag_context,
+        "tool_results": tool_results,
+        "node_trace": node_trace,
+        "required_facts": required_facts,
+    }
+    if conversation_history:
+        context["conversation_history"] = [list(pair) for pair in conversation_history]
+
     if judge_result is None:
-        context: dict[str, Any] = {"rag_context": rag_context, "tool_results": tool_results}
         if extra_context:
             context.update(extra_context)
         db.add_score(
@@ -59,15 +70,7 @@ async def score_and_persist_turn(
         )
         return None
 
-    context = {
-        "rag_context": rag_context,
-        "tool_results": tool_results,
-        "node_trace": node_trace,
-        "required_facts": required_facts,
-        "fact_verdicts": judge_result.fact_verdicts,
-    }
-    if conversation_history:
-        context["conversation_history"] = [list(pair) for pair in conversation_history]
+    context["fact_verdicts"] = judge_result.fact_verdicts
     if extra_context:
         context.update(extra_context)
 

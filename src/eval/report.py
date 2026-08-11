@@ -40,7 +40,20 @@ def print_run_summary(summary: dict[str, Any]) -> None:
     print("=" * 60)
 
 
-def print_comparison(run_a: dict[str, Any], run_b: dict[str, Any]) -> None:
+COMPOSITE_INCOMMENSURABLE_NOTE = "(macro, Fair-only — not comparable to micro)"
+
+
+def print_comparison(
+    run_a: dict[str, Any], run_b: dict[str, Any], *, composite_commensurable: bool = True
+) -> None:
+    """Print a two-run comparison table.
+
+    When ``composite_commensurable`` is False the two runs' composites are built
+    under different semantics (multiturn macro over Fair-only thread composites
+    vs. single-turn micro average). The composite delta is then meaningless, so
+    the row is annotated rather than given a number — the per-dimension rows,
+    which ARE commensurable, carry the comparison.
+    """
     print()
     print("=" * 70)
     print("  Eval Run Comparison")
@@ -57,10 +70,14 @@ def print_comparison(run_a: dict[str, Any], run_b: dict[str, Any]) -> None:
         print(f"  {name:20s} {a_val:10.2f}  {b_val:10.2f}  {sign}{delta:9.2f}")
     a_comp = run_a.get("composite_score", 0.0)
     b_comp = run_b.get("composite_score", 0.0)
-    delta = b_comp - a_comp
-    sign = "+" if delta > 0 else ""
     print(f"  {'─' * 50}")
-    print(f"  {'COMPOSITE':20s} {a_comp:10.2f}  {b_comp:10.2f}  {sign}{delta:9.2f}")
+    if composite_commensurable:
+        delta = b_comp - a_comp
+        sign = "+" if delta > 0 else ""
+        print(f"  {'COMPOSITE':20s} {a_comp:10.2f}  {b_comp:10.2f}  {sign}{delta:9.2f}")
+    else:
+        print(f"  {'COMPOSITE':20s} {a_comp:10.2f}  {b_comp:10.2f}  {'n/a':>10s}")
+        print(f"  {'':20s} {COMPOSITE_INCOMMENSURABLE_NOTE}")
     print()
     print(f"  Run A: {run_a.get('run_id', '?')} ({run_a.get('agent_branch', '?')})")
     print(f"  Run B: {run_b.get('run_id', '?')} ({run_b.get('agent_branch', '?')})")

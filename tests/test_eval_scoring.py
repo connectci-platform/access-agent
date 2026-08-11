@@ -86,6 +86,41 @@ async def test_judge_failure_writes_judge_error_row(tmp_path):
     assert row.context["thread_id"] == "t-01"
 
 
+@pytest.mark.asyncio
+async def test_judge_error_row_carries_same_context_as_success(tmp_path):
+    """A transient judge outage must leave a manually re-scorable row: same context
+    keys as a success row, with only fact_verdicts (which need a verdict) absent."""
+    from src.eval.scoring import score_and_persist_turn
+
+    db = _db(tmp_path)
+    kwargs = {
+        "question_id": "t-01_t2",
+        "question_text": "Which of those have A100s?",
+        "answer": "Delta does.",
+        "rag_context": "rag",
+        "tool_results": "tools",
+        "node_trace": "trace",
+        "required_facts": [{"fact_id": "f1", "fact_text": "names Delta"}],
+        "conversation_history": [("q1", "a1")],
+        "extra_context": {"thread_id": "t-01", "turn_index": 2},
+    }
+
+    ok_run = db.create_run(run_type="pre_production")
+    await score_and_persist_turn(db, _judge_returning(GOOD_RESULT), run_id=str(ok_run.id), **kwargs)
+    err_run = db.create_run(run_type="pre_production")
+    await score_and_persist_turn(db, _judge_returning(None), run_id=str(err_run.id), **kwargs)
+
+    ok_ctx = db.get_scores_for_run(str(ok_run.id))[0].context
+    err_ctx = db.get_scores_for_run(str(err_run.id))[0].context
+
+    assert set(ok_ctx) - set(err_ctx) == {"fact_verdicts"}
+    assert set(err_ctx) - set(ok_ctx) == set()
+    # The re-score inputs are all there, not just the two the old row kept.
+    assert err_ctx["node_trace"] == "trace"
+    assert err_ctx["required_facts"] == [{"fact_id": "f1", "fact_text": "names Delta"}]
+    assert err_ctx["conversation_history"] == [["q1", "a1"]]
+
+
 def test_skipped_row(tmp_path):
     from src.eval.scoring import persist_skipped_turn
 

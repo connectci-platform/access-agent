@@ -71,7 +71,27 @@ def _handle_compare(args: argparse.Namespace) -> None:
         "composite_score": run_b.composite_score or 0.0,
         "per_dimension": _per_dimension(run_b.scores_summary),
     }
-    print_comparison(summary_a, summary_b)
+    # Composite semantics are per-run: multiturn is a macro mean over Fair-only
+    # thread composites, single-turn a micro average over questions. Comparing
+    # across the two is not meaningful, so the composite row is annotated instead.
+    commensurable = _is_macro_composite(run_a.scores_summary) == _is_macro_composite(
+        run_b.scores_summary
+    )
+    print_comparison(summary_a, summary_b, composite_commensurable=commensurable)
+
+
+def _is_macro_composite(scores_summary: Any) -> bool:
+    """Whether a run's composite is a multiturn macro (Fair-only thread) mean.
+
+    Feature-detected from the stored summary shape rather than run metadata: the
+    nested per_dimension / thread_composites contract IS the multiturn summary,
+    and detecting it keeps rejudged multiturn runs annotated too.
+    """
+    if not isinstance(scores_summary, dict):
+        return False
+    return isinstance(scores_summary.get("per_dimension"), dict) or isinstance(
+        scores_summary.get("thread_composites"), dict
+    )
 
 
 def _per_dimension(scores_summary: Any) -> dict[str, Any]:

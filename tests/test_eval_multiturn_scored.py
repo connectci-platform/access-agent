@@ -680,3 +680,75 @@ def test_compare_renders_per_dimension_for_both_summary_shapes(tmp_path, capsys)
     assert rows["correctness"] == [1.5, 2.0]
     assert rows["relevance"] == [2.0, 2.0]
     assert rows["hedging"] == [1.0, 1.0]
+
+    # The composite row is annotated, not delta'd: multiturn's macro Fair-only mean
+    # and single-turn's micro average are not the same statistic.
+    composite_line = next(line for line in out.splitlines() if "COMPOSITE" in line)
+    assert "n/a" in composite_line
+    assert "macro, Fair-only" in out
+
+
+def test_compare_between_two_single_turn_runs_keeps_composite_delta(tmp_path, capsys):
+    """Same semantics on both sides — the composite delta is still real and shown."""
+    from src.eval.__main__ import _handle_compare
+
+    db_url = f"sqlite:///{tmp_path}/eval.db"
+    db = EvalDB(db_url)
+    dims = {
+        "correctness": 1.0,
+        "specificity": 1.0,
+        "relevance": 1.0,
+        "citation_quality": 1.0,
+        "hedging": 1.0,
+    }
+    a = db.create_run(run_type="pre_production", metadata_={"system": "agent_full"})
+    db.update_run_summary(str(a.id), dims, 0.50)
+    b = db.create_run(run_type="pre_production", metadata_={"system": "agent_full"})
+    db.update_run_summary(str(b.id), {**dims, "correctness": 2.0}, 0.75)
+
+    args = MagicMock(run_a=str(a.id), run_b=str(b.id))
+    with patch("src.config.settings.DATABASE_URL", db_url):
+        _handle_compare(args)
+    out = capsys.readouterr().out
+
+    composite_line = next(line for line in out.splitlines() if "COMPOSITE" in line)
+    assert composite_line.split()[1:] == ["0.50", "0.75", "+", "0.25"]
+    assert "macro, Fair-only" not in out
+
+
+def test_compare_between_two_multiturn_runs_keeps_composite_delta(tmp_path, capsys):
+    """Two multiturn runs share macro semantics, so their composites DO compare —
+    this is the incumbent-vs-nothink A/B the battery exists for."""
+    from src.eval.__main__ import _handle_compare
+
+    db_url = f"sqlite:///{tmp_path}/eval.db"
+    db = EvalDB(db_url)
+
+    def _summary(correctness):
+        return {
+            "per_dimension": {
+                "correctness": correctness,
+                "specificity": 1.0,
+                "relevance": 1.0,
+                "citation_quality": 1.0,
+                "hedging": 1.0,
+            },
+            "thread_composites": {"mt-f-01": 0.8},
+            "unscored_threads": [],
+            "screened_turns": 0,
+            "failed_turns": {},
+        }
+
+    a = db.create_run(run_type="pre_production", metadata_={"mode": "multiturn"})
+    db.update_run_summary(str(a.id), _summary(1.0), 0.60)
+    b = db.create_run(run_type="pre_production", metadata_={"mode": "multiturn"})
+    db.update_run_summary(str(b.id), _summary(2.0), 0.70)
+
+    args = MagicMock(run_a=str(a.id), run_b=str(b.id))
+    with patch("src.config.settings.DATABASE_URL", db_url):
+        _handle_compare(args)
+    out = capsys.readouterr().out
+
+    composite_line = next(line for line in out.splitlines() if "COMPOSITE" in line)
+    assert composite_line.split()[1:] == ["0.60", "0.70", "+", "0.10"]
+    assert "macro, Fair-only" not in out
