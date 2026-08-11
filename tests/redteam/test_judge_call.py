@@ -59,3 +59,34 @@ async def test_score_caps_at_two_api_calls():
         result = await j.score(query="q", answer="a")
     assert result is None
     assert create.await_count == 2
+
+
+def _good_judge_payload():
+    return """```json
+{
+  "answerable": "Fair",
+  "correctness": {"value": "Correct", "justification": "a"},
+  "specificity": {"value": "Actionable", "justification": "b"},
+  "relevance": {"value": "On-target", "justification": "c"},
+  "citation_quality": {"value": "Good", "justification": "d"},
+  "hedging": {"value": "Calibrated", "justification": "e"}
+}
+```"""
+
+
+@pytest.mark.asyncio
+async def test_score_retries_after_call_once_returns_none():
+    # _call_once returning (None, False) on the first attempt (the exception path)
+    # must be skipped via `continue`, not treated as a terminal failure.
+    j = Judge(base_url="http://onprem/v1", model="qwen")
+    call_once = AsyncMock(
+        side_effect=[
+            (None, False),
+            (_good_judge_payload(), False),
+        ]
+    )
+    with patch.object(j, "_call_once", new=call_once):
+        result = await j.score(query="q", answer="a")
+    assert result is not None
+    assert result.scores["correctness"] == 2
+    assert call_once.await_count == 2
