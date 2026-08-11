@@ -8,7 +8,16 @@ A rejudged run's summary is rebuilt under the SOURCE run's semantics: a
 ``mode="multiturn"`` run groups its rows by ``context.thread_id`` and rebuilds
 Fair-only thread composites plus a macro run composite (the full
 ``scores_summary`` contract), so an original-vs-rejudge delta compares like
-statistics. Single-turn runs keep the flat micro-averaged dimension map.
+statistics. Single-turn runs keep the flat micro-averaged dimension map. Only
+rows that represent a turn feed that rebuild (see ``TURN_SOURCES``): human
+review rows and rows without a ``thread_id`` are left out entirely rather than
+pooled into a synthetic thread.
+
+A rejudged row's context is the ORIGINAL row's replayed transcript with one
+exception — ``fact_verdicts`` is a judge OUTPUT, so it is replaced with the new
+judge's verdicts. ``skipped`` rows are not judgeable but are copied forward into
+the rejudged run, so a thread's ``failed_turns`` survives across successive
+rejudge generations instead of decaying to a clean-looking zero.
 
 Limitation: the stored `tool_results` field is pre-formatted text produced by
 the formatter that was current at original-run time. Rubric prompt changes
@@ -45,6 +54,12 @@ def _replay_history(stored: Any) -> list[tuple[str, str]] | None:
     return history or None
 
 
+# Row sources that represent a multiturn TURN. Human review rows (and any other
+# non-turn source) describe the same question a judge row already covers, so
+# ingesting them would double-count a turn or invent a thread that never ran.
+TURN_SOURCES = ("judge", "judge_error", "skipped")
+
+
 def _turn_record(
     context: dict[str, Any],
     *,
@@ -52,20 +67,34 @@ def _turn_record(
     composite: float | None = None,
     answerable: bool | None = None,
     scores: dict[str, int | None] | None = None,
-) -> TurnRecord:
+) -> TurnRecord | None:
     """Adapt one persisted score row into the multiturn summary's turn shape.
 
-    Rows written by the multiturn runner carry ``context["thread_id"]``; a row
-    without one is grouped under its own question-less bucket so it still counts
-    rather than silently vanishing from the rebuilt summary.
+    Returns None for rows that are not multiturn turns: a source outside
+    ``TURN_SOURCES`` (human review rows), or a row with no
+    ``context["thread_id"]``. Both would otherwise land in a synthetic
+    "(no thread)" bucket and be reported as a real unscored thread — a human
+    row on one question would make the run look like it had a thread that never
+    produced a Fair turn.
     """
+    if source not in TURN_SOURCES:
+        return None
+    thread_id = context.get("thread_id")
+    if not thread_id:
+        return None
     return TurnRecord(
-        thread_id=str(context.get("thread_id") or "(no thread)"),
+        thread_id=str(thread_id),
         composite=composite,
         answerable=answerable,
         scores=scores,
         source=source,
     )
+
+
+def _add_turn_record(records: list[TurnRecord], record: TurnRecord | None) -> None:
+    """Append a turn record when the row qualifies as one (see ``_turn_record``)."""
+    if record is not None:
+        records.append(record)
 
 
 def _rebuild_summary(
@@ -166,7 +195,22 @@ async def rejudge_run(
             # Not rejudged, but a multiturn summary must still count it against its
             # thread's failed_turns — composites exclude failed turns, so a run that
             # crashed half a thread would otherwise look clean.
-            turn_records.append(_turn_record(context, source=str(score.source)))
+            _add_turn_record(turn_records, _turn_record(context, source=str(score.source)))
+            if score.source == "skipped":
+                # Materialize the failure into the new run. Without this row the
+                # rejudged run has no record that the turn failed, so rejudging the
+                # rejudge (or any later read of the new run's rows) reports a clean
+                # thread — failed_turns would decay to zero across generations.
+                db.add_score(
+                    run_id=new_run.id,
+                    question_id=score.question_id,
+                    source="skipped",
+                    question_text=score.question_text,
+                    answer_text=score.answer_text,
+                    context=context,
+                    duration_ms=score.duration_ms,
+                    justifications=score.justifications,
+                )
             continue
 
         logger.info(f"[{i}/{len(original_scores)}] rejudging {score.question_id}")
@@ -190,7 +234,7 @@ async def rejudge_run(
 
         if judge_result is None:
             errors += 1
-            turn_records.append(_turn_record(context, source="judge_error"))
+            _add_turn_record(turn_records, _turn_record(context, source="judge_error"))
             db.add_score(
                 run_id=new_run.id,
                 question_id=score.question_id,
@@ -204,13 +248,19 @@ async def rejudge_run(
             )
             continue
 
+        # The replayed context (transcript, facts, history) is the ORIGINAL run's —
+        # it is what was re-judged. But fact_verdicts are a JUDGE OUTPUT, so the new
+        # row must carry the new judge's verdicts; keeping the source row's would
+        # make a rejudge report the old judge's per-fact calls beside new scores.
+        rejudged_context = {**context, "fact_verdicts": judge_result.fact_verdicts}
+
         db.add_score(
             run_id=new_run.id,
             question_id=score.question_id,
             source="judge",
             question_text=score.question_text,
             answer_text=score.answer_text,
-            context=context,
+            context=rejudged_context,
             context_completeness=score.context_completeness,
             correctness=judge_result.scores["correctness"],
             specificity=judge_result.scores["specificity"],
@@ -225,14 +275,15 @@ async def rejudge_run(
             justifications=judge_result.justifications,
         )
         all_scores.append(judge_result.scores)
-        turn_records.append(
+        _add_turn_record(
+            turn_records,
             _turn_record(
                 context,
                 source="judge",
                 composite=judge_result.composite,
                 answerable=judge_result.answerable,
                 scores=judge_result.scores,
-            )
+            ),
         )
         rescored += 1
 

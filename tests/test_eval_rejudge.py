@@ -378,6 +378,166 @@ async def test_rejudge_single_turn_summary_stays_flat(mock_db):
     assert stored["correctness"] == 2.0
 
 
+async def test_rejudge_row_carries_new_judge_fact_verdicts(mock_db):
+    """fact_verdicts are a judge OUTPUT. The replayed transcript stays the source
+    row's, but the verdicts on the rejudged row must be the NEW judge's — otherwise
+    a rejudge reports the old judge's per-fact calls next to new dimension scores."""
+    db = EvalDB(mock_db)
+    original = db.create_run(
+        run_type="pre_production",
+        llm_model="qwen",
+        question_set="tiny",
+        question_count=1,
+        metadata_={"system": "access-agent"},
+    )
+    db.add_score(
+        run_id=original.id,
+        question_id="q1",
+        source="judge",
+        question_text="What is ACCESS?",
+        answer_text="A program.",
+        context={
+            "rag_context": "docs",
+            "required_facts": [{"fact_id": 7, "fact_text": "ACCESS allocates HPC resources"}],
+            "conversation_history": [["earlier q", "earlier a"]],
+            # The OLD judge said the fact was missing.
+            "fact_verdicts": [{"id": "7", "verdict": "missing", "justification": "old judge"}],
+        },
+        composite_score=0.5,
+    )
+
+    new_verdicts = [{"id": "7", "verdict": "supported", "justification": "new judge"}]
+    judge_result = MagicMock()
+    judge_result.scores = dict.fromkeys(
+        ("correctness", "specificity", "relevance", "citation_quality", "hedging"), 1
+    )
+    judge_result.specificity_na = False
+    judge_result.answerable = True
+    judge_result.composite = 0.5
+    judge_result.justifications = {}
+    judge_result.fact_verdicts = new_verdicts
+
+    judge = MagicMock()
+    judge.score = AsyncMock(return_value=judge_result)
+    with patch("src.eval.rejudge.Judge", return_value=judge):
+        summary = await rejudge_run(original_run_id=str(original.id), database_url=mock_db)
+
+    rescored = db.get_scores_for_run(str(summary["new_run_id"]))[0]
+    assert rescored.context["fact_verdicts"] == new_verdicts
+    # Only fact_verdicts is replaced — the replayed transcript stays the original's.
+    assert rescored.context["rag_context"] == "docs"
+    assert rescored.context["conversation_history"] == [["earlier q", "earlier a"]]
+    assert rescored.context["required_facts"][0]["fact_text"] == "ACCESS allocates HPC resources"
+    # No regression on the rubric stamp (fix 4).
+    assert rescored.rubric_version == scoring.RUBRIC_VERSION
+
+    # The SOURCE row is untouched — rejudge never mutates the run it replays.
+    assert db.get_scores_for_run(str(original.id))[0].context["fact_verdicts"] == [
+        {"id": "7", "verdict": "missing", "justification": "old judge"}
+    ]
+
+
+async def test_rejudge_materializes_skipped_rows_so_failed_turns_survive(mock_db):
+    """A rejudge-of-a-rejudge must report the same failed_turns. skipped rows are not
+    judgeable, so they are copied forward; without that the failure record vanishes
+    from the new run and the next generation reports a clean thread."""
+    db = EvalDB(mock_db)
+    original = db.create_run(
+        run_type="pre_production",
+        llm_model="qwen",
+        question_set="mt.yaml",
+        question_count=2,
+        metadata_={"system": "agent_full", "mode": "multiturn"},
+    )
+    db.add_score(
+        run_id=original.id,
+        question_id="mt-a_t1",
+        source="judge",
+        question_text="q1",
+        answer_text="a1",
+        context={"thread_id": "mt-a", "turn_index": 1},
+        composite_score=1.0,
+    )
+    db.add_score(
+        run_id=original.id,
+        question_id="mt-a_t2",
+        source="skipped",
+        question_text="q2",
+        answer_text="boom",
+        context={"thread_id": "mt-a", "turn_index": 2},
+        justifications={"error": "boom"},
+    )
+
+    with patch("src.eval.judge.AsyncOpenAI") as mock_openai_cls:
+        mock_client = mock_openai_cls.return_value
+        mock_client.chat.completions.create = AsyncMock(return_value=_completion(MOCK_JUDGE_BEST))
+        gen1 = await rejudge_run(original_run_id=str(original.id), database_url=mock_db)
+
+    gen1_id = str(gen1["new_run_id"])
+    assert db.get_run(gen1_id).scores_summary["failed_turns"] == {"mt-a": 1}
+
+    # The skipped row was materialized into the rejudged run, with its text and context.
+    carried = [s for s in db.get_scores_for_run(gen1_id) if s.source == "skipped"]
+    assert len(carried) == 1
+    assert carried[0].question_id == "mt-a_t2"
+    assert carried[0].question_text == "q2"
+    assert carried[0].answer_text == "boom"
+    assert carried[0].context["thread_id"] == "mt-a"
+
+    # Rejudging the rejudge reports the SAME failed_turns.
+    with patch("src.eval.judge.AsyncOpenAI") as mock_openai_cls:
+        mock_client = mock_openai_cls.return_value
+        mock_client.chat.completions.create = AsyncMock(return_value=_completion(MOCK_JUDGE_BEST))
+        gen2 = await rejudge_run(original_run_id=gen1_id, database_url=mock_db)
+
+    assert db.get_run(str(gen2["new_run_id"])).scores_summary["failed_turns"] == {"mt-a": 1}
+
+
+async def test_rejudge_excludes_human_rows_from_multiturn_rebuild(mock_db):
+    """Human review rows describe a question a judge row already covers. Ingesting
+    them would invent a phantom thread with no Fair turn, reporting the run as
+    partly unscored when every turn actually scored."""
+    db = EvalDB(mock_db)
+    original = db.create_run(
+        run_type="pre_production",
+        llm_model="qwen",
+        question_set="mt.yaml",
+        question_count=1,
+        metadata_={"system": "agent_full", "mode": "multiturn"},
+    )
+    db.add_score(
+        run_id=original.id,
+        question_id="mt-a_t1",
+        source="judge",
+        question_text="q1",
+        answer_text="a1",
+        context={"thread_id": "mt-a", "turn_index": 1},
+        composite_score=1.0,
+    )
+    # A human reviewer scored the same question later. No thread_id, source="human".
+    db.add_score(
+        run_id=original.id,
+        question_id="mt-a_t1",
+        source="human",
+        reviewer_id="drew",
+        question_text="q1",
+        answer_text="a1",
+        context={},
+        composite_score=0.75,
+    )
+
+    with patch("src.eval.judge.AsyncOpenAI") as mock_openai_cls:
+        mock_client = mock_openai_cls.return_value
+        mock_client.chat.completions.create = AsyncMock(return_value=_completion(MOCK_JUDGE_BEST))
+        summary = await rejudge_run(original_run_id=str(original.id), database_url=mock_db)
+
+    stored = db.get_run(str(summary["new_run_id"])).scores_summary
+    # No "(no thread)" bucket, and the human row did not become an unscored thread.
+    assert list(stored["thread_composites"]) == ["mt-a"]
+    assert stored["unscored_threads"] == []
+    assert stored["failed_turns"] == {}
+
+
 async def test_rejudge_single_turn_passes_no_history(mock_db):
     """Single-turn rows have no stored history — the judge call must stay unchanged."""
     db = EvalDB(mock_db)
