@@ -67,7 +67,14 @@ async def run_from_env(
         )
     # Write the full on-prem artifact BEFORE returning, so a later print/crash
     # can never lose evidence (ordering is load-bearing — see test).
-    artifact = Path(os.environ.get("REDTEAM_ARTIFACT_DIR", "/tmp/redteam")) / f"{run_id}.json"
+    artifact_dir = Path(os.environ.get("REDTEAM_ARTIFACT_DIR", "/tmp/redteam")).resolve()
+    repo_root = Path(__file__).resolve().parents[2]
+    if repo_root == artifact_dir or repo_root in artifact_dir.parents:
+        raise RuntimeError(
+            f"artifact dir (REDTEAM_ARTIFACT_DIR) must be outside the repo tree (got {artifact_dir}); "
+            "harmful transcripts must never be committable"
+        )
+    artifact = artifact_dir / f"{run_id}.json"
     write_artifact(artifact, result.artifact_records)  # on-prem only, gitignored dir
     return result
 
