@@ -26,6 +26,17 @@ from .runner import get_git_info
 logger = logging.getLogger(__name__)
 
 
+def _replay_history(stored: Any) -> list[tuple[str, str]] | None:
+    """Convert a persisted conversation_history (list-of-lists) back to Q/A tuples."""
+    if not stored:
+        return None
+    history: list[tuple[str, str]] = []
+    for pair in stored:
+        if isinstance(pair, (list, tuple)) and len(pair) == 2:
+            history.append((str(pair[0]), str(pair[1])))
+    return history or None
+
+
 async def rejudge_run(
     original_run_id: str,
     database_url: str | None = None,
@@ -49,6 +60,17 @@ async def rejudge_run(
     git_info = get_git_info()
     original_meta: dict[str, Any] = original.metadata_ or {}  # type: ignore[assignment]
 
+    # A rejudged multiturn run must stay excluded from the dashboard aggregate, so
+    # mode rides along with the run rather than being reconstructed downstream.
+    rejudge_meta: dict[str, Any] = {
+        "system": original_meta.get("system"),
+        "rejudged_from": original_run_id,
+        "rejudge_commit": git_info.get("commit"),
+        "rejudge_branch": git_info.get("branch"),
+    }
+    if original_meta.get("mode") is not None:
+        rejudge_meta["mode"] = original_meta["mode"]
+
     new_run = db.create_run(
         run_type="rejudge",
         agent_commit=original.agent_commit,
@@ -58,12 +80,7 @@ async def rejudge_run(
         judge_model=j_model,
         question_set=original.question_set,
         question_count=original.question_count,
-        metadata_={
-            "system": original_meta.get("system"),
-            "rejudged_from": original_run_id,
-            "rejudge_commit": git_info.get("commit"),
-            "rejudge_branch": git_info.get("branch"),
-        },
+        metadata_=rejudge_meta,
     )
     logger.info(
         f"Rejudge run {new_run.id} created (source run {original_run_id}, "
@@ -94,6 +111,11 @@ async def rejudge_run(
             # rejudged run keeps fact-grounded verdicts (and the fact-sized
             # token budget — omitting them starved verbose judges at 500 tokens).
             required_facts=context.get("required_facts"),
+            # Multiturn rows persist the prior transcript as list-of-lists (JSON has
+            # no tuples). Replaying it keeps reference-resolution turns judgeable —
+            # without it the judge sees "how does that compare?" with no antecedent
+            # and records a phantom quality drop.
+            conversation_history=_replay_history(context.get("conversation_history")),
         )
 
         if judge_result is None:

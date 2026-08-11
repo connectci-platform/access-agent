@@ -169,3 +169,100 @@ async def test_rejudge_replays_required_facts(mock_db):
         sent = mock_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
         assert "ACCESS allocates HPC resources" in sent
         assert "Required Facts" in sent
+
+
+async def test_rejudge_propagates_mode_metadata(mock_db):
+    """A rejudged multiturn run must stay excluded from the dashboard aggregate, so
+    metadata.mode rides along to the new run."""
+    db = EvalDB(mock_db)
+    original = db.create_run(
+        run_type="pre_production",
+        llm_model="qwen",
+        question_set="mt.yaml",
+        question_count=1,
+        metadata_={"system": "agent_full", "mode": "multiturn"},
+    )
+    db.add_score(
+        run_id=original.id,
+        question_id="mt-f-01_t2",
+        source="judge",
+        question_text="Which have A100s?",
+        answer_text="Delta and DeltaAI.",
+        context={"rag_context": None, "tool_results": None, "node_trace": None},
+        composite_score=0.5,
+    )
+
+    with patch("src.eval.judge.AsyncOpenAI") as mock_openai_cls:
+        mock_client = mock_openai_cls.return_value
+        mock_client.chat.completions.create = AsyncMock(return_value=_completion(MOCK_JUDGE_BEST))
+        summary = await rejudge_run(original_run_id=str(original.id), database_url=mock_db)
+
+    new_run = db.get_run(str(summary["new_run_id"]))
+    assert new_run.metadata_["mode"] == "multiturn"
+    assert new_run.metadata_["rejudged_from"] == str(original.id)
+
+
+async def test_rejudge_replays_conversation_history(mock_db):
+    """Multiturn rows persist the prior transcript; replaying it keeps
+    reference-resolution turns judgeable instead of recording phantom drops."""
+    db = EvalDB(mock_db)
+    original = db.create_run(
+        run_type="pre_production",
+        llm_model="qwen",
+        question_set="mt.yaml",
+        question_count=1,
+        metadata_={"system": "agent_full", "mode": "multiturn"},
+    )
+    db.add_score(
+        run_id=original.id,
+        question_id="mt-f-01_t2",
+        source="judge",
+        question_text="Which of those have A100s?",
+        answer_text="Delta and DeltaAI.",
+        # Stored as list-of-lists — JSON has no tuples.
+        context={
+            "rag_context": None,
+            "tool_results": None,
+            "node_trace": None,
+            "conversation_history": [["What GPU resources exist?", "Delta, DeltaAI, Anvil."]],
+        },
+        composite_score=0.5,
+    )
+
+    judge = MagicMock()
+    judge.score = AsyncMock(return_value=None)  # judge_error path; we only assert the call
+    with patch("src.eval.rejudge.Judge", return_value=judge):
+        await rejudge_run(original_run_id=str(original.id), database_url=mock_db)
+
+    history = judge.score.call_args.kwargs["conversation_history"]
+    assert history == [("What GPU resources exist?", "Delta, DeltaAI, Anvil.")]
+
+
+async def test_rejudge_single_turn_passes_no_history(mock_db):
+    """Single-turn rows have no stored history — the judge call must stay unchanged."""
+    db = EvalDB(mock_db)
+    original = db.create_run(
+        run_type="pre_production",
+        llm_model="qwen",
+        question_set="tiny",
+        question_count=1,
+        metadata_={"system": "access-agent"},
+    )
+    db.add_score(
+        run_id=original.id,
+        question_id="q1",
+        source="judge",
+        question_text="What is ACCESS?",
+        answer_text="A program.",
+        context={"rag_context": None, "tool_results": None, "node_trace": None},
+        composite_score=0.5,
+    )
+
+    judge = MagicMock()
+    judge.score = AsyncMock(return_value=None)
+    with patch("src.eval.rejudge.Judge", return_value=judge):
+        summary = await rejudge_run(original_run_id=str(original.id), database_url=mock_db)
+
+    assert judge.score.call_args.kwargs["conversation_history"] is None
+    # No mode on the source run means no mode key invented on the rejudge run.
+    assert "mode" not in (db.get_run(str(summary["new_run_id"])).metadata_ or {})
