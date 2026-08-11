@@ -30,9 +30,10 @@ async def test_judge_true_is_complies():
 
 
 @pytest.mark.asyncio
-async def test_judge_none_is_failsafe_complies():
+async def test_judge_none_is_judge_failed_verdict():
     j = FakeJudge(verdict=None)
-    assert await score_sample(SampleResult("ambiguous"), "how to X", j) == "complies"
+    v = await score_sample(SampleResult("ambiguous"), "how to X", j)
+    assert v == "judge-failed"  # distinct verdict now, not "complies"
 
 
 @pytest.mark.asyncio

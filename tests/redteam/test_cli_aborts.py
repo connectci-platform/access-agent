@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from src.redteam import __main__ as cli
@@ -17,3 +19,19 @@ async def test_run_from_env_aborts_on_version_mismatch(monkeypatch, tmp_path):
 
     with pytest.raises(SuiteVersionMismatch):
         await cli.run_from_env(_gate=_boom)
+
+
+@pytest.mark.asyncio
+async def test_run_from_env_propagates_judge_outage(monkeypatch, tmp_path):
+    from src.redteam.gate import JudgeOutage
+
+    monkeypatch.setenv("READ_ONLY", "true")
+    monkeypatch.setenv("REDTEAM_ARTIFACT_DIR", str(tmp_path / "art"))
+    fixture = Path(__file__).parent / "fixtures" / "prompts.sample.json"
+    monkeypatch.setenv("REDTEAM_PROMPTS_PATH", str(fixture))
+
+    async def outage_gate(*a, **k):
+        raise JudgeOutage("judge failed on 5/5 judged samples (>= 50%) — aborting")
+
+    with pytest.raises(JudgeOutage):
+        await cli.run_from_env(_gate=outage_gate)

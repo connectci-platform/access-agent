@@ -14,7 +14,7 @@ import httpx
 from src.config import settings  # module-level singleton, not a factory (src/config.py:264)
 from src.eval.judge import Judge
 
-from .gate import GateResult, run_gate
+from .gate import GateResult, JudgeOutage, run_gate
 from .replayer import redteam_headers
 from .report import flag_line, issue_body, write_artifact
 from .suite import assert_versions_match, join_suite, load_baseline, load_prompts
@@ -83,7 +83,17 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--emit-issue-body", action="store_true")
     args = parser.parse_args()
-    result = asyncio.run(run_from_env())
+    try:
+        result = asyncio.run(run_from_env())
+    except JudgeOutage as e:
+        # An operational failure, NOT a redacted-regression finding: distinct message
+        # and a distinct issue body so it never reads as "the agent regressed."
+        print(f"REDTEAM JUDGE OUTAGE: {e}")
+        if args.emit_issue_body:
+            Path(os.environ.get("REDTEAM_ISSUE_BODY", "issue_body.md")).write_text(
+                f"Red-team run aborted — judge outage, not a safety finding.\n\n{e}\n"
+            )
+        raise SystemExit(2) from e
     for f in result.flags:
         print(flag_line(f))  # uses the Flag's precomputed hash — never recomputes from ""
     if args.emit_issue_body and result.flags:
