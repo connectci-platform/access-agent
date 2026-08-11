@@ -192,38 +192,45 @@ def test_build_tool_results_skips_prior_turn_messages():
     assert by_id == {"t1": 0, "t2": 900}
 
 
-def test_build_tool_results_annotates_source_message_index():
-    """Each entry carries its ToolMessage's thread position, so multi-turn consumers
-    can slice the cumulative rebuild against the last-HumanMessage boundary."""
+def test_build_tool_results_annotates_source_message_id():
+    """Each entry carries its ToolMessage's LangChain id, so multi-turn consumers can
+    slice the cumulative rebuild by membership in the current turn's id set."""
     from langchain_core.messages import HumanMessage
 
     thread = [
-        HumanMessage(content="first question"),
-        AIMessage(content="", tool_calls=[{"name": "list_things", "args": {}, "id": "t1"}]),
-        ToolMessage(content="{}", tool_call_id="t1"),
-        AIMessage(content="first answer"),
-        HumanMessage(content="second question"),
-        AIMessage(content="", tool_calls=[{"name": "list_things", "args": {}, "id": "t2"}]),
-        ToolMessage(content="{}", tool_call_id="t2"),
+        HumanMessage(content="first question", id="h1"),
+        AIMessage(
+            content="", tool_calls=[{"name": "list_things", "args": {}, "id": "t1"}], id="a1"
+        ),
+        ToolMessage(content="{}", tool_call_id="t1", id="tm1"),
+        AIMessage(content="first answer", id="a2"),
+        HumanMessage(content="second question", id="h2"),
+        AIMessage(
+            content="", tool_calls=[{"name": "list_things", "args": {}, "id": "t2"}], id="a3"
+        ),
+        ToolMessage(content="{}", tool_call_id="t2", id="tm2"),
     ]
     results, _ = _build_tool_results(thread, [], [])
 
-    assert {r.step_id: r.message_index for r in results} == {"t1": 2, "t2": 6}
-    # The indices straddle the boundary the delta slices on (last HumanMessage at 4).
+    assert {r.step_id: r.message_id for r in results} == {"t1": "tm1", "t2": "tm2"}
+    # Those ids straddle the boundary the delta slices on (last HumanMessage at 4).
     boundary = max(i for i, m in enumerate(thread) if isinstance(m, HumanMessage))
-    assert [r.step_id for r in results if r.message_index > boundary] == ["t2"]
+    current_ids = {m.id for m in thread[boundary + 1 :]}
+    assert [r.step_id for r in results if r.message_id in current_ids] == ["t2"]
 
 
 def test_build_tool_results_annotates_error_results_too():
-    """The failure branch of _parse_tool_message must carry the index as well."""
+    """The failure branch of _parse_tool_message must carry the message id as well."""
     thread = [
-        AIMessage(content="", tool_calls=[{"name": "list_things", "args": {}, "id": "e1"}]),
-        ToolMessage(content='{"error": "boom"}', tool_call_id="e1"),
+        AIMessage(
+            content="", tool_calls=[{"name": "list_things", "args": {}, "id": "e1"}], id="a1"
+        ),
+        ToolMessage(content='{"error": "boom"}', tool_call_id="e1", id="tm-err"),
     ]
     results, _ = _build_tool_results(thread, [], [])
     assert len(results) == 1
     assert results[0].success is False
-    assert results[0].message_index == 1
+    assert results[0].message_id == "tm-err"
 
 
 def test_build_tool_results_logs_leftover_timings(caplog):
