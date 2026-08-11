@@ -33,12 +33,32 @@ Per-turn output (printed + collected) includes message count growth,
 duration, tools used, and answer length — enough to eyeball whether
 compaction fired and whether answers degraded.
 
-With ``--score``, the harness runs a per-turn judge with access to the full
-conversation history via ScoringContext. Each successful turn is scored,
-persisted to eval_runs/eval_scores, and reported with a thread-level
-composite (average of scored turns). Failed/skipped turns are persisted but
-excluded from composites; threads with no scored turns are excluded from the
-run-level composite.
+With ``--score``, the harness runs a per-turn judge with access to the prior
+turns' visible transcript via ScoringContext. Each successful turn is scored and
+persisted to eval_runs/eval_scores.
+
+Judge context is per-turn, not cumulative. Under checkpointing the agent state
+grows across the thread (``tool_results`` is rebuilt each turn from the full
+ordered message thread; ``node_trace`` appends via its reducer), so the runner
+tracks the previous turn's post-state counts and formats only this turn's new
+entries. Prior turns reach the judge only through the conversation history —
+cumulative tool payloads would present old calls as support for the current
+answer.
+
+Composites are macro and Fair-only. A thread composite is the mean over its
+turns that were judged AND not screened ``answerable=False`` ("Unfair"); the run
+composite is the mean of thread composites, so a long thread cannot dominate a
+short one. Turns excluded from composites are still counted and surfaced:
+``scores_summary`` carries
+``{"per_dimension", "thread_composites", "unscored_threads", "screened_turns",
+"failed_turns"}``, where ``per_dimension`` holds DIMENSION_NAMES-keyed means over
+Fair judged turns (the shape ``eval compare`` consumes) and ``failed_turns`` maps
+thread_id to its skipped/judge_error count. A thread with no Fair-judged turn is
+reported ``unscored`` and left out of the run composite rather than scoring zero.
+
+Scored runs pre-resolve every turn's required facts before the first agent call
+and refuse to start when a resolved fact still contains an ``AUTHOR:``
+placeholder (``--allow-draft-facts`` overrides for smoke tests).
 
 The harness writes to ``stdout`` and returns a structured result list and
 (when scoring) a summary of run/thread/turn composites.
@@ -57,6 +77,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from src.agent.graph import run_agent
+from src.agent.turn_capture import reset_turn_capture
 from src.config import settings
 from src.tools import ToolRegistry, get_catalog_aggregator
 
@@ -64,6 +85,7 @@ from .db import EvalDB
 from .formatting import format_node_trace, format_rag_matches, format_tool_results
 from .judge import Judge
 from .question_facts import resolve_required_facts
+from .rubric import DIMENSION_NAMES
 from .runner import report_battery_turn
 from .scoring import persist_skipped_turn, score_and_persist_turn
 
@@ -74,6 +96,27 @@ logger = logging.getLogger(__name__)
 
 MAX_QUESTION_ID_LEN = 64  # eval_scores.question_id is String(64)
 FAILED_TURN_MARKER = "(no answer — turn failed)"
+DRAFT_FACT_MARKER = "AUTHOR:"
+
+
+def _turn_delta_state(state: Any, prior_tool_results: int, prior_node_trace: int) -> dict[str, Any]:
+    """Project the cumulative agent state down to THIS turn's new activity (D1).
+
+    Under checkpointing the state the agent returns is thread-cumulative:
+    ``tool_results`` is rebuilt each turn from the full ordered message thread
+    and ``node_trace`` appends via its ``operator.add`` reducer. Both are
+    append-ordered, so the current turn's entries are exactly the tail beyond
+    the previous turn's post-state counts.
+
+    ``rag_matches`` is NOT sliced: no node on the current path writes it (see
+    src/agent/state.py), so it is always the empty per-turn default. Should a
+    node start populating it cumulatively, it needs the same treatment.
+    """
+    return {
+        "rag_matches": state.get("rag_matches", []),
+        "tool_results": list(state.get("tool_results", []))[prior_tool_results:],
+        "node_trace": list(state.get("node_trace", []))[prior_node_trace:],
+    }
 
 
 @dataclass
@@ -100,6 +143,10 @@ class TurnResult:
     error: str | None = None
     composite: float | None = None
     score_source: str | None = None
+    # Judge screen: False means "Unfair" — excluded from thread/run composites (D2).
+    answerable: bool | None = None
+    # Per-dimension raw scores from the JudgeResult, for the run's per_dimension means.
+    scores: dict[str, int | None] | None = None
 
 
 @dataclass
@@ -150,6 +197,7 @@ async def run_thread(
     acting_user: str | None = None,
     resource_context: str | None = None,
     scoring: ScoringContext | None = None,
+    resolved_facts: dict[str, list[Any] | None] | None = None,
 ) -> ThreadResult:
     """Run all questions in a thread sequentially in one checkpointed session.
 
@@ -167,6 +215,9 @@ async def run_thread(
         scoring: When provided, each successful turn is judged and persisted
             (with prior turns as conversation history) and a battery turn
             report is written; failed turns are persisted as skipped.
+        resolved_facts: Optional question_id -> required facts map pre-resolved by
+            ``run_battery`` (draft-placeholder pre-flight, D3). When a turn's
+            question_id is absent from the map its facts are resolved inline.
 
     Returns:
         ThreadResult with one TurnResult per question.
@@ -178,6 +229,10 @@ async def run_thread(
     result = ThreadResult(thread_id=thread_id, description=description)
     session_id = f"eval_{session_namespace}_{thread_id}"
     history: list[tuple[str, str]] = []
+    # Post-state counts after the previous turn, so each turn's judge context is a
+    # delta over the thread-cumulative agent state (D1).
+    prior_tool_results = 0
+    prior_node_trace = 0
 
     logger.info(f"=== Thread {thread_id}: {description} ===")
     logger.info(f"Turns: {len(questions)}")
@@ -191,6 +246,9 @@ async def run_thread(
 
         start = time.monotonic()
         state: dict[str, Any] | AgentState = {}
+        # Per-turn capture (summarized flag, tool timings, retrieved chunks) —
+        # mirrors the single-turn runner so turn_reports carry this turn's data only.
+        reset_turn_capture()
         try:
             state = await run_agent(
                 query=question_text,
@@ -232,56 +290,25 @@ async def run_thread(
             )
 
         if scoring is not None:
-            if turn_result.success:
-                yaml_facts = q.get("required_facts")
-                required_facts = resolve_required_facts(scoring.db, question_id, yaml_facts)
-                judge_result = await score_and_persist_turn(
-                    scoring.db,
-                    scoring.judge,
-                    run_id=scoring.run_id,
-                    question_id=question_id,
-                    question_text=question_text,
-                    answer=turn_result.answer,
-                    rag_context=format_rag_matches(state),
-                    tool_results=format_tool_results(state),
-                    node_trace=format_node_trace(state),
-                    required_facts=required_facts,
-                    conversation_history=list(history) or None,
-                    extra_context={
-                        "thread_id": thread_id,
-                        "turn_index": i,
-                        "ground_truth_stability": q.get("ground_truth_stability"),
-                    },
-                    duration_ms=turn_result.duration_ms,
-                )
-                if judge_result is not None:
-                    turn_result.composite = judge_result.composite
-                    turn_result.score_source = "judge"
-                else:
-                    turn_result.score_source = "judge_error"
-            else:
-                persist_skipped_turn(
-                    scoring.db,
-                    run_id=scoring.run_id,
-                    question_id=question_id,
-                    question_text=question_text,
-                    error=turn_result.error,
-                    duration_ms=turn_result.duration_ms,
-                    extra_context={"thread_id": thread_id, "turn_index": i},
-                )
-                turn_result.score_source = "skipped"
-
-            await report_battery_turn(
-                state=state if turn_result.success else {},
+            await _score_turn(
+                scoring,
+                turn_result,
+                turn_spec=q,
+                state=state,
+                thread_id=thread_id,
                 session_id=session_id,
                 question_id=question_id,
-                query_text=question_text,
-                duration_ms=turn_result.duration_ms,
-                battery_id=scoring.battery_id,
-                battery_run_id=scoring.run_id,
-                success=turn_result.success,
                 turn_index=i,
+                history=history,
+                delta_baseline=(prior_tool_results, prior_node_trace),
+                resolved_facts=resolved_facts,
             )
+
+        # Advance the delta baseline to this turn's post-state. A failed turn leaves
+        # `state` empty and the checkpoint untouched, so the baseline stays put.
+        if turn_result.success:
+            prior_tool_results = len(state.get("tool_results", []))
+            prior_node_trace = len(state.get("node_trace", []))
 
         history.append(
             (question_text, turn_result.answer if turn_result.success else FAILED_TURN_MARKER)
@@ -290,6 +317,129 @@ async def run_thread(
         result.turns.append(turn_result)
 
     return result
+
+
+async def _score_turn(
+    scoring: ScoringContext,
+    turn_result: TurnResult,
+    *,
+    turn_spec: dict[str, Any],
+    state: Any,
+    thread_id: str,
+    session_id: str,
+    question_id: str,
+    turn_index: int,
+    history: list[tuple[str, str]],
+    delta_baseline: tuple[int, int],
+    resolved_facts: dict[str, list[Any] | None] | None,
+) -> None:
+    """Judge + persist one turn, then write its battery turn report.
+
+    Mutates ``turn_result`` with the judge verdict (composite, answerable, raw
+    dimension scores, score source). A failed turn is persisted as ``skipped``
+    and the thread continues — a mid-thread failure degrading later turns is
+    itself multi-turn robustness signal.
+    """
+    if turn_result.success:
+        if resolved_facts is not None and question_id in resolved_facts:
+            required_facts = resolved_facts[question_id]
+        else:
+            required_facts = resolve_required_facts(
+                scoring.db, question_id, turn_spec.get("required_facts")
+            )
+        turn_state = _turn_delta_state(state, *delta_baseline)
+        judge_result = await score_and_persist_turn(
+            scoring.db,
+            scoring.judge,
+            run_id=scoring.run_id,
+            question_id=question_id,
+            question_text=turn_result.question,
+            answer=turn_result.answer,
+            rag_context=format_rag_matches(turn_state),
+            tool_results=format_tool_results(turn_state),
+            node_trace=format_node_trace(turn_state),
+            required_facts=required_facts,
+            conversation_history=list(history) or None,
+            extra_context={
+                "thread_id": thread_id,
+                "turn_index": turn_index,
+                "ground_truth_stability": turn_spec.get("ground_truth_stability"),
+            },
+            duration_ms=turn_result.duration_ms,
+        )
+        if judge_result is not None:
+            turn_result.composite = judge_result.composite
+            turn_result.answerable = judge_result.answerable
+            turn_result.scores = judge_result.scores
+            turn_result.score_source = "judge"
+        else:
+            turn_result.score_source = "judge_error"
+    else:
+        persist_skipped_turn(
+            scoring.db,
+            run_id=scoring.run_id,
+            question_id=question_id,
+            question_text=turn_result.question,
+            error=turn_result.error,
+            duration_ms=turn_result.duration_ms,
+            extra_context={"thread_id": thread_id, "turn_index": turn_index},
+        )
+        turn_result.score_source = "skipped"
+
+    await report_battery_turn(
+        state=state if turn_result.success else {},
+        session_id=session_id,
+        question_id=question_id,
+        query_text=turn_result.question,
+        duration_ms=turn_result.duration_ms,
+        battery_id=scoring.battery_id,
+        battery_run_id=scoring.run_id,
+        success=turn_result.success,
+        turn_index=turn_index,
+    )
+
+
+def _fact_text(fact: Any) -> str:
+    """The judge-visible text of a required fact — never authoring metadata.
+
+    Facts arrive either as plain strings (YAML fallback) or as dicts carrying
+    ``fact_text`` plus authoring fields. Only the fact text is scanned for the
+    draft marker: ``authoring_notes`` legitimately keep their AUTHOR markers.
+    """
+    if isinstance(fact, dict):
+        return str(fact.get("fact_text", ""))
+    return str(fact)
+
+
+def _preresolve_facts(
+    db: EvalDB, threads: list[dict[str, Any]], *, allow_draft_facts: bool
+) -> dict[str, list[Any] | None]:
+    """Resolve every turn's facts up front and refuse unreviewed drafts (D3).
+
+    Runs before the first agent call so an ``AUTHOR:`` placeholder is a true
+    pre-flight refusal rather than a mid-run crash, and returns the map so the
+    run reuses one resolution per turn (consistency + fewer DB round trips).
+    """
+    resolved: dict[str, list[Any] | None] = {}
+    offending: list[str] = []
+    for thread in threads:
+        for q in thread["questions"]:
+            question_id = f"{thread['thread_id']}_{q['turn_id']}"
+            facts = resolve_required_facts(db, question_id, q.get("required_facts"))
+            resolved[question_id] = facts
+            if facts and any(DRAFT_FACT_MARKER in _fact_text(f) for f in facts):
+                offending.append(question_id)
+
+    if offending and not allow_draft_facts:
+        raise ValueError(
+            f"required facts still contain {DRAFT_FACT_MARKER!r} placeholders for: "
+            f"{', '.join(offending)} — confirm the facts or pass --allow-draft-facts"
+        )
+    if offending:
+        logger.warning(
+            f"running with {len(offending)} draft-placeholder fact set(s): {', '.join(offending)}"
+        )
+    return resolved
 
 
 def _build_judge(judge_model: str | None) -> Judge:
@@ -310,12 +460,15 @@ async def run_battery(
     score: bool = False,
     judge_model: str | None = None,
     database_url: str | None = None,
+    allow_draft_facts: bool = False,
 ) -> tuple[list[ThreadResult], dict[str, Any] | None]:
     """Load a multi-turn battery (YAML or JSON) file and run every thread in it.
 
     When ``score`` is set, each turn is judged and persisted under a new
     eval_runs row, and a run-level summary (thread + run composites) is
-    returned alongside the per-thread results.
+    returned alongside the per-thread results. Scored runs pre-resolve every
+    turn's required facts and refuse to start if any resolved fact text still
+    carries an ``AUTHOR:`` placeholder, unless ``allow_draft_facts`` is set.
     """
     threads = load_thread_battery(battery_path)
 
@@ -326,18 +479,26 @@ async def run_battery(
                 f"acting_user_required threads need --acting-user: {', '.join(missing_acting_user)}"
             )
 
+    # Pre-flight before the catalog fetch and any agent call (and before the
+    # eval_runs row exists, so a refusal leaves no orphan run): resolve every
+    # turn's facts once and refuse unreviewed draft placeholders (D3).
+    db: EvalDB | None = None
+    resolved_facts: dict[str, list[Any] | None] | None = None
+    if score:
+        db = EvalDB(database_url or settings.DATABASE_URL)
+        resolved_facts = _preresolve_facts(db, threads, allow_draft_facts=allow_draft_facts)
+
     aggregator = get_catalog_aggregator()
     catalog = await aggregator.fetch_catalog()
     registry = ToolRegistry(catalog=catalog)
     tool_catalog = registry.catalog
 
     scoring: ScoringContext | None = None
-    if score:
+    if db is not None:
         from src.llm.providers import active_model_name
 
         from .runner import gen_semantic_run_id, get_git_info
 
-        db = EvalDB(database_url or settings.DATABASE_URL)
         git_info = get_git_info()
         run = db.create_run(
             id=gen_semantic_run_id("mtloop"),
@@ -376,35 +537,72 @@ async def run_battery(
                 resource_context=resource_context,
                 session_namespace=session_namespace,
                 scoring=scoring,
+                resolved_facts=resolved_facts,
             )
         )
 
     summary: dict[str, Any] | None = None
     if scoring is not None:
-        thread_composites: dict[str, float] = {}
-        unscored_threads: list[str] = []
-        for thread in results:
-            scored = [t.composite for t in thread.turns if t.composite is not None]
-            if scored:
-                thread_composites[thread.thread_id] = sum(scored) / len(scored)
-            else:
-                unscored_threads.append(thread.thread_id)
-        run_composite = (
-            sum(thread_composites.values()) / len(thread_composites) if thread_composites else 0.0
-        )
-        scores_summary = {
-            "thread_composites": thread_composites,
-            "unscored_threads": unscored_threads,
-        }
+        scores_summary, run_composite = _build_scores_summary(results)
         scoring.db.update_run_summary(scoring.run_id, scores_summary, run_composite)
-        summary = {
-            "run_id": scoring.run_id,
-            "composite_score": run_composite,
-            "thread_composites": thread_composites,
-            "unscored_threads": unscored_threads,
-        }
+        summary = {"run_id": scoring.run_id, "composite_score": run_composite, **scores_summary}
 
     return results, summary
+
+
+def _is_fair_scored(turn: TurnResult) -> bool:
+    """A turn counts toward composites only when judged AND not screened Unfair (D2)."""
+    return turn.composite is not None and turn.answerable is not False
+
+
+def _build_scores_summary(results: list[ThreadResult]) -> tuple[dict[str, Any], float]:
+    """Aggregate thread/run composites and the full scores_summary consumer contract.
+
+    Thread composite = mean over its Fair-judged turns; run composite = mean of
+    thread composites (macro, so a long thread cannot dominate). Unfair-screened
+    turns and failed/judge_error turns are excluded from composites but counted,
+    so a brittle variant cannot look good by scoring only what it survived.
+    """
+    thread_composites: dict[str, float] = {}
+    unscored_threads: list[str] = []
+    screened_turns = 0
+    failed_turns: dict[str, int] = {}
+    fair_scores: list[dict[str, int | None]] = []
+
+    for thread in results:
+        fair = [t for t in thread.turns if _is_fair_scored(t)]
+        screened_turns += sum(1 for t in thread.turns if t.answerable is False)
+        failed = sum(1 for t in thread.turns if t.score_source in ("skipped", "judge_error"))
+        if failed:
+            failed_turns[thread.thread_id] = failed
+        fair_scores.extend(t.scores for t in fair if t.scores is not None)
+        if fair:
+            thread_composites[thread.thread_id] = sum(
+                t.composite for t in fair if t.composite is not None
+            ) / len(fair)
+        else:
+            unscored_threads.append(thread.thread_id)
+
+    run_composite = (
+        sum(thread_composites.values()) / len(thread_composites) if thread_composites else 0.0
+    )
+
+    # per_dimension is a micro-average over Fair judged turns, keyed by DIMENSION_NAMES —
+    # the shape `eval compare` / print_comparison consume for single-turn runs.
+    per_dimension: dict[str, float] = {}
+    for name in DIMENSION_NAMES:
+        values = [v for s in fair_scores if (v := s.get(name)) is not None]
+        if values:
+            per_dimension[name] = sum(values) / len(values)
+
+    scores_summary: dict[str, Any] = {
+        "per_dimension": per_dimension,
+        "thread_composites": thread_composites,
+        "unscored_threads": unscored_threads,
+        "screened_turns": screened_turns,
+        "failed_turns": failed_turns,
+    }
+    return scores_summary, run_composite
 
 
 def print_summary(results: list[ThreadResult], summary: dict[str, Any] | None = None) -> None:
@@ -419,6 +617,8 @@ def print_summary(results: list[ThreadResult], summary: dict[str, Any] | None = 
         )
         for turn in thread.turns:
             status = "ok" if turn.success else f"FAIL: {turn.error}"
+            if turn.answerable is False:
+                status = "screened (unfair)"
             comp = f"{turn.composite:.2f}" if turn.composite is not None else "-"
             print(
                 f"  {turn.turn_id:<10} {len(turn.tools_used):<6} "
@@ -427,9 +627,26 @@ def print_summary(results: list[ThreadResult], summary: dict[str, Any] | None = 
             )
 
     if summary is not None:
+        failed_turns: dict[str, int] = summary.get("failed_turns") or {}
         print(f"\n=== Run {summary['run_id']} ===")
         for thread_id, composite in summary["thread_composites"].items():
-            print(f"  {thread_id}: {composite:.2f}")
+            failed = failed_turns.get(thread_id)
+            # Failed turns print next to every composite: composites exclude them, so a
+            # brittle run would otherwise look clean (A/B pairing rule needs them visible).
+            suffix = f"  ({failed} failed turn(s))" if failed else ""
+            print(f"  {thread_id}: {composite:.2f}{suffix}")
         if summary["unscored_threads"]:
             print(f"  unscored: {', '.join(summary['unscored_threads'])}")
+        if summary.get("screened_turns"):
+            print(
+                f"  screened (unfair) turns excluded from composites: {summary['screened_turns']}"
+            )
+        unscored_failed = {
+            t: n for t, n in failed_turns.items() if t not in summary["thread_composites"]
+        }
+        if unscored_failed:
+            print(
+                "  failed turns in unscored threads: "
+                + ", ".join(f"{t}={n}" for t, n in unscored_failed.items())
+            )
         print(f"  run composite: {summary['composite_score']:.2f}")

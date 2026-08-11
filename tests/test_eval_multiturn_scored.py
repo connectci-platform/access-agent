@@ -231,3 +231,335 @@ async def test_run_composite_is_mean_of_thread_means_not_turns(tmp_path):
 
     # Mean of thread means = (0.3 + 0.9) / 2 = 0.6; mean of turns would be 0.45.
     assert summary["composite_score"] == pytest.approx(0.6)
+
+
+def _judge_result(composite=0.9, answerable=True, correctness=2):
+    return JudgeResult(
+        scores={
+            "correctness": correctness,
+            "specificity": 2,
+            "relevance": 2,
+            "citation_quality": 2,
+            "hedging": 1,
+        },
+        justifications={},
+        composite=composite,
+        answerable=answerable,
+    )
+
+
+@pytest.mark.asyncio
+async def test_judge_context_is_per_turn_delta_not_cumulative(tmp_path):
+    """Under checkpointing the state is thread-cumulative; the judge must see only
+    the current turn's tool results and trace entries (D1)."""
+    from src.eval.multiturn import run_thread
+
+    scoring, _, judge = _scoring(tmp_path)
+
+    # Distinguishable, growing state: turn N's state holds turns 1..N's entries.
+    def _tool_result(turn):
+        return {"tool_name": f"tool_turn{turn}", "data": [f"payload-turn{turn}"], "success": True}
+
+    states = [
+        {
+            **STATE,
+            "tool_results": [_tool_result(n) for n in range(1, turn + 1)],
+            "node_trace": [{"node": f"trace_turn{n}"} for n in range(1, turn + 1)],
+        }
+        for turn in (1, 2, 3)
+    ]
+
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(side_effect=states)),
+        patch("src.eval.multiturn.report_battery_turn", new=AsyncMock()),
+    ):
+        await run_thread(THREAD, tool_catalog=None, session_namespace="ns", scoring=scoring)
+
+    turn2 = judge.score.call_args_list[1].kwargs
+    assert "tool_turn2" in turn2["tool_results"]
+    assert "payload-turn2" in turn2["tool_results"]
+    # Turn 1's cumulative entries must NOT appear as support for turn 2's answer.
+    assert "tool_turn1" not in turn2["tool_results"]
+    assert "trace_turn2" in turn2["node_trace"]
+    assert "trace_turn1" not in turn2["node_trace"]
+
+    turn3 = judge.score.call_args_list[2].kwargs
+    assert "tool_turn3" in turn3["tool_results"]
+    assert "tool_turn1" not in turn3["tool_results"]
+    assert "tool_turn2" not in turn3["tool_results"]
+
+
+@pytest.mark.asyncio
+async def test_turn_capture_reset_per_turn(tmp_path):
+    """turn_reports carry per-turn summarized/timings/chunks only if the capture is
+    reset before each turn (mirrors the single-turn runner)."""
+    from src.eval.multiturn import run_thread
+
+    scoring, _, _ = _scoring(tmp_path)
+    resets = MagicMock()
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(return_value=STATE)),
+        patch("src.eval.multiturn.report_battery_turn", new=AsyncMock()),
+        patch("src.eval.multiturn.reset_turn_capture", new=resets),
+    ):
+        await run_thread(THREAD, tool_catalog=None, session_namespace="ns", scoring=scoring)
+
+    assert resets.call_count == 3  # one per turn, not once per thread
+
+
+@pytest.mark.asyncio
+async def test_unfair_turns_excluded_from_composites_and_counted(tmp_path):
+    """Judge-screened (answerable=False) turns leave composites alone but are counted."""
+    from src.eval import multiturn
+
+    battery = tmp_path / "b.json"
+    battery.write_text(json.dumps([THREAD]))
+    db_url = f"sqlite:///{tmp_path}/eval.db"
+
+    judge = MagicMock()
+    # t1 Fair 0.8, t2 Unfair 0.1 (must not drag the mean), t3 Fair 0.6.
+    judge.score = AsyncMock(
+        side_effect=[
+            _judge_result(0.8),
+            _judge_result(0.1, answerable=False),
+            _judge_result(0.6),
+        ]
+    )
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(return_value=STATE)),
+        patch("src.eval.multiturn.report_battery_turn", new=AsyncMock()),
+        patch("src.eval.multiturn.get_catalog_aggregator") as agg,
+        patch("src.eval.multiturn._build_judge", return_value=judge),
+    ):
+        agg.return_value.fetch_catalog = AsyncMock(return_value={"tools": []})
+        _, summary = await multiturn.run_battery(
+            battery_path=str(battery), score=True, database_url=db_url
+        )
+
+    # Fair-only mean = (0.8 + 0.6) / 2 = 0.7; including the Unfair turn would give 0.5.
+    assert summary["thread_composites"]["mt-f-01"] == pytest.approx(0.7)
+    assert summary["composite_score"] == pytest.approx(0.7)
+    assert summary["screened_turns"] == 1
+    # The screened row still persists so the screen is auditable.
+    rows = EvalDB(db_url).get_scores_for_run(summary["run_id"])
+    assert {r.question_id: r.source for r in rows}["mt-f-01_t2"] == "judge"
+
+
+@pytest.mark.asyncio
+async def test_scores_summary_carries_full_consumer_contract(tmp_path):
+    """per_dimension (Fair turns only) + screened/failed counts land in scores_summary."""
+    from src.eval import multiturn
+
+    battery = tmp_path / "b.json"
+    battery.write_text(json.dumps([THREAD]))
+    db_url = f"sqlite:///{tmp_path}/eval.db"
+
+    calls = {"n": 0}
+
+    async def flaky_agent(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise RuntimeError("boom")
+        return STATE
+
+    judge = MagicMock()
+    # Two judged turns: correctness 2 and 0 -> per_dimension mean 1.0.
+    judge.score = AsyncMock(
+        side_effect=[_judge_result(correctness=2), _judge_result(correctness=0)]
+    )
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(side_effect=flaky_agent)),
+        patch("src.eval.multiturn.report_battery_turn", new=AsyncMock()),
+        patch("src.eval.multiturn.get_catalog_aggregator") as agg,
+        patch("src.eval.multiturn._build_judge", return_value=judge),
+    ):
+        agg.return_value.fetch_catalog = AsyncMock(return_value={"tools": []})
+        _, summary = await multiturn.run_battery(
+            battery_path=str(battery), score=True, database_url=db_url
+        )
+
+    stored = EvalDB(db_url).get_run(summary["run_id"]).scores_summary
+    assert set(stored) == {
+        "per_dimension",
+        "thread_composites",
+        "unscored_threads",
+        "screened_turns",
+        "failed_turns",
+    }
+    assert stored["per_dimension"]["correctness"] == pytest.approx(1.0)
+    assert stored["per_dimension"]["hedging"] == pytest.approx(1.0)
+    assert stored["failed_turns"] == {"mt-f-01": 1}
+    assert stored["screened_turns"] == 0
+
+
+@pytest.mark.asyncio
+async def test_scored_run_refuses_draft_author_facts(tmp_path):
+    """A resolved fact still carrying AUTHOR: is an authoring instruction, not ground
+    truth — refuse before the first agent call, listing the offending questions."""
+    from src.eval import multiturn
+
+    thread = {
+        "thread_id": "mt-draft",
+        "questions": [
+            {
+                "turn_id": "t1",
+                "question": "Q1?",
+                "required_facts": ["Answer names X (AUTHOR: TBD)"],
+            },
+            {"turn_id": "t2", "question": "Q2?", "required_facts": ["Answer names Y."]},
+        ],
+    }
+    battery = tmp_path / "b.json"
+    battery.write_text(json.dumps([thread]))
+    db_url = f"sqlite:///{tmp_path}/eval.db"
+
+    agent = AsyncMock(return_value=STATE)
+    judge = MagicMock()
+    judge.score = AsyncMock(return_value=GOOD)
+    with (
+        patch("src.eval.multiturn.run_agent", new=agent),
+        patch("src.eval.multiturn.report_battery_turn", new=AsyncMock()),
+        patch("src.eval.multiturn.get_catalog_aggregator") as agg,
+        patch("src.eval.multiturn._build_judge", return_value=judge),
+    ):
+        agg.return_value.fetch_catalog = AsyncMock(return_value={"tools": []})
+        with pytest.raises(ValueError, match="mt-draft_t1"):
+            await multiturn.run_battery(battery_path=str(battery), score=True, database_url=db_url)
+        assert agent.call_count == 0  # true pre-flight: refused before any agent call
+
+        # The override runs the battery.
+        _, summary = await multiturn.run_battery(
+            battery_path=str(battery),
+            score=True,
+            database_url=db_url,
+            allow_draft_facts=True,
+        )
+    assert agent.call_count == 2
+    assert summary["thread_composites"]["mt-draft"] == pytest.approx(0.9)
+
+
+@pytest.mark.asyncio
+async def test_draft_guard_ignores_authoring_notes(tmp_path):
+    """authoring_notes legitimately keep AUTHOR markers after authoring — the scan
+    targets fact text only."""
+    from src.eval import multiturn
+
+    thread = {
+        "thread_id": "mt-notes",
+        "questions": [
+            {
+                "turn_id": "t1",
+                "question": "Q1?",
+                "required_facts": ["Answer names X."],
+                "authoring_notes": ["AUTHOR: verify the list live before the run"],
+            }
+        ],
+    }
+    battery = tmp_path / "b.json"
+    battery.write_text(json.dumps([thread]))
+    db_url = f"sqlite:///{tmp_path}/eval.db"
+
+    judge = MagicMock()
+    judge.score = AsyncMock(return_value=GOOD)
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(return_value=STATE)),
+        patch("src.eval.multiturn.report_battery_turn", new=AsyncMock()),
+        patch("src.eval.multiturn.get_catalog_aggregator") as agg,
+        patch("src.eval.multiturn._build_judge", return_value=judge),
+    ):
+        agg.return_value.fetch_catalog = AsyncMock(return_value={"tools": []})
+        _, summary = await multiturn.run_battery(
+            battery_path=str(battery), score=True, database_url=db_url
+        )
+
+    assert summary["thread_composites"]["mt-notes"] == pytest.approx(0.9)
+
+
+@pytest.mark.asyncio
+async def test_facts_resolved_once_and_reused_per_turn(tmp_path):
+    """Pre-resolution is reused during the run: one resolve per turn, not two."""
+    from src.eval import multiturn
+
+    thread = {
+        "thread_id": "mt-reuse",
+        "questions": [
+            {"turn_id": "t1", "question": "Q1?", "required_facts": ["Fact A."]},
+            {"turn_id": "t2", "question": "Q2?", "required_facts": ["Fact B."]},
+        ],
+    }
+    battery = tmp_path / "b.json"
+    battery.write_text(json.dumps([thread]))
+    db_url = f"sqlite:///{tmp_path}/eval.db"
+
+    judge = MagicMock()
+    judge.score = AsyncMock(return_value=GOOD)
+    resolver = MagicMock(side_effect=lambda db, qid, yaml_facts: yaml_facts)
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(return_value=STATE)),
+        patch("src.eval.multiturn.report_battery_turn", new=AsyncMock()),
+        patch("src.eval.multiturn.get_catalog_aggregator") as agg,
+        patch("src.eval.multiturn._build_judge", return_value=judge),
+        patch("src.eval.multiturn.resolve_required_facts", new=resolver),
+    ):
+        agg.return_value.fetch_catalog = AsyncMock(return_value={"tools": []})
+        await multiturn.run_battery(battery_path=str(battery), score=True, database_url=db_url)
+
+    assert resolver.call_count == 2  # pre-flight only; the run reuses the map
+    assert judge.score.call_args_list[0].kwargs["required_facts"] == ["Fact A."]
+    assert judge.score.call_args_list[1].kwargs["required_facts"] == ["Fact B."]
+
+
+def test_compare_renders_per_dimension_for_both_summary_shapes(tmp_path, capsys):
+    """`eval compare` between a single-turn and a multiturn run must show real
+    per-dimension values: single-turn stores the dims AS scores_summary, multiturn
+    nests them under per_dimension."""
+    from src.eval.__main__ import _handle_compare
+
+    db_url = f"sqlite:///{tmp_path}/eval.db"
+    db = EvalDB(db_url)
+    single = db.create_run(run_type="pre_production", metadata_={"system": "agent_full"})
+    db.update_run_summary(
+        str(single.id),
+        {
+            "correctness": 1.5,
+            "specificity": 1.0,
+            "relevance": 2.0,
+            "citation_quality": 1.0,
+            "hedging": 1.0,
+        },
+        0.62,
+    )
+    multi = db.create_run(run_type="pre_production", metadata_={"mode": "multiturn"})
+    db.update_run_summary(
+        str(multi.id),
+        {
+            "per_dimension": {
+                "correctness": 2.0,
+                "specificity": 1.0,
+                "relevance": 2.0,
+                "citation_quality": 1.0,
+                "hedging": 1.0,
+            },
+            "thread_composites": {"mt-f-01": 0.8},
+            "unscored_threads": [],
+            "screened_turns": 1,
+            "failed_turns": {},
+        },
+        0.8,
+    )
+
+    args = MagicMock(run_a=str(single.id), run_b=str(multi.id))
+    with patch("src.config.settings.DATABASE_URL", db_url):
+        _handle_compare(args)
+    out = capsys.readouterr().out
+
+    # Both columns render real values — a raw scores_summary read would give the
+    # multiturn side 0.00 for every dimension.
+    rows = {
+        line.split()[0]: [float(v) for v in line.split()[1:3]]
+        for line in out.splitlines()
+        if line.strip().startswith(("correctness", "relevance", "hedging"))
+    }
+    assert rows["correctness"] == [1.5, 2.0]
+    assert rows["relevance"] == [2.0, 2.0]
+    assert rows["hedging"] == [1.0, 1.0]
