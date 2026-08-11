@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.eval import scoring
 from src.eval.db import EvalDB
 from src.eval.rejudge import rejudge_run
 
@@ -112,7 +113,8 @@ async def test_rejudge_run_replays_and_writes_v2(mock_db):
     rescored = new_scores[0]
     assert rescored.source == "judge"
     assert rescored.question_id == "q1"
-    assert rescored.rubric_version == 2
+    # Stamped from the module constant, never a literal at the call site.
+    assert rescored.rubric_version == scoring.RUBRIC_VERSION
     assert rescored.answerable is True
     assert rescored.specificity == 2  # "Actionable"
     assert rescored.specificity_na is False
@@ -236,6 +238,144 @@ async def test_rejudge_replays_conversation_history(mock_db):
 
     history = judge.score.call_args.kwargs["conversation_history"]
     assert history == [("What GPU resources exist?", "Delta, DeltaAI, Anvil.")]
+
+
+async def test_rejudge_multiturn_rebuilds_summary_under_macro_semantics(mock_db):
+    """Identical verdicts must report ~zero drift. The stored composite is a macro
+    mean of Fair-only thread composites; scoring the rejudge as an all-rows micro
+    mean would invent a delta out of thread-length imbalance alone."""
+    db = EvalDB(mock_db)
+    original = db.create_run(
+        run_type="pre_production",
+        llm_model="qwen",
+        question_set="mt.yaml",
+        question_count=3,
+        metadata_={"system": "agent_full", "mode": "multiturn"},
+    )
+    # Deliberately uneven: thread A has 2 turns, thread B has 1. Every turn scores
+    # composite 1.0 under the mocked judge, so macro == micro == 1.0 only if the
+    # rebuild groups by thread; the point is the CONTRACT shape plus a zero delta.
+    for thread_id, turn_ids in (("mt-a", ("t1", "t2")), ("mt-b", ("t1",))):
+        for turn_id in turn_ids:
+            db.add_score(
+                run_id=original.id,
+                question_id=f"{thread_id}_{turn_id}",
+                source="judge",
+                question_text="Which of those have A100s?",
+                answer_text="Delta and DeltaAI.",
+                context={
+                    "rag_context": None,
+                    "tool_results": None,
+                    "node_trace": None,
+                    "thread_id": thread_id,
+                },
+                composite_score=1.0,
+            )
+    db.update_run_summary(
+        str(original.id),
+        {"per_dimension": {}, "thread_composites": {"mt-a": 1.0, "mt-b": 1.0}},
+        1.0,
+    )
+
+    with patch("src.eval.judge.AsyncOpenAI") as mock_openai_cls:
+        mock_client = mock_openai_cls.return_value
+        mock_client.chat.completions.create = AsyncMock(return_value=_completion(MOCK_JUDGE_BEST))
+        summary = await rejudge_run(original_run_id=str(original.id), database_url=mock_db)
+
+    # Identical verdicts, so no phantom judge drift.
+    assert summary["delta"] == 0.0
+    assert summary["new_composite"] == 1.0
+
+    stored = db.get_run(str(summary["new_run_id"])).scores_summary
+    # Rebuilt under the full multiturn contract, not a flat dimension map.
+    assert set(stored) == {
+        "per_dimension",
+        "thread_composites",
+        "unscored_threads",
+        "screened_turns",
+        "failed_turns",
+    }
+    assert stored["thread_composites"] == {"mt-a": 1.0, "mt-b": 1.0}
+    assert stored["per_dimension"]["correctness"] == 2.0
+
+
+async def test_rejudge_multiturn_macro_differs_from_micro(mock_db):
+    """The rebuilt composite is the mean of THREAD means, so a long thread cannot
+    dominate — the same rule the live runner applies."""
+    db = EvalDB(mock_db)
+    original = db.create_run(
+        run_type="pre_production",
+        llm_model="qwen",
+        question_set="mt.yaml",
+        question_count=4,
+        metadata_={"system": "agent_full", "mode": "multiturn"},
+    )
+    # 3-turn thread scores 0.0 per turn, 1-turn thread scores 1.0.
+    # Macro = (0.0 + 1.0)/2 = 0.5; a micro mean over 4 rows would give 0.25.
+    for thread_id, turn_ids in (("mt-long", ("t1", "t2", "t3")), ("mt-short", ("t1",))):
+        for turn_id in turn_ids:
+            db.add_score(
+                run_id=original.id,
+                question_id=f"{thread_id}_{turn_id}",
+                source="judge",
+                question_text="q",
+                answer_text="a",
+                context={"thread_id": thread_id},
+                composite_score=0.5,
+            )
+
+    worst = json.dumps(
+        {
+            "answerable": "Fair",
+            "correctness": {"value": "Incorrect", "justification": "wrong"},
+            "specificity": {"value": "Generic", "justification": "vague"},
+            "relevance": {"value": "Off", "justification": "off"},
+            "citation_quality": {"value": "Poor", "justification": "none"},
+            "hedging": {"value": "Miscalibrated", "justification": "hedged"},
+        }
+    )
+    with patch("src.eval.judge.AsyncOpenAI") as mock_openai_cls:
+        mock_client = mock_openai_cls.return_value
+        # get_scores_for_run orders by created_at; the 3 mt-long rows were inserted first.
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[_completion(worst)] * 3 + [_completion(MOCK_JUDGE_BEST)]
+        )
+        summary = await rejudge_run(original_run_id=str(original.id), database_url=mock_db)
+
+    stored = db.get_run(str(summary["new_run_id"])).scores_summary
+    assert stored["thread_composites"]["mt-long"] == pytest.approx(0.0)
+    assert stored["thread_composites"]["mt-short"] == pytest.approx(1.0)
+    assert summary["new_composite"] == pytest.approx(0.5)  # micro would be 0.25
+
+
+async def test_rejudge_single_turn_summary_stays_flat(mock_db):
+    """Single-turn rejudge behavior is unchanged: a flat dimension map, micro mean."""
+    db = EvalDB(mock_db)
+    original = db.create_run(
+        run_type="pre_production",
+        llm_model="qwen",
+        question_set="tiny",
+        question_count=1,
+        metadata_={"system": "access-agent"},
+    )
+    db.add_score(
+        run_id=original.id,
+        question_id="q1",
+        source="judge",
+        question_text="What is ACCESS?",
+        answer_text="A program.",
+        context={"rag_context": None, "tool_results": None, "node_trace": None},
+        composite_score=0.5,
+    )
+
+    with patch("src.eval.judge.AsyncOpenAI") as mock_openai_cls:
+        mock_client = mock_openai_cls.return_value
+        mock_client.chat.completions.create = AsyncMock(return_value=_completion(MOCK_JUDGE_BEST))
+        summary = await rejudge_run(original_run_id=str(original.id), database_url=mock_db)
+
+    stored = db.get_run(str(summary["new_run_id"])).scores_summary
+    assert "thread_composites" not in stored
+    assert stored["correctness"] == 2.0
 
 
 async def test_rejudge_single_turn_passes_no_history(mock_db):

@@ -75,7 +75,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import yaml
 
@@ -595,45 +595,83 @@ async def run_battery(
 
     summary: dict[str, Any] | None = None
     if scoring is not None:
-        scores_summary, run_composite = _build_scores_summary(results)
+        scores_summary, run_composite = build_multiturn_summary(_turn_records(results))
         scoring.db.update_run_summary(scoring.run_id, scores_summary, run_composite)
         summary = {"run_id": scoring.run_id, "composite_score": run_composite, **scores_summary}
 
     return results, summary
 
 
-def _is_fair_scored(turn: TurnResult) -> bool:
+class TurnRecord(NamedTuple):
+    """One scored turn, reduced to what multiturn composite math needs.
+
+    The adapter shape between the live runner (TurnResult objects grouped by
+    ThreadResult) and rejudge (eval_scores rows grouped by context.thread_id),
+    so both build the identical scores_summary contract from one code path.
+    """
+
+    thread_id: str
+    composite: float | None
+    answerable: bool | None
+    scores: dict[str, int | None] | None
+    source: str | None
+
+
+def _is_fair_scored(turn: TurnRecord) -> bool:
     """A turn counts toward composites only when judged AND not screened Unfair (D2)."""
     return turn.composite is not None and turn.answerable is not False
 
 
-def _build_scores_summary(results: list[ThreadResult]) -> tuple[dict[str, Any], float]:
+def _turn_records(results: list[ThreadResult]) -> list[TurnRecord]:
+    return [
+        TurnRecord(
+            thread_id=thread.thread_id,
+            composite=turn.composite,
+            answerable=turn.answerable,
+            scores=turn.scores,
+            source=turn.score_source,
+        )
+        for thread in results
+        for turn in thread.turns
+    ]
+
+
+def build_multiturn_summary(records: list[TurnRecord]) -> tuple[dict[str, Any], float]:
     """Aggregate thread/run composites and the full scores_summary consumer contract.
 
     Thread composite = mean over its Fair-judged turns; run composite = mean of
     thread composites (macro, so a long thread cannot dominate). Unfair-screened
     turns and failed/judge_error turns are excluded from composites but counted,
     so a brittle variant cannot look good by scoring only what it survived.
+
+    Shared with ``rejudge_run``: a rejudged multiturn run must rebuild its summary
+    under these semantics, or an all-rows micro mean compared against the stored
+    macro reports phantom judge drift on identical verdicts. Thread order follows
+    first appearance in ``records``.
     """
+    by_thread: dict[str, list[TurnRecord]] = {}
+    for record in records:
+        by_thread.setdefault(record.thread_id, []).append(record)
+
     thread_composites: dict[str, float] = {}
     unscored_threads: list[str] = []
     screened_turns = 0
     failed_turns: dict[str, int] = {}
     fair_scores: list[dict[str, int | None]] = []
 
-    for thread in results:
-        fair = [t for t in thread.turns if _is_fair_scored(t)]
-        screened_turns += sum(1 for t in thread.turns if t.answerable is False)
-        failed = sum(1 for t in thread.turns if t.score_source in ("skipped", "judge_error"))
+    for thread_id, turns in by_thread.items():
+        fair = [t for t in turns if _is_fair_scored(t)]
+        screened_turns += sum(1 for t in turns if t.answerable is False)
+        failed = sum(1 for t in turns if t.source in ("skipped", "judge_error"))
         if failed:
-            failed_turns[thread.thread_id] = failed
+            failed_turns[thread_id] = failed
         fair_scores.extend(t.scores for t in fair if t.scores is not None)
         if fair:
-            thread_composites[thread.thread_id] = sum(
+            thread_composites[thread_id] = sum(
                 t.composite for t in fair if t.composite is not None
             ) / len(fair)
         else:
-            unscored_threads.append(thread.thread_id)
+            unscored_threads.append(thread_id)
 
     run_composite = (
         sum(thread_composites.values()) / len(thread_composites) if thread_composites else 0.0

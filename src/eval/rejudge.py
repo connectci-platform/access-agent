@@ -4,6 +4,12 @@ Replays frozen question/answer/context rows through the current judge, writing
 a new eval_run linked back to the original via metadata.rejudged_from. Does
 not re-call the system — the answer_text and context blobs come from Postgres.
 
+A rejudged run's summary is rebuilt under the SOURCE run's semantics: a
+``mode="multiturn"`` run groups its rows by ``context.thread_id`` and rebuilds
+Fair-only thread composites plus a macro run composite (the full
+``scores_summary`` contract), so an original-vs-rejudge delta compares like
+statistics. Single-turn runs keep the flat micro-averaged dimension map.
+
 Limitation: the stored `tool_results` field is pre-formatted text produced by
 the formatter that was current at original-run time. Rubric prompt changes
 (e.g. mission preamble) fully apply; tool-context-format changes only apply
@@ -18,8 +24,10 @@ from typing import Any
 
 from src.config import settings
 
+from . import scoring
 from .db import EvalDB
 from .judge import Judge
+from .multiturn import TurnRecord, build_multiturn_summary
 from .rubric import DIMENSION_NAMES, compute_composite
 from .runner import get_git_info
 
@@ -35,6 +43,59 @@ def _replay_history(stored: Any) -> list[tuple[str, str]] | None:
         if isinstance(pair, (list, tuple)) and len(pair) == 2:
             history.append((str(pair[0]), str(pair[1])))
     return history or None
+
+
+def _turn_record(
+    context: dict[str, Any],
+    *,
+    source: str,
+    composite: float | None = None,
+    answerable: bool | None = None,
+    scores: dict[str, int | None] | None = None,
+) -> TurnRecord:
+    """Adapt one persisted score row into the multiturn summary's turn shape.
+
+    Rows written by the multiturn runner carry ``context["thread_id"]``; a row
+    without one is grouped under its own question-less bucket so it still counts
+    rather than silently vanishing from the rebuilt summary.
+    """
+    return TurnRecord(
+        thread_id=str(context.get("thread_id") or "(no thread)"),
+        composite=composite,
+        answerable=answerable,
+        scores=scores,
+        source=source,
+    )
+
+
+def _rebuild_summary(
+    all_scores: list[dict[str, int | None]],
+    turn_records: list[TurnRecord],
+    *,
+    is_multiturn: bool,
+) -> tuple[dict[str, Any], dict[str, float], float]:
+    """Build the rejudged run's (scores_summary, per-dimension means, composite).
+
+    A multiturn source run rebuilds under multiturn semantics — macro mean over
+    Fair-only thread composites, full scores_summary contract — so the
+    original-vs-rejudge delta compares like statistics. Scoring it as an all-rows
+    micro mean against the stored macro would report phantom judge drift on
+    identical verdicts. Single-turn runs keep the flat micro-averaged map.
+    """
+    if is_multiturn:
+        summary, composite = build_multiturn_summary(turn_records)
+        return summary, dict(summary["per_dimension"]), composite
+    if not all_scores:
+        return {}, {}, 0.0
+    avg_scores = {
+        name: (
+            sum(v for s in all_scores if (v := s.get(name)) is not None)
+            / max(1, sum(1 for s in all_scores if s.get(name) is not None))
+        )
+        for name in DIMENSION_NAMES
+    }
+    avg_composite = sum(compute_composite(s) for s in all_scores) / len(all_scores)
+    return avg_scores, avg_scores, avg_composite
 
 
 async def rejudge_run(
@@ -87,18 +148,27 @@ async def rejudge_run(
         f"system={original_meta.get('system')}, judge={j_model})"
     )
 
+    is_multiturn = original_meta.get("mode") == "multiturn"
+
     original_scores = db.get_scores_for_run(original_run_id)
     all_scores: list[dict[str, int | None]] = []
+    # Per-turn records for the multiturn summary rebuild (thread-grouped, Fair-only).
+    turn_records: list[TurnRecord] = []
     rescored = 0
     skipped = 0
     errors = 0
 
     for i, score in enumerate(original_scores, 1):
+        context: dict[str, Any] = score.context or {}  # type: ignore[assignment]
+
         if score.source != "judge":
             skipped += 1
+            # Not rejudged, but a multiturn summary must still count it against its
+            # thread's failed_turns — composites exclude failed turns, so a run that
+            # crashed half a thread would otherwise look clean.
+            turn_records.append(_turn_record(context, source=str(score.source)))
             continue
 
-        context: dict[str, Any] = score.context or {}  # type: ignore[assignment]
         logger.info(f"[{i}/{len(original_scores)}] rejudging {score.question_id}")
 
         judge_result = await judge.score(
@@ -120,6 +190,7 @@ async def rejudge_run(
 
         if judge_result is None:
             errors += 1
+            turn_records.append(_turn_record(context, source="judge_error"))
             db.add_score(
                 run_id=new_run.id,
                 question_id=score.question_id,
@@ -145,7 +216,7 @@ async def rejudge_run(
             specificity=judge_result.scores["specificity"],
             specificity_na=judge_result.specificity_na,
             answerable=judge_result.answerable,
-            rubric_version=2,
+            rubric_version=scoring.RUBRIC_VERSION,
             relevance=judge_result.scores["relevance"],
             citation_quality=judge_result.scores["citation_quality"],
             hedging=judge_result.scores["hedging"],
@@ -154,22 +225,21 @@ async def rejudge_run(
             justifications=judge_result.justifications,
         )
         all_scores.append(judge_result.scores)
+        turn_records.append(
+            _turn_record(
+                context,
+                source="judge",
+                composite=judge_result.composite,
+                answerable=judge_result.answerable,
+                scores=judge_result.scores,
+            )
+        )
         rescored += 1
 
-    if all_scores:
-        avg_scores = {
-            name: (
-                sum(v for s in all_scores if (v := s.get(name)) is not None)
-                / max(1, sum(1 for s in all_scores if s.get(name) is not None))
-            )
-            for name in DIMENSION_NAMES
-        }
-        avg_composite = sum(compute_composite(s) for s in all_scores) / len(all_scores)
-    else:
-        avg_scores = {}
-        avg_composite = 0.0
-
-    db.update_run_summary(str(new_run.id), avg_scores, avg_composite)
+    new_summary, avg_scores, avg_composite = _rebuild_summary(
+        all_scores, turn_records, is_multiturn=is_multiturn
+    )
+    db.update_run_summary(str(new_run.id), new_summary, avg_composite)
 
     summary = {
         "new_run_id": new_run.id,
