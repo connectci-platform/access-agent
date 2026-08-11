@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
 """One-shot: insert authored multi-turn facts as draft rows in reporting.question_facts.
 
-Reads the multiturn battery files, emits one draft version-1 row per fact with a
-stable fact_id ({thread_id}-{turn_id}-f{n}), skipping any (question_id, fact_id)
-that already has rows (idempotent re-run). Run over the 5433 tunnel:
+Reads the multiturn battery files and emits one draft row per fact with a stable
+fact_id ({thread_id}-{turn_id}-f{n}). Re-runs are versioning, not just idempotent:
+for each (question_id, fact_id) the script compares the authored text against the
+DB's latest version and
+
+  * inserts version 1 when the fact is new,
+  * inserts version latest+1 (same display_order) when the text CHANGED — the
+    resolver takes the latest non-flagged version, so this is how an AUTHOR-pass
+    edit actually reaches the judge,
+  * skips when the text is unchanged.
+
+Run over the 5433 tunnel:
 
     scripts/eval-tunnel-open   # in another terminal
     DATABASE_URL=... uv run python scripts/insert-multiturn-facts.py [--dry-run]
@@ -23,15 +32,27 @@ BATTERIES = [
     str(REPO_ROOT / "eval/questions/multiturn_compaction_battery.json"),
 ]
 
-INSERT = text("""
+# The DB's current state for one (question_id, fact_id): highest version and its text.
+LATEST = text("""
+    SELECT version, fact_text
+    FROM reporting.question_facts
+    WHERE question_id = :question_id AND fact_id = :fact_id
+    ORDER BY version DESC
+    LIMIT 1
+""")
+
+INSERT_VERSION = text("""
     INSERT INTO reporting.question_facts
         (question_id, fact_id, fact_text, status, version, display_order)
-    SELECT :question_id, :fact_id, :fact_text, 'draft', 1, :display_order
-    WHERE NOT EXISTS (
-        SELECT 1 FROM reporting.question_facts
-        WHERE question_id = :question_id AND fact_id = :fact_id
-    )
+    VALUES (:question_id, :fact_id, :fact_text, 'draft', :version, :display_order)
 """)
+
+
+def _fact_text(fact: object) -> str:
+    """Authored facts are plain strings; tolerate dicts carrying fact_text."""
+    if isinstance(fact, dict):
+        return str(fact.get("fact_text", ""))
+    return str(fact)
 
 
 def main() -> int:
@@ -51,7 +72,7 @@ def main() -> int:
                         {
                             "question_id": f"{thread['thread_id']}_{q['turn_id']}",
                             "fact_id": f"{thread['thread_id']}-{q['turn_id']}-f{n}",
-                            "fact_text": str(fact),
+                            "fact_text": _fact_text(fact),
                             "display_order": n,
                         }
                     )
@@ -64,11 +85,23 @@ def main() -> int:
 
     url = os.environ["DATABASE_URL"].replace("postgresql://", "postgresql+psycopg://", 1)
     engine = create_engine(url)
-    inserted = 0
+    inserted = bumped = skipped = 0
     with engine.begin() as conn:
         for r in rows:
-            inserted += conn.execute(INSERT, r).rowcount
-    print(f"inserted {inserted} new draft rows ({len(rows) - inserted} already present)")
+            latest = conn.execute(
+                LATEST, {"question_id": r["question_id"], "fact_id": r["fact_id"]}
+            ).fetchone()
+            if latest is None:
+                version = 1
+                inserted += 1
+            elif latest.fact_text == r["fact_text"]:
+                skipped += 1
+                continue
+            else:
+                version = latest.version + 1
+                bumped += 1
+            conn.execute(INSERT_VERSION, {**r, "version": version})
+    print(f"inserted {inserted} new, bumped {bumped} edited, skipped {skipped} unchanged")
     return 0
 
 
