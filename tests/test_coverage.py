@@ -26,6 +26,10 @@ class TestStructuralClass:
         assert structural_class("get_my_registrations") == "auth-read"
         assert structural_class("get_my_events") == "auth-read"
 
+    def test_auth_read_by_explicit_set(self):
+        # acting-user-scoped read that does NOT match the get_my_ prefix
+        assert structural_class("get_rp_account") == "auth-read"
+
     def test_unauth_read(self):
         assert structural_class("search_events") == "unauth-read"
         assert structural_class("get_infrastructure_news") == "unauth-read"

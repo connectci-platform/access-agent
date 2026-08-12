@@ -125,6 +125,17 @@ WRITE_MCP_TOOL_NAMES: frozenset[str] = frozenset(
     }
 )
 
+# Read-only MCP tools scoped to the authenticated acting user that do NOT follow
+# the get_my_* naming convention, so a name-prefix heuristic misses them. They
+# return the acting user's own data (e.g. get_rp_account: the user's username and
+# balance on one resource provider) and are unreachable under acting_user=None,
+# exactly like the get_my_* tools. Keep in sync with the MCP tool descriptions.
+AUTH_READ_MCP_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "get_rp_account",  # the acting user's account/username/balance on one RP
+    }
+)
+
 # MCP tools the agent invokes only in service of a *parent* capability, never
 # in response to a standalone user question. They are XDMoD query/chart plumbing
 # (the agent chains them to build a chart or metrics answer), announcement

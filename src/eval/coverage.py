@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from src.agent.domains.capabilities import (
+    AUTH_READ_MCP_TOOL_NAMES,
     COMPOSITIONAL_MCP_TOOL_NAMES,
     WRITE_MCP_TOOL_NAMES,
 )
@@ -52,7 +53,7 @@ def structural_class(tool: str) -> str:
         return "write"
     if tool in COMPOSITIONAL_MCP_TOOL_NAMES:
         return "composition"
-    if _AUTH_READ_RE.match(tool):
+    if tool in AUTH_READ_MCP_TOOL_NAMES or _AUTH_READ_RE.match(tool):
         return "auth-read"
     return "unauth-read"
 
