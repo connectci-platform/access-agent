@@ -43,7 +43,11 @@ async def run_eval(
     git_info = get_git_info()
     tool_catalog_snapshot = {
         "tool_count": registry.tool_count,
-        "tools": [t.get("name", "unknown") for t in (registry.catalog or {}).get("tools", [])],
+        # registry.tools is the flat name->definition dict tool_count is derived
+        # from; the raw catalog nests tools under servers[*].tools, so a
+        # top-level catalog["tools"] read comes back empty. Persist the names so
+        # the coverage audit can diff served-vs-exercised (was silently []).
+        "tools": sorted(registry.tools.keys()),
     }
 
     db = EvalDB(db_url)
