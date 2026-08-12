@@ -37,7 +37,7 @@
           },
           {
             "fact_id": "compaction-tool-heavy-02-keep-tokens-t7-delta-only-software",
-            "fact_text": "Answer names real Delta-only software per compare_software_availability (AUTHOR: verify 2-3 anchor packages live at authoring time)."
+            "fact_text": "Answer names real software the index lists for Delta but not for Anvil (anchors verified 2026-08-12 via compare_software_availability: alphafold, cce, and hpc-gpt are listed for Delta and not listed for Anvil; iqtree3 and beastx are DeltaAI-only and do NOT count as Delta software). Claims should match the software index rather than asserting absolute absence."
           },
           {
             "fact_id": "compaction-tool-heavy-02-keep-tokens-t7-no-fabricated-anvil",
