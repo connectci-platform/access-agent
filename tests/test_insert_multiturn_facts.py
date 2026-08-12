@@ -243,7 +243,7 @@ def test_build_rows_uses_the_authored_fact_ids():
     display_order is per-turn position."""
     rows = script.build_rows(script.BATTERIES)
 
-    assert len(rows) == 40
+    assert len(rows) == 41
     assert len({(r["question_id"], r["fact_id"]) for r in rows}) == len(rows)
     assert all(r["fact_id"].startswith(r["question_id"].replace("_", "-")) for r in rows)
     first = next(r for r in rows if r["question_id"] == "mt-followup-01_t2")

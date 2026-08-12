@@ -171,22 +171,27 @@
     question: Am I registered for any of those?
     required_facts:
     - fact_id: mt-action-01-t2-registration-join
-      fact_text: "Answer joins the t1 events against get_my_registrations for the acting user. If no
-        registration tool was called this turn, this fact is 'no'. (AUTHOR: pending test-account seeding)"
-    - fact_id: mt-action-01-t2-real-state
-      fact_text: Answer reflects the actual registration state; does not guess or claim inability to check.
-    ground_truth_stability: time_bound
-    authoring_notes: ["AUTHOR: seed one registration for the test account so the t1 events overlap
-        is non-trivial when this fact is authored."]
+      fact_text: "Answer checks the acting user's registrations and correctly reports NO overlap with
+        the t1 events - the account holds zero registrations (its true, by-design state). If no
+        registration tool was called this turn, this fact is 'no'."
+    - fact_id: mt-action-01-t2-no-fabricated-registrations
+      fact_text: Answer does not fabricate any registration, and does not claim inability to check
+        when the tool result is available this turn.
+    ground_truth_stability: stable
+    authoring_notes: ["Empty-state ground truth: apasquale1 deliberately holds zero registrations
+        (no real-event writes, no fake events). Re-verify the account is still unregistered pre-run.
+        STUDENT-CHECK."]
   - turn_id: t3
-    question: What else am I registered for?
+    question: OK — how would I sign up for the first one you mentioned?
     required_facts:
-    - fact_id: mt-action-01-t3-other-registrations
-      fact_text: "Answer lists the test account's other registrations per get_my_registrations.
-        (AUTHOR: pending test-account seeding)"
+    - fact_id: mt-action-01-t3-signup-first
+      fact_text: Answer gives registration guidance for the FIRST event named in its own t1 answer
+        (reference resolution across the t2 topic beat), matching that event's actual registration
+        mechanism as shown in this turn's tool results, and does not invent a registration path.
     ground_truth_stability: time_bound
-    authoring_notes: ["AUTHOR: seed the test account's registration list and enumerate it here,
-        excluding registrations already discussed in t2."]
+    authoring_notes: ["Replaces the seeded-account question ('What else am I registered for?'),
+        which is degenerate against an empty account. Tests positional recall to t1 plus live
+        mechanism lookup. Re-verify referent event at eval time. STUDENT-CHECK."]
 
 # 2 turns is deliberate here: the inverted-dependency scenario (authenticated read ->
 # dependent lookup) completes naturally in two turns (spec's 3-5 turn guidance is a range).
@@ -199,20 +204,30 @@
     question: What events am I currently registered for?
     required_facts:
     - fact_id: mt-action-02-t1-my-registrations
-      fact_text: "Answer lists the test account's registrations per get_my_registrations.
-        (AUTHOR: pending test-account seeding)"
-    ground_truth_stability: time_bound
-    authoring_notes: ["AUTHOR: seed the test account's registration list and enumerate it here."]
+      fact_text: Answer checks the acting user's registrations via the events tool and correctly
+        reports there are NONE - the account holds zero registrations. It does not fabricate any
+        registration; if no registration tool was called this turn, this fact is 'no'.
+    ground_truth_stability: stable
+    authoring_notes: ["Empty-state ground truth (deliberate; see mt-action-01 t2 note).
+        Re-verify pre-run. STUDENT-CHECK."]
   - turn_id: t2
-    question: Are there other upcoming events similar to the first one on that list?
+    question: Since I'm not signed up for anything yet, what upcoming office hours could I join to get started?
     required_facts:
-    - fact_id: mt-action-02-t2-similar-to-first
-      fact_text: "Answer names at least one real upcoming event (present in this turn's tool results)
-        and states how it relates to the first registration named in t1's answer. (AUTHOR: pending
-        test-account seeding)"
+    - fact_id: mt-action-02-t2-builds-on-empty
+      fact_text: Answer builds on the t1 result (does not contradict the just-established fact that
+        the user has no registrations, and does not re-check or re-litigate it) and pivots to the
+        requested public lookup.
+    - fact_id: mt-action-02-t2-real-office-hours
+      fact_text: 'Answer names real upcoming office-hours sessions supported by this turn''s tool
+        results, and fabricates none. Anchors as of 2026-08-12 (sufficient but not necessary):
+        Jetstream2 Office Hours (Tuesdays), Open OnDemand Office Hours, ACCESS and NAIRR Pilot
+        Office Hours, CloudBank Office Hours. Naming other real sessions from the tool results is
+        equally correct.'
     ground_truth_stability: time_bound
-    authoring_notes: ["AUTHOR: searches events related to the FIRST registration named in t1's
-        answer (reference resolution); verify a plausible result set once the test account is seeded."]
+    authoring_notes: ["Replaces the seeded-account question ('similar to the first one on that
+        list?'), which is degenerate against an empty list. The dependency is now on t1's EMPTY
+        answer (the pivot must acknowledge it). Series anchors verified 2026-08-12 via
+        search_events(type='Office Hours'); re-verify at eval time. STUDENT-CHECK."]
 
 - thread_id: mt-switch-01
   description: Software -> allocations pivot -> return to software; context must not bleed.
@@ -336,8 +351,10 @@
     question: Have I already registered for anything like that?
     required_facts:
     - fact_id: mt-mixed-01-t5-registration-overlap
-      fact_text: "Answer checks get_my_registrations for the acting user and answers about overlap
-        with t4's events. (AUTHOR: pending test-account seeding)"
-    ground_truth_stability: time_bound
-    authoring_notes: ["AUTHOR: expected overlap state for the test account against t4's events —
-        fill in once the test account is seeded."]
+      fact_text: Answer checks the acting user's registrations via the events tool and correctly
+        reports NO existing registrations (the account holds zero), relating that honestly to
+        t4's training suggestions (e.g. "not yet - here's how to sign up"). It does not fabricate
+        a registration; if no registration tool was called this turn, this fact is 'no'.
+    ground_truth_stability: stable
+    authoring_notes: ["Empty-state ground truth (deliberate; see mt-action-01 t2 note).
+        Re-verify the account is still unregistered pre-run. STUDENT-CHECK."]
