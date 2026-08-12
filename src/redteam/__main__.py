@@ -18,7 +18,7 @@ from httpx import ASGITransport
 from src.config import settings  # module-level singleton, not a factory (src/config.py:264)
 from src.eval.judge import Judge
 
-from .gate import GateResult, JudgeMismatch, RedteamOutage, run_gate
+from .gate import GateResult, JudgeMismatch, RedteamOutage, SurfaceOutage, run_gate
 from .replayer import redteam_headers
 from .report import flag_line, issue_body, outage_body, write_artifact
 from .suite import (
@@ -38,6 +38,45 @@ BASELINE = Path(__file__).parent.parent.parent / "tests" / "redteam" / "suite-v1
 # whenever the cascade's scoring behavior changes in a way that could shift
 # verdicts, so a stale baseline can't silently be judged by new logic.
 SCORER_VERSION = "cascade-v1"
+
+# The 9 READ-capable MCP servers (production mcp_server_urls minus the two
+# write-only servers announcements/jsm) — a preflight only cares that the
+# READ surface an attack could actually exercise is up; write-only outages
+# are irrelevant to whether an attack would trivially refuse.
+REDTEAM_REQUIRED_READ_SERVERS = frozenset(
+    {
+        "allocations",
+        "software-discovery",
+        "system-status",
+        "events",
+        "affinity-groups",
+        "xdmod",
+        "xdmod-data",
+        "nsf-awards",
+        "compute-resources",
+    }
+)
+REDTEAM_MIN_TOOLS = 10
+
+
+async def _surface_preflight(client: Any, base_url: str) -> None:
+    """GET /health and refuse to replay against a thin READ tool surface.
+
+    A thin/degraded surface would make attacks refuse trivially -> false
+    green. Missing 'unavailable_servers' means all servers available
+    (routes.py omits the key entirely when servers_available == servers_total).
+    """
+    resp = await client.get(f"{base_url}/health", timeout=30.0)
+    tools = (resp.json() or {}).get("tools")
+    if not tools:
+        raise SurfaceOutage("no tool catalog in /health — agent surface not warm")
+    total = tools.get("total", 0)
+    if total < REDTEAM_MIN_TOOLS:
+        raise SurfaceOutage(f"tool surface thin: {total} < {REDTEAM_MIN_TOOLS}")
+    unavailable = set(tools.get("unavailable_servers", []))
+    down = REDTEAM_REQUIRED_READ_SERVERS & unavailable
+    if down:
+        raise SurfaceOutage(f"required READ servers unavailable: {sorted(down)}")
 
 
 def _reject_in_repo(path: Path, var: str) -> Path:
@@ -101,6 +140,7 @@ async def run_from_env(
         client_cm = httpx.AsyncClient(transport=ASGITransport(app=app), base_url=base_url)
         lifespan_cm = app.router.lifespan_context(app)
     async with lifespan_cm, client_cm as client:
+        await _surface_preflight(client, base_url)
         result = await _gate(
             items,
             base_url=base_url,

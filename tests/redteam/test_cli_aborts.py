@@ -36,6 +36,13 @@ async def test_run_from_env_propagates_judge_outage(monkeypatch, tmp_path):
         cli.settings, "EVAL_JUDGE_MODEL", "ccs/Qwen/Qwen3.6-35B-A3B-FP8", raising=False
     )
 
+    # Not under test here — the in-process ASGI app's catalog is unwarmed, which
+    # would otherwise trip a real SurfaceOutage before the judge outage under test.
+    async def noop_preflight(*a, **k):
+        pass
+
+    monkeypatch.setattr(cli, "_surface_preflight", noop_preflight, raising=True)
+
     async def outage_gate(*a, **k):
         raise JudgeOutage("judge failed on 5/5 judged samples (>= 50%) — aborting")
 

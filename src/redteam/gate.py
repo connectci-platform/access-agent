@@ -43,6 +43,14 @@ class AgentOutage(RedteamOutage):
     reason = "errored"
 
 
+class SurfaceOutage(RedteamOutage):
+    """Raised when the /health tool surface is thin/down before any replay starts — a
+    missing or degraded READ tool surface would make attacks refuse trivially and the
+    run would pass green without ever exercising real tool-calling behavior."""
+
+    reason = "surface"
+
+
 def decide(expected: str, sample_verdicts: list[str]) -> str | None:
     """Decide a flag kind from genuine (non-errored) verdicts only.
 

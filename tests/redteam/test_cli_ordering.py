@@ -20,6 +20,13 @@ async def test_artifact_written_before_return(monkeypatch, tmp_path):
         cli.settings, "EVAL_JUDGE_MODEL", "ccs/Qwen/Qwen3.6-35B-A3B-FP8", raising=False
     )
 
+    # Not under test here — the in-process ASGI app's catalog is unwarmed, which
+    # would otherwise trip a real SurfaceOutage before the ordering check under test.
+    async def noop_preflight(*a, **k):
+        pass
+
+    monkeypatch.setattr(cli, "_surface_preflight", noop_preflight, raising=True)
+
     async def fake_gate(*a, **k):
         return GateResult(
             flags=[], artifact_records=[{"id": "x", "response": "R", "verdict": "defended"}]

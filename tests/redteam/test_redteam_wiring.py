@@ -4,6 +4,13 @@ import pytest
 
 FIXTURE_PROMPTS = Path(__file__).parent / "fixtures" / "prompts.sample.json"
 
+
+async def _noop_preflight(*a, **k):
+    """Stand-in for _surface_preflight in tests not exercising the /health preflight
+    itself — the in-process ASGI app's catalog is unwarmed in the test environment,
+    which would otherwise make every run_from_env test hit a real SurfaceOutage."""
+
+
 # Exact match for suite-v1/baseline.json's expected_prompt_ids (no extra/missing
 # ids) — needed once assert_suite_complete is wired in, unlike FIXTURE_PROMPTS
 # above which intentionally carries an extra floor-section entry.
@@ -53,7 +60,7 @@ async def test_run_from_env_unset_base_url_uses_asgi(monkeypatch, tmp_path):
 
     # Skip the completeness manifest + preflight for THIS transport test.
     monkeypatch.setattr(cli, "assert_suite_complete", lambda *a, **k: None, raising=True)
-    monkeypatch.setattr(cli, "_surface_preflight", None, raising=False)
+    monkeypatch.setattr(cli, "_surface_preflight", _noop_preflight, raising=True)
     await cli.run_from_env(_gate=fake_gate)
     assert seen["transport"] == "ASGITransport"
     assert seen["base_url"] == "http://redteam-asgi"
@@ -82,7 +89,7 @@ async def test_run_from_env_set_base_url_uses_plain_client(monkeypatch, tmp_path
         return GateResult(flags=[], artifact_records=[])
 
     monkeypatch.setattr(cli, "assert_suite_complete", lambda *a, **k: None, raising=True)
-    monkeypatch.setattr(cli, "_surface_preflight", None, raising=False)
+    monkeypatch.setattr(cli, "_surface_preflight", _noop_preflight, raising=True)
     await cli.run_from_env(_gate=fake_gate)
     # httpx 0.28's default async transport class is AsyncHTTPTransport (not
     # ASGITransport) — the plain, unconfigured httpx.AsyncClient() branch.
@@ -132,6 +139,7 @@ async def test_run_from_env_judge_model_match_reaches_gate(monkeypatch, tmp_path
         called["ran"] = True
         return GateResult(flags=[], artifact_records=[])
 
+    monkeypatch.setattr(cli, "_surface_preflight", _noop_preflight, raising=True)
     await cli.run_from_env(_gate=fake_gate)
     assert called.get("ran") is True
 
@@ -254,3 +262,58 @@ async def test_run_gate_aborts_on_agent_error_flood(monkeypatch):
             http_client=None,
             _replay=all_errored,
         )
+
+
+@pytest.mark.asyncio
+async def test_surface_preflight(monkeypatch):
+    import src.redteam.__main__ as cli
+    from src.redteam.gate import SurfaceOutage
+
+    class FakeResp:
+        def __init__(self, body):
+            self._b = body
+
+        def json(self):
+            return self._b
+
+    class FakeClient:
+        def __init__(self, body):
+            self._b = body
+
+        async def get(self, url, timeout=None):
+            return FakeResp(self._b)
+
+    healthy = {"tools": {"total": 20, "servers_total": 11, "servers_available": 11}}
+    await cli._surface_preflight(FakeClient(healthy), "http://x")  # no raise
+
+    # only write-only servers down -> still fine
+    write_down = {
+        "tools": {
+            "total": 18,
+            "servers_total": 11,
+            "servers_available": 9,
+            "unavailable_servers": ["announcements", "jsm"],
+        }
+    }
+    await cli._surface_preflight(FakeClient(write_down), "http://x")  # no raise
+
+    # a required READ server down -> raise
+    read_down = {
+        "tools": {
+            "total": 16,
+            "servers_total": 11,
+            "servers_available": 10,
+            "unavailable_servers": ["allocations"],
+        }
+    }
+    with pytest.raises(SurfaceOutage):
+        await cli._surface_preflight(FakeClient(read_down), "http://x")
+
+    # tool floor unmet -> raise
+    thin = {"tools": {"total": 3, "servers_total": 11, "servers_available": 11}}
+    with pytest.raises(SurfaceOutage):
+        await cli._surface_preflight(FakeClient(thin), "http://x")
+
+    # catalog absent entirely -> raise
+    with pytest.raises(SurfaceOutage):
+        await cli._surface_preflight(FakeClient({"status": "healthy"}), "http://x")

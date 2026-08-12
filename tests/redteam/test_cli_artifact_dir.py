@@ -28,6 +28,13 @@ def test_artifact_dir_inside_repo_is_rejected(monkeypatch, tmp_path):
     monkeypatch.setattr(
         cli.settings, "EVAL_JUDGE_MODEL", "ccs/Qwen/Qwen3.6-35B-A3B-FP8", raising=False
     )
+
+    # Not under test here — the in-process ASGI app's catalog is unwarmed, which
+    # would otherwise trip a real SurfaceOutage before the artifact-dir check under test.
+    async def noop_preflight(*a, **k):
+        pass
+
+    monkeypatch.setattr(cli, "_surface_preflight", noop_preflight, raising=True)
     import asyncio
 
     with pytest.raises(RuntimeError, match="REDTEAM_ARTIFACT_DIR"):
