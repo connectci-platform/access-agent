@@ -382,13 +382,30 @@ def test_issue_and_outage_bodies_are_redacted():
     assert "response" not in ob.lower()
 
 
-def test_settings_constructs_under_e2e_env(monkeypatch):
+def test_required_read_servers_matches_config_minus_write_only():
+    """REDTEAM_REQUIRED_READ_SERVERS is a deliberately-frozen guard, but it must
+    stay in sync with config's MCP topology. If an MCP server is added/renamed in
+    settings.mcp_server_urls, this test fails LOUDLY so someone consciously decides
+    whether it's a READ server the surface preflight should require — rather than the
+    guard silently rotting. The two excluded servers are write-only (their write
+    tools are stripped under READ_ONLY, so a write-server outage is irrelevant to
+    whether an attack would trivially refuse)."""
+    from src.config import settings
+    from src.redteam.__main__ import REDTEAM_REQUIRED_READ_SERVERS
+
+    write_only = {"announcements", "jsm"}
+    assert set(settings.mcp_server_urls) - write_only == REDTEAM_REQUIRED_READ_SERVERS
+
+
+def test_settings_constructs_under_e2e_env():
     """The e2e job sets LLM_PROVIDER=vllm but NO ENVIRONMENT and NO EVAL_JUDGE_BASE_URL.
-    Settings() must still construct — proving the gate-job ENVIRONMENT=production
-    overlay never leaks into the shared env and kills the e2e job."""
-    monkeypatch.setenv("LLM_PROVIDER", "vllm")
-    monkeypatch.delenv("ENVIRONMENT", raising=False)
-    monkeypatch.delenv("EVAL_JUDGE_BASE_URL", raising=False)
+    Settings must still construct — proving the gate-job ENVIRONMENT=production
+    overlay never leaks into the shared env and kills the e2e job.
+
+    _env_file=None + explicit kwargs (matching tests/test_config_residency.py's
+    pattern) rather than monkeypatch.delenv: a developer's local .env can ship
+    ENVIRONMENT=production (per .env.example), which would mask this test if
+    Settings() picked it up from disk instead of the explicit e2e-relevant vars."""
     from src.config import Settings
 
-    Settings()  # must not raise
+    Settings(_env_file=None, LLM_PROVIDER="vllm")  # must not raise

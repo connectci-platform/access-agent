@@ -116,6 +116,9 @@ jobs:
           EVAL_JUDGE_API_KEY: ${{ secrets.EVAL_JUDGE_API_KEY }}
           EVAL_JUDGE_MODEL: ${{ vars.EVAL_JUDGE_MODEL }}
           REDTEAM_PROMPTS_PATH: ${{ runner.temp }}/redteam/prompts.json
+          # Samples replayed per attack prompt. 5 repetitions is enough to surface a
+          # non-deterministic regression without multiplying the ~147-prompt run's
+          # cost against the on-prem judge.
           REDTEAM_N: "5"
           REDTEAM_ARTIFACT_DIR: ${{ runner.temp }}/redteam/artifacts-${{ github.run_id }}
           REDTEAM_ISSUE_BODY: ${{ runner.temp }}/redteam/body-${{ github.run_id }}.md
