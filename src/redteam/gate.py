@@ -23,6 +23,10 @@ class JudgeOutage(RuntimeError):
     """Raised when a systemic judge failure makes the run's verdicts untrustworthy."""
 
 
+class JudgeMismatch(RuntimeError):
+    """Baseline scorer_version / judge_model does not match the running judge."""
+
+
 def decide(expected: str, sample_verdicts: list[str]) -> str | None:
     """Decide a flag kind from genuine (non-errored) verdicts only.
 

@@ -4,6 +4,26 @@ import pytest
 
 FIXTURE_PROMPTS = Path(__file__).parent / "fixtures" / "prompts.sample.json"
 
+# Exact match for suite-v1/baseline.json's expected_prompt_ids (no extra/missing
+# ids) — needed once assert_suite_complete is wired in, unlike FIXTURE_PROMPTS
+# above which intentionally carries an extra floor-section entry.
+_COMPLETE_PROMPTS_JSON = (
+    '{"suite_version":"v1-2026-05-08","pyrit_version":"0.13.0","prompts":['
+    '{"id":"wrapped__aligned__stop-sign","text":"x","section":"wrapped",'
+    '"wrapper_id":"aligned","probe_id":"stop-sign","wrapper_category":"dual-persona",'
+    '"probe_category":"illegal","wrapper_source":"pyrit-bundled"},'
+    '{"id":"wrapped__prefix_injection__system-prompt","text":"x","section":"wrapped",'
+    '"wrapper_id":"prefix_injection","probe_id":"system-prompt","wrapper_category":"output-coercion",'
+    '"probe_category":"leakage","wrapper_source":"pyrit-bundled"},'
+    '{"id":"wrapped__refusal_suppression__stop-sign","text":"x","section":"wrapped",'
+    '"wrapper_id":"refusal_suppression","probe_id":"stop-sign","wrapper_category":"output-coercion",'
+    '"probe_category":"illegal","wrapper_source":"pyrit-bundled"},'
+    '{"id":"wrapped__wikipedia_with_title__credentials","text":"x","section":"wrapped",'
+    '"wrapper_id":"wikipedia_with_title","probe_id":"credentials","wrapper_category":"output-coercion",'
+    '"probe_category":"leakage","wrapper_source":"pyrit-bundled"}'
+    "]}"
+)
+
 
 @pytest.mark.asyncio
 async def test_run_from_env_unset_base_url_uses_asgi(monkeypatch, tmp_path):
@@ -16,6 +36,11 @@ async def test_run_from_env_unset_base_url_uses_asgi(monkeypatch, tmp_path):
     monkeypatch.setenv("REDTEAM_PROMPTS_PATH", str(FIXTURE_PROMPTS))
     monkeypatch.delenv("REDTEAM_BASE_URL", raising=False)
     monkeypatch.setenv("REDTEAM_ARTIFACT_DIR", str(tmp_path / "art"))
+    # Not under test here — match the baseline's judge/scorer pin so this
+    # transport-focused test doesn't trip the (Task 3) judge/scorer asserts.
+    monkeypatch.setattr(
+        cli.settings, "EVAL_JUDGE_MODEL", "ccs/Qwen/Qwen3.6-35B-A3B-FP8", raising=False
+    )
 
     seen = {}
 
@@ -27,7 +52,7 @@ async def test_run_from_env_unset_base_url_uses_asgi(monkeypatch, tmp_path):
         return GateResult(flags=[], artifact_records=[])
 
     # Skip the completeness manifest + preflight for THIS transport test.
-    monkeypatch.setattr(cli, "assert_suite_complete", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(cli, "assert_suite_complete", lambda *a, **k: None, raising=True)
     monkeypatch.setattr(cli, "_surface_preflight", None, raising=False)
     await cli.run_from_env(_gate=fake_gate)
     assert seen["transport"] == "ASGITransport"
@@ -42,6 +67,11 @@ async def test_run_from_env_set_base_url_uses_plain_client(monkeypatch, tmp_path
     monkeypatch.setenv("REDTEAM_PROMPTS_PATH", str(FIXTURE_PROMPTS))
     monkeypatch.setenv("REDTEAM_BASE_URL", "http://localhost:8000")
     monkeypatch.setenv("REDTEAM_ARTIFACT_DIR", str(tmp_path / "art"))
+    # Not under test here — match the baseline's judge/scorer pin so this
+    # transport-focused test doesn't trip the (Task 3) judge/scorer asserts.
+    monkeypatch.setattr(
+        cli.settings, "EVAL_JUDGE_MODEL", "ccs/Qwen/Qwen3.6-35B-A3B-FP8", raising=False
+    )
     seen = {}
 
     async def fake_gate(items, *, base_url, http_client, **kw):
@@ -51,13 +81,59 @@ async def test_run_from_env_set_base_url_uses_plain_client(monkeypatch, tmp_path
 
         return GateResult(flags=[], artifact_records=[])
 
-    monkeypatch.setattr(cli, "assert_suite_complete", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(cli, "assert_suite_complete", lambda *a, **k: None, raising=True)
     monkeypatch.setattr(cli, "_surface_preflight", None, raising=False)
     await cli.run_from_env(_gate=fake_gate)
     # httpx 0.28's default async transport class is AsyncHTTPTransport (not
     # ASGITransport) — the plain, unconfigured httpx.AsyncClient() branch.
     assert seen["transport"] == "AsyncHTTPTransport"
     assert seen["base_url"] == "http://localhost:8000"
+
+
+@pytest.mark.asyncio
+async def test_run_from_env_judge_model_mismatch_raises(monkeypatch, tmp_path):
+    import src.redteam.__main__ as cli
+    from src.redteam.gate import JudgeMismatch
+
+    # baseline judge_model is "ccs/Qwen/..."; force the running judge to differ.
+    monkeypatch.setattr(cli.settings, "EVAL_JUDGE_MODEL", "gpt-4o-mini", raising=False)
+    monkeypatch.setenv("READ_ONLY", "true")
+    prompts = tmp_path / "prompts.json"
+    prompts.write_text(_COMPLETE_PROMPTS_JSON)
+    monkeypatch.setenv("REDTEAM_PROMPTS_PATH", str(prompts))
+    monkeypatch.delenv("REDTEAM_BASE_URL", raising=False)
+    monkeypatch.setenv("REDTEAM_ARTIFACT_DIR", str(tmp_path / "art"))
+    with pytest.raises(JudgeMismatch):
+        await cli.run_from_env(_gate=_should_not_run)
+
+
+async def _should_not_run(*a, **k):
+    raise AssertionError("gate ran despite a precondition failure")
+
+
+@pytest.mark.asyncio
+async def test_run_from_env_judge_model_match_reaches_gate(monkeypatch, tmp_path):
+    import src.redteam.__main__ as cli
+    from src.redteam.gate import GateResult
+
+    monkeypatch.setattr(
+        cli.settings, "EVAL_JUDGE_MODEL", "ccs/Qwen/Qwen3.6-35B-A3B-FP8", raising=False
+    )
+    monkeypatch.setenv("READ_ONLY", "true")
+    prompts = tmp_path / "prompts.json"
+    prompts.write_text(_COMPLETE_PROMPTS_JSON)
+    monkeypatch.setenv("REDTEAM_PROMPTS_PATH", str(prompts))
+    monkeypatch.delenv("REDTEAM_BASE_URL", raising=False)
+    monkeypatch.setenv("REDTEAM_ARTIFACT_DIR", str(tmp_path / "art"))
+
+    called = {}
+
+    async def fake_gate(items, *, base_url, http_client, **kw):
+        called["ran"] = True
+        return GateResult(flags=[], artifact_records=[])
+
+    await cli.run_from_env(_gate=fake_gate)
+    assert called.get("ran") is True
 
 
 def test_assert_suite_complete_rejects_missing_and_extra(tmp_path):

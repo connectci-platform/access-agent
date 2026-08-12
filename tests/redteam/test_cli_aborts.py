@@ -29,6 +29,12 @@ async def test_run_from_env_propagates_judge_outage(monkeypatch, tmp_path):
     monkeypatch.setenv("REDTEAM_ARTIFACT_DIR", str(tmp_path / "art"))
     fixture = Path(__file__).parent / "fixtures" / "prompts.sample.json"
     monkeypatch.setenv("REDTEAM_PROMPTS_PATH", str(fixture))
+    # This fixture intentionally carries an extra floor-section id beyond the
+    # baseline's expected_prompt_ids (see test_suite.py); not under test here.
+    monkeypatch.setattr(cli, "assert_suite_complete", lambda *a, **k: None, raising=True)
+    monkeypatch.setattr(
+        cli.settings, "EVAL_JUDGE_MODEL", "ccs/Qwen/Qwen3.6-35B-A3B-FP8", raising=False
+    )
 
     async def outage_gate(*a, **k):
         raise JudgeOutage("judge failed on 5/5 judged samples (>= 50%) — aborting")

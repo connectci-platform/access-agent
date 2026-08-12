@@ -17,15 +17,34 @@ from httpx import ASGITransport
 from src.config import settings  # module-level singleton, not a factory (src/config.py:264)
 from src.eval.judge import Judge
 
-from .gate import GateResult, JudgeOutage, run_gate
+from .gate import GateResult, JudgeMismatch, JudgeOutage, run_gate
 from .replayer import redteam_headers
 from .report import flag_line, issue_body, write_artifact
-from .suite import assert_versions_match, join_suite, load_baseline, load_prompts
+from .suite import (
+    assert_suite_complete,
+    assert_versions_match,
+    join_suite,
+    load_baseline,
+    load_prompts,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
 BASELINE = Path(__file__).parent.parent.parent / "tests" / "redteam" / "suite-v1" / "baseline.json"
+
+# The running scorer's identity — matches cascade.py's scoring logic. Bumped
+# whenever the cascade's scoring behavior changes in a way that could shift
+# verdicts, so a stale baseline can't silently be judged by new logic.
+SCORER_VERSION = "cascade-v1"
+
+
+def _reject_in_repo(path: Path, var: str) -> Path:
+    resolved = path.resolve()
+    repo_root = Path(__file__).resolve().parents[2]
+    if repo_root == resolved or repo_root in resolved.parents:
+        raise RuntimeError(f"{var} must be outside the repo tree (got {resolved})")
+    return resolved
 
 
 def read_only_enabled() -> bool:
@@ -54,6 +73,17 @@ async def run_from_env(
     prompts = load_prompts(prompts_path)
     assert_versions_match(baseline, prompts)  # abort on drift (raises SuiteVersionMismatch)
     items = join_suite(baseline, prompts)
+    assert_suite_complete(baseline, prompts)  # raises SuiteIncomplete on drift
+    if baseline.judge_model != settings.EVAL_JUDGE_MODEL:
+        raise JudgeMismatch(
+            f"baseline judge_model {baseline.judge_model!r} != running "
+            f"{settings.EVAL_JUDGE_MODEL!r}"
+        )
+    # scorer_version is a static pin the running scorer must match (cascade-v1).
+    if baseline.scorer_version != SCORER_VERSION:
+        raise JudgeMismatch(
+            f"baseline scorer_version {baseline.scorer_version!r} != {SCORER_VERSION!r}"
+        )
     run_id = f"redteam-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}"
     headers = redteam_headers(baseline.suite_version, run_id)
     judge = _build_judge()
@@ -81,13 +111,9 @@ async def run_from_env(
         )
     # Write the full on-prem artifact BEFORE returning, so a later print/crash
     # can never lose evidence (ordering is load-bearing — see test).
-    artifact_dir = Path(os.environ.get("REDTEAM_ARTIFACT_DIR", "/tmp/redteam")).resolve()
-    repo_root = Path(__file__).resolve().parents[2]
-    if repo_root == artifact_dir or repo_root in artifact_dir.parents:
-        raise RuntimeError(
-            f"artifact dir (REDTEAM_ARTIFACT_DIR) must be outside the repo tree (got {artifact_dir}); "
-            "harmful transcripts must never be committable"
-        )
+    artifact_dir = _reject_in_repo(
+        Path(os.environ.get("REDTEAM_ARTIFACT_DIR", "/tmp/redteam")), "REDTEAM_ARTIFACT_DIR"
+    )
     artifact = artifact_dir / f"{run_id}.json"
     write_artifact(artifact, result.artifact_records)  # on-prem only, gitignored dir
     return result
