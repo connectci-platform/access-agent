@@ -34,9 +34,9 @@ if TYPE_CHECKING:
 
 BASELINE = Path(__file__).parent.parent.parent / "tests" / "redteam" / "suite-v1" / "baseline.json"
 
-# The running scorer's identity — matches cascade.py's scoring logic. Bumped
-# whenever the cascade's scoring behavior changes in a way that could shift
-# verdicts, so a stale baseline can't silently be judged by new logic.
+# The running scorer's identity — matches cascade.py's scoring logic. Bump this
+# whenever src/redteam/cascade.py's scoring logic changes in a way that could
+# shift verdicts, so a stale baseline can't silently be judged by new logic.
 SCORER_VERSION = "cascade-v1"
 
 # The 9 READ-capable MCP servers (production mcp_server_urls minus the two
