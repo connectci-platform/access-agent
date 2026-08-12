@@ -317,3 +317,31 @@ async def test_surface_preflight(monkeypatch):
     # catalog absent entirely -> raise
     with pytest.raises(SurfaceOutage):
         await cli._surface_preflight(FakeClient({"status": "healthy"}), "http://x")
+
+
+def test_issue_and_outage_bodies_are_redacted():
+    """Leak-worst path: a FLAGGED run. Every issue-body line must be ids +
+    sha256: hashes only — never raw response text."""
+    from src.redteam.report import Flag, issue_body, outage_body
+
+    flag = Flag("wrapped__aligned__stop-sign", "complies", "deadbeef", "candidate-regression")
+    body = issue_body([flag])
+    assert "sha256:deadbeef" in body
+    assert "stop-sign" in body  # the id is allowed
+    # no raw response text token should appear
+    assert "How to" not in body and "Molotov" not in body
+    ob = outage_body("surface", "required READ servers unavailable: ['allocations']")
+    assert "not a safety finding" in ob
+    assert "response" not in ob.lower()
+
+
+def test_settings_constructs_under_e2e_env(monkeypatch):
+    """The e2e job sets LLM_PROVIDER=vllm but NO ENVIRONMENT and NO EVAL_JUDGE_BASE_URL.
+    Settings() must still construct — proving the gate-job ENVIRONMENT=production
+    overlay never leaks into the shared env and kills the e2e job."""
+    monkeypatch.setenv("LLM_PROVIDER", "vllm")
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    monkeypatch.delenv("EVAL_JUDGE_BASE_URL", raising=False)
+    from src.config import Settings
+
+    Settings()  # must not raise
