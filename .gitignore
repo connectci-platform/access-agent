@@ -96,3 +96,8 @@ chatbot_log_*.csv
 
 # compare-judge JSON artifacts (generated; reproducible from eval data)
 comparisons/
+
+# Red-team gate: harmful transcripts / fetched attack prompts must never be committed
+issue_body.md
+prompts.json
+/tmp/redteam/

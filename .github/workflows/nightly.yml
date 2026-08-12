@@ -5,6 +5,18 @@ on:
     - cron: '0 9 * * *'  # 09:00 UTC daily (05:00 ET)
   workflow_dispatch:     # Manual trigger for debugging
 
+env:
+  # Production parity: the nightly exercises the same provider, endpoint,
+  # and model the deployed loop runs. No OpenAI key on purpose — a code
+  # path that silently falls back to OpenAI should fail loudly here.
+  LLM_PROVIDER: vllm
+  VLLM_BASE_URL: https://jump-external.ccs.uky.edu/v1
+  VLLM_MODEL_NAME: ccs/Qwen/Qwen3.6-35B-A3B-FP8
+  # e2e tests live-aggregate the catalog from the prod MCP servers
+  # (CatalogAggregator), so point them at the prod host.
+  MCP_SERVER_HOST: 45.79.215.140
+  DATABASE_URL: ""
+
 jobs:
   e2e:
     # Self-hosted on the mcp box: Linode's edge mitigation drops hosted-runner
@@ -28,18 +40,8 @@ jobs:
       - name: Run e2e tests
         run: uv run pytest tests/ -m e2e -v
         env:
-          # Production parity: the nightly exercises the same provider, endpoint,
-          # and model the deployed loop runs. No OpenAI key on purpose — a code
-          # path that silently falls back to OpenAI should fail loudly here.
-          LLM_PROVIDER: vllm
-          VLLM_BASE_URL: https://jump-external.ccs.uky.edu/v1
-          VLLM_MODEL_NAME: ccs/Qwen/Qwen3.6-35B-A3B-FP8
           VLLM_API_KEY: ${{ secrets.VLLM_API_KEY }}
           ACCESS_AI_API_KEY: ${{ secrets.ACCESS_AI_API_KEY }}
-          # e2e tests live-aggregate the catalog from the prod MCP servers
-          # (CatalogAggregator), so point them at the prod host.
-          MCP_SERVER_HOST: 45.79.215.140
-          DATABASE_URL: ""
 
       - name: Open issue on failure
         if: failure()
@@ -53,4 +55,136 @@ jobs:
               title: `Nightly e2e failure — ${date}`,
               body: `The nightly live-dep test run failed. See the workflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
               labels: ['nightly-failure', 'bug']
+            });
+
+  redteam-gate:
+    if: github.event_name == 'schedule'
+    runs-on: [self-hosted, nightly-e2e]
+    permissions:
+      contents: read
+      issues: write
+    concurrency:
+      group: nightly-redteam
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with: { version: "latest" }
+      - run: uv python install 3.13
+      - run: uv sync --extra dev --locked
+
+      - name: Read suite pin from baseline
+        id: pin
+        run: |
+          SV=$(uv run python -c "import json;print(json.load(open('tests/redteam/suite-v1/baseline.json'))['suite_version'])")
+          echo "suite_version=$SV" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch pinned suite
+        env:
+          GH_TOKEN: ${{ secrets.REDTEAM_SUITE_TOKEN }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/redteam"
+          gh release download "suite-${{ steps.pin.outputs.suite_version }}" \
+            --repo necyberteam/access-redteam \
+            --pattern prompts.json \
+            --dir "$RUNNER_TEMP/redteam"
+
+      - name: Content pre-check (id-set == baseline manifest)
+        run: |
+          uv run python -c "
+          import json, sys
+          base=json.load(open('tests/redteam/suite-v1/baseline.json'))
+          got={p['id'] for p in json.load(open('$RUNNER_TEMP/redteam/prompts.json'))['prompts']}
+          exp=set(base['expected_prompt_ids'])
+          assert base['suite_version']=='${{ steps.pin.outputs.suite_version }}', 'version drift'
+          assert got==exp, f'id-set mismatch missing={sorted(exp-got)} extra={sorted(got-exp)}'
+          "
+
+      - name: Run gate
+        id: gate
+        env:
+          READ_ONLY: "true"
+          ENVIRONMENT: production
+          LLM_PROVIDER: ${{ env.LLM_PROVIDER }}
+          VLLM_BASE_URL: ${{ env.VLLM_BASE_URL }}
+          VLLM_MODEL_NAME: ${{ env.VLLM_MODEL_NAME }}
+          VLLM_API_KEY: ${{ secrets.VLLM_API_KEY }}
+          ACCESS_AI_API_KEY: ${{ secrets.ACCESS_AI_API_KEY }}
+          MCP_SERVER_HOST: ${{ env.MCP_SERVER_HOST }}
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+          EVAL_JUDGE_BASE_URL: ${{ secrets.EVAL_JUDGE_BASE_URL }}
+          EVAL_JUDGE_API_KEY: ${{ secrets.EVAL_JUDGE_API_KEY }}
+          EVAL_JUDGE_MODEL: ${{ vars.EVAL_JUDGE_MODEL }}
+          REDTEAM_PROMPTS_PATH: ${{ runner.temp }}/redteam/prompts.json
+          REDTEAM_N: "5"
+          REDTEAM_ARTIFACT_DIR: ${{ runner.temp }}/redteam/artifacts-${{ github.run_id }}
+          REDTEAM_ISSUE_BODY: ${{ runner.temp }}/redteam/body-${{ github.run_id }}.md
+          REDTEAM_STATUS_PATH: ${{ runner.temp }}/redteam/status-${{ github.run_id }}.json
+        run: |
+          : > "$REDTEAM_ISSUE_BODY"; : > "$REDTEAM_STATUS_PATH"
+          set +e
+          uv run python -m src.redteam --emit-issue-body
+          rc=$?
+          set -e
+          case $rc in
+            0) disp=clean; reason= ;;
+            3) disp=regression; reason= ;;
+            2) reason=$(uv run python -c "import json;print(json.load(open('$REDTEAM_STATUS_PATH')).get('reason',''))" 2>/dev/null || echo "")
+               disp=outage
+               [ -z "$reason" ] && disp=infra ;;
+            *) disp=infra; reason= ;;
+          esac
+          echo "disposition=$disp" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          echo "body=$REDTEAM_ISSUE_BODY" >> "$GITHUB_OUTPUT"
+          [ "$disp" = "clean" ] && exit 0 || exit 1
+
+      - name: Open regression issue
+        if: always() && steps.gate.outputs.disposition == 'regression'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync(process.env.BODY, 'utf8');
+            const date = new Date().toISOString().split('T')[0];
+            await github.rest.issues.create({
+              owner: context.repo.owner, repo: context.repo.repo,
+              title: `Red-team regression — ${date}`, body,
+              labels: ['redteam-regression', 'bug'],
+            });
+        env:
+          BODY: ${{ steps.gate.outputs.body }}
+
+      - name: Open outage issue
+        if: always() && steps.gate.outputs.disposition == 'outage'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync(process.env.BODY, 'utf8');
+            const date = new Date().toISOString().split('T')[0];
+            const reason = process.env.REASON;
+            const map = {judge:['Red-team judge outage','redteam-judge-outage'],
+                         surface:['Red-team surface outage','redteam-surface-outage'],
+                         errored:['Red-team agent outage','redteam-agent-outage']};
+            const [title, label] = map[reason] || ['Red-team outage','redteam-infra'];
+            await github.rest.issues.create({
+              owner: context.repo.owner, repo: context.repo.repo,
+              title: `${title} — ${date}`, body, labels: [label],
+            });
+        env:
+          BODY: ${{ steps.gate.outputs.body }}
+          REASON: ${{ steps.gate.outputs.reason }}
+
+      - name: Open infra issue
+        if: failure() && (steps.gate.outputs.disposition == '' || steps.gate.outputs.disposition == 'infra')
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const date = new Date().toISOString().split('T')[0];
+            await github.rest.issues.create({
+              owner: context.repo.owner, repo: context.repo.repo,
+              title: `Red-team gate infra failure — ${date}`,
+              body: `The red-team gate job failed before producing a disposition. See: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              labels: ['redteam-infra'],
             });

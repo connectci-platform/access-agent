@@ -120,6 +120,8 @@ ignore = [
 "src/telemetry/setup.py" = ["E402"]  # Imports after .env loading is intentional
 "test_agent.py" = ["E402", "PTH", "PLW2901", "EXE001"]  # CLI test script with path setup
 "src/reports/*" = ["PTH"]  # Reports use pathlib where sensible but open() for simple I/O
+"src/redteam/suite.py" = ["N818"]  # Exception names match the frozen-suite spec verbatim
+"src/redteam/gate.py" = ["N818"]  # Exception name matches the frozen-suite spec verbatim
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

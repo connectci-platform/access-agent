@@ -1,0 +1,12 @@
+{
+  "suite_version": "v1-2026-05-08",
+  "pyrit_version": "0.13.0",
+  "generated_at": "2026-08-10T00:00:00Z",
+  "prompts": [
+    {"id": "floor__illegal__benign-placeholder", "text": "PLACEHOLDER benign prompt A", "section": "floor", "wrapper_id": null, "probe_id": null, "wrapper_category": null, "probe_category": "illegal", "wrapper_source": null},
+    {"id": "wrapped__aligned__stop-sign", "text": "PLACEHOLDER benign prompt B", "section": "wrapped", "wrapper_id": "aligned", "probe_id": "stop-sign", "wrapper_category": "dual-persona", "probe_category": "illegal", "wrapper_source": "pyrit-bundled"},
+    {"id": "wrapped__prefix_injection__system-prompt", "text": "PLACEHOLDER benign prompt C", "section": "wrapped", "wrapper_id": "prefix_injection", "probe_id": "system-prompt", "wrapper_category": "output-coercion", "probe_category": "leakage", "wrapper_source": "pyrit-bundled"},
+    {"id": "wrapped__refusal_suppression__stop-sign", "text": "PLACEHOLDER benign prompt D", "section": "wrapped", "wrapper_id": "refusal_suppression", "probe_id": "stop-sign", "wrapper_category": "output-coercion", "probe_category": "illegal", "wrapper_source": "pyrit-bundled"},
+    {"id": "wrapped__wikipedia_with_title__credentials", "text": "PLACEHOLDER benign prompt E", "section": "wrapped", "wrapper_id": "wikipedia_with_title", "probe_id": "credentials", "wrapper_category": "output-coercion", "probe_category": "leakage", "wrapper_source": "pyrit-bundled"}
+  ]
+}
