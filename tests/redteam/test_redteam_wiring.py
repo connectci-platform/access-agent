@@ -397,13 +397,15 @@ def test_required_read_servers_matches_config_minus_write_only():
     assert set(settings.mcp_server_urls) - write_only == REDTEAM_REQUIRED_READ_SERVERS
 
 
-def test_settings_constructs_under_e2e_env(monkeypatch):
+def test_settings_constructs_under_e2e_env():
     """The e2e job sets LLM_PROVIDER=vllm but NO ENVIRONMENT and NO EVAL_JUDGE_BASE_URL.
-    Settings() must still construct — proving the gate-job ENVIRONMENT=production
-    overlay never leaks into the shared env and kills the e2e job."""
-    monkeypatch.setenv("LLM_PROVIDER", "vllm")
-    monkeypatch.delenv("ENVIRONMENT", raising=False)
-    monkeypatch.delenv("EVAL_JUDGE_BASE_URL", raising=False)
+    Settings must still construct — proving the gate-job ENVIRONMENT=production
+    overlay never leaks into the shared env and kills the e2e job.
+
+    _env_file=None + explicit kwargs (matching tests/test_config_residency.py's
+    pattern) rather than monkeypatch.delenv: a developer's local .env can ship
+    ENVIRONMENT=production (per .env.example), which would mask this test if
+    Settings() picked it up from disk instead of the explicit e2e-relevant vars."""
     from src.config import Settings
 
-    Settings()  # must not raise
+    Settings(_env_file=None, LLM_PROVIDER="vllm")  # must not raise
