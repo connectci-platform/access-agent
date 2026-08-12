@@ -19,11 +19,19 @@ if TYPE_CHECKING:
     from .suite import SuiteItem
 
 
-class JudgeOutage(RuntimeError):
+class RedteamOutage(RuntimeError):
+    """Base for run-invalidating outages (judge/surface/errored). reason set by subclass."""
+
+    reason = "outage"
+
+
+class JudgeOutage(RedteamOutage):
     """Raised when a systemic judge failure makes the run's verdicts untrustworthy."""
 
+    reason = "judge"
 
-class JudgeMismatch(RuntimeError):
+
+class JudgeMismatch(JudgeOutage):
     """Baseline scorer_version / judge_model does not match the running judge."""
 
 

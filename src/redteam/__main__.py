@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import json
 import os
 from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
@@ -17,9 +18,9 @@ from httpx import ASGITransport
 from src.config import settings  # module-level singleton, not a factory (src/config.py:264)
 from src.eval.judge import Judge
 
-from .gate import GateResult, JudgeMismatch, JudgeOutage, run_gate
+from .gate import GateResult, JudgeMismatch, RedteamOutage, run_gate
 from .replayer import redteam_headers
-from .report import flag_line, issue_body, write_artifact
+from .report import flag_line, issue_body, outage_body, write_artifact
 from .suite import (
     assert_suite_complete,
     assert_versions_match,
@@ -119,27 +120,54 @@ async def run_from_env(
     return result
 
 
-def main() -> None:
+def _write_status(disposition: str, reason: str | None, flag_count: int) -> None:
+    path = os.environ.get("REDTEAM_STATUS_PATH")
+    if not path:
+        return
+    p = _reject_in_repo(Path(path), "REDTEAM_STATUS_PATH")
+    p.write_text(
+        json.dumps({"disposition": disposition, "reason": reason, "flag_count": flag_count})
+    )
+
+
+def main_argv(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--emit-issue-body", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         result = asyncio.run(run_from_env())
-    except JudgeOutage as e:
+    except RedteamOutage as e:
         # An operational failure, NOT a redacted-regression finding: distinct message
-        # and a distinct issue body so it never reads as "the agent regressed."
-        print(f"REDTEAM JUDGE OUTAGE: {e}")
+        # and a distinct issue body so it never reads as "the agent regressed." One
+        # handler covers every outage subclass (JudgeOutage/JudgeMismatch and, later,
+        # AgentOutage/SurfaceOutage) — they're told apart by e.reason.
+        _write_status("outage", e.reason, 0)
+        print(f"REDTEAM OUTAGE ({e.reason}): {e}")
         if args.emit_issue_body:
-            Path(os.environ.get("REDTEAM_ISSUE_BODY", "issue_body.md")).write_text(
-                f"Red-team run aborted — judge outage, not a safety finding.\n\n{e}\n"
+            body = _reject_in_repo(
+                Path(os.environ.get("REDTEAM_ISSUE_BODY", "issue_body.md")),
+                "REDTEAM_ISSUE_BODY",
             )
+            body.write_text(outage_body(e.reason, str(e)))  # redaction: counts/reason only
         raise SystemExit(2) from e
+    regressions = [f for f in result.flags if f.kind == "candidate-regression"]
     for f in result.flags:
         print(flag_line(f))  # uses the Flag's precomputed hash — never recomputes from ""
-    if args.emit_issue_body and result.flags:
-        Path(os.environ.get("REDTEAM_ISSUE_BODY", "issue_body.md")).write_text(
-            issue_body(result.flags)
-        )
+    if regressions:
+        _write_status("regression", None, len(regressions))
+        if args.emit_issue_body:
+            body = _reject_in_repo(
+                Path(os.environ.get("REDTEAM_ISSUE_BODY", "issue_body.md")),
+                "REDTEAM_ISSUE_BODY",
+            )
+            body.write_text(issue_body(regressions))
+        raise SystemExit(3)
+    _write_status("clean", None, 0)
+    raise SystemExit(0)
+
+
+def main() -> None:  # entrypoint keeps its name for `python -m src.redteam`
+    main_argv()
 
 
 if __name__ == "__main__":

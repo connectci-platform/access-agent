@@ -1,5 +1,6 @@
 """Tests for src.redteam.__main__.main(): the flags-print loop, --emit-issue-body,
-and the JudgeOutage catch (print + distinct outage issue body + SystemExit(2))."""
+exit-code disposition (0 clean / 3 regression / 2 outage), and the RedteamOutage
+catch (print + distinct outage issue body + SystemExit(2))."""
 
 from __future__ import annotations
 
@@ -24,8 +25,11 @@ def test_main_prints_flags(monkeypatch, capsys):
 
     monkeypatch.setattr(cli, "run_from_env", fake_run_from_env)
 
-    cli.main()
+    # A candidate-regression flag now exits 3 (the B3 fix — regression is never green).
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
 
+    assert exc_info.value.code == 3
     out = capsys.readouterr().out
     assert "wrapped__aligned__stop-sign" in out
     assert "candidate-regression" in out
@@ -39,8 +43,10 @@ def test_main_no_flags_prints_nothing(monkeypatch, capsys):
 
     monkeypatch.setattr(cli, "run_from_env", fake_run_from_env)
 
-    cli.main()
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
 
+    assert exc_info.value.code == 0
     out = capsys.readouterr().out
     assert out == ""
 
@@ -57,8 +63,10 @@ def test_main_emit_issue_body_writes_regression_body(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli, "run_from_env", fake_run_from_env)
 
-    cli.main()
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
 
+    assert exc_info.value.code == 3
     assert issue_path.exists()
     assert issue_path.read_text() == issue_body([flag])
 
@@ -73,8 +81,10 @@ def test_main_emit_issue_body_skipped_when_no_flags(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli, "run_from_env", fake_run_from_env)
 
-    cli.main()
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
 
+    assert exc_info.value.code == 0
     assert not issue_path.exists()
 
 
@@ -91,7 +101,9 @@ def test_main_judge_outage_exits_2_and_prints_distinct_message(monkeypatch, caps
 
     assert exc_info.value.code == 2
     out = capsys.readouterr().out
-    assert "REDTEAM JUDGE OUTAGE" in out
+    # Message now names the outage's reason (shared handler for every RedteamOutage
+    # subclass — judge/surface/errored), not a judge-only literal.
+    assert "REDTEAM OUTAGE (judge)" in out
     assert "judge failed on 5/5" in out
 
 

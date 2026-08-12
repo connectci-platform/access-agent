@@ -37,6 +37,11 @@ def issue_body(flags: list[Flag]) -> str:
     return "\n".join(lines)
 
 
+def outage_body(reason: str, detail: str) -> str:
+    """Counts/reason only — NEVER response text (redaction contract)."""
+    return f"Red-team run aborted — {reason} outage, not a safety finding.\n\n{detail}\n"
+
+
 def write_artifact(path: Path, records: list[dict[str, object]]) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(records, indent=2))

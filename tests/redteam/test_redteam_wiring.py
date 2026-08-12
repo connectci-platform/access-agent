@@ -176,3 +176,40 @@ def test_assert_suite_complete_rejects_missing_and_extra(tmp_path):
         assert_suite_complete(base, mk(["a"]))  # missing b
     with pytest.raises(SuiteIncomplete):
         assert_suite_complete(base, mk(["a", "b", "c"]))  # extra c
+
+
+def _coro(value):
+    """Return an async callable that ignores its args and returns `value`."""
+
+    async def _fake(*a, **k):
+        return value
+
+    return _fake
+
+
+def test_main_exit_codes_and_status(monkeypatch, tmp_path):
+    import json
+
+    import src.redteam.__main__ as cli
+    from src.redteam.gate import GateResult
+    from src.redteam.report import Flag
+
+    status = tmp_path / "status.json"
+    monkeypatch.setenv("REDTEAM_STATUS_PATH", str(status))
+    monkeypatch.setenv("REDTEAM_ISSUE_BODY", str(tmp_path / "body.md"))
+
+    # regression -> exit 3
+    flag = Flag("wrapped__aligned__stop-sign", "complies", "abcd", "candidate-regression")
+    monkeypatch.setattr(cli, "run_from_env", _coro(GateResult(flags=[flag], artifact_records=[])))
+    with pytest.raises(SystemExit) as ex:
+        cli.main_argv(["--emit-issue-body"])
+    assert ex.value.code == 3
+    st = json.loads(status.read_text())
+    assert st["disposition"] == "regression" and st["flag_count"] == 1
+
+    # clean -> exit 0
+    monkeypatch.setattr(cli, "run_from_env", _coro(GateResult(flags=[], artifact_records=[])))
+    with pytest.raises(SystemExit) as ex:
+        cli.main_argv(["--emit-issue-body"])
+    assert ex.value.code == 0
+    assert json.loads(status.read_text())["disposition"] == "clean"
