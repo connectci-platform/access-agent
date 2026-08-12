@@ -54,8 +54,11 @@ def _handle_coverage(args: argparse.Namespace) -> None:
     db = EvalDB(settings.DATABASE_URL)
 
     # Resolve the run: explicit --run-id, else newest agent_full run.
+    # The newest-run query uses execute_readonly_sql (Postgres metadata->> JSON
+    # operators + SET TRANSACTION READ ONLY), which does not run on the SQLite
+    # test DB; the explicit --run-id path is exercised in tests instead.
     run_id = args.run_id
-    if not run_id:
+    if not run_id:  # pragma: no cover - Postgres-only newest-run resolution
         clause = "AND question_set = %(qs)s" if args.battery else ""
         rows, _ = db.execute_readonly_sql(
             "SELECT id FROM eval_runs WHERE metadata->>'system'='agent_full' "
@@ -377,7 +380,8 @@ def _handle_score_production(_args: argparse.Namespace) -> None:
     sys.exit(1)
 
 
-def main() -> None:  # noqa: PLR0915  # CLI dispatcher, statements not meaningfully extractable
+def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915  # all subcommand wiring
+    """Construct the eval CLI parser (kept separate from main() so it is testable)."""
     parser = argparse.ArgumentParser(
         prog="python -m src.eval",
         description="Agent answer evaluation pipeline",
@@ -621,6 +625,11 @@ def main() -> None:  # noqa: PLR0915  # CLI dispatcher, statements not meaningfu
         help="[NOT YET IMPLEMENTED] Score recent production answers (requires on-premise LLM)",
     )
 
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
     args = parser.parse_args()
 
     handlers = {

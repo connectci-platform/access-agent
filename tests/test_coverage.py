@@ -10,6 +10,7 @@ from src.eval.coverage import (
     reconcile_warnings,
     structural_class,
 )
+from src.eval.coverage_report import render_coverage
 
 
 class TestStructuralClass:
@@ -73,6 +74,20 @@ class TestParseToolResultCalls:
     def test_empty(self):
         assert parse_tool_result_calls(None) == []
         assert parse_tool_result_calls("") == []
+
+    def test_header_without_arguments_line(self):
+        # a header block with no following '- arguments:' line -> call with empty args
+        assert parse_tool_result_calls("### Tool call: lonely_tool\nsome prose") == [
+            ("lonely_tool", {})
+        ]
+
+    def test_block_with_no_header(self):
+        # a block that is pure prose (no '### Tool call:') contributes no call
+        assert parse_tool_result_calls("just some text\nno header here") == []
+
+    def test_args_is_json_but_not_object(self):
+        # arguments line parses as JSON but is a list, not a dict -> empty args
+        assert parse_tool_result_calls("### Tool call: t\n- arguments: [1, 2]") == [("t", {})]
 
 
 def _score(qid, tools_called, tool_results, n_facts, n_pass=0):
@@ -159,6 +174,17 @@ class TestBuildCoverage:
         assert cov["search_events"].facts_realized == 3
         assert cov["search_events"].invocations == 2
 
+    def test_non_enum_arg_key_ignored_for_enum_values(self):
+        # a non-enum-like arg key (e.g. 'query') is tracked in arg_shapes but not enum_values
+        tr = "### Tool call: search_events\n- arguments: " + json.dumps({"query": "gpu training"})
+        cov = {
+            c.tool: c
+            for c in build_coverage(["search_events"], [_score("q1", ["search_events"], tr, 1)])
+        }
+        c = cov["search_events"]
+        assert c.enum_values == {}
+        assert frozenset({"query"}) in c.arg_shapes
+
     def test_invoked_but_not_in_snapshot_flagged(self):
         tr = "### Tool call: brand_new_tool\n- arguments: {}"
         cov = {c.tool: c for c in build_coverage([], [_score("q1", ["brand_new_tool"], tr, 1)])}
@@ -195,3 +221,151 @@ class TestReconcile:
         tr = "### Tool call: get_event\n- arguments: {}"
         w = reconcile_warnings([_score("q1", ["search_events"], tr, 1)])
         assert len(w) == 1 and "drift" in w[0]
+
+
+class TestNodeTraceEdgeCases:
+    def test_empty_node_trace_yields_no_tools(self):
+        # node_trace None/empty -> the tool is served but never invoked
+        cov = {c.tool: c for c in build_coverage(["search_events"], [_score("q1", [], "", 2)])}
+        assert cov["search_events"].invocations == 0
+        assert cov["search_events"].tier == "UNCOVERED-TESTABLE"
+
+    def test_node_trace_as_json_string(self):
+        # context.node_trace can arrive as a JSON string instead of a list
+        score = {
+            "question_id": "q1",
+            "context": {
+                "node_trace": json.dumps([{"node": "loop", "tools_called": ["search_events"]}]),
+                "tool_results": "### Tool call: search_events\n- arguments: {}",
+                "required_facts": ["f0", "f1"],
+                "fact_verdicts": [],
+            },
+        }
+        cov = {c.tool: c for c in build_coverage(["search_events"], [score])}
+        assert cov["search_events"].invocations == 1
+
+    def test_node_trace_key_absent(self):
+        # context with no node_trace key at all -> _extract_invoked_tools sees None
+        score = {
+            "question_id": "q1",
+            "context": {
+                "tool_results": "",
+                "required_facts": [],
+                "fact_verdicts": [],
+            },
+        }
+        cov = {c.tool: c for c in build_coverage(["search_events"], [score])}
+        assert cov["search_events"].invocations == 0
+
+    def test_node_trace_entry_not_a_dict(self):
+        # a node_trace list whose element is not a dict is skipped, not fatal
+        score = {
+            "question_id": "q1",
+            "context": {
+                "node_trace": ["not-a-dict", {"tools_called": ["search_events"]}],
+                "tool_results": "",
+                "required_facts": ["f0"],
+                "fact_verdicts": [],
+            },
+        }
+        cov = {c.tool: c for c in build_coverage(["search_events"], [score])}
+        assert cov["search_events"].invocations == 1
+
+    def test_bad_json_node_trace_degrades(self):
+        score = {
+            "question_id": "q1",
+            "context": {
+                "node_trace": "{not valid json",
+                "tool_results": "",
+                "required_facts": [],
+                "fact_verdicts": [],
+            },
+        }
+        # served tool stays uninvoked; the bad trace does not raise
+        cov = {c.tool: c for c in build_coverage(["search_events"], [score])}
+        assert cov["search_events"].invocations == 0
+
+    def test_call_block_name_not_in_trace_or_snapshot(self):
+        # a tool present only in the tool_results call blocks (not node_trace, not served)
+        score = {
+            "question_id": "q1",
+            "context": {
+                "node_trace": [{"node": "loop", "tools_called": []}],
+                "tool_results": "### Tool call: surprise_tool\n- arguments: {}",
+                "required_facts": [],
+                "fact_verdicts": [],
+            },
+        }
+        cov = {c.tool: c for c in build_coverage([], [score])}
+        assert cov["surprise_tool"].total_calls == 1
+        assert cov["surprise_tool"].in_snapshot is False
+
+
+class TestRenderCoverage:
+    def _cov(self):
+        return build_coverage(
+            ["search_events", "register_for_event", "get_dimension_values", "search_new_thing"],
+            [
+                _score(
+                    "q1",
+                    ["search_events"],
+                    "### Tool call: search_events\n- arguments: "
+                    + json.dumps({"date": "upcoming"}),
+                    2,
+                    2,
+                )
+            ],
+        )
+
+    def _render(self, fmt):
+        return render_coverage(
+            self._cov(),
+            run_id="run-x",
+            battery="b.yaml",
+            model="m",
+            warnings=["w1"],
+            fmt=fmt,
+        )
+
+    def test_table_groups_by_tier(self):
+        out = self._render("table")
+        assert "run-x" in out
+        assert "[EVALUATED]" in out
+        assert "[UNCOVERED-STRUCTURAL]" in out
+        assert "[UNCOVERED-COMPOSITIONAL]" in out
+        assert "search_events" in out
+        assert "parser warnings (1)" in out
+
+    def test_md_has_pipe_tables(self):
+        out = self._render("md")
+        assert "## EVALUATED" in out
+        assert "| tool |" in out
+
+    def test_csv_is_parseable(self):
+        import csv
+        import io
+
+        out = self._render("csv")
+        # first line is the summary comment; the rest is CSV
+        body = "\n".join(out.splitlines()[1:])
+        rows = list(csv.DictReader(io.StringIO(body)))
+        assert any(r["tool"] == "search_events" for r in rows)
+        assert {"tier", "invocations", "facts_realized_ub"} <= set(rows[0].keys())
+
+    def test_json_shape(self):
+        out = self._render("json")
+        data = json.loads(out)
+        assert data["warnings"] == ["w1"]
+        assert "summary" in data
+        assert any(t["tool"] == "search_events" for t in data["tools"])
+
+    def test_csv_empty_coverage(self):
+        out = render_coverage([], run_id="r", battery=None, model=None, warnings=[], fmt="csv")
+        assert "0 served" in out
+
+    def test_not_in_snapshot_marker(self):
+        cov = build_coverage(
+            [], [_score("q1", ["brand_new"], "### Tool call: brand_new\n- arguments: {}", 1)]
+        )
+        out = render_coverage(cov, run_id="r", battery=None, model=None, warnings=[], fmt="table")
+        assert "NOT-IN-SNAPSHOT" in out
