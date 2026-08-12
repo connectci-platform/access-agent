@@ -30,6 +30,12 @@ class TestStructuralClass:
         assert structural_class("search_events") == "unauth-read"
         assert structural_class("get_infrastructure_news") == "unauth-read"
 
+    def test_compositional(self):
+        # XDMoD plumbing + authoring helpers: read-only but never user-facing
+        assert structural_class("get_dimension_values") == "composition"
+        assert structural_class("suggest_tags") == "composition"
+        assert structural_class("get_ticket_types") == "composition"
+
 
 class TestParseToolResultCalls:
     def test_single_call(self):
@@ -115,6 +121,23 @@ class TestBuildCoverage:
         # served, never invoked, plain read tool -> actionable gap
         cov = {c.tool: c for c in build_coverage(["search_new_thing"], [])}
         assert cov["search_new_thing"].tier == "UNCOVERED-TESTABLE"
+
+    def test_uncovered_compositional(self):
+        # served, never invoked, but a helper tool -> not an actionable gap
+        cov = {c.tool: c for c in build_coverage(["get_dimension_values"], [])}
+        assert cov["get_dimension_values"].tier == "UNCOVERED-COMPOSITIONAL"
+
+    def test_compositional_still_evaluated_when_exercised(self):
+        # a helper invoked via a parent capability + checked -> EVALUATED, not demoted
+        tr = "### Tool call: get_dimension_values\n- arguments: {}"
+        cov = {
+            c.tool: c
+            for c in build_coverage(
+                ["get_dimension_values"],
+                [_score("q1", ["get_dimension_values"], tr, 2, 2)],
+            )
+        }
+        assert cov["get_dimension_values"].tier == "EVALUATED"
 
     def test_evaluated(self):
         tr = "### Tool call: search_events\n- arguments: " + json.dumps({"date": "upcoming"})

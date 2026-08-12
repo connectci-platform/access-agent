@@ -20,9 +20,13 @@ if TYPE_CHECKING:
     from .coverage import ToolCoverage
 
 _TIERS = [
-    ("UNCOVERED-TESTABLE", "actionable gap: served read tool with no battery question"),
+    ("UNCOVERED-TESTABLE", "actionable gap: served user-facing read tool with no battery question"),
     ("EXERCISED-NOT-EVALUATED", "the loop calls it but no fact checks its output"),
     ("EVALUATED", "invoked and checked by at least one required fact"),
+    (
+        "UNCOVERED-COMPOSITIONAL",
+        "helper/plumbing: covered via a parent capability, no standalone question",
+    ),
     ("UNCOVERED-STRUCTURAL", "write / auth-read: unreachable under acting_user=None"),
 ]
 
@@ -33,11 +37,14 @@ def _summary(
     served = sum(1 for c in coverage if c.in_snapshot)
     invoked = sum(1 for c in coverage if c.invocations > 0)
     evaluated = sum(1 for c in coverage if c.invocations > 0 and c.facts_realized > 0)
+    testable = sum(1 for c in coverage if c.tier == "UNCOVERED-TESTABLE")
+    compositional = sum(1 for c in coverage if c.tier == "UNCOVERED-COMPOSITIONAL")
     structural = sum(1 for c in coverage if c.tier == "UNCOVERED-STRUCTURAL")
     return (
         f"{served} served -> {invoked} invoked -> {evaluated} evaluated "
-        f"(facts_realized>0); {structural} structurally-unreachable "
-        f"(write/auth-read, acting_user=None). "
+        f"(facts_realized>0); {testable} uncovered-testable (actionable gaps); "
+        f"{compositional} compositional (covered via parent); "
+        f"{structural} structural (write/auth-read, acting_user=None). "
         f"run {run_id} | battery {battery or '?'} | model {model or '?'}"
     )
 

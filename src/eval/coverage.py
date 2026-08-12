@@ -28,7 +28,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from src.agent.domains.capabilities import WRITE_MCP_TOOL_NAMES
+from src.agent.domains.capabilities import (
+    COMPOSITIONAL_MCP_TOOL_NAMES,
+    WRITE_MCP_TOOL_NAMES,
+)
 
 # --- structural classification (name/registry-based; the DB carries no auth flag) ---
 
@@ -37,13 +40,18 @@ _WRITE_PREFIX_RE = re.compile(r"^(create_|update_|delete_|register_|cancel_|repo
 
 
 def structural_class(tool: str) -> str:
-    """Classify a tool as unauth-read / auth-read / write.
+    """Classify a tool as unauth-read / auth-read / write / composition.
 
     WRITE_MCP_TOOL_NAMES membership is the primary write signal; the name-prefix
     is a fallback so a newly-added write tool not yet in the set is still caught.
+    Compositional tools (XDMoD plumbing, authoring helpers) are read-only but
+    never user-facing, so they get their own class: a zero-invocation count for
+    them is not an actionable battery gap, unlike a user-facing read tool.
     """
     if tool in WRITE_MCP_TOOL_NAMES or _WRITE_PREFIX_RE.match(tool):
         return "write"
+    if tool in COMPOSITIONAL_MCP_TOOL_NAMES:
+        return "composition"
     if _AUTH_READ_RE.match(tool):
         return "auth-read"
     return "unauth-read"
@@ -142,6 +150,8 @@ class ToolCoverage:
             return "EXERCISED-NOT-EVALUATED"
         if self.structural in ("write", "auth-read"):
             return "UNCOVERED-STRUCTURAL"
+        if self.structural == "composition":
+            return "UNCOVERED-COMPOSITIONAL"
         return "UNCOVERED-TESTABLE"
 
 
@@ -201,6 +211,7 @@ def build_coverage(
                 "UNCOVERED-TESTABLE",
                 "EXERCISED-NOT-EVALUATED",
                 "EVALUATED",
+                "UNCOVERED-COMPOSITIONAL",
                 "UNCOVERED-STRUCTURAL",
             ].index(c.tier),
             c.tool,

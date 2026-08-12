@@ -125,6 +125,32 @@ WRITE_MCP_TOOL_NAMES: frozenset[str] = frozenset(
     }
 )
 
+# MCP tools the agent invokes only in service of a *parent* capability, never
+# in response to a standalone user question. They are XDMoD query/chart plumbing
+# (the agent chains them to build a chart or metrics answer), announcement
+# authoring helpers (they assist create/update_announcement), and a ticket-type
+# precondition lookup (read before create_support_ticket). A coverage audit must
+# not flag these as "uncovered-testable" gaps: no user asks "list dimension
+# values," so they carry no direct battery question — they are exercised when
+# their parent capability is tested (e.g. one chart-request question drives the
+# whole XDMoD chain). Distinct from writes: these are reads, just not user-facing.
+COMPOSITIONAL_MCP_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        # XDMoD query/chart plumbing (drive get_chart_data / a metrics answer)
+        "get_dimension_values",
+        "get_smart_filters",
+        "get_analysis_template",
+        "get_raw_data",
+        "get_chart_link",
+        "integrate_nsf_xdmod",
+        # announcement authoring helpers (assist create/update_announcement)
+        "suggest_summary",
+        "suggest_tags",
+        # precondition lookup for create_support_ticket
+        "get_ticket_types",
+    }
+)
+
 # ── Categories ────────────────────────────────────────────────────────────
 
 CATEGORIES: list[Category] = [
