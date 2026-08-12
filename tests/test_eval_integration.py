@@ -105,10 +105,13 @@ async def test_full_eval_run(mock_db, tiny_question_set):
         patch("src.eval.scorer.ToolRegistry") as mock_registry_cls,
         patch("src.eval.judge.AsyncOpenAI") as mock_openai_cls,
     ):
-        # Mock tool registry
+        # Mock tool registry. `.tools` is a sync property (name -> definition);
+        # set it to a real dict so the snapshot's sorted(registry.tools.keys())
+        # works — an AsyncMock child would hand back a coroutine.
         mock_registry = AsyncMock()
         mock_registry.tool_count = 10
         mock_registry.catalog = {"tools": [{"name": "test_tool"}]}
+        mock_registry.tools = {"test_tool": object()}
         mock_registry_cls.return_value = mock_registry
 
         # Mock OpenAI client — a distinct judge response per question.

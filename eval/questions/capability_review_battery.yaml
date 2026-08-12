@@ -1,0 +1,423 @@
+# Capability review battery — the FINALIZED student-review set (2026-07-06).
+# Non-destructive: assembled from kept questions in tool_coverage_battery.yaml + mcp_coverage_battery.json
+# + gapfill_battery.yaml, with facts corrected per the triage doc
+# (docs/collaboration/2026-07-06-tc-facts-refresh-triage.md). Source batteries left INTACT (grand_prix
+# and reports depend on them).
+#
+# DROPPED for tool/data reasons (all "for now"): affinity questions (thin description content),
+# NSF questions (NSF API/MCP query issue — future todo), xdmod-data personal-usage (needs Metrics JWT).
+#
+# Every required_fact here is a FIRST PASS for STUDENT CONFIRMATION, not final ground truth.
+# Verified against live hosted MCP tools 2026-07-06 (reading FULL output — see triage doc for the
+# truncated-read lessons).
+
+# ============================================================================
+# tc-* KEEPERS (from tool_coverage_battery.yaml, facts corrected 2026-07-06)
+# ============================================================================
+
+- id: tc-status-01
+  question: Are any ACCESS resources currently down or in maintenance?
+  capability_area: system_status
+  battery: capability_review
+  expected_tool: get_infrastructure_news
+  ground_truth_stability: time_bound
+  required_facts:
+  - Answer reflects the live status feed, naming the resources the feed currently reports as down or in
+    maintenance, or stating none are if the feed is clear.
+  - Answer adds no outages or maintenance windows beyond what the tool returns.
+  - Answer links to a live status page (support.access-ci.org/outages or operations.access-ci.org), not a
+    generic docs page.
+  sources:
+  - 'tool: get_infrastructure_news(time=''current'')'
+  authoring_notes:
+  - 'Invariant rewrite (2026-08-12): tests live-feed grounding + status-page link, not a frozen snapshot. Prior version named the July 18-21 Anvil window (expired). Grounded at eval time.'
+
+- id: tc-software-01
+  question: Which ACCESS resources have PyTorch available?
+  capability_area: software_discovery
+  battery: capability_review
+  expected_tool: search_software
+  ground_truth_stability: time_bound
+  required_facts:
+  - Per search_software(query='pytorch') READING FULL OUTPUT, PyTorch is available on Anvil, Delta,
+    DeltaAI (and Bridges-2) — under multiple package names ('pytorch' on Bridges-2/Anvil, 'pytorch-conda'
+    on Delta, 'miniforge3_pytorch' on DeltaAI). A shallow reader seeing only 'pytorch' misses Delta/DeltaAI.
+  - Answer does not falsely claim PyTorch on resources the tool did not return; correct qualifiers about
+    conda/container installability are fine.
+  sources:
+  - 'tool: search_software(query=''pytorch'') -> available_on_resources across 3 packages (verified 2026-07-06)'
+  authoring_notes:
+  - Verified 2026-07-06 (April fact confirmed correct; my initial truncated read was wrong). STUDENT-CHECK
+    the multi-package mapping stays complete.
+
+- id: tc-software-02
+  question: What version of CUDA is available on Delta?
+  capability_area: software_discovery
+  battery: capability_review
+  expected_tool: get_software_details
+  ground_truth_stability: time_bound
+  required_facts:
+  - Answer states Delta's current CUDA versions per get_software_details (12.8, 11.8 at last refresh).
+  - Answer does not conflate Delta with DeltaAI — the tool returns both mixed
+    (versions [13.1.1, 12.9, 11.8, 12.8], resource_matched [deltaai, delta]); DeltaAI-only versions
+    (13.1.1, 12.9) must not be attributed to Delta.
+  sources:
+  - 'tool: get_software_details(software_name=''cuda'', resource=''delta'') (verified 2026-07-06)'
+  authoring_notes:
+  - Tool conflates Delta/DeltaAI — the negative guard catches this real behavior. STUDENT-CHECK which
+    versions are actually Delta's vs DeltaAI's (tool won't cleanly tell you — needs independent confirm).
+
+- id: tc-allocations-01
+  question: What are the most common allocation types and fields of science in current ACCESS projects?
+  capability_area: allocations
+  battery: capability_review
+  expected_tool: get_allocation_statistics
+  ground_truth_stability: time_bound
+  required_facts:
+  - >-
+    Allocation types (per get_allocation_statistics sample, verified 2026-07-06): Explore is most common
+    (49), Discover close behind (41), Accelerate smaller (10). Explore and Discover dominate.
+  - >-
+    Top fields of science: Computer Science, Artificial Intelligence, and Mechanical Engineering are
+    consistently among the top fields (exact ordering varies by sample; do NOT assert a single number-one
+    — the 2026-07-06 sample had Mechanical Eng 13, AI 12, CS 12, a 1-project spread = noise). Naming 3+
+    top fields from the tool output is required.
+  - Answer acknowledges it is a ~100-project sample, not a universe count.
+  - Answer does not invent counts not in the tool output.
+  - >-
+    Answer points to a specific see-more URL (allocations.access-ci.org/current-projects or an XDMoD chart
+    URL), not a vague "see ACCESS-CI".
+  sources:
+  - 'tool: get_allocation_statistics(pages_to_analyze=5) (verified 2026-07-06: Explore 49 > Discover 41 > Accelerate 10)'
+  authoring_notes:
+  - CORRECTED 2026-07-06 - softened "CS is largest field" to a top-cluster claim (sample noise; the fact''s
+    own "acknowledge sample" guard governs). Rank order stable; exact counts drift. STUDENT-CHECK.
+
+- id: tc-allocations-02
+  question: Search for ACCESS projects on Delta related to climate modeling.
+  capability_area: allocations
+  battery: capability_review
+  expected_tool: search_projects
+  ground_truth_stability: time_bound
+  required_facts:
+  - The tool returns LOOSE matches (query_relevance='loose_match'), not strict topic+resource matches. A
+    correct answer does NOT present the loose matches as actual climate-modeling projects primarily on
+    Delta GPU (verified 2026-07-06 — the returned items' primary resources / topics do not align).
+  - Answer does not overstate loose-match results as real Delta climate-modeling projects.
+  sources:
+  - 'tool: search_projects(query=''climate modeling'', resource_name=''Delta'') -> loose_match (verified 2026-07-06)'
+  authoring_notes:
+  - VERIFIED VALID 2026-07-06 (my initial "inverted/49 real projects" read was a truncated-read error; the
+    loose-match guard is correct and doing its job). STUDENT-CHECK the loose-match behavior.
+
+- id: tc-events-01
+  question: What ACCESS events are happening in the next two weeks?
+  capability_area: events
+  battery: capability_review
+  expected_tool: search_events
+  ground_truth_stability: time_bound
+  required_facts:
+  - Answer lists upcoming ACCESS events from search_events within ~14 days, each named with its date.
+  - Each listed event includes a support.access-ci.org/events/ registration/info URL from the tool.
+  - Answer links to support.access-ci.org/events (or per-event URLs) as its source.
+  sources:
+  - 'tool: search_events(date=''upcoming'') (verified 2026-07-06, query_relevance exact)'
+  authoring_notes:
+  - Self-refreshing. STUDENT-CHECK current events at eval time.
+
+- id: tc-announce-01
+  question: What are the most recent ACCESS announcements about Expanse?
+  capability_area: announcements
+  battery: capability_review
+  expected_tool: search_announcements
+  ground_truth_stability: time_bound
+  required_facts:
+  - Answer reports what search_announcements(query='Expanse') actually returns (state "no current
+    announcements mention Expanse" if the tool returns none).
+  - Answer does not fabricate announcement titles.
+  sources:
+  - 'tool: search_announcements(query=''Expanse'', limit=10)'
+  authoring_notes:
+  - Self-refreshing; requires the authenticated tool path. STUDENT-CHECK at eval time.
+
+# tc-rag CONTROL questions (docs-based, durable — RAG and agent both should succeed)
+
+- id: tc-rag-01
+  question: How do I set up SSH keys to log into Expanse?
+  capability_area: documentation
+  battery: capability_review
+  expected_tool: none
+  ground_truth_stability: stable
+  required_facts:
+  - Generate an SSH key pair with ssh-keygen (RSA/ECDSA/ed25519), protect the private key with a passphrase.
+  - Describes installing the public key on Expanse (append to ~/.ssh/authorized_keys, or via the ACCESS
+    registry at registry.access-ci.org) — at least one path present.
+  - Mentions Expanse's login host (login.expanse.sdsc.edu).
+  - Mentions Expanse's TOTP/authenticator-based 2FA (Google Authenticator, Duo, etc.) or links the
+    enrollment portal.
+  sources:
+  - 'doc: https://www.sdsc.edu/systems/expanse/user_guide.html'
+  - 'doc: https://operations.access-ci.org/identity/ssh-pubkey'
+  authoring_notes:
+  - Durable docs question (control). STUDENT-CHECK.
+
+- id: tc-rag-02
+  question: What's the difference between an Explore allocation and an Accelerate allocation?
+  capability_area: documentation
+  battery: capability_review
+  expected_tool: none
+  ground_truth_stability: stable
+  required_facts:
+  - Explore provides up to 400,000 ACCESS Credits; intended for entry-level/small-scale use; lightweight
+    review.
+  - Accelerate provides up to 3,000,000 ACCESS Credits; for mid-scale needs; panel merit review (longer
+    proposal).
+  - Both accept requests anytime.
+  sources:
+  - 'doc: https://allocations.access-ci.org/project-types'
+  - 'doc: https://allocations.access-ci.org/allocations-policy'
+  authoring_notes:
+  - Durable docs question (control). STUDENT-CHECK credit figures against current policy.
+
+- id: tc-rag-03
+  question: How do I use Globus to transfer files between ACCESS resources?
+  capability_area: documentation
+  battery: capability_review
+  expected_tool: none
+  ground_truth_stability: stable
+  required_facts:
+  - User logs in to Globus before transferring (canonical IdP option 'ACCESS-CI (formerly XSEDE)').
+  - Each ACCESS resource exposes its own Globus collection/endpoint; users find them via Collection Search.
+  - Points at the Globus File Manager (app.globus.org) for the transfer.
+  - For laptops/non-endpoint machines, install Globus Connect Personal.
+  sources:
+  - 'doc: https://docs.globus.org/guides/tutorials/manage-files/transfer-files/'
+  authoring_notes:
+  - Durable docs question (control). STUDENT-CHECK.
+
+- id: tc-rag-04
+  question: Who is eligible to apply for an ACCESS allocation?
+  capability_area: documentation
+  battery: capability_review
+  expected_tool: none
+  ground_truth_stability: stable
+  required_facts:
+  - Names U.S.-based faculty/researchers/postdocs at academic institutions as eligible PIs.
+  - Notes graduate students may lead allocations (typically Explore/Discover, with advisor involvement).
+  - Mentions eligibility extends beyond academia (nonprofits, FFRDCs, U.S. commercial, etc. — any one).
+  - Identifies at least one ineligible group (undergraduates, K-12, unaffiliated individuals, international
+    without a U.S. PI).
+  - Mentions the institutional-email requirement (NSF Notice 149) — generic gmail/yahoo prohibited.
+  sources:
+  - 'doc: https://allocations.access-ci.org/allocations-policy'
+  authoring_notes:
+  - Durable docs question (control). STUDENT-CHECK the NSF-149 email rule currency.
+
+# ============================================================================
+# mcp_coverage KEEPERS (facts authored 2026-07-06 from verified hosted-tool output).
+# Dropped: affinity 006/007/008, NSF 017/018/019, xdmod-personal 012/016.
+# ============================================================================
+
+- id: mcp-cov-001
+  question: Is Delta down right now?
+  capability_area: system_status
+  battery: capability_review
+  expected_tool: get_infrastructure_news
+  ground_truth_stability: time_bound
+  required_facts:
+  - >-
+    Per get_infrastructure_news(ids=['Delta']) Delta is operational (0 active outages) as of 2026-07-06.
+  - Answer does not invent outages not in the feed.
+  sources:
+  - 'tool: get_infrastructure_news(ids=[''Delta'']) -> operational (verified 2026-07-06)'
+  authoring_notes:
+  - Self-refreshing. STUDENT-CHECK current status.
+
+- id: mcp-cov-002
+  question: Are there any planned outages on Expanse this week?
+  capability_area: system_status
+  battery: capability_review
+  expected_tool: get_infrastructure_news
+  ground_truth_stability: time_bound
+  required_facts:
+  - >-
+    Answer reports what get_infrastructure_news(resource='expanse', time='scheduled') returns. As of
+    2026-07-06 the scheduled feed shows no upcoming Expanse-specific outage this week (the recent Expanse
+    maintenance was 2026-06-09, past); state "no planned outages this week" if the tool returns none.
+  - Answer does not fabricate maintenance windows.
+  sources:
+  - 'tool: get_infrastructure_news(resource=''expanse'', time=''scheduled'')'
+  authoring_notes:
+  - Self-refreshing; AUTHOR/STUDENT re-verify the scheduled feed at eval time (Expanse windows change).
+
+- id: mcp-cov-003
+  question: What's the current status of Anvil?
+  capability_area: system_status
+  battery: capability_review
+  expected_tool: get_infrastructure_news
+  ground_truth_stability: time_bound
+  required_facts:
+  - Answer reports Anvil's current status from get_infrastructure_news, reflecting the live feed at eval
+    time (operational, or the actual status of any posted maintenance window).
+  - Answer conveys the feed's actual state, not a flat "Anvil is down right now"; does not invent a firm date.
+  sources:
+  - 'tool: get_infrastructure_news(ids=[''Anvil'']) -> current status'
+  authoring_notes:
+  - 'Invariant rewrite (2026-08-12): live-feed grounding, not the expired July 18-21 postponed window.'
+
+- id: mcp-cov-004
+  question: Show me recent infrastructure news for ACCESS resources
+  capability_area: system_status
+  battery: capability_review
+  expected_tool: get_infrastructure_news
+  ground_truth_stability: time_bound
+  required_facts:
+  - Answer summarizes the actual recent items get_infrastructure_news returns (current + scheduled +
+    recent_past) at eval time, across multiple resources.
+  - Answer draws only from the tool's returned items; does not fabricate news.
+  - Answer links to operations.access-ci.org / support.access-ci.org as the source.
+  sources:
+  - 'tool: get_infrastructure_news(time=''all'') -> current feed'
+  authoring_notes:
+  - 'Invariant rewrite (2026-08-12): tests feed-grounded summarization + source link, not the frozen July item list (expired).'
+
+- id: mcp-cov-005
+  question: Any scheduled maintenance coming up on Bridges-2?
+  capability_area: system_status
+  battery: capability_review
+  expected_tool: get_infrastructure_news
+  ground_truth_stability: time_bound
+  required_facts:
+  - Answer reports Bridges-2 scheduled maintenance from get_infrastructure_news(resource='bridges2',
+    time='scheduled'), naming the actual upcoming window(s) the feed returns, or stating none if clear.
+  - Answer names only windows from the feed; does not fabricate other windows.
+  sources:
+  - 'tool: get_infrastructure_news(resource=''bridges2'', time=''scheduled'') -> scheduled windows'
+  authoring_notes:
+  - 'Invariant rewrite (2026-08-12): live scheduled-maintenance grounding, not the expired July 7 window.'
+
+- id: mcp-cov-009
+  question: What training events are happening this month?
+  capability_area: events
+  battery: capability_review
+  expected_tool: search_events
+  ground_truth_stability: time_bound
+  required_facts:
+  - Answer lists real upcoming events from search_events(date='upcoming' or 'this_month'), each with the
+    date and support.access-ci.org/events/<id> URL the tool returns.
+  - Each named event traces to a tool result with a real date and URL; no fabrication.
+  sources:
+  - 'tool: search_events(date=''upcoming'') -> current feed'
+  authoring_notes:
+  - 'Invariant rewrite (2026-08-12): feed-grounded upcoming events with real URLs, not the frozen July event list (passed).'
+
+- id: mcp-cov-010
+  question: Are there any ACCESS webinars coming up?
+  capability_area: events
+  battery: capability_review
+  expected_tool: search_events
+  ground_truth_stability: time_bound
+  required_facts:
+  - >-
+    Answer lists upcoming events from search_events, correctly reflecting event types (the current feed is
+    heavy on Office Hours and Training; a precise answer distinguishes webinars/training from office hours
+    rather than mislabeling all as "webinars").
+  - Names events with dates and support.access-ci.org/events URLs from the tool; no fabrication.
+  sources:
+  - 'tool: search_events(date=''upcoming'', type=''webinar'') / (date=''upcoming'')'
+  authoring_notes:
+  - Self-refreshing. STUDENT-CHECK whether the type filter is exact or loose (per the events tag-filter
+    looseness seen in gapfill gf-events-02).
+
+- id: mcp-cov-011
+  question: Show me upcoming GPU training workshops
+  capability_area: events
+  battery: capability_review
+  expected_tool: search_events
+  ground_truth_stability: time_bound
+  required_facts:
+  - >-
+    Answer returns upcoming events genuinely tagged gpu/ml (e.g. Sage Office Hours carry ai/machine-learning/gpu
+    tags) with dates and URLs.
+  - >-
+    CAUTION - the events tag filter is LOOSE (returns non-gpu events too). A correct answer must not present
+    untagged events (e.g. generic Office Hours with no gpu tag) as GPU workshops — only ones actually
+    carrying the tags. If no true GPU *workshop* is upcoming, say so rather than padding.
+  sources:
+  - 'tool: search_events(date=''upcoming'', tags=''gpu'') -> loose filter (verified 2026-07-06)'
+  authoring_notes:
+  - Good discrimination question - naive reader lists all events as "gpu workshops" (confident-wrong).
+    Self-refreshing. STUDENT-CHECK.
+
+- id: mcp-cov-013
+  question: What XDMoD metrics are available for Delta?
+  capability_area: xdmod_tools
+  battery: capability_review
+  expected_tool: describe_realms
+  ground_truth_stability: semi_stable
+  required_facts:
+  - >-
+    Answer describes the XDMoD data realms available (per describe_realms on the charts xdmod server, which
+    works without auth): Jobs, SUPREMM, Cloud, Storage, Allocations, Accounts, Requests, Gateways,
+    ResourceSpecifications. Job accounting + performance (Jobs/SUPREMM) are the core, including CPU/GPU/
+    memory metrics (SUPREMM).
+  - >-
+    Answer points to the ACCESS XDMoD portal (xdmod.access-ci.org). Does not claim per-Delta metric values
+    it cannot retrieve — describes what CATEGORIES are explorable, not fabricated numbers.
+  sources:
+  - 'tool: describe_realms (charts xdmod server, no auth) (verified 2026-07-06)'
+  authoring_notes:
+  - Uses the WORKING charts xdmod server, NOT token-gated xdmod-data. STUDENT-CHECK realm list.
+
+- id: mcp-cov-015
+  question: What's the difference between node-hours and SU-hours in XDMoD?
+  capability_area: xdmod_docs
+  battery: capability_review
+  expected_tool: search_docs
+  ground_truth_stability: stable
+  required_facts:
+  - >-
+    Answer explains that a Service Unit (SU) is a normalized usage unit (typically 1 core-hour or a
+    resource-defined equivalent) whereas a node-hour is one full node used for one hour; the conversion
+    depends on cores/node and the resource's SU-charging policy.
+  - Answer synthesizes from search_docs excerpts and cites the source URL(s) returned; does not fabricate.
+  sources:
+  - 'tool: search_docs(query=''difference between node-hours and SU-hours XDMoD'')'
+  authoring_notes:
+  - Docs/conceptual question. AUTHOR/STUDENT confirm the canonical URL search_docs returns. STUDENT-CHECK
+    the SU definition against ACCESS''s current charging policy.
+
+- id: mcp-cov-020
+  question: Which ACCESS resources have TensorFlow available?
+  capability_area: software_discovery
+  battery: capability_review
+  expected_tool: search_software
+  ground_truth_stability: time_bound
+  required_facts:
+  - >-
+    Per search_software(query='tensorflow') READING FULL OUTPUT, TensorFlow is available on Bridges-2,
+    Anvil, Delta, and DeltaAI — under multiple package names ('tensorflow' on Bridges-2/Anvil,
+    'tensorflow-conda' on Delta, 'miniforge3_tensorflow_cpu'/'_cuda' on DeltaAI). A shallow reader seeing
+    only 'tensorflow' misses Delta/DeltaAI (verified 2026-07-06).
+  - Answer does not falsely claim TensorFlow on resources the tool did not return; correct conda/container
+    qualifiers are fine.
+  sources:
+  - 'tool: search_software(query=''tensorflow'') -> 4 packages across bridges-2/anvil/delta/deltaai (verified 2026-07-06)'
+  authoring_notes:
+  - Multi-package read (PyTorch lesson). STUDENT-CHECK the mapping stays complete.
+
+- id: mcp-cov-021
+  question: Is LAMMPS installed on Stampede3 and Anvil?
+  capability_area: software_discovery
+  battery: capability_review
+  expected_tool: compare_software_availability
+  ground_truth_stability: time_bound
+  required_facts:
+  - >-
+    Per compare_software_availability(software_names=['lammps'], resources=['stampede3','anvil']) LAMMPS is
+    available on BOTH anvil and stampede3 (found=true, resource_count=2) (verified 2026-07-06).
+  - Answer does not assert availability the tool does not report.
+  sources:
+  - 'tool: compare_software_availability(...) -> available_on=[anvil, stampede3] (verified 2026-07-06)'
+  authoring_notes:
+  - Note SDS indexing gaps generally (a "no" elsewhere may be unreported). STUDENT-CHECK.

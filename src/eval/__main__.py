@@ -44,6 +44,67 @@ def _handle_multiturn(args: argparse.Namespace) -> None:
     print_summary(results)
 
 
+def _handle_coverage(args: argparse.Namespace) -> None:
+    from src.config import settings
+
+    from .coverage import build_coverage, reconcile_warnings
+    from .coverage_report import render_coverage
+    from .db import EvalDB
+
+    db = EvalDB(settings.DATABASE_URL)
+
+    # Resolve the run: explicit --run-id, else newest agent_full run.
+    # The newest-run query uses execute_readonly_sql (Postgres metadata->> JSON
+    # operators + SET TRANSACTION READ ONLY), which does not run on the SQLite
+    # test DB; the explicit --run-id path is exercised in tests instead.
+    run_id = args.run_id
+    if not run_id:  # pragma: no cover - Postgres-only newest-run resolution
+        clause = "AND question_set = %(qs)s" if args.battery else ""
+        rows, _ = db.execute_readonly_sql(
+            "SELECT id FROM eval_runs WHERE metadata->>'system'='agent_full' "
+            f"AND tool_catalog IS NOT NULL {clause} ORDER BY created_at DESC LIMIT 1",
+        )
+        if not rows:
+            print("No agent_full run with a tool_catalog found.")
+            return
+        run_id = rows[0][0]
+
+    run = db.get_run(run_id)
+    if run is None:
+        print(f"Run {run_id} not found.")
+        return
+    meta: dict[str, Any] = run.metadata_ or {}  # type: ignore[assignment]
+    system = meta.get("system")
+    if system != "agent_full":
+        print(
+            f"Run {run_id} is system={system!r}, not 'agent_full'. "
+            "Coverage needs the tool-calling loop's node_trace/tool_results; a "
+            "raw_rag run has none — this would be no data, not thin coverage."
+        )
+        return
+
+    catalog: dict[str, Any] = run.tool_catalog or {}  # type: ignore[assignment]
+    served: list[str] = catalog.get("tools", []) or []
+    scores: list[dict[str, Any]] = [
+        {"question_id": s.question_id, "context": s.context or {}}
+        for s in db.get_scores_for_run(run_id)
+        if s.source == "judge"
+    ]
+
+    coverage = build_coverage(served, scores)
+    warnings = reconcile_warnings(scores)
+    print(
+        render_coverage(
+            coverage,
+            run_id=run_id,
+            battery=str(run.question_set) if run.question_set else None,
+            model=str(run.llm_model) if run.llm_model else None,
+            warnings=warnings,
+            fmt=args.format,
+        )
+    )
+
+
 def _handle_compare(args: argparse.Namespace) -> None:
     from src.config import settings
 
@@ -319,7 +380,8 @@ def _handle_score_production(_args: argparse.Namespace) -> None:
     sys.exit(1)
 
 
-def main() -> None:  # noqa: PLR0915  # CLI dispatcher, statements not meaningfully extractable
+def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915  # all subcommand wiring
+    """Construct the eval CLI parser (kept separate from main() so it is testable)."""
     parser = argparse.ArgumentParser(
         prog="python -m src.eval",
         description="Agent answer evaluation pipeline",
@@ -351,6 +413,15 @@ def main() -> None:  # noqa: PLR0915  # CLI dispatcher, statements not meaningfu
     compare_parser = subparsers.add_parser("compare", help="Compare two eval runs")
     compare_parser.add_argument("--run-a", required=True, help="First run ID")
     compare_parser.add_argument("--run-b", required=True, help="Second run ID")
+
+    coverage_parser = subparsers.add_parser(
+        "coverage", help="Per-tool evaluation-depth audit for a run"
+    )
+    coverage_parser.add_argument("--run-id", help="Run to audit (default: newest agent_full run)")
+    coverage_parser.add_argument("--battery", help="Restrict the default run to this question_set")
+    coverage_parser.add_argument(
+        "--format", choices=["table", "md", "csv", "json"], default="table"
+    )
 
     report_parser = subparsers.add_parser("report", help="Generate eval report")
     report_parser.add_argument(
@@ -554,6 +625,11 @@ def main() -> None:  # noqa: PLR0915  # CLI dispatcher, statements not meaningfu
         help="[NOT YET IMPLEMENTED] Score recent production answers (requires on-premise LLM)",
     )
 
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
     args = parser.parse_args()
 
     handlers = {
@@ -568,6 +644,7 @@ def main() -> None:  # noqa: PLR0915  # CLI dispatcher, statements not meaningfu
         "html": _handle_html,
         "score-production": _handle_score_production,
         "multiturn": _handle_multiturn,
+        "coverage": _handle_coverage,
     }
 
     handler = handlers.get(args.command)
