@@ -5,6 +5,18 @@ import pytest
 FIXTURE_PROMPTS = Path(__file__).parent / "fixtures" / "prompts.sample.json"
 
 
+@pytest.fixture(autouse=True)
+def _reset_catalog_aggregator():
+    """Some tests in this file enter the real FastAPI lifespan, which warms the
+    module-level CatalogAggregator singleton against (in CI) unreachable MCP
+    servers. Reset it after every test so that pollution can't leak into other
+    test files that read get_catalog_aggregator() (e.g. /health)."""
+    yield
+    import src.tools.registry as _reg
+
+    _reg._aggregator = None
+
+
 async def _noop_preflight(*a, **k):
     """Stand-in for _surface_preflight in tests not exercising the /health preflight
     itself — the in-process ASGI app's catalog is unwarmed in the test environment,
