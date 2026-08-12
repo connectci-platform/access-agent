@@ -180,6 +180,65 @@ async def test_full_eval_run(mock_db, tiny_question_set):
 
 
 @pytest.mark.asyncio
+async def test_run_eval_persists_skipped_row_for_failed_question(mock_db, tiny_question_set):
+    """A question whose agent run raises is not sent to the judge at all — it is
+    persisted as a skipped row via persist_skipped_turn and excluded from scoring,
+    while the other questions in the set still run and score normally."""
+    mock_state = {
+        "final_answer": "ACCESS is a program for HPC resources.",
+        "rag_matches": [],
+        "tool_results": [],
+        "node_trace": [{"node": "classify", "query_type": "static"}],
+        "tools_used": [],
+    }
+
+    async def flaky_agent(*args, **kwargs):
+        # tiny_question_set's questions are t1, t2, t3, run in order; fail the
+        # second question only, so both the failure path and the surrounding
+        # success path are exercised in the same run.
+        query = kwargs.get("query") or (args[1] if len(args) > 1 else None)
+        if query == "How do I get an allocation?":
+            raise RuntimeError("agent blew up")
+        return mock_state
+
+    completions = [
+        _completion(MOCK_JUDGE_BEST),
+        _completion(MOCK_JUDGE_BEST),
+    ]
+
+    with (
+        patch("src.eval.runner.run_agent", new_callable=AsyncMock, side_effect=flaky_agent),
+        patch("src.eval.scorer.ToolRegistry") as mock_registry_cls,
+        patch("src.eval.judge.AsyncOpenAI") as mock_openai_cls,
+    ):
+        mock_registry = AsyncMock()
+        mock_registry.tool_count = 10
+        mock_registry.catalog = {"tools": [{"name": "test_tool"}]}
+        mock_registry_cls.return_value = mock_registry
+
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create.side_effect = completions
+        mock_openai_cls.return_value = mock_client
+
+        summary = await run_eval(
+            question_set_path=tiny_question_set,
+            database_url=mock_db,
+        )
+
+    assert summary["questions"] == 3
+    assert summary["scored"] == 2
+    assert summary["skipped"] == 1
+
+    db = EvalDB(mock_db)
+    scores = db.get_scores_for_run(summary["run_id"])
+    by_qid = {s.question_id: s for s in scores}
+    assert by_qid["t2"].source == "skipped"
+    assert "agent blew up" in (by_qid["t2"].justifications or {}).get("error", "")
+    assert by_qid["t1"].source == "judge"
+    assert by_qid["t3"].source == "judge"
+
+
+@pytest.mark.asyncio
 async def test_v2_round_trip(mock_db):
     """Judge payload -> parse -> store -> read, including specificity N/A (spec §9)."""
     db = EvalDB(mock_db)

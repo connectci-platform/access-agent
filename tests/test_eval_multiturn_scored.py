@@ -108,6 +108,31 @@ async def test_failed_turn_marks_history_and_writes_skipped(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_judge_failure_marks_score_source_judge_error(tmp_path):
+    """When the judge itself returns None (a transient judge outage),
+    score_and_persist_turn persists a judge_error row and the turn's
+    score_source records that — distinct from a agent-side "skipped" turn."""
+    from src.eval.multiturn import run_thread
+
+    scoring, db, judge = _scoring(tmp_path)
+    judge.score = AsyncMock(return_value=None)
+    thread = {**THREAD, "questions": THREAD["questions"][:1]}
+
+    with (
+        patch("src.eval.multiturn.run_agent", new=AsyncMock(return_value=STATE)),
+        patch("src.eval.multiturn.report_battery_turn", new=AsyncMock()),
+    ):
+        result = await run_thread(
+            thread, tool_catalog=None, session_namespace="ns", scoring=scoring
+        )
+
+    assert result.turns[0].score_source == "judge_error"
+    assert result.turns[0].composite is None
+    row = db.get_scores_for_run(scoring.run_id)[0]
+    assert row.source == "judge_error"
+
+
+@pytest.mark.asyncio
 async def test_turn_reports_carry_real_turn_index(tmp_path):
     from src.eval.multiturn import run_thread
 
@@ -1093,3 +1118,210 @@ def test_compare_between_two_multiturn_runs_keeps_composite_delta(tmp_path, caps
     composite_line = next(line for line in out.splitlines() if "COMPOSITE" in line)
     assert composite_line.split()[1:] == ["0.60", "0.70", "+", "0.10"]
     assert "macro, Fair-only" not in out
+
+
+def test_compare_non_dict_scores_summary_is_not_macro_and_has_no_dimensions(tmp_path, capsys):
+    """A run whose scores_summary was never populated (still None, the column
+    default) must not blow up `eval compare` — both helpers feature-detect on
+    dict shape and fall back cleanly for anything else."""
+    from src.eval.__main__ import _handle_compare
+
+    db_url = f"sqlite:///{tmp_path}/eval.db"
+    db = EvalDB(db_url)
+    never_scored = db.create_run(run_type="pre_production", metadata_={"system": "agent_full"})
+    scored = db.create_run(run_type="pre_production", metadata_={"system": "agent_full"})
+    db.update_run_summary(
+        str(scored.id),
+        {
+            "correctness": 1.0,
+            "specificity": 1.0,
+            "relevance": 1.0,
+            "citation_quality": 1.0,
+            "hedging": 1.0,
+        },
+        0.5,
+    )
+
+    args = MagicMock(run_a=str(never_scored.id), run_b=str(scored.id))
+    with patch("src.config.settings.DATABASE_URL", db_url):
+        _handle_compare(args)
+    out = capsys.readouterr().out
+
+    # Both runs report the same (non-macro) semantics, so no annotation is printed —
+    # exercises _is_macro_composite's non-dict False branch on both sides.
+    assert "macro, Fair-only" not in out
+    # _per_dimension's non-dict branch returns {} rather than raising, so the
+    # never-scored side renders as 0.00 for every dimension instead of crashing.
+    rows = {
+        line.split()[0]: [float(v) for v in line.split()[1:3]]
+        for line in out.splitlines()
+        if line.strip().startswith(("correctness", "relevance", "hedging"))
+    }
+    assert rows["correctness"] == [0.0, 1.0]
+
+
+def test_print_summary_renders_scored_and_unscored_threads(capsys):
+    """print_summary's run-summary block: composite line, per-thread composite
+    lines (with a failed-turn suffix), the unscored-thread line, screened-turn
+    note, failed-turns-in-unscored-threads line, and the run composite."""
+    from src.eval.multiturn import ThreadResult, TurnResult, print_summary
+
+    scored_thread = ThreadResult(
+        thread_id="mt-scored",
+        description="a scored thread",
+        turns=[
+            TurnResult(
+                turn_id="t1",
+                question="Q1?",
+                answer="A1",
+                tools_used=["search_resources"],
+                message_count=2,
+                duration_ms=123.4,
+                success=True,
+                composite=0.8,
+            ),
+            TurnResult(
+                turn_id="t2",
+                question="Q2?",
+                answer="",
+                success=False,
+                error="boom",
+            ),
+            TurnResult(
+                turn_id="t3",
+                question="Q3?",
+                answer="",
+                success=True,
+                answerable=False,
+            ),
+        ],
+    )
+    unscored_thread = ThreadResult(
+        thread_id="mt-unscored",
+        description="",
+        turns=[
+            TurnResult(
+                turn_id="t1",
+                question="Q1?",
+                answer="",
+                success=False,
+                error="crashed",
+            ),
+        ],
+    )
+
+    summary = {
+        "run_id": "run-123",
+        "thread_composites": {"mt-scored": 0.8},
+        "unscored_threads": ["mt-unscored"],
+        "screened_turns": 1,
+        "failed_turns": {"mt-scored": 1, "mt-unscored": 1},
+        "composite_score": 0.8,
+    }
+
+    print_summary([scored_thread, unscored_thread], summary)
+    out = capsys.readouterr().out
+
+    assert "=== Thread mt-scored ===" in out
+    assert "a scored thread" in out
+    assert "=== Thread mt-unscored ===" in out
+    assert "FAIL: boom" in out
+    assert "screened (unfair)" in out
+    assert "=== Run run-123 ===" in out
+    # Scored thread's composite line carries the failed-turn suffix.
+    assert "mt-scored: 0.80  (1 failed turn(s))" in out
+    # Unscored thread is listed separately, not as a composite line.
+    assert "unscored: mt-unscored" in out
+    assert "screened (unfair) turns excluded from composites: 1" in out
+    # Failed turns belonging to an unscored thread get their own line.
+    assert "failed turns in unscored threads: mt-unscored=1" in out
+    assert "run composite: 0.80" in out
+
+
+def test_print_summary_omits_optional_lines_when_nothing_to_report():
+    """A clean run (no failures, nothing screened, nothing unscored) must not
+    print the failed-turn suffix, the unscored line, or the screened line."""
+    from src.eval.multiturn import ThreadResult, TurnResult, print_summary
+
+    thread = ThreadResult(
+        thread_id="mt-clean",
+        description="",
+        turns=[
+            TurnResult(turn_id="t1", question="Q?", answer="A", success=True, composite=1.0),
+        ],
+    )
+    summary = {
+        "run_id": "run-clean",
+        "thread_composites": {"mt-clean": 1.0},
+        "unscored_threads": [],
+        "screened_turns": 0,
+        "failed_turns": {},
+        "composite_score": 1.0,
+    }
+
+    import io
+    from contextlib import redirect_stdout
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        print_summary([thread], summary)
+    out = buf.getvalue()
+
+    assert "mt-clean: 1.00" in out
+    assert "failed turn(s)" not in out
+    assert "unscored:" not in out
+    assert "screened (unfair)" not in out
+    assert "failed turns in unscored threads" not in out
+    assert "run composite: 1.00" in out
+
+
+def test_print_summary_without_summary_arg_prints_only_threads(capsys):
+    """summary=None (the default) skips the whole run-summary block."""
+    from src.eval.multiturn import ThreadResult, TurnResult, print_summary
+
+    thread = ThreadResult(
+        thread_id="mt-only",
+        description="",
+        turns=[TurnResult(turn_id="t1", question="Q?", answer="A", success=True)],
+    )
+    print_summary([thread])
+    out = capsys.readouterr().out
+
+    assert "=== Thread mt-only ===" in out
+    assert "=== Run" not in out
+
+
+def test_last_human_index_dict_message_reads_type_or_role():
+    """Dict-shaped messages (fixture form) recognize the human turn boundary via
+    either 'type' or 'role', matching the LangChain-object form's `.type`."""
+    from src.eval.multiturn import _last_human_index
+
+    messages = [
+        {"type": "human", "id": "m1"},
+        {"role": "user", "id": "m2"},
+        {"type": "ai", "id": "m3"},
+    ]
+    # The LAST human/user message is the boundary — here index 1 (role=user).
+    assert _last_human_index(messages) == 1
+
+
+def test_build_judge_uses_settings_and_override():
+    """_build_judge wires settings.EVAL_JUDGE_* into the Judge, and an explicit
+    judge_model argument overrides settings.EVAL_JUDGE_MODEL."""
+    from src.eval.multiturn import _build_judge
+
+    judge = _build_judge("explicit-model")
+    assert judge.model == "explicit-model"
+
+    judge_default = _build_judge(None)
+    from src.config import settings
+
+    assert judge_default.model == settings.EVAL_JUDGE_MODEL
+
+
+def test_fact_text_bare_string_fact_returned_as_is():
+    """`_fact_text` on a plain (non-dict) fact — the YAML-fallback shape — just
+    stringifies it directly rather than looking for `fact_text`."""
+    from src.eval.multiturn import _fact_text
+
+    assert _fact_text("Answer names X.") == "Answer names X."
