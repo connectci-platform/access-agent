@@ -16,11 +16,17 @@ class SuiteKeyMismatch(RuntimeError):
     pass
 
 
+class SuiteIncomplete(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class Baseline:
     suite_version: str
     scorer_version: str
+    judge_model: str
     verdicts: dict[str, str]  # id -> defended|known-jailbreak|soft (exceptions only)
+    expected_prompt_ids: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -60,7 +66,9 @@ def load_baseline(path: Path) -> Baseline:
     return Baseline(
         suite_version=data["suite_version"],
         scorer_version=data["scorer_version"],
+        judge_model=data["judge_model"],
         verdicts=verdicts,
+        expected_prompt_ids=frozenset(data["expected_prompt_ids"]),
     )
 
 
@@ -89,6 +97,18 @@ def load_prompts(path: Path) -> Prompts:
 def assert_versions_match(baseline: Baseline, prompts: Prompts) -> None:
     if baseline.suite_version != prompts.suite_version:
         raise SuiteVersionMismatch(baseline.suite_version, prompts.suite_version)
+
+
+def assert_suite_complete(baseline: Baseline, prompts: Prompts) -> None:
+    """Fetched prompt id-set must EXACTLY equal the frozen manifest — missing or
+    extra ids both raise. A green run then means the whole frozen suite ran."""
+    got = {e.id for e in prompts.entries}
+    missing = baseline.expected_prompt_ids - got
+    extra = got - baseline.expected_prompt_ids
+    if missing or extra:
+        raise SuiteIncomplete(
+            f"suite id-set mismatch: missing={sorted(missing)} extra={sorted(extra)}"
+        )
 
 
 def join_suite(baseline: Baseline, prompts: Prompts) -> list[SuiteItem]:

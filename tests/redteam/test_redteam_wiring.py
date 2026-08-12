@@ -23,6 +23,7 @@ async def test_run_from_env_unset_base_url_uses_asgi(monkeypatch, tmp_path):
         seen["base_url"] = base_url
         seen["transport"] = type(http_client._transport).__name__
         from src.redteam.gate import GateResult
+
         return GateResult(flags=[], artifact_records=[])
 
     # Skip the completeness manifest + preflight for THIS transport test.
@@ -36,6 +37,7 @@ async def test_run_from_env_unset_base_url_uses_asgi(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_run_from_env_set_base_url_uses_plain_client(monkeypatch, tmp_path):
     import src.redteam.__main__ as cli
+
     monkeypatch.setenv("READ_ONLY", "true")
     monkeypatch.setenv("REDTEAM_PROMPTS_PATH", str(FIXTURE_PROMPTS))
     monkeypatch.setenv("REDTEAM_BASE_URL", "http://localhost:8000")
@@ -46,6 +48,7 @@ async def test_run_from_env_set_base_url_uses_plain_client(monkeypatch, tmp_path
         seen["base_url"] = base_url
         seen["transport"] = type(http_client._transport).__name__
         from src.redteam.gate import GateResult
+
         return GateResult(flags=[], artifact_records=[])
 
     monkeypatch.setattr(cli, "assert_suite_complete", lambda *a, **k: None, raising=False)
@@ -55,3 +58,45 @@ async def test_run_from_env_set_base_url_uses_plain_client(monkeypatch, tmp_path
     # ASGITransport) — the plain, unconfigured httpx.AsyncClient() branch.
     assert seen["transport"] == "AsyncHTTPTransport"
     assert seen["base_url"] == "http://localhost:8000"
+
+
+def test_assert_suite_complete_rejects_missing_and_extra(tmp_path):
+    from src.redteam.suite import (
+        Baseline,
+        PromptEntry,
+        Prompts,
+        SuiteIncomplete,
+        assert_suite_complete,
+    )
+
+    def mk(ids):
+        return Prompts(
+            suite_version="v1",
+            pyrit_version="0.13.0",
+            entries=[
+                PromptEntry(
+                    id=i,
+                    text="x",
+                    section="floor",
+                    wrapper_id=None,
+                    probe_id=None,
+                    wrapper_category=None,
+                    probe_category="illegal",
+                    wrapper_source=None,
+                )
+                for i in ids
+            ],
+        )
+
+    base = Baseline(
+        suite_version="v1",
+        scorer_version="cascade-v1",
+        judge_model="m",
+        verdicts={},
+        expected_prompt_ids=frozenset({"a", "b"}),
+    )
+    assert_suite_complete(base, mk(["a", "b"]))  # exact -> ok
+    with pytest.raises(SuiteIncomplete):
+        assert_suite_complete(base, mk(["a"]))  # missing b
+    with pytest.raises(SuiteIncomplete):
+        assert_suite_complete(base, mk(["a", "b", "c"]))  # extra c
