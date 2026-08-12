@@ -1,0 +1,196 @@
+# Gap-fill capability battery — brings the capability set into the 30-40 range.
+# First-pass required_facts authored from VERIFIED current hosted-tool output (2026-07-06), tc-* template.
+# Every fact is a STUDENT-CHECK first pass, NOT final ground truth. Some facts need exact values filled
+# (see authoring_notes "AUTHOR:"). purpose tag: discrimination = live data RAG can't have;
+# regression = stable, fact-groundable, catches version drift.
+
+- id: gf-status-01
+  question: Is Anvil available right now, or is there maintenance?
+  capability_area: system_status
+  battery: gapfill
+  expected_tool: get_infrastructure_news
+  ground_truth_stability: time_bound
+  purpose: discrimination
+  required_facts:
+  - Answer reports Anvil's current availability from get_infrastructure_news, reflecting whatever
+    the live feed says at eval time (operational, or an active/scheduled maintenance window if one is posted).
+  - If the feed posts a maintenance window, the answer conveys its actual status (e.g. scheduled, postponed,
+    in progress) rather than flatly asserting Anvil is down; if the feed shows none, the answer says Anvil is available.
+  - Answer does not invent a maintenance window, firm date, or outage that is not in the feed.
+  sources:
+  - 'tool: get_infrastructure_news(ids=[''Anvil'']) -> current status'
+  authoring_notes:
+  - 'Invariant rewrite (2026-08-12): tests live-feed grounding for Anvil status, not a frozen window.
+    Prior version hardcoded the July 18-21 postponed outage, which expired. Grounded at eval time.'
+
+- id: gf-status-02
+  question: Any planned maintenance on Bridges-2 this week?
+  capability_area: system_status
+  battery: gapfill
+  expected_tool: get_infrastructure_news
+  ground_truth_stability: time_bound
+  purpose: discrimination
+  required_facts:
+  - Answer reports Bridges-2 scheduled maintenance from get_infrastructure_news, naming the actual
+    upcoming window(s) the feed returns at eval time, or stating none are scheduled if the feed shows none.
+  - Answer does not fabricate a maintenance window that is not in the feed.
+  sources:
+  - 'tool: get_infrastructure_news(resource=''bridges2'', time=''scheduled'') -> scheduled windows'
+  authoring_notes:
+  - 'Invariant rewrite (2026-08-12): tests live scheduled-maintenance grounding for Bridges-2, not a frozen July 7 window (expired). Grounded at eval time.'
+
+- id: gf-status-03
+  question: Is Delta operational?
+  capability_area: system_status
+  battery: gapfill
+  expected_tool: get_infrastructure_news
+  ground_truth_stability: time_bound
+  purpose: discrimination
+  required_facts:
+  - Per get_infrastructure_news(ids=['Delta']) Delta is operational (0 active outages).
+  - Answer does not invent outages not in the feed.
+  sources:
+  - 'tool: get_infrastructure_news(ids=[''Delta'']) -> "operational"'
+  authoring_notes:
+  - Self-refreshing. STUDENT-CHECK.
+
+- id: gf-events-01
+  question: What ACCESS training or office hours are coming up this week?
+  capability_area: events
+  battery: gapfill
+  expected_tool: search_events
+  ground_truth_stability: time_bound
+  purpose: discrimination
+  required_facts:
+  - Answer lists real upcoming training/office-hours events from search_events(date='upcoming'),
+    each with the date and support.access-ci.org/events/<id> URL the tool returns.
+  - Every named event traces to a tool result; the answer fabricates no events, dates, or URLs.
+  sources:
+  - 'tool: search_events(date=''upcoming'') (query_relevance: exact)'
+  authoring_notes:
+  - 'Invariant rewrite (2026-08-12): tests that upcoming events are grounded in the live feed with real URLs, not a frozen July event list (those events have passed). Grounded at eval time.'
+
+- id: gf-events-02
+  question: Are there any GPU or ML training events coming up?
+  capability_area: events
+  battery: gapfill
+  expected_tool: search_events
+  ground_truth_stability: time_bound
+  purpose: discrimination
+  required_facts:
+  - Answer presents only the genuinely gpu/ml-tagged upcoming events from search_events(date='upcoming',
+    tags='gpu') — those whose returned tags actually include gpu, ai, or machine-learning — with their
+    dates and support.access-ci.org/events/<id> URLs.
+  - CAUTION - the tags filter is LOOSE - it returns the full upcoming set including events WITHOUT a
+    gpu/ml tag. A correct answer must NOT present those untagged events as gpu/ml events; it filters to
+    events actually carrying the tags.
+  - Does not fabricate events or dates.
+  sources:
+  - 'tool: search_events(date=''upcoming'', tags=''gpu'') -> loose filter; select genuinely-tagged events'
+  authoring_notes:
+  - 'Invariant rewrite (2026-08-12): the discrimination point (loose tag filter -> must not present untagged events as gpu/ml) is stable and dateless. Prior version named the July Sage Office Hours sessions, which have passed. Grounded at eval time by inspecting returned tags.'
+
+- id: gf-software-01
+  question: Is TensorFlow available on Anvil, and which versions?
+  capability_area: software
+  battery: gapfill
+  expected_tool: search_software
+  ground_truth_stability: semi_stable
+  purpose: discrimination
+  required_facts:
+  - Per search_software(query='tensorflow', resource='anvil') (verified 2026-07-06) TensorFlow is
+    available on Anvil, version 2.6.0 (single package this time; still read full output for any variants).
+  - Does not claim versions/resources the tool did not return.
+  sources:
+  - 'tool: search_software(query=''tensorflow'', resource=''anvil'') -> versions_by_resource.anvil=[2.6.0]'
+  authoring_notes:
+  - Verified 2026-07-06. STUDENT-CHECK version currency.
+
+- id: gf-software-02
+  question: Is LAMMPS installed on Stampede3 and Anvil?
+  capability_area: software
+  battery: gapfill
+  expected_tool: compare_software_availability
+  ground_truth_stability: semi_stable
+  purpose: discrimination
+  required_facts:
+  - Per compare_software_availability(software_names=['lammps'], resources=['stampede3','anvil'])
+    (verified 2026-07-06), LAMMPS is available on BOTH anvil and stampede3 (resource_count=2, found=true).
+  - Does not assert availability the tool does not report.
+  sources:
+  - 'tool: compare_software_availability(...) -> available_on=[anvil, stampede3]'
+  authoring_notes:
+  - Verified 2026-07-06. Note SDS indexing gaps generally (a "no" elsewhere may be unreported).
+    STUDENT-CHECK.
+
+- id: gf-hw-01
+  question: What are the hardware specifications of Anvil?
+  capability_area: compute_resources
+  battery: gapfill
+  expected_tool: get_resource_hardware
+  ground_truth_stability: stable
+  purpose: regression
+  required_facts:
+  - Per get_resource_hardware(id='Anvil') (verified 2026-07-01) Anvil CPU = 1,000 nodes, 2x 64-core AMD
+    EPYC "Milan", 256GB DDR4 (32 large-mem nodes at 1TB), ~5.1 PF, 100Gbps HDR100 IB.
+  - Anvil GPU = 16 nodes x 4 NVIDIA A100. Anvil AI = 21 nodes x 4 NVIDIA H100 80GB SXM.
+  - Answer keeps the three sub-systems (CPU/GPU/AI) distinct; does not merge them; does not invent counts.
+  sources:
+  - 'tool: get_resource_hardware(id=''Anvil'')'
+  authoring_notes:
+  - Operations/CiDeR data is known to LAG reality — STUDENT-CHECK specs against the RP''s own docs, not
+    just the tool. Marked regression (not discrimination) — specs likely also in RAG.
+
+- id: gf-hw-02
+  question: Which ACCESS resources have GPUs?
+  capability_area: compute_resources
+  battery: gapfill
+  expected_tool: search_resources
+  ground_truth_stability: semi_stable
+  purpose: regression
+  required_facts:
+  - Per search_resources(has_gpu=true) (STRUCTURED boolean filter, verified 2026-07-06) 14 GPU resources
+    are returned - ACES, PNRP, Bridges-2, Stampede3, REPACSS, Anvil, Jetstream2, Expanse, Launch, Nexus,
+    Derecho, Delta, DeltaAI, OSG. A good answer names a representative set and/or the count.
+  - Answer uses the has_gpu filter, not description keyword-matching. NOTE this tool correctly includes
+    DeltaAI and Derecho (which the affinity keyword-search missed) - both are GPU resources.
+  - May note status flags - "Derecho - NO NEW ALLOCATIONS", "PNRP / Nexus - COMING SOON".
+  sources:
+  - 'tool: search_resources(has_gpu=true) -> 14 items (verified 2026-07-06)'
+  authoring_notes:
+  - Verified 2026-07-06. This is the RIGHT tool for "which resources have GPUs" - the affinity tool did
+    this badly (missed DeltaAI/Derecho due to thin descriptions). STUDENT-CHECK the list stays current.
+
+- id: gf-alloc-01
+  question: What are the most common allocation types in current ACCESS projects?
+  capability_area: allocations
+  battery: gapfill
+  expected_tool: get_allocation_statistics
+  ground_truth_stability: semi_stable
+  purpose: discrimination
+  required_facts:
+  - Per get_allocation_statistics (100-project sample, verified 2026-07-06) Explore (49) > Discover (41)
+    > Accelerate (10). Answer conveys Explore is most common, Discover close behind.
+  - Answer acknowledges it is a sample; does not invent precise universe counts.
+  sources:
+  - 'tool: get_allocation_statistics(pages_to_analyze=5)'
+  authoring_notes:
+  - Sample is noisy; treat ordering as approximate. STUDENT-CHECK.
+
+- id: gf-docs-01
+  question: How do I set up multi-factor authentication for my ACCESS account?
+  capability_area: account_management
+  battery: gapfill
+  expected_tool: search_docs
+  ground_truth_stability: stable
+  purpose: regression
+  required_facts:
+  - Per search_docs (verified 2026-07-06) answer synthesizes MFA enrollment steps from the returned
+    excerpts and cites the canonical source URL https://operations.access-ci.org/identity/manage-mfa
+    (the identity FAQ https://operations.access-ci.org/identity/faq is also acceptable).
+  - Answer cites real URLs from the tool's excerpts; does not fabricate steps or links.
+  sources:
+  - 'tool: search_docs(query=''...multi-factor authentication...'') -> operations.access-ci.org/identity/manage-mfa, /identity/faq'
+  authoring_notes:
+  - Verified 2026-07-06. search_docs is retrieval-only (agent synthesizes); NOT the old RAG endpoint
+    (which did its own inferencing) - do not conflate. STUDENT-CHECK URLs are the right canonical ones.
