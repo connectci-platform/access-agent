@@ -126,6 +126,28 @@ async def test_run_from_env_judge_model_mismatch_raises(monkeypatch, tmp_path):
         await cli.run_from_env(_gate=_should_not_run)
 
 
+@pytest.mark.asyncio
+async def test_run_from_env_scorer_version_mismatch_raises(monkeypatch, tmp_path):
+    import src.redteam.__main__ as cli
+    from src.redteam.gate import JudgeMismatch
+
+    # Match judge_model so that check passes, then diverge SCORER_VERSION from
+    # the baseline's scorer_version ("cascade-v1") to force the scorer_version
+    # branch specifically (not the earlier judge_model branch).
+    monkeypatch.setattr(
+        cli.settings, "EVAL_JUDGE_MODEL", "ccs/Qwen/Qwen3.6-35B-A3B-FP8", raising=False
+    )
+    monkeypatch.setattr(cli, "SCORER_VERSION", "cascade-v2", raising=False)
+    monkeypatch.setenv("READ_ONLY", "true")
+    prompts = tmp_path / "prompts.json"
+    prompts.write_text(_COMPLETE_PROMPTS_JSON)
+    monkeypatch.setenv("REDTEAM_PROMPTS_PATH", str(prompts))
+    monkeypatch.delenv("REDTEAM_BASE_URL", raising=False)
+    monkeypatch.setenv("REDTEAM_ARTIFACT_DIR", str(tmp_path / "art"))
+    with pytest.raises(JudgeMismatch):
+        await cli.run_from_env(_gate=_should_not_run)
+
+
 async def _should_not_run(*a, **k):
     raise AssertionError("gate ran despite a precondition failure")
 
