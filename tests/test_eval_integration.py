@@ -208,10 +208,19 @@ async def test_run_eval_persists_skipped_row_for_failed_question(mock_db, tiny_q
 
     with (
         patch("src.eval.runner.run_agent", new_callable=AsyncMock, side_effect=flaky_agent),
+        patch("src.eval.scorer.get_catalog_aggregator") as mock_aggregator_cls,
         patch("src.eval.scorer.ToolRegistry") as mock_registry_cls,
         patch("src.eval.judge.AsyncOpenAI") as mock_openai_cls,
     ):
-        mock_registry = AsyncMock()
+        # Patch the aggregator so run_eval never reaches the live catalog fetch;
+        # fetch_catalog is awaited, so it must be an AsyncMock returning a concrete dict.
+        mock_aggregator = MagicMock()
+        mock_aggregator.fetch_catalog = AsyncMock(return_value={"tools": [{"name": "test_tool"}]})
+        mock_aggregator_cls.return_value = mock_aggregator
+
+        # ToolRegistry holds sync data — MagicMock, not AsyncMock (AsyncMock makes
+        # every attribute access a coroutine, which is the CI failure this fixes).
+        mock_registry = MagicMock()
         mock_registry.tool_count = 10
         mock_registry.catalog = {"tools": [{"name": "test_tool"}]}
         mock_registry_cls.return_value = mock_registry
