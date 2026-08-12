@@ -107,6 +107,32 @@ def test_main_judge_outage_exits_2_and_prints_distinct_message(monkeypatch, caps
     assert "judge failed on 5/5" in out
 
 
+def test_main_judge_outage_writes_status_before_exit(monkeypatch, tmp_path):
+    """The outage-path status write (`_write_status("outage", e.reason, 0)` at
+    __main__.py, BEFORE `SystemExit(2)`) must land with the exact disposition/
+    reason/flag_count — this is the write-before-raise ordering the brief calls
+    load-bearing, and Tasks 5/6 add more outage subclasses onto this exact path."""
+    import json
+
+    status_path = tmp_path / "status.json"
+    monkeypatch.setenv("REDTEAM_STATUS_PATH", str(status_path))
+
+    async def fake_run_from_env(*a, **k):
+        raise JudgeOutage("judge failed on 5/5 judged samples (>= 50%) — aborting")
+
+    monkeypatch.setattr(cli, "run_from_env", fake_run_from_env)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main_argv([])
+
+    assert exc_info.value.code == 2
+    assert json.loads(status_path.read_text()) == {
+        "disposition": "outage",
+        "reason": "judge",
+        "flag_count": 0,
+    }
+
+
 def test_main_judge_outage_emits_distinct_outage_issue_body(monkeypatch, tmp_path):
     issue_path = tmp_path / "issue_body.md"
     monkeypatch.setattr("sys.argv", ["redteam", "--emit-issue-body"])
