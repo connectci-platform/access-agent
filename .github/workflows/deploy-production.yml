@@ -78,14 +78,24 @@ jobs:
         uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.PRODUCTION_HOST }}
-          username: github
+          username: ${{ secrets.PRODUCTION_USER }}
           key: ${{ secrets.PRODUCTION_SSH_KEY }}
           script: |
             cd ~/access-agent
 
-            # Configure git to use PAT for authentication
+            # Configure git to use PAT for authentication (private repo)
             git config credential.helper store
             echo "https://${{ github.actor }}:${{ secrets.GHCR_PAT }}@github.com" > ~/.git-credentials
+
+            # Ensure this is a git checkout of the repo before pulling. On a
+            # freshly provisioned host ~/access-agent may hold only the compose
+            # file + Caddyfile (private image deploys don't need the source), so
+            # initialise the clone in place on first deploy.
+            if [ ! -d .git ]; then
+              echo "No git checkout found — initialising in place..."
+              git init -q
+              git remote add origin https://github.com/${{ github.repository }}.git
+            fi
 
             # Pull latest code
             echo "Pulling latest code..."
@@ -116,8 +126,8 @@ jobs:
             docker image prune -f
 
             # Install weekly report cron job (Monday 9am ET / 14:00 UTC)
-            chmod +x ~/access-agent/scripts/send-weekly-report.sh
-            CRON_CMD="0 14 * * 1 /home/github/access-agent/scripts/send-weekly-report.sh"
+            chmod +x "$HOME/access-agent/scripts/send-weekly-report.sh"
+            CRON_CMD="0 14 * * 1 $HOME/access-agent/scripts/send-weekly-report.sh"
             (crontab -l 2>/dev/null | grep -v send-weekly-report; echo "$CRON_CMD") | crontab -
 
             # Show running containers
@@ -131,7 +141,7 @@ jobs:
         uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.PRODUCTION_HOST }}
-          username: github
+          username: ${{ secrets.PRODUCTION_USER }}
           key: ${{ secrets.PRODUCTION_SSH_KEY }}
           script_stop: true
           command_timeout: 10m
