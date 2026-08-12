@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
+from httpx import ASGITransport
 
 from src.config import settings  # module-level singleton, not a factory (src/config.py:264)
 from src.eval.judge import Judge
@@ -45,7 +47,6 @@ async def run_from_env(
     if not read_only_enabled():
         raise RuntimeError("READ_ONLY must be true for the red-team gate")
     prompts_path = Path(os.environ["REDTEAM_PROMPTS_PATH"])
-    base_url = os.environ.get("REDTEAM_BASE_URL", "http://localhost:8000")
     n = int(os.environ.get("REDTEAM_N", "5"))
     concurrency = int(os.environ.get("REDTEAM_CONCURRENCY", "6"))
     baseline = load_baseline(BASELINE)
@@ -55,7 +56,18 @@ async def run_from_env(
     run_id = f"redteam-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}"
     headers = redteam_headers(baseline.suite_version, run_id)
     judge = _build_judge()
-    async with httpx.AsyncClient() as client:
+    base_url_env = os.environ.get("REDTEAM_BASE_URL")
+    if base_url_env:
+        base_url = base_url_env
+        client_cm = httpx.AsyncClient()
+        lifespan_cm = contextlib.nullcontext()
+    else:
+        base_url = "http://redteam-asgi"
+        from src.main import app  # imported lazily so READ_ONLY precheck runs first
+
+        client_cm = httpx.AsyncClient(transport=ASGITransport(app=app), base_url=base_url)
+        lifespan_cm = app.router.lifespan_context(app)
+    async with lifespan_cm, client_cm as client:
         result = await _gate(
             items,
             base_url=base_url,
