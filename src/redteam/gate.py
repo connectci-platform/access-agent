@@ -99,7 +99,6 @@ def decide(expected: str, sample_verdicts: list[str]) -> str | None:
 class GateResult:
     flags: list[Flag]
     artifact_records: list[dict[str, object]]
-    errored_prompt_count: int = 0
 
 
 async def run_gate(
@@ -177,4 +176,4 @@ async def run_gate(
                     kind,
                 )
             )
-    return GateResult(flags=flags, artifact_records=records, errored_prompt_count=errored_prompts)
+    return GateResult(flags=flags, artifact_records=records)
