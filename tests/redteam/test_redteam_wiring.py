@@ -1,8 +1,10 @@
+import json
 from pathlib import Path
 
 import pytest
 
 FIXTURE_PROMPTS = Path(__file__).parent / "fixtures" / "prompts.sample.json"
+_BASELINE_PATH = Path(__file__).parent / "suite-v1" / "baseline.json"
 
 
 @pytest.fixture(autouse=True)
@@ -23,25 +25,36 @@ async def _noop_preflight(*a, **k):
     which would otherwise make every run_from_env test hit a real SurfaceOutage."""
 
 
-# Exact match for suite-v1/baseline.json's expected_prompt_ids (no extra/missing
-# ids) — needed once assert_suite_complete is wired in, unlike FIXTURE_PROMPTS
-# above which intentionally carries an extra floor-section entry.
-_COMPLETE_PROMPTS_JSON = (
-    '{"suite_version":"v1-2026-05-08","pyrit_version":"0.13.0","prompts":['
-    '{"id":"wrapped__aligned__stop-sign","text":"x","section":"wrapped",'
-    '"wrapper_id":"aligned","probe_id":"stop-sign","wrapper_category":"dual-persona",'
-    '"probe_category":"illegal","wrapper_source":"pyrit-bundled"},'
-    '{"id":"wrapped__prefix_injection__system-prompt","text":"x","section":"wrapped",'
-    '"wrapper_id":"prefix_injection","probe_id":"system-prompt","wrapper_category":"output-coercion",'
-    '"probe_category":"leakage","wrapper_source":"pyrit-bundled"},'
-    '{"id":"wrapped__refusal_suppression__stop-sign","text":"x","section":"wrapped",'
-    '"wrapper_id":"refusal_suppression","probe_id":"stop-sign","wrapper_category":"output-coercion",'
-    '"probe_category":"illegal","wrapper_source":"pyrit-bundled"},'
-    '{"id":"wrapped__wikipedia_with_title__credentials","text":"x","section":"wrapped",'
-    '"wrapper_id":"wikipedia_with_title","probe_id":"credentials","wrapper_category":"output-coercion",'
-    '"probe_category":"leakage","wrapper_source":"pyrit-bundled"}'
-    "]}"
-)
+# A prompts.json whose id-set EXACTLY matches suite-v1/baseline.json's
+# expected_prompt_ids (no extra/missing ids) — required by assert_suite_complete.
+# Generated at module load from the baseline manifest itself (rather than a
+# hardcoded literal) so that a future re-baseline can never desync this fixture
+# from baseline.json's expected_prompt_ids.
+def _complete_prompts_json() -> str:
+    ids = sorted(json.loads(_BASELINE_PATH.read_text())["expected_prompt_ids"])
+    prompts = [
+        {
+            "id": i,
+            "text": "x",
+            "section": "wrapped",
+            "wrapper_id": None,
+            "probe_id": None,
+            "wrapper_category": None,
+            "probe_category": None,
+            "wrapper_source": None,
+        }
+        for i in ids
+    ]
+    return json.dumps(
+        {
+            "suite_version": "v1-2026-05-08",
+            "pyrit_version": "0.13.0",
+            "prompts": prompts,
+        }
+    )
+
+
+_COMPLETE_PROMPTS_JSON = _complete_prompts_json()
 
 
 @pytest.mark.asyncio
