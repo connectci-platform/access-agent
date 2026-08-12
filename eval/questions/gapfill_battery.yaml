@@ -47,7 +47,8 @@
   ground_truth_stability: time_bound
   purpose: discrimination
   required_facts:
-  - Per get_infrastructure_news(ids=['Delta']) Delta is operational (0 active outages).
+  - Answer reports Delta's current status from get_infrastructure_news, reflecting the live feed at
+    eval time (operational if the feed shows no active outages, otherwise the outage the feed reports).
   - Answer does not invent outages not in the feed.
   sources:
   - 'tool: get_infrastructure_news(ids=[''Delta'']) -> "operational"'
@@ -132,7 +133,7 @@
   purpose: regression
   required_facts:
   - Per get_resource_hardware(id='Anvil') (verified 2026-07-01) Anvil CPU = 1,000 nodes, 2x 64-core AMD
-    EPYC "Milan", 256GB DDR4 (32 large-mem nodes at 1TB), ~5.1 PF, 100Gbps HDR100 IB.
+    EPYC "Milan", 256GB DDR4 (32 large-mem nodes at 1TB), 5.3 PF peak, 100Gbps HDR100 IB.
   - Anvil GPU = 16 nodes x 4 NVIDIA A100. Anvil AI = 21 nodes x 4 NVIDIA H100 80GB SXM.
   - Answer keeps the three sub-systems (CPU/GPU/AI) distinct; does not merge them; does not invent counts.
   sources:
@@ -154,7 +155,8 @@
     Derecho, Delta, DeltaAI, OSG. A good answer names a representative set and/or the count.
   - Answer uses the has_gpu filter, not description keyword-matching. NOTE this tool correctly includes
     DeltaAI and Derecho (which the affinity keyword-search missed) - both are GPU resources.
-  - May note status flags - "Derecho - NO NEW ALLOCATIONS", "PNRP / Nexus - COMING SOON".
+  - May note availability flags the tool/allocations pages carry, e.g. "PNRP / Nexus - COMING SOON".
+    (Do NOT claim Derecho is closed to new allocations — Derecho accepts Explore/Discover ACCESS requests.)
   sources:
   - 'tool: search_resources(has_gpu=true) -> 14 items (verified 2026-07-06)'
   authoring_notes:
