@@ -111,7 +111,7 @@ jobs:
           VLLM_API_KEY: ${{ secrets.VLLM_API_KEY }}
           ACCESS_AI_API_KEY: ${{ secrets.ACCESS_AI_API_KEY }}
           MCP_SERVER_HOST: ${{ env.MCP_SERVER_HOST }}
-          DATABASE_URL: ""
+          DATABASE_URL: ${{ env.DATABASE_URL }}
           EVAL_JUDGE_BASE_URL: ${{ secrets.EVAL_JUDGE_BASE_URL }}
           EVAL_JUDGE_API_KEY: ${{ secrets.EVAL_JUDGE_API_KEY }}
           EVAL_JUDGE_MODEL: ${{ vars.EVAL_JUDGE_MODEL }}
@@ -177,7 +177,7 @@ jobs:
           REASON: ${{ steps.gate.outputs.reason }}
 
       - name: Open infra issue
-        if: failure()
+        if: failure() && (steps.gate.outputs.disposition == '' || steps.gate.outputs.disposition == 'infra')
         uses: actions/github-script@v7
         with:
           script: |
