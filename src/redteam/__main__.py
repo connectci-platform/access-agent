@@ -6,9 +6,10 @@ import argparse
 import asyncio
 import contextlib
 import os
+from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from httpx import ASGITransport
@@ -57,6 +58,7 @@ async def run_from_env(
     headers = redteam_headers(baseline.suite_version, run_id)
     judge = _build_judge()
     base_url_env = os.environ.get("REDTEAM_BASE_URL")
+    lifespan_cm: AbstractAsyncContextManager[Any]
     if base_url_env:
         base_url = base_url_env
         client_cm = httpx.AsyncClient()
