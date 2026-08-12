@@ -35,6 +35,14 @@ class JudgeMismatch(JudgeOutage):
     """Baseline scorer_version / judge_model does not match the running judge."""
 
 
+class AgentOutage(RedteamOutage):
+    """Raised when too many prompts have every sample errored (agent-side, e.g. a flaky
+    vLLM night timing out every replay) — the tested set would otherwise silently shrink
+    and the run could pass green without having actually exercised the surface."""
+
+    reason = "errored"
+
+
 def decide(expected: str, sample_verdicts: list[str]) -> str | None:
     """Decide a flag kind from genuine (non-errored) verdicts only.
 
@@ -83,6 +91,7 @@ def decide(expected: str, sample_verdicts: list[str]) -> str | None:
 class GateResult:
     flags: list[Flag]
     artifact_records: list[dict[str, object]]
+    errored_prompt_count: int = 0
 
 
 async def run_gate(
@@ -95,6 +104,7 @@ async def run_gate(
     headers: dict[str, str],
     http_client: httpx.AsyncClient | None,
     judge_failure_abort_fraction: float = 0.5,
+    agent_error_abort_fraction: float = 0.5,
     _replay: Callable[..., Awaitable[list[SampleResult]]] = replay_item,
 ) -> GateResult:
     if n < 1:
@@ -136,6 +146,14 @@ async def run_gate(
             f"(>= {judge_failure_abort_fraction:.0%}) — aborting rather than emitting "
             "regression flags"
         )
+    errored_prompts = sum(
+        1 for _item, scored in scored_by_item if scored and all(s.errored for s, _v in scored)
+    )
+    if items and errored_prompts / len(items) >= agent_error_abort_fraction:
+        raise AgentOutage(
+            f"{errored_prompts}/{len(items)} prompts all-errored "
+            f"(>= {agent_error_abort_fraction:.0%}) — aborting; run not trustworthy"
+        )
     flags: list[Flag] = []
     for item, scored in scored_by_item:
         kind = decide(item.expected, [v for _, v in scored])
@@ -151,4 +169,4 @@ async def run_gate(
                     kind,
                 )
             )
-    return GateResult(flags=flags, artifact_records=records)
+    return GateResult(flags=flags, artifact_records=records, errored_prompt_count=errored_prompts)

@@ -213,3 +213,44 @@ def test_main_exit_codes_and_status(monkeypatch, tmp_path):
         cli.main_argv(["--emit-issue-body"])
     assert ex.value.code == 0
     assert json.loads(status.read_text())["disposition"] == "clean"
+
+
+@pytest.mark.asyncio
+async def test_run_gate_aborts_on_agent_error_flood(monkeypatch):
+    from src.redteam import gate as g
+    from src.redteam.sample import SampleResult
+    from src.redteam.suite import PromptEntry, SuiteItem
+
+    def item(i):
+        e = PromptEntry(
+            id=i,
+            text="x",
+            section="floor",
+            wrapper_id=None,
+            probe_id=None,
+            wrapper_category=None,
+            probe_category="illegal",
+            wrapper_source=None,
+        )
+        return SuiteItem(id=i, text="x", expected="defended", entry=e)
+
+    items = [item(f"floor__illegal__{i}") for i in range(4)]
+
+    async def all_errored(it, **kw):
+        return [SampleResult.error(), SampleResult.error()]
+
+    class DummyJudge:  # never reached — every sample errored
+        async def score_binary(self, *a, **k):
+            return None
+
+    with pytest.raises(g.AgentOutage):
+        await g.run_gate(
+            items,
+            base_url="x",
+            n=2,
+            concurrency=2,
+            judge=DummyJudge(),
+            headers={},
+            http_client=None,
+            _replay=all_errored,
+        )

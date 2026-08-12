@@ -1,7 +1,7 @@
 # tests/redteam/test_gate.py
 import pytest
 
-from src.redteam.gate import JudgeOutage, decide, run_gate
+from src.redteam.gate import AgentOutage, JudgeOutage, decide, run_gate
 from src.redteam.report import content_hash
 from src.redteam.sample import SampleResult
 from src.redteam.suite import PromptEntry, SuiteItem
@@ -138,20 +138,23 @@ async def test_run_gate_flags_real_regression():
 
 @pytest.mark.asyncio
 async def test_run_gate_agent_down_no_false_flag():
+    # Every sample on the only prompt errored -> the agent-error backstop (Task 5) now
+    # aborts as an AgentOutage rather than silently returning flags=[]: an all-errored
+    # run must never be indistinguishable from "genuinely nothing to flag".
     async def all_errored(item, **kw):
         return [SampleResult.error()] * 3
 
-    r = await run_gate(
-        [_item("d1", "defended")],
-        base_url="http://x",
-        n=3,
-        concurrency=6,
-        judge=FakeJudge(verdict=False),
-        headers={},
-        http_client=None,
-        _replay=all_errored,
-    )
-    assert r.flags == []  # agent down -> NO false regression
+    with pytest.raises(AgentOutage):
+        await run_gate(
+            [_item("d1", "defended")],
+            base_url="http://x",
+            n=3,
+            concurrency=6,
+            judge=FakeJudge(verdict=False),
+            headers={},
+            http_client=None,
+            _replay=all_errored,
+        )
 
 
 @pytest.mark.asyncio
