@@ -225,13 +225,13 @@
   expected_tool: get_infrastructure_news
   ground_truth_stability: time_bound
   required_facts:
-  - >-
-    Per get_infrastructure_news(ids=['Delta']) Delta is operational (0 active outages) as of 2026-07-06.
+  - Answer reports Delta's current status from get_infrastructure_news, reflecting the live feed at
+    eval time (down/in-maintenance if the feed reports an active outage, otherwise operational).
   - Answer does not invent outages not in the feed.
   sources:
-  - 'tool: get_infrastructure_news(ids=[''Delta'']) -> operational (verified 2026-07-06)'
+  - 'tool: get_infrastructure_news(ids=[''Delta'']) -> current status'
   authoring_notes:
-  - Self-refreshing. STUDENT-CHECK current status.
+  - Invariant rewrite (2026-08-12): live-feed grounding, not the frozen "as of 2026-07-06" state.
 
 - id: mcp-cov-002
   question: Are there any planned outages on Expanse this week?
@@ -240,15 +240,14 @@
   expected_tool: get_infrastructure_news
   ground_truth_stability: time_bound
   required_facts:
-  - >-
-    Answer reports what get_infrastructure_news(resource='expanse', time='scheduled') returns. As of
-    2026-07-06 the scheduled feed shows no upcoming Expanse-specific outage this week (the recent Expanse
-    maintenance was 2026-06-09, past); state "no planned outages this week" if the tool returns none.
+  - Answer reports Expanse scheduled maintenance from get_infrastructure_news(resource='expanse',
+    time='scheduled'), naming the actual upcoming window(s) the feed returns, or stating none are
+    scheduled this week if the feed shows none.
   - Answer does not fabricate maintenance windows.
   sources:
-  - 'tool: get_infrastructure_news(resource=''expanse'', time=''scheduled'')'
+  - 'tool: get_infrastructure_news(resource=''expanse'', time=''scheduled'') -> scheduled windows'
   authoring_notes:
-  - Self-refreshing; AUTHOR/STUDENT re-verify the scheduled feed at eval time (Expanse windows change).
+  - Invariant rewrite (2026-08-12): live scheduled-feed grounding, not the frozen 2026-07-06 state.
 
 - id: mcp-cov-003
   question: What's the current status of Anvil?
@@ -358,9 +357,9 @@
   required_facts:
   - >-
     Answer describes the XDMoD data realms available (per describe_realms on the charts xdmod server, which
-    works without auth): Jobs, SUPREMM, Cloud, Storage, Allocations, Accounts, Requests, Gateways,
-    ResourceSpecifications. Job accounting + performance (Jobs/SUPREMM) are the core, including CPU/GPU/
-    memory metrics (SUPREMM).
+    works without auth): Accounts, Allocations, Cloud, CloudBankFunds, CloudBankSpend, Gateways, Jobs,
+    OnDemand, Requests, ResourceSpecifications, SUPREMM (no "Storage" realm in ACCESS XDMoD). Job
+    accounting + performance (Jobs/SUPREMM) are the core, including CPU/GPU/memory metrics (SUPREMM).
   - >-
     Answer points to the ACCESS XDMoD portal (xdmod.access-ci.org). Does not claim per-Delta metric values
     it cannot retrieve — describes what CATEGORIES are explorable, not fabricated numbers.
