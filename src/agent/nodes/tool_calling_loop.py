@@ -470,6 +470,16 @@ def _build_tool_results(
     this turn. Limitation: two parallel calls to the SAME tool in one turn may
     swap durations between them (records append in completion order).
 
+    Every entry carries ``message_id`` — its source ToolMessage's LangChain id.
+    Multi-turn consumers (src/eval/multiturn.py) slice this cumulative list to one
+    turn by testing that id against the set of ids appearing after the last
+    HumanMessage of the OUTER merged thread. The id is the only identity that
+    survives that crossing: ``result_messages`` here is the INNER list
+    ``create_agent`` returns, which compaction may have rewritten, so its positions
+    do not correspond to the outer list's. ``add_messages`` (the reducer on both
+    the inner and outer ``messages`` channels) assigns a UUID in place to any
+    message lacking an id, so ``.id`` is always populated by the time we read it.
+
     Returns:
         (tool_results, orphan_count) — the reconstructed ToolResult list and
         the number of ToolMessages skipped because their tool_call_id had no
@@ -511,7 +521,13 @@ def _build_tool_results(
             if queue:
                 duration_ms = queue.popleft()
         result = _parse_tool_message(
-            msg, tc_id, tool_name, server, tool_args, duration_ms=duration_ms
+            msg,
+            tc_id,
+            tool_name,
+            server,
+            tool_args,
+            duration_ms=duration_ms,
+            message_id=str(msg.id or ""),
         )
         results.append(result)
 
@@ -532,8 +548,14 @@ def _parse_tool_message(
     server: str,
     tool_args: dict[str, Any],
     duration_ms: int = 0,
+    message_id: str = "",
 ) -> ToolResult:
-    """Build a ToolResult from a single ToolMessage + its originating call metadata."""
+    """Build a ToolResult from a single ToolMessage + its originating call metadata.
+
+    ``message_id`` is the source ToolMessage's LangChain id; multi-turn consumers
+    use it to slice this cumulative list down to one turn (entries whose id appears
+    after the last HumanMessage of the outer merged thread).
+    """
     raw_content = msg.content if isinstance(msg.content, str) else str(msg.content)
     try:
         parsed: Any = json.loads(raw_content)
@@ -549,6 +571,7 @@ def _parse_tool_message(
             error=str(parsed["error"]),
             arguments=tool_args,
             duration_ms=duration_ms,
+            message_id=message_id,
         )
 
     return ToolResult(
@@ -559,4 +582,5 @@ def _parse_tool_message(
         data=parsed,
         arguments=tool_args,
         duration_ms=duration_ms,
+        message_id=message_id,
     )

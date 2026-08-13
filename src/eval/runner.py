@@ -1,6 +1,5 @@
 """Run eval questions through the agent and collect results."""
 
-import json
 import logging
 import os
 import subprocess
@@ -13,6 +12,7 @@ from src.agent.graph import run_agent
 from src.agent.state import AgentState
 from src.agent.turn_capture import get_turn_capture, reset_turn_capture
 from src.config import settings
+from src.eval.formatting import format_node_trace, format_rag_matches, format_tool_results
 from src.services.resource_matcher import resources_for_turn
 from src.services.uky_client import get_uky_client
 from src.turn_reporter import get_turn_reporter
@@ -30,7 +30,7 @@ SYSTEM_SHORTCODES: dict[SystemMode, str] = {
 }
 
 
-def gen_semantic_run_id(system: SystemMode) -> str:
+def gen_semantic_run_id(shortcode: str) -> str:
     """Generate a semantic run ID of form `{shortcode}-{YYYYMMDD}-{HHMMSS}-{hash6}`.
 
     Lex-sortable by time. Fits in the existing String(36) column. Collision-safe
@@ -43,7 +43,6 @@ def gen_semantic_run_id(system: SystemMode) -> str:
     import secrets
     from datetime import UTC, datetime
 
-    shortcode = SYSTEM_SHORTCODES[system]
     ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     suffix = secrets.token_hex(3)
     return f"{shortcode}-{ts}-{suffix}"
@@ -82,111 +81,6 @@ def get_git_info() -> dict[str, Any]:
             "commit": os.environ.get("GIT_COMMIT") or settings.AGENT_VERSION or "unknown",
             "branch": os.environ.get("GIT_BRANCH") or "unknown",
         }
-
-
-def _format_rag_matches(state: Any) -> str | None:
-    matches = state.get("rag_matches", [])
-    if not matches:
-        return None
-    parts = []
-    for m in matches:
-        if hasattr(m, "answer"):
-            parts.append(f"Score: {getattr(m, 'score', 'N/A')}\n{m.answer}")
-        elif isinstance(m, dict):
-            parts.append(f"Score: {m.get('score', 'N/A')}\n{m.get('answer', '')}")
-    return "\n---\n".join(parts) if parts else None
-
-
-def _format_tool_results(state: Any) -> str | None:
-    """Format tool results for the judge as a structured record per call.
-
-    Each call shows: tool name, arguments, success, duration, an explicit
-    result_count + empty flag, and the raw data. This replaces a plain data
-    dump so the judge can reason about what the agent actually tried rather
-    than parse string blobs.
-    """
-    results = state.get("tool_results", [])
-    if not results:
-        return None
-
-    def _extract(r: Any) -> dict[str, Any]:
-        if hasattr(r, "tool_name"):
-            return {
-                "tool_name": getattr(r, "tool_name", "unknown"),
-                "arguments": getattr(r, "arguments", {}) or {},
-                "success": getattr(r, "success", True),
-                "duration_ms": getattr(r, "duration_ms", 0),
-                "data": getattr(r, "data", None),
-                "error": getattr(r, "error", None),
-            }
-        if isinstance(r, dict):
-            return {
-                "tool_name": r.get("tool_name", "unknown"),
-                "arguments": r.get("arguments", {}) or {},
-                "success": r.get("success", True),
-                "duration_ms": r.get("duration_ms", 0),
-                "data": r.get("data"),
-                "error": r.get("error"),
-            }
-        return {
-            "tool_name": "unknown",
-            "arguments": {},
-            "success": True,
-            "duration_ms": 0,
-            "data": r,
-            "error": None,
-        }
-
-    def _summarize(data: Any) -> tuple[int | None, bool]:
-        """Return (result_count, empty_flag); count is None when indeterminate."""
-        if data is None:
-            return 0, True
-        if isinstance(data, list):
-            return len(data), len(data) == 0
-        if isinstance(data, dict):
-            for key in ("items", "results", "events", "announcements", "outages", "records"):
-                value = data.get(key)
-                if isinstance(value, list):
-                    return len(value), len(value) == 0
-            for key in ("total", "total_items", "total_events", "total_outages", "count"):
-                value = data.get(key)
-                if isinstance(value, int):
-                    return value, value == 0
-            if not data:
-                return 0, True
-            return None, False
-        if isinstance(data, str):
-            return None, not data.strip()
-        return None, False
-
-    parts: list[str] = []
-    for r in results:
-        info = _extract(r)
-        count, empty = _summarize(info["data"])
-        args_json = json.dumps(info["arguments"], default=str, sort_keys=True)
-        lines = [
-            f"### Tool call: {info['tool_name']}",
-            f"- arguments: {args_json}",
-            f"- success: {info['success']}",
-            f"- duration_ms: {info['duration_ms']}",
-        ]
-        if count is not None:
-            lines.append(f"- result_count: {count}")
-        lines.append(f"- empty: {empty}")
-        if info["error"]:
-            lines.append(f"- error: {info['error']}")
-        lines.append("- data:")
-        lines.append(str(info["data"]))
-        parts.append("\n".join(lines))
-
-    return "\n\n---\n\n".join(parts) if parts else None
-
-
-def _format_node_trace(state: Any) -> str | None:
-    trace = state.get("node_trace", [])
-    if not trace:
-        return None
-    return json.dumps(trace, indent=2, default=str)
 
 
 async def run_question(
@@ -263,7 +157,7 @@ async def _run_raw_rag(
         # Mirror the agent path: a failed battery question must be
         # distinguishable from one that never ran.
         if battery_run_id:
-            await _report_battery_turn(
+            await report_battery_turn(
                 state={},
                 session_id=session_id,
                 question_id=question_id,
@@ -275,7 +169,7 @@ async def _run_raw_rag(
             )
         raise
     if battery_run_id:
-        await _report_battery_turn(
+        await report_battery_turn(
             state={"final_answer": uky_response.response},
             session_id=session_id,
             question_id=question_id,
@@ -325,7 +219,7 @@ async def _run_agent(
         # Mirror src/api/routes.py's failure write: a failed battery question
         # must be distinguishable from one that never ran.
         if battery_run_id:
-            await _report_battery_turn(
+            await report_battery_turn(
                 state={},
                 session_id=session_id,
                 question_id=question_id,
@@ -340,7 +234,7 @@ async def _run_agent(
 
     answer = state.get("final_answer", "")
     if battery_run_id:
-        await _report_battery_turn(
+        await report_battery_turn(
             state=state,
             session_id=session_id,
             question_id=question_id,
@@ -354,15 +248,15 @@ async def _run_agent(
         question_id=question_id,
         question_text=question_text,
         answer=answer or "",
-        rag_context=_format_rag_matches(state),
-        tool_results=_format_tool_results(state),
-        node_trace=_format_node_trace(state),
+        rag_context=format_rag_matches(state),
+        tool_results=format_tool_results(state),
+        node_trace=format_node_trace(state),
         tools_used=state.get("tools_used", []),
         success=bool(answer),
     )
 
 
-async def _report_battery_turn(
+async def report_battery_turn(
     *,
     state: dict[str, Any] | AgentState,
     session_id: str,
@@ -372,6 +266,7 @@ async def _report_battery_turn(
     battery_id: str | None,
     battery_run_id: str,
     success: bool,
+    turn_index: int = 1,
 ) -> None:
     """Best-effort: a reporting failure must never fail the eval run."""
     try:
@@ -379,7 +274,7 @@ async def _report_battery_turn(
         get_turn_reporter().log_turn_report(
             final_state=state,
             session_id=session_id,
-            turn_index=1,  # battery questions are single-turn sessions
+            turn_index=turn_index,
             question_id=question_id,
             query_text=query_text,
             duration_ms=duration_ms,

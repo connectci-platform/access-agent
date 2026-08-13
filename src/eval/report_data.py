@@ -30,6 +30,35 @@ def _parse_since(since: str) -> datetime:
     return datetime.now(UTC) - delta.get(unit, timedelta(days=7))
 
 
+def _index_runs(db: EvalDB, scores: list[Any]) -> tuple[dict[str, datetime], dict[str, str | None]]:
+    """Memoized run lookup: run_id -> created_at (ordering) and run_id -> mode (fail-closed filter).
+
+    One db.get_run per unique run_id — including run_ids whose lookup comes back
+    missing, tracked in ``seen`` so a second score referencing the same orphaned
+    run_id doesn't trigger another db.get_run call or another warning. A run_id
+    present in run_mode means the run row was FOUND — that's the "found" test the
+    fail-closed filter relies on. A missing run is logged (once) and simply absent
+    from both maps.
+    """
+    run_created: dict[str, datetime] = {}
+    run_mode: dict[str, str | None] = {}
+    seen: set[str] = set()
+    for s in scores:
+        rid = str(s.run_id)
+        if rid in seen:
+            continue
+        seen.add(rid)
+        run = db.get_run(rid)
+        if run is None:
+            logger.warning(f"Score {s.question_id} references missing run {rid}; excluded")
+            continue
+        if run.created_at:
+            run_created[rid] = run.created_at  # type: ignore[assignment]
+        run_meta: dict[str, Any] = run.metadata_ or {}  # type: ignore[assignment]
+        run_mode[rid] = run_meta.get("mode")
+    return run_created, run_mode
+
+
 def build_report_data(
     db: EvalDB,
     since: str = "7d",
@@ -39,15 +68,22 @@ def build_report_data(
     since_dt = _parse_since(since)
     all_scores = db.query_scores(since=since_dt, resource=resource)
 
-    # Build a map of run_id -> run created_at for ordering.
-    # This avoids using score row timestamps (which can be skewed by late Argilla syncs).
-    run_created: dict[str, datetime] = {}
-    for s in all_scores:
-        rid = str(s.run_id)
-        if rid not in run_created:
-            run = db.get_run(rid)
-            if run and run.created_at:
-                run_created[rid] = run.created_at  # type: ignore[assignment]
+    # run_created orders "latest per question" below by eval_runs.created_at (not score
+    # row timestamps, which can be skewed by late Argilla syncs). run_mode backs the
+    # fail-closed filter directly below.
+    run_created, run_mode = _index_runs(db, all_scores)
+
+    # Fail-closed filter: keep a score only if its run row was FOUND (rid in run_mode)
+    # and is not a multiturn run. A score whose run lookup fails is excluded, not
+    # silently included — otherwise multiturn rows leak into the dashboard exactly
+    # when this lookup breaks.
+    kept = [
+        s for s in all_scores if (rid := str(s.run_id)) in run_mode and run_mode[rid] != "multiturn"
+    ]
+    dropped = len(all_scores) - len(kept)
+    if dropped:
+        logger.info(f"Report excludes {dropped} score(s) from multiturn/missing runs")
+    all_scores = kept
 
     # Group by (question_id, run_id) to avoid mixing scores across runs.
     by_question_run: dict[tuple[str, str], list[Any]] = {}

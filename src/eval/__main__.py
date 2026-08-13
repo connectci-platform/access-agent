@@ -32,16 +32,19 @@ def _handle_run(args: argparse.Namespace) -> None:
 
 
 def _handle_multiturn(args: argparse.Namespace) -> None:
-    from .multiturn import print_summary, run_battery
+    from . import multiturn
 
-    results = asyncio.run(
-        run_battery(
+    results, summary = asyncio.run(
+        multiturn.run_battery(
             battery_path=args.threads,
             acting_user=args.acting_user,
             resource_context=args.resource,
+            score=args.score,
+            judge_model=args.judge_model,
+            allow_draft_facts=args.allow_draft_facts,
         )
     )
-    print_summary(results)
+    multiturn.print_summary(results, summary)
 
 
 def _handle_coverage(args: argparse.Namespace) -> None:
@@ -121,15 +124,52 @@ def _handle_compare(args: argparse.Namespace) -> None:
         "run_id": run_a.id,
         "agent_branch": run_a.agent_branch,
         "composite_score": run_a.composite_score or 0.0,
-        "per_dimension": run_a.scores_summary or {},
+        "per_dimension": _per_dimension(run_a.scores_summary),
     }
     summary_b: dict[str, Any] = {
         "run_id": run_b.id,
         "agent_branch": run_b.agent_branch,
         "composite_score": run_b.composite_score or 0.0,
-        "per_dimension": run_b.scores_summary or {},
+        "per_dimension": _per_dimension(run_b.scores_summary),
     }
-    print_comparison(summary_a, summary_b)
+    # Scoring semantics are per-run: multiturn is a macro mean over Fair-only
+    # thread composites, single-turn a micro average over questions — and the
+    # per-dimension means differ in population the same way. Comparing across the
+    # two is not like-for-like, so print_comparison annotates BOTH sections.
+    commensurable = _is_macro_composite(run_a.scores_summary) == _is_macro_composite(
+        run_b.scores_summary
+    )
+    print_comparison(summary_a, summary_b, composite_commensurable=commensurable)
+
+
+def _is_macro_composite(scores_summary: Any) -> bool:
+    """Whether a run's composite is a multiturn macro (Fair-only thread) mean.
+
+    Feature-detected from the stored summary shape rather than run metadata: the
+    nested per_dimension / thread_composites contract IS the multiturn summary,
+    and detecting it keeps rejudged multiturn runs annotated too.
+    """
+    if not isinstance(scores_summary, dict):
+        return False
+    return isinstance(scores_summary.get("per_dimension"), dict) or isinstance(
+        scores_summary.get("thread_composites"), dict
+    )
+
+
+def _per_dimension(scores_summary: Any) -> dict[str, Any]:
+    """Read the per-dimension means out of a run's scores_summary.
+
+    Single-turn runs store the dimension means as scores_summary itself;
+    multiturn runs store a richer contract with the means under
+    ``per_dimension`` alongside thread composites and turn counts. Feature-detect
+    by key so both shapes render real values.
+    """
+    if not isinstance(scores_summary, dict):
+        return {}
+    nested = scores_summary.get("per_dimension")
+    if isinstance(nested, dict):
+        return nested
+    return scores_summary
 
 
 def _handle_report(args: argparse.Namespace) -> None:
@@ -616,6 +656,26 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915  # all subcomman
         "--resource",
         default=None,
         help="Optional RP slug applied as resource_context for the thread",
+    )
+    multiturn_parser.add_argument(
+        "--score",
+        action="store_true",
+        help="Judge each turn and persist to eval_runs/eval_scores (requires DATABASE_URL)",
+    )
+    multiturn_parser.add_argument(
+        "--judge-model",
+        default=None,
+        dest="judge_model",
+        help="Override judge model (default: from config)",
+    )
+    multiturn_parser.add_argument(
+        "--allow-draft-facts",
+        action="store_true",
+        dest="allow_draft_facts",
+        help=(
+            "Score against facts that still contain 'AUTHOR:' placeholders "
+            "(smoke tests only — placeholders make correctness verdicts arbitrary)"
+        ),
     )
 
     # Production scoring is deferred — requires on-premise LLM or updated privacy policy

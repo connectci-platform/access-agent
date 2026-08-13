@@ -40,7 +40,33 @@ def print_run_summary(summary: dict[str, Any]) -> None:
     print("=" * 60)
 
 
-def print_comparison(run_a: dict[str, Any], run_b: dict[str, Any]) -> None:
+COMPOSITE_INCOMMENSURABLE_NOTE = "(macro, Fair-only — not comparable to micro)"
+DIMENSION_POPULATION_NOTE = (
+    "Note: dimension means cover different populations "
+    "(multiturn: Fair-judged turns only; single-turn: all judged rows). "
+    "Read the deltas as directional, not as a like-for-like difference."
+)
+
+
+def print_comparison(
+    run_a: dict[str, Any], run_b: dict[str, Any], *, composite_commensurable: bool = True
+) -> None:
+    """Print a two-run comparison table.
+
+    When ``composite_commensurable`` is False the two runs are built under
+    different semantics and NEITHER section is a like-for-like comparison:
+
+    - the composite is a multiturn macro mean over Fair-only thread composites on
+      one side and a single-turn micro average on the other, so its delta is
+      meaningless and the row is annotated instead of given a number;
+    - the per-dimension means are population-mismatched too. A multiturn run's
+      ``per_dimension`` averages only Fair-judged turns, while a single-turn run
+      averages every judged row including ``answerable=False`` ones. The rows are
+      still printed with deltas — they carry directional signal the composite
+      cannot — but under an explicit population note rather than bare.
+
+    Same-mode comparisons print both sections unannotated.
+    """
     print()
     print("=" * 70)
     print("  Eval Run Comparison")
@@ -55,12 +81,20 @@ def print_comparison(run_a: dict[str, Any], run_b: dict[str, Any]) -> None:
         delta = b_val - a_val
         sign = "+" if delta > 0 else ""
         print(f"  {name:20s} {a_val:10.2f}  {b_val:10.2f}  {sign}{delta:9.2f}")
+    if not composite_commensurable:
+        # Cross-mode: the dimension rows are population-mismatched too (Fair-only
+        # vs all-judged), so they get one clear note rather than bare deltas.
+        print(f"  {DIMENSION_POPULATION_NOTE}")
     a_comp = run_a.get("composite_score", 0.0)
     b_comp = run_b.get("composite_score", 0.0)
-    delta = b_comp - a_comp
-    sign = "+" if delta > 0 else ""
     print(f"  {'─' * 50}")
-    print(f"  {'COMPOSITE':20s} {a_comp:10.2f}  {b_comp:10.2f}  {sign}{delta:9.2f}")
+    if composite_commensurable:
+        delta = b_comp - a_comp
+        sign = "+" if delta > 0 else ""
+        print(f"  {'COMPOSITE':20s} {a_comp:10.2f}  {b_comp:10.2f}  {sign}{delta:9.2f}")
+    else:
+        print(f"  {'COMPOSITE':20s} {a_comp:10.2f}  {b_comp:10.2f}  {'n/a':>10s}")
+        print(f"  {'':20s} {COMPOSITE_INCOMMENSURABLE_NOTE}")
     print()
     print(f"  Run A: {run_a.get('run_id', '?')} ({run_a.get('agent_branch', '?')})")
     print(f"  Run B: {run_b.get('run_id', '?')} ({run_b.get('agent_branch', '?')})")

@@ -55,6 +55,18 @@ class ToolResult(BaseModel):
     arguments: ToolArguments = Field(
         default_factory=dict, description="Arguments the tool was called with"
     )
+    message_id: str = Field(
+        default="",
+        description=(
+            "LangChain message id of the source ToolMessage. Lets multi-turn "
+            "consumers slice the cumulative, rebuilt tool_results down to one turn "
+            "by testing membership in the set of ids appearing after the last "
+            "HumanMessage of the OUTER merged thread. An id survives the "
+            "add_messages merge; a positional index does not, because the list the "
+            "loop stamps against is the inner, possibly compaction-rewritten one. "
+            "Additive metadata; empty means 'unpositioned'."
+        ),
+    )
 
 
 class RAGMatch(BaseModel):
