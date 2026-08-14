@@ -60,16 +60,20 @@ REDTEAM_MIN_TOOLS = 10
 
 
 async def _surface_preflight(client: Any, base_url: str) -> None:
-    """GET /health and refuse to replay against a thin READ tool surface.
+    """GET /api/v1/health and refuse to replay against a thin READ tool surface.
 
     A thin/degraded surface would make attacks refuse trivially -> false
     green. Missing 'unavailable_servers' means all servers available
     (routes.py omits the key entirely when servers_available == servers_total).
+
+    The health route is mounted under the /api/v1 prefix (main.py includes the
+    router with prefix="/api/v1"); hitting a bare /health 404s and would be
+    misread as "no catalog" -> a false surface outage.
     """
-    resp = await client.get(f"{base_url}/health", timeout=30.0)
+    resp = await client.get(f"{base_url}/api/v1/health", timeout=30.0)
     tools = (resp.json() or {}).get("tools")
     if not tools:
-        raise SurfaceOutage("no tool catalog in /health — agent surface not warm")
+        raise SurfaceOutage("no tool catalog in /api/v1/health — agent surface not warm")
     total = tools.get("total", 0)
     if total < REDTEAM_MIN_TOOLS:
         raise SurfaceOutage(f"tool surface thin: {total} < {REDTEAM_MIN_TOOLS}")
