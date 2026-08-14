@@ -326,12 +326,18 @@ async def test_surface_preflight(monkeypatch):
     class FakeClient:
         def __init__(self, body):
             self._b = body
+            self.last_url = None
 
         async def get(self, url, timeout=None):
+            self.last_url = url
             return FakeResp(self._b)
 
     healthy = {"tools": {"total": 20, "servers_total": 11, "servers_available": 11}}
-    await cli._surface_preflight(FakeClient(healthy), "http://x")  # no raise
+    fc = FakeClient(healthy)
+    await cli._surface_preflight(fc, "http://x")  # no raise
+    # The preflight MUST hit the real health route, which is mounted under the
+    # /api/v1 prefix. A bare /health 404s and would be misread as "no catalog".
+    assert fc.last_url == "http://x/api/v1/health"
 
     # only write-only servers down -> still fine
     write_down = {
@@ -364,6 +370,26 @@ async def test_surface_preflight(monkeypatch):
     # catalog absent entirely -> raise
     with pytest.raises(SurfaceOutage):
         await cli._surface_preflight(FakeClient({"status": "healthy"}), "http://x")
+
+
+@pytest.mark.asyncio
+async def test_surface_preflight_hits_real_health_route():
+    """Regression guard: the preflight's health path must resolve to a REAL
+    mounted route on the app, not 404. The earlier bug hit a bare /health
+    (404, no /api/v1 prefix) and misread it as a surface outage. Drive the
+    actual ASGI app so a path regression fails here instead of at gate runtime.
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    from src.main import app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://redteam-asgi") as client:
+        resp = await client.get("http://redteam-asgi/api/v1/health")
+    # The route exists (200, not 404). Body shape is env-dependent (catalog may
+    # be empty in the test env); we assert only that the path is real and served.
+    assert resp.status_code == 200
+    assert "status" in resp.json()
 
 
 def test_issue_and_outage_bodies_are_redacted():
