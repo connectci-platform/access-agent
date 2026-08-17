@@ -65,8 +65,19 @@ def test_write_mcp_tool_names_covers_all_known_write_tools():
                 "create_support_ticket",
                 "create_login_ticket",
                 "report_security_incident",
+                # events registration writes
                 "cancel_registration",
                 "register_for_event",
+                # events organizer writes (all POST/PATCH/DELETE)
+                "create_event",
+                "update_event",
+                "delete_event",
+                "restore_event",
+                "send_for_review",
+                "cancel_occurrence",
+                "restore_occurrence",
+                "edit_occurrence",
+                "add_occurrence",
             }
         )
         == WRITE_MCP_TOOL_NAMES

@@ -544,6 +544,31 @@ def mixed_catalog_state(base_state):
                     },
                 ],
             },
+            {
+                "server": "events",
+                "tools": [
+                    {
+                        "name": name,
+                        "description": f"Write tool — {name}",
+                        "inputSchema": {"properties": {}, "required": []},
+                    }
+                    for name in (
+                        # registration writes (already in the deny-list)
+                        "register_for_event",
+                        "cancel_registration",
+                        # organizer writes (the guard hole being closed)
+                        "create_event",
+                        "update_event",
+                        "delete_event",
+                        "restore_event",
+                        "send_for_review",
+                        "cancel_occurrence",
+                        "restore_occurrence",
+                        "edit_occurrence",
+                        "add_occurrence",
+                    )
+                ],
+            },
         ]
     }
     return state
@@ -584,6 +609,55 @@ async def test_read_only_strips_write_tools_from_loop_registry(monkeypatch, mixe
         f"but these leaked through: {sorted(leaked)}"
     )
     # Read tools survive the filter.
+    assert "search_resources" in tool_names
+
+
+# The nine events-organizer write tools shipped in access_mcp's events server.
+# All are POST/PATCH/DELETE; delete_event / cancel_occurrence / edit_occurrence
+# are preview-by-default but write when confirmed:true, so they count as writes.
+_EVENTS_ORGANIZER_WRITE_TOOLS = (
+    "create_event",
+    "update_event",
+    "delete_event",
+    "restore_event",
+    "send_for_review",
+    "cancel_occurrence",
+    "restore_occurrence",
+    "edit_occurrence",
+    "add_occurrence",
+)
+
+
+@pytest.mark.asyncio
+async def test_read_only_strips_events_organizer_write_tools_from_loop(
+    monkeypatch, mixed_catalog_state
+):
+    """With READ_ONLY=true, none of the 9 events-organizer write tools reach create_agent.
+
+    Regression test for the guard hole: the organizer CRUD tools shipped without
+    being added to WRITE_MCP_TOOL_NAMES, so the loop left them callable under
+    READ_ONLY. This asserts the tool_calling_loop strip covers all nine by name.
+    """
+    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
+
+    monkeypatch.setattr("src.config.settings.READ_ONLY", True, raising=False)
+
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke.return_value = {
+        "messages": [*mixed_catalog_state["messages"], AIMessage(content="ok")]
+    }
+    capture, captured = _capture_tools_kwarg(mock_graph)
+
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture):
+        await tool_calling_loop_node(mixed_catalog_state)
+
+    tool_names = {t.name for t in captured["tools"]}
+    leaked = tool_names & set(_EVENTS_ORGANIZER_WRITE_TOOLS)
+    assert not leaked, (
+        f"READ_ONLY=true must strip every events-organizer write tool from the loop, "
+        f"but these leaked through: {sorted(leaked)}"
+    )
+    # Read tools still survive the filter.
     assert "search_resources" in tool_names
 
 

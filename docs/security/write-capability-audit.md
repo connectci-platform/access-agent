@@ -23,6 +23,24 @@ Enumerate every capability in the access-agent that performs writes against an e
 
 The source of truth for this list is the `WRITE_CAPABILITY_IDS` constant in `src/agent/domains/capabilities.py`. Any change to that set must be reflected in this table (enforced by code review).
 
+### Events writes (no `WRITE_CAPABILITY_IDS` entry — guarded by tool name only)
+
+The `events` MCP server exposes write tools, but they are **not** owned by any registry write capability: the only events capability in `GENERAL_CAPABILITIES` is `browse_events`, which is read-only. Events writes reach the agent solely through the `tool_calling_loop`, which builds tools directly from the MCP catalog. They are therefore guarded by their MCP tool name in `WRITE_MCP_TOOL_NAMES` (Layer 3, loop path), with no corresponding `WRITE_CAPABILITY_IDS` id. The legacy chain never surfaces these tools, so a capability-id entry there would gate nothing; the tool-name deny-list is the load-bearing control.
+
+| MCP tool name | Server | Effect | Guard |
+| ------------- | ------ | ------ | ----- |
+| `register_for_event` | `events` | Register the acting user for an event | `WRITE_MCP_TOOL_NAMES` (loop deny-list) |
+| `cancel_registration` | `events` | Cancel the acting user's event registration | `WRITE_MCP_TOOL_NAMES` (loop deny-list) |
+| `create_event` | `events` | Create an event (organizer) | `WRITE_MCP_TOOL_NAMES` (loop deny-list) |
+| `update_event` | `events` | Update an event (organizer) | `WRITE_MCP_TOOL_NAMES` (loop deny-list) |
+| `delete_event` | `events` | Delete an event (organizer; preview-by-default, writes when `confirmed:true`) | `WRITE_MCP_TOOL_NAMES` (loop deny-list) |
+| `restore_event` | `events` | Restore a deleted event (organizer) | `WRITE_MCP_TOOL_NAMES` (loop deny-list) |
+| `send_for_review` | `events` | Submit an event for review (organizer) | `WRITE_MCP_TOOL_NAMES` (loop deny-list) |
+| `cancel_occurrence` | `events` | Cancel one occurrence (organizer; preview-by-default, writes when `confirmed:true`) | `WRITE_MCP_TOOL_NAMES` (loop deny-list) |
+| `restore_occurrence` | `events` | Restore a cancelled occurrence (organizer) | `WRITE_MCP_TOOL_NAMES` (loop deny-list) |
+| `edit_occurrence` | `events` | Edit one occurrence (organizer). A location-only edit, or a date edit on a dark/draft occurrence, applies **immediately** with no preview and no `confirmed` flag; only a date change on a live occurrence with existing registrants previews and requires `confirmed:true`. The call signature does not reveal which path an invocation takes, so the whole tool is stripped. | `WRITE_MCP_TOOL_NAMES` (loop deny-list) |
+| `add_occurrence` | `events` | Add an occurrence to an event (organizer) | `WRITE_MCP_TOOL_NAMES` (loop deny-list) |
+
 ## Defense layers
 
 Three layers protect against unintended writes. They are additive; an attacker or a regression would need to defeat all three simultaneously.
@@ -76,3 +94,4 @@ The production smoke test, when the process is started with `READ_ONLY=true`, ca
 
 - 2026-04-21: Initial audit. Four write capabilities enumerated; `WRITE_CAPABILITY_IDS` constant and `READ_ONLY` guard landed together.
 - 2026-04-29: Extended `READ_ONLY` guard to the `tool_calling_loop` code path (Phase 3). Added `WRITE_MCP_TOOL_NAMES` deny-list in `capabilities.py` and a filter in `tool_calling_loop_node` so the loop's tool registry honors `READ_ONLY=true` the same way the legacy chain does. Without this, the loop bypassed the guard entirely. Machine-verified by `tests/test_tool_calling_loop.py::test_read_only_strips_write_tools_from_loop_registry`.
+- 2026-08-15: Closed a guard hole for events writes. When the events-CRUD organizer tools shipped in access_mcp they were not added to `WRITE_MCP_TOOL_NAMES`, so under `READ_ONLY=true` the `tool_calling_loop` left all nine callable and write-counting undercounted them. Added `create_event`, `update_event`, `delete_event`, `restore_event`, `send_for_review`, `cancel_occurrence`, `restore_occurrence`, `edit_occurrence`, and `add_occurrence` to `WRITE_MCP_TOOL_NAMES`. Documented the events writes (organizer + the pre-existing registration writes) in the new "Events writes" section above; these are guarded by tool name only and have no `WRITE_CAPABILITY_IDS` entry because no registry write capability owns them. `WRITE_CAPABILITY_IDS` is unchanged. Machine-verified by `tests/test_tool_calling_loop.py::test_read_only_strips_events_organizer_write_tools_from_loop` and `tests/test_capabilities_read_only.py::test_write_mcp_tool_names_covers_all_known_write_tools`.

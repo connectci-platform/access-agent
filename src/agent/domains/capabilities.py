@@ -119,9 +119,28 @@ WRITE_MCP_TOOL_NAMES: frozenset[str] = frozenset(
         "create_support_ticket",
         "create_login_ticket",
         "report_security_incident",
-        # events domain (event registration writes)
+        # events domain — registration writes (attendee-side)
         "cancel_registration",
         "register_for_event",
+        # events domain — organizer writes (all POST/PATCH/DELETE in the
+        # access_mcp events server). delete_event and cancel_occurrence are
+        # preview-by-default but write when confirmed:true; edit_occurrence can
+        # apply immediately with no confirmation (location-only edits, or date
+        # edits on dark/draft occurrences), so the whole tool is stripped. These
+        # have no WRITE_CAPABILITY_IDS entry: events organizer tools are served
+        # to the tool_calling_loop from the MCP catalog and are not owned by any
+        # registry write capability (the only events capability is the read-only
+        # browse_events), so the tool-name deny-list is the sole guard — matching
+        # the registration writes above. See docs/security/write-capability-audit.md.
+        "create_event",
+        "update_event",
+        "delete_event",
+        "restore_event",
+        "send_for_review",
+        "cancel_occurrence",
+        "restore_occurrence",
+        "edit_occurrence",
+        "add_occurrence",
     }
 )
 

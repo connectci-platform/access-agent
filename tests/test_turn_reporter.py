@@ -133,6 +133,31 @@ class TestAssemble:
         assert tool_calls[1]["tool_name"] == "create_support_ticket"
         assert tool_calls[0]["args_hash"]
 
+    def test_invoked_write_picks_up_events_organizer_writes(self):
+        # An events-organizer write (delete_event) must set invoked_write via its
+        # WRITE_MCP_TOOL_NAMES membership — verifies the analytics path recognizes
+        # the newly-guarded organizer tool names (src/turn_reporter.py keys off it).
+        final_state = {
+            "final_answer": "Event deleted.",
+            "tools_used": ["events__delete_event"],
+            "tool_results": [
+                _tool_result("delete_event", "events", True, {"id": "42", "confirmed": True}),
+            ],
+            "node_trace": [{"node": "loop"}],
+        }
+        report, _ = _assemble_turn_report(
+            final_state=final_state,
+            session_id="s1",
+            turn_index=1,
+            question_id="q1",
+            query_text="delete event 42",
+            duration_ms=10.0,
+            acting_user="organizer@x.edu",
+            success=True,
+            capabilities=[],
+        )
+        assert report["invoked_write"] is True
+
     def test_total_tokens_from_final_state(self):
         report, _ = _assemble_turn_report(
             final_state={"tools_used": [], "tool_results": [], "total_tokens": 123},

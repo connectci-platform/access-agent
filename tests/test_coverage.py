@@ -18,6 +18,13 @@ class TestStructuralClass:
         assert structural_class("register_for_event") == "write"
         assert structural_class("cancel_registration") == "write"
         assert structural_class("create_announcement") == "write"
+        # events-organizer writes whose names do NOT match the write-prefix regex
+        # (create_/update_/delete_/register_/cancel_/report_): classified as writes
+        # only because they're in WRITE_MCP_TOOL_NAMES, proving registry membership
+        # is doing the work, not the prefix fallback.
+        assert structural_class("restore_event") == "write"
+        assert structural_class("send_for_review") == "write"
+        assert structural_class("add_occurrence") == "write"
 
     def test_write_by_prefix_fallback(self):
         # a plausible new write tool not yet in WRITE_MCP_TOOL_NAMES
