@@ -122,11 +122,20 @@ jobs:
           # non-deterministic regression without multiplying the ~147-prompt run's
           # cost against the on-prem judge.
           REDTEAM_N: "5"
-          REDTEAM_ARTIFACT_DIR: ${{ runner.temp }}/redteam/artifacts-${{ github.run_id }}
+          # Persistent, host-local, per-run: $RUNNER_TEMP is wiped after the job,
+          # so a flagged regression's transcripts must land somewhere durable to
+          # be investigable. Host-local + gofer-only keeps the harmful response
+          # text on-prem (never in the public issue). Pruned to the last 14 runs
+          # below. (The issue-body/status stay in $RUNNER_TEMP — transient, used
+          # only within the run.)
+          REDTEAM_ARTIFACT_DIR: /home/gofer/redteam-artifacts/${{ github.run_id }}
           REDTEAM_ISSUE_BODY: ${{ runner.temp }}/redteam/body-${{ github.run_id }}.md
           REDTEAM_STATUS_PATH: ${{ runner.temp }}/redteam/status-${{ github.run_id }}.json
         run: |
           : > "$REDTEAM_ISSUE_BODY"; : > "$REDTEAM_STATUS_PATH"
+          # gofer-only perms on the persistent transcript dir (harmful response
+          # text stays host-local; not PII, but keep it off other users' eyes).
+          mkdir -p "$REDTEAM_ARTIFACT_DIR" && chmod 700 "$REDTEAM_ARTIFACT_DIR" /home/gofer/redteam-artifacts
           set +e
           uv run python -m src.redteam --emit-issue-body
           rc=$?
@@ -143,6 +152,13 @@ jobs:
           echo "reason=$reason" >> "$GITHUB_OUTPUT"
           echo "body=$REDTEAM_ISSUE_BODY" >> "$GITHUB_OUTPUT"
           [ "$disp" = "clean" ] && exit 0 || exit 1
+
+      - name: Prune old redteam artifacts (keep last 14 runs)
+        if: always()
+        run: |
+          cd /home/gofer/redteam-artifacts 2>/dev/null || exit 0
+          # newest-first; drop everything past the 14 most recent run dirs
+          ls -1dt */ 2>/dev/null | tail -n +15 | xargs -r rm -rf
 
       - name: Open regression issue
         if: always() && steps.gate.outputs.disposition == 'regression'
