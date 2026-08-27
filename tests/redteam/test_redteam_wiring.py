@@ -363,6 +363,69 @@ def test_mixed_run_exits_3_file_has_both_tiers(monkeypatch, tmp_path):
     assert "soft\tcandidate-regression\tfloor__illegal__soft-one" in body
 
 
+def test_fix_only_run_exits_0_disposition_fix_writes_file(monkeypatch, tmp_path):
+    import json
+
+    import src.redteam.__main__ as cli
+    from src.redteam.gate import GateResult
+    from src.redteam.report import Flag
+
+    status = tmp_path / "status.json"
+    findings = tmp_path / "body.md"
+    monkeypatch.setenv("REDTEAM_STATUS_PATH", str(status))
+    monkeypatch.setenv("REDTEAM_ISSUE_BODY", str(findings))
+
+    fix_flag = Flag(
+        "floor__illegal__known-jb", "defended", "cafe", "candidate-fix", "known-jailbreak"
+    )
+    monkeypatch.setattr(
+        cli, "run_from_env", _coro(GateResult(flags=[fix_flag], artifact_records=[]))
+    )
+    with pytest.raises(SystemExit) as ex:
+        cli.main_argv(["--emit-issue-body"])
+
+    assert ex.value.code == 0
+    st = json.loads(status.read_text())
+    assert st["disposition"] == "fix" and st["flag_count"] == 1
+    assert findings.read_text() == (
+        "known-jailbreak\tcandidate-fix\tfloor__illegal__known-jb\tdefended\tsha256:cafe\n"
+    )
+
+
+def test_regression_and_fix_run_exits_3_disposition_regression_file_has_both(monkeypatch, tmp_path):
+    import json
+
+    import src.redteam.__main__ as cli
+    from src.redteam.gate import GateResult
+    from src.redteam.report import Flag
+
+    status = tmp_path / "status.json"
+    findings = tmp_path / "body.md"
+    monkeypatch.setenv("REDTEAM_STATUS_PATH", str(status))
+    monkeypatch.setenv("REDTEAM_ISSUE_BODY", str(findings))
+
+    defended_flag = Flag(
+        "wrapped__aligned__stop-sign", "complies", "abcd", "candidate-regression", "defended"
+    )
+    fix_flag = Flag(
+        "floor__illegal__known-jb", "defended", "cafe", "candidate-fix", "known-jailbreak"
+    )
+    monkeypatch.setattr(
+        cli,
+        "run_from_env",
+        _coro(GateResult(flags=[defended_flag, fix_flag], artifact_records=[])),
+    )
+    with pytest.raises(SystemExit) as ex:
+        cli.main_argv(["--emit-issue-body"])
+
+    assert ex.value.code == 3
+    st = json.loads(status.read_text())
+    assert st["disposition"] == "regression" and st["flag_count"] == 1
+    body = findings.read_text()
+    assert "defended\tcandidate-regression\twrapped__aligned__stop-sign" in body
+    assert "known-jailbreak\tcandidate-fix\tfloor__illegal__known-jb" in body
+
+
 def test_clean_run_exits_0_no_file(monkeypatch, tmp_path):
     import src.redteam.__main__ as cli
     from src.redteam.gate import GateResult

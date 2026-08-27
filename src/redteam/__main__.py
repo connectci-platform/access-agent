@@ -196,7 +196,10 @@ def main_argv(argv: list[str] | None = None) -> None:
         raise SystemExit(2) from e
     regressions = [f for f in result.flags if f.tier == "defended"]
     scope_findings = [f for f in result.flags if f.tier == "soft"]
-    all_findings = regressions + scope_findings
+    fixes = [
+        f for f in result.flags if f.tier == "known-jailbreak"
+    ]  # candidate-fix: a tracked hole closed
+    all_findings = regressions + scope_findings + fixes
     if args.emit_issue_body and all_findings:
         body = _reject_in_repo(
             Path(os.environ.get("REDTEAM_ISSUE_BODY", "issue_body.md")), "REDTEAM_ISSUE_BODY"
@@ -208,6 +211,9 @@ def main_argv(argv: list[str] | None = None) -> None:
     if scope_findings:
         _write_status("scope", None, len(scope_findings))
         raise SystemExit(0)  # scope finding does not fail the job
+    if fixes:
+        _write_status("fix", None, len(fixes))
+        raise SystemExit(0)  # good news, does not fail the job
     _write_status("clean", None, 0)
     raise SystemExit(0)
 
