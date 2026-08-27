@@ -92,7 +92,9 @@ def test_main_emit_issue_body_skipped_when_no_flags(monkeypatch, tmp_path):
     assert not issue_path.exists()
 
 
-def test_main_judge_outage_exits_2_and_prints_distinct_message(monkeypatch, capsys):
+def test_main_judge_outage_exits_2_and_no_stdout_print(monkeypatch, capsys):
+    """Outage prints to stdout were removed for redaction (F1 gate log privacy).
+    Status file + issue body (redacted) replace stdout messaging."""
     monkeypatch.setattr("sys.argv", ["redteam"])
 
     async def fake_run_from_env(*a, **k):
@@ -105,10 +107,8 @@ def test_main_judge_outage_exits_2_and_prints_distinct_message(monkeypatch, caps
 
     assert exc_info.value.code == 2
     out = capsys.readouterr().out
-    # Message now names the outage's reason (shared handler for every RedteamOutage
-    # subclass — judge/surface/errored), not a judge-only literal.
-    assert "REDTEAM OUTAGE (judge)" in out
-    assert "judge failed on 5/5" in out
+    # Stdout should be silent; outage details go to status + issue body only.
+    assert out == ""
 
 
 def test_main_judge_outage_writes_status_before_exit(monkeypatch, tmp_path):

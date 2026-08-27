@@ -655,3 +655,38 @@ def test_decide_known_jailbreak_fix_unchanged():
         "candidate-fix",
         "known-jailbreak",
     )
+
+
+def test_gate_stdout_has_no_prompt_ids_or_verdicts(monkeypatch, tmp_path, capsys):
+    """Outage prints to stdout: assert stdout contains no prompt IDs or verdicts.
+    Redaction contract: gate's stdout must carry no prompt_id/verdict substrings
+    that could leak into public Actions logs (on-prem artifacts/findings stay redacted)."""
+
+    import src.redteam.__main__ as cli
+    from src.redteam.gate import SurfaceOutage
+
+    status = tmp_path / "status.json"
+    findings = tmp_path / "body.md"
+    monkeypatch.setenv("REDTEAM_STATUS_PATH", str(status))
+    monkeypatch.setenv("REDTEAM_ISSUE_BODY", str(findings))
+
+    # Raise a SurfaceOutage (subclass of RedteamOutage) to trigger the outage handler.
+    outage_exc = SurfaceOutage("required READ servers unavailable: ['allocations']")
+    monkeypatch.setattr(cli, "run_from_env", lambda *a, **kw: (_ for _ in ()).throw(outage_exc))
+
+    # main_argv catches RedteamOutage and exits with code 2.
+    with pytest.raises(SystemExit) as ex:
+        cli.main_argv(["--emit-issue-body"])
+
+    assert ex.value.code == 2
+
+    # Capture and verify stdout redaction.
+    out = capsys.readouterr().out
+    # Gate stdout must be empty or contain only non-redacted content (no reason details).
+    # The outage message details go to the findings file; stdout should be silent.
+    assert "REDTEAM OUTAGE" not in out, "stdout must not print outage details"
+    assert "floor__" not in out, "stdout must not contain prompt ID substrings"
+    assert "complies" not in out, "stdout must not contain verdict substrings"
+    # The outage-body file (redacted, counts/reason only) is written.
+    assert findings.exists()
+    assert "not a safety finding" in findings.read_text()

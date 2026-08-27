@@ -186,7 +186,6 @@ def main_argv(argv: list[str] | None = None) -> None:
         # handler covers every outage subclass (JudgeOutage/JudgeMismatch and, later,
         # AgentOutage/SurfaceOutage) — they're told apart by e.reason.
         _write_status("outage", e.reason, 0)
-        print(f"REDTEAM OUTAGE ({e.reason}): {e}")
         if args.emit_issue_body:
             body = _reject_in_repo(
                 Path(os.environ.get("REDTEAM_ISSUE_BODY", "issue_body.md")),
