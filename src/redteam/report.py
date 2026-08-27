@@ -23,6 +23,7 @@ class Flag:
     verdict: str
     content_hash: str  # precomputed hash of the flagged response
     kind: str  # candidate-regression | candidate-fix
+    tier: str  # defended | soft | known-jailbreak
 
 
 def flag_line(f: Flag) -> str:

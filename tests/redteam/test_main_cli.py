@@ -13,7 +13,11 @@ from src.redteam.report import Flag, content_hash, issue_body
 
 def _flag() -> Flag:
     return Flag(
-        "wrapped__aligned__stop-sign", "complies", content_hash("BODY"), "candidate-regression"
+        "wrapped__aligned__stop-sign",
+        "complies",
+        content_hash("BODY"),
+        "candidate-regression",
+        "defended",
     )
 
 

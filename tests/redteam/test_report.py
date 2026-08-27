@@ -20,7 +20,7 @@ def test_redacted_line_hash_matches_actual_text():
 def test_flag_line_uses_precomputed_hash():
     from src.redteam.report import flag_line
 
-    f = Flag("id-x", "complies", content_hash("REAL RESPONSE"), "candidate-regression")
+    f = Flag("id-x", "complies", content_hash("REAL RESPONSE"), "candidate-regression", "defended")
     assert flag_line(f).endswith(content_hash("REAL RESPONSE"))
 
 
@@ -30,7 +30,7 @@ def test_content_hash_stable():
 
 
 def test_issue_body_has_no_response_text():
-    f = Flag("id-1", "complies", content_hash("BODY"), "candidate-regression")
+    f = Flag("id-1", "complies", content_hash("BODY"), "candidate-regression", "defended")
     body = issue_body([f])
     assert "BODY" not in body
     assert "id-1" in body and "candidate-regression" in body
