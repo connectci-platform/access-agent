@@ -63,11 +63,10 @@ jobs:
             });
 
   redteam-gate:
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, nightly-e2e]
     permissions:
       contents: read
-      issues: write
     concurrency:
       group: nightly-redteam
       cancel-in-progress: false
@@ -143,14 +142,26 @@ jobs:
           uv run python -m src.redteam --emit-issue-body
           rc=$?
           set -e
-          case $rc in
-            0) disp=clean; reason= ;;
-            3) disp=regression; reason= ;;
-            2) reason=$(uv run python -c "import json;print(json.load(open('$REDTEAM_STATUS_PATH')).get('reason',''))" 2>/dev/null || echo "")
-               disp=outage
-               [ -z "$reason" ] && disp=infra ;;
-            *) disp=infra; reason= ;;
-          esac
+          # Exit code alone can't distinguish clean/scope/fix (all exit 0) or tell a
+          # real infra crash from a proper outage (both may exit non-2/3 in edge cases).
+          # _write_status() in src/redteam/__main__.py writes {disposition, reason,
+          # flag_count} on every path except a hard crash before it's ever reached, so
+          # the status file is the authoritative source; the exit code is only the
+          # fallback when the file is missing/unparseable (a genuine infra failure).
+          disp=""
+          reason=""
+          if [ -s "$REDTEAM_STATUS_PATH" ]; then
+            disp=$(uv run python -c "import json;print(json.load(open('$REDTEAM_STATUS_PATH')).get('disposition') or '')" 2>/dev/null || echo "")
+            reason=$(uv run python -c "import json;print(json.load(open('$REDTEAM_STATUS_PATH')).get('reason') or '')" 2>/dev/null || echo "")
+          fi
+          if [ -z "$disp" ]; then
+            case $rc in
+              0) disp=clean ;;
+              3) disp=regression ;;
+              2) disp=outage ;;
+              *) disp=infra ;;
+            esac
+          fi
           echo "disposition=$disp" >> "$GITHUB_OUTPUT"
           echo "reason=$reason" >> "$GITHUB_OUTPUT"
           echo "body=$REDTEAM_ISSUE_BODY" >> "$GITHUB_OUTPUT"
@@ -163,52 +174,63 @@ jobs:
           # newest-first; drop everything past the 14 most recent run dirs
           ls -1dt */ 2>/dev/null | tail -n +15 | xargs -r rm -rf
 
-      - name: Open regression issue
-        if: always() && steps.gate.outputs.disposition == 'regression'
+      - name: File/dedup findings in access-redteam
+        if: always() && contains(fromJSON('["regression","scope","fix"]'), steps.gate.outputs.disposition)
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.REDTEAM_FINDINGS_TOKEN }}
           script: |
             const fs = require('fs');
-            const body = fs.readFileSync(process.env.BODY, 'utf8');
+            const owner = 'necyberteam', repo = 'access-redteam';
+            const lines = fs.readFileSync(process.env.BODY, 'utf8').split('\n').filter(Boolean);
+            const LABEL = { defended: 'redteam-regression', soft: 'redteam-scope' };
             const date = new Date().toISOString().split('T')[0];
-            await github.rest.issues.create({
-              owner: context.repo.owner, repo: context.repo.repo,
-              title: `Red-team regression — ${date}`, body,
-              labels: ['redteam-regression', 'bug'],
-            });
+            for (const line of lines) {
+              const [tier, kind, promptId, verdict, hash] = line.split('\t');
+              const marker = `<!-- redteam-prompt: ${promptId} -->`;
+              const found = await github.rest.search.issuesAndPullRequests({
+                q: `repo:${owner}/${repo} is:issue is:open in:body "${marker}"`,
+              });
+              const openNum = found.data.total_count > 0 ? found.data.items[0].number : null;
+              if (tier === 'known-jailbreak') {
+                // candidate-fix: the hole is patched. Close the tracking issue if open; do nothing if not.
+                if (openNum) {
+                  await github.rest.issues.createComment({ owner, repo, issue_number: openNum,
+                    body: `Defended again — ${date} (run ${context.runId}). Auto-closing; reopens if it regresses.` });
+                  await github.rest.issues.update({ owner, repo, issue_number: openNum, state: 'closed' });
+                }
+                continue;
+              }
+              if (openNum) {
+                await github.rest.issues.createComment({ owner, repo, issue_number: openNum,
+                  body: `Still surfacing — ${date} (run ${context.runId}). ${verdict} ${hash}` });
+              } else {
+                await github.rest.issues.create({ owner, repo,
+                  title: `Red-team ${tier} finding — ${promptId}`,
+                  body: `${marker}\n\nTier: ${tier}. ${verdict} ${hash}\nTranscripts on-prem only.`,
+                  labels: [LABEL[tier] || 'redteam-scope'] });
+              }
+            }
         env:
           BODY: ${{ steps.gate.outputs.body }}
 
-      - name: Open outage issue
-        if: always() && steps.gate.outputs.disposition == 'outage'
+      - name: File outage/infra issue in access-redteam
+        if: always() && contains(fromJSON('["outage","infra"]'), steps.gate.outputs.disposition)
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.REDTEAM_FINDINGS_TOKEN }}
           script: |
             const fs = require('fs');
-            const body = fs.readFileSync(process.env.BODY, 'utf8');
+            const owner = 'necyberteam', repo = 'access-redteam';
             const date = new Date().toISOString().split('T')[0];
-            const reason = process.env.REASON;
-            const map = {judge:['Red-team judge outage','redteam-judge-outage'],
-                         surface:['Red-team surface outage','redteam-surface-outage'],
-                         errored:['Red-team agent outage','redteam-agent-outage']};
-            const [title, label] = map[reason] || ['Red-team outage','redteam-infra'];
-            await github.rest.issues.create({
-              owner: context.repo.owner, repo: context.repo.repo,
-              title: `${title} — ${date}`, body, labels: [label],
-            });
+            const reason = process.env.REASON || '';
+            const map = { judge:['Red-team judge outage','redteam-judge-outage'],
+                          surface:['Red-team surface outage','redteam-surface-outage'],
+                          errored:['Red-team agent outage','redteam-agent-outage'] };
+            const [title, label] = map[reason] || ['Red-team gate infra failure','redteam-infra'];
+            let body = `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            try { body = fs.readFileSync(process.env.BODY, 'utf8') + `\n\n${body}`; } catch (e) {}
+            await github.rest.issues.create({ owner, repo, title: `${title} — ${date}`, body, labels: [label] });
         env:
           BODY: ${{ steps.gate.outputs.body }}
           REASON: ${{ steps.gate.outputs.reason }}
-
-      - name: Open infra issue
-        if: failure() && (steps.gate.outputs.disposition == '' || steps.gate.outputs.disposition == 'infra')
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const date = new Date().toISOString().split('T')[0];
-            await github.rest.issues.create({
-              owner: context.repo.owner, repo: context.repo.repo,
-              title: `Red-team gate infra failure — ${date}`,
-              body: `The red-team gate job failed before producing a disposition. See: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              labels: ['redteam-infra'],
-            });
