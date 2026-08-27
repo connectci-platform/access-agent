@@ -183,7 +183,11 @@ jobs:
             const fs = require('fs');
             const owner = 'necyberteam', repo = 'access-redteam';
             const lines = fs.readFileSync(process.env.BODY, 'utf8').split('\n').filter(Boolean);
-            const LABEL = { defended: 'redteam-regression', soft: 'redteam-scope' };
+            // known-jailbreak always `continue`s above before reaching the LABEL
+            // lookup below (candidate-fix never files an issue); the entry here is
+            // defensive only, so a future fall-through can't silently mislabel via
+            // the `|| 'redteam-scope'` fallback.
+            const LABEL = { defended: 'redteam-regression', soft: 'redteam-scope', 'known-jailbreak': 'redteam-regression' };
             const date = new Date().toISOString().split('T')[0];
             for (const line of lines) {
               const [tier, kind, promptId, verdict, hash] = line.split('\t');

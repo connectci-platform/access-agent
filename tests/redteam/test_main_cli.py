@@ -21,7 +21,7 @@ def _flag() -> Flag:
     )
 
 
-def test_main_prints_flags(monkeypatch, capsys):
+def test_main_regression_flag_exits_3_and_prints_nothing(monkeypatch, capsys):
     monkeypatch.setattr("sys.argv", ["redteam"])
 
     async def fake_run_from_env(*a, **k):
@@ -37,6 +37,12 @@ def test_main_prints_flags(monkeypatch, capsys):
         cli.main()
 
     assert exc_info.value.code == 3
+    # Guard the one regression-WITH-flag exit path against a re-added print:
+    # nothing about the flag (prompt id, verdict) should ever reach stdout.
+    out = capsys.readouterr().out
+    assert out == ""
+    assert "wrapped__" not in out
+    assert "complies" not in out
 
 
 def test_main_no_flags_prints_nothing(monkeypatch, capsys):

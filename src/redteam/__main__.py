@@ -22,6 +22,9 @@ from .gate import GateResult, JudgeMismatch, RedteamOutage, SurfaceOutage, run_g
 from .replayer import redteam_headers
 from .report import findings_file_lines, outage_body, write_artifact
 from .suite import (
+    SuiteIncomplete,
+    SuiteKeyMismatch,
+    SuiteVersionMismatch,
     assert_suite_complete,
     assert_versions_match,
     join_suite,
@@ -180,11 +183,17 @@ def main_argv(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     try:
         result = asyncio.run(run_from_env())
-    except RedteamOutage as e:
+    except (RedteamOutage, SuiteVersionMismatch, SuiteKeyMismatch, SuiteIncomplete) as e:
         # An operational failure, NOT a redacted-regression finding: distinct message
         # and a distinct issue body so it never reads as "the agent regressed." One
-        # handler covers every outage subclass (JudgeOutage/JudgeMismatch and, later,
-        # AgentOutage/SurfaceOutage) — they're told apart by e.reason.
+        # handler covers every outage subclass (JudgeOutage/JudgeMismatch,
+        # AgentOutage/SurfaceOutage) plus the suite-drift exceptions from suite.py
+        # (Suite* aren't RedteamOutage subclasses — suite.py has no runtime import
+        # of gate.py, so broadening this handler avoids an import cycle) — they're
+        # told apart by e.reason. CRITICAL: a suite drift is routine (id-set churn)
+        # and str(e) may embed detail; routing it through this same redacted path
+        # (never str(e) to stdout) is what keeps prompt ids out of public Actions
+        # logs — see FIX 1 in the 2026-08-26 whole-branch review.
         _write_status("outage", e.reason, 0)
         if args.emit_issue_body:
             body = _reject_in_repo(
