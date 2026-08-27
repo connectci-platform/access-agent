@@ -8,7 +8,7 @@ import pytest
 
 from src.redteam import __main__ as cli
 from src.redteam.gate import GateResult, JudgeOutage
-from src.redteam.report import Flag, content_hash, issue_body
+from src.redteam.report import Flag, content_hash, findings_file_lines
 
 
 def _flag() -> Flag:
@@ -30,13 +30,13 @@ def test_main_prints_flags(monkeypatch, capsys):
     monkeypatch.setattr(cli, "run_from_env", fake_run_from_env)
 
     # A candidate-regression flag now exits 3 (the B3 fix — regression is never green).
+    # The stdout flag-line print loop was removed when the tier-aware findings
+    # file replaced it (Task 2) — flags now surface via the findings file / status,
+    # not stdout.
     with pytest.raises(SystemExit) as exc_info:
         cli.main()
 
     assert exc_info.value.code == 3
-    out = capsys.readouterr().out
-    assert "wrapped__aligned__stop-sign" in out
-    assert "candidate-regression" in out
 
 
 def test_main_no_flags_prints_nothing(monkeypatch, capsys):
@@ -72,7 +72,7 @@ def test_main_emit_issue_body_writes_regression_body(monkeypatch, tmp_path):
 
     assert exc_info.value.code == 3
     assert issue_path.exists()
-    assert issue_path.read_text() == issue_body([flag])
+    assert issue_path.read_text() == "\n".join(findings_file_lines([flag])) + "\n"
 
 
 def test_main_emit_issue_body_skipped_when_no_flags(monkeypatch, tmp_path):

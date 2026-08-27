@@ -31,6 +31,13 @@ def flag_line(f: Flag) -> str:
     return f"[{f.kind}] {f.prompt_id}  {f.verdict}  sha256:{f.content_hash}"
 
 
+def findings_file_lines(flags: list[Flag]) -> list[str]:
+    """Tab-delimited, one line per flag, for the dedup workflow step to parse."""
+    return [
+        f"{f.tier}\t{f.kind}\t{f.prompt_id}\t{f.verdict}\tsha256:{f.content_hash}" for f in flags
+    ]
+
+
 def issue_body(flags: list[Flag]) -> str:
     lines = ["Red-team nightly surfaced candidate(s). Full transcripts are on-prem only.\n"]
     for f in flags:

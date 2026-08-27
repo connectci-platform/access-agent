@@ -250,8 +250,9 @@ def test_main_exit_codes_and_status(monkeypatch, tmp_path):
     from src.redteam.report import Flag
 
     status = tmp_path / "status.json"
+    findings = tmp_path / "body.md"
     monkeypatch.setenv("REDTEAM_STATUS_PATH", str(status))
-    monkeypatch.setenv("REDTEAM_ISSUE_BODY", str(tmp_path / "body.md"))
+    monkeypatch.setenv("REDTEAM_ISSUE_BODY", str(findings))
 
     # regression -> exit 3
     flag = Flag(
@@ -270,6 +271,116 @@ def test_main_exit_codes_and_status(monkeypatch, tmp_path):
         cli.main_argv(["--emit-issue-body"])
     assert ex.value.code == 0
     assert json.loads(status.read_text())["disposition"] == "clean"
+
+
+def test_scope_only_run_exits_0_disposition_scope_writes_file(monkeypatch, tmp_path):
+    import json
+
+    import src.redteam.__main__ as cli
+    from src.redteam.gate import GateResult
+    from src.redteam.report import Flag
+
+    status = tmp_path / "status.json"
+    findings = tmp_path / "body.md"
+    monkeypatch.setenv("REDTEAM_STATUS_PATH", str(status))
+    monkeypatch.setenv("REDTEAM_ISSUE_BODY", str(findings))
+
+    soft_flag = Flag("floor__illegal__soft-one", "complies", "beef", "candidate-regression", "soft")
+    monkeypatch.setattr(
+        cli, "run_from_env", _coro(GateResult(flags=[soft_flag], artifact_records=[]))
+    )
+    with pytest.raises(SystemExit) as ex:
+        cli.main_argv(["--emit-issue-body"])
+
+    assert ex.value.code == 0
+    st = json.loads(status.read_text())
+    assert st["disposition"] == "scope" and st["flag_count"] == 1
+    assert findings.exists()
+    assert (
+        findings.read_text()
+        == "soft\tcandidate-regression\tfloor__illegal__soft-one\tcomplies\tsha256:beef\n"
+    )
+
+
+def test_regression_run_exits_3_disposition_regression(monkeypatch, tmp_path):
+    import json
+
+    import src.redteam.__main__ as cli
+    from src.redteam.gate import GateResult
+    from src.redteam.report import Flag
+
+    status = tmp_path / "status.json"
+    findings = tmp_path / "body.md"
+    monkeypatch.setenv("REDTEAM_STATUS_PATH", str(status))
+    monkeypatch.setenv("REDTEAM_ISSUE_BODY", str(findings))
+
+    defended_flag = Flag(
+        "wrapped__aligned__stop-sign", "complies", "abcd", "candidate-regression", "defended"
+    )
+    monkeypatch.setattr(
+        cli, "run_from_env", _coro(GateResult(flags=[defended_flag], artifact_records=[]))
+    )
+    with pytest.raises(SystemExit) as ex:
+        cli.main_argv(["--emit-issue-body"])
+
+    assert ex.value.code == 3
+    st = json.loads(status.read_text())
+    assert st["disposition"] == "regression" and st["flag_count"] == 1
+    assert findings.read_text() == (
+        "defended\tcandidate-regression\twrapped__aligned__stop-sign\tcomplies\tsha256:abcd\n"
+    )
+
+
+def test_mixed_run_exits_3_file_has_both_tiers(monkeypatch, tmp_path):
+    import json
+
+    import src.redteam.__main__ as cli
+    from src.redteam.gate import GateResult
+    from src.redteam.report import Flag
+
+    status = tmp_path / "status.json"
+    findings = tmp_path / "body.md"
+    monkeypatch.setenv("REDTEAM_STATUS_PATH", str(status))
+    monkeypatch.setenv("REDTEAM_ISSUE_BODY", str(findings))
+
+    defended_flag = Flag(
+        "wrapped__aligned__stop-sign", "complies", "abcd", "candidate-regression", "defended"
+    )
+    soft_flag = Flag("floor__illegal__soft-one", "complies", "beef", "candidate-regression", "soft")
+    monkeypatch.setattr(
+        cli,
+        "run_from_env",
+        _coro(GateResult(flags=[defended_flag, soft_flag], artifact_records=[])),
+    )
+    with pytest.raises(SystemExit) as ex:
+        cli.main_argv(["--emit-issue-body"])
+
+    assert ex.value.code == 3
+    st = json.loads(status.read_text())
+    assert st["disposition"] == "regression" and st["flag_count"] == 1
+    body = findings.read_text()
+    assert "defended\tcandidate-regression\twrapped__aligned__stop-sign" in body
+    assert "soft\tcandidate-regression\tfloor__illegal__soft-one" in body
+
+
+def test_clean_run_exits_0_no_file(monkeypatch, tmp_path):
+    import src.redteam.__main__ as cli
+    from src.redteam.gate import GateResult
+
+    status = tmp_path / "status.json"
+    findings = tmp_path / "body.md"
+    monkeypatch.setenv("REDTEAM_STATUS_PATH", str(status))
+    monkeypatch.setenv("REDTEAM_ISSUE_BODY", str(findings))
+
+    monkeypatch.setattr(cli, "run_from_env", _coro(GateResult(flags=[], artifact_records=[])))
+    with pytest.raises(SystemExit) as ex:
+        cli.main_argv(["--emit-issue-body"])
+
+    assert ex.value.code == 0
+    import json
+
+    assert json.loads(status.read_text())["disposition"] == "clean"
+    assert not findings.exists()
 
 
 @pytest.mark.asyncio

@@ -20,7 +20,7 @@ from src.eval.judge import Judge
 
 from .gate import GateResult, JudgeMismatch, RedteamOutage, SurfaceOutage, run_gate
 from .replayer import redteam_headers
-from .report import flag_line, issue_body, outage_body, write_artifact
+from .report import findings_file_lines, outage_body, write_artifact
 from .suite import (
     assert_suite_complete,
     assert_versions_match,
@@ -194,18 +194,20 @@ def main_argv(argv: list[str] | None = None) -> None:
             )
             body.write_text(outage_body(e.reason, str(e)))  # redaction: counts/reason only
         raise SystemExit(2) from e
-    regressions = [f for f in result.flags if f.kind == "candidate-regression"]
-    for f in result.flags:
-        print(flag_line(f))  # uses the Flag's precomputed hash — never recomputes from ""
+    regressions = [f for f in result.flags if f.tier == "defended"]
+    scope_findings = [f for f in result.flags if f.tier == "soft"]
+    all_findings = regressions + scope_findings
+    if args.emit_issue_body and all_findings:
+        body = _reject_in_repo(
+            Path(os.environ.get("REDTEAM_ISSUE_BODY", "issue_body.md")), "REDTEAM_ISSUE_BODY"
+        )
+        body.write_text("\n".join(findings_file_lines(all_findings)) + "\n")
     if regressions:
         _write_status("regression", None, len(regressions))
-        if args.emit_issue_body:
-            body = _reject_in_repo(
-                Path(os.environ.get("REDTEAM_ISSUE_BODY", "issue_body.md")),
-                "REDTEAM_ISSUE_BODY",
-            )
-            body.write_text(issue_body(regressions))
         raise SystemExit(3)
+    if scope_findings:
+        _write_status("scope", None, len(scope_findings))
+        raise SystemExit(0)  # scope finding does not fail the job
     _write_status("clean", None, 0)
     raise SystemExit(0)
 

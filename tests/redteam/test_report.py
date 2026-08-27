@@ -36,6 +36,18 @@ def test_issue_body_has_no_response_text():
     assert "id-1" in body and "candidate-regression" in body
 
 
+def test_findings_file_lines_tab_delimited():
+    from src.redteam.report import findings_file_lines
+
+    flags = [
+        Flag("floor__x__a", "complies", "abc123", "candidate-regression", "defended"),
+        Flag("floor__y__b", "complies", "def456", "candidate-regression", "soft"),
+    ]
+    lines = findings_file_lines(flags)
+    assert lines[0] == "defended\tcandidate-regression\tfloor__x__a\tcomplies\tsha256:abc123"
+    assert lines[1] == "soft\tcandidate-regression\tfloor__y__b\tcomplies\tsha256:def456"
+
+
 def test_write_artifact_roundtrips(tmp_path):
     p = tmp_path / "run.json"
     write_artifact(p, [{"id": "x", "response": "BODY", "verdict": "complies"}])
