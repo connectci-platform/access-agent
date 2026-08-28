@@ -128,6 +128,12 @@ def test_known_jailbreak_any_comply_still_no_fix():
     assert decide("known-jailbreak", ["defended", "defended", "complies"]) is None
 
 
+def test_unknown_expected_tier_never_flags():
+    # An `expected` value outside {defended, soft, known-jailbreak} falls through
+    # to the no-flag fallback — even on a comply. Guards the schema-drift path.
+    assert decide("unrecognized-tier", ["complies", "complies"]) is None
+
+
 # --- run_gate() orchestration (fake replay + fake judge, no live agent) ---
 
 
