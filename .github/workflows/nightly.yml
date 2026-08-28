@@ -150,11 +150,18 @@ jobs:
           # fallback when the file is missing/unparseable (a genuine infra failure).
           disp=""
           reason=""
+          # Read the authoritative disposition/reason from the status JSON with jq
+          # (installed on the self-hosted runner). Deliberately NOT `uv run python`:
+          # this step runs on burrow where uv is not on the login PATH, so shelling
+          # out to uv here is a fragile seam — a failed read would silently drop the
+          # real disposition and fall through to the exit-code guess.
           if [ -s "$REDTEAM_STATUS_PATH" ]; then
-            disp=$(uv run python -c "import json;print(json.load(open('$REDTEAM_STATUS_PATH')).get('disposition') or '')" 2>/dev/null || echo "")
-            reason=$(uv run python -c "import json;print(json.load(open('$REDTEAM_STATUS_PATH')).get('reason') or '')" 2>/dev/null || echo "")
+            disp=$(jq -r '.disposition // ""' "$REDTEAM_STATUS_PATH" 2>/dev/null || echo "")
+            reason=$(jq -r '.reason // ""' "$REDTEAM_STATUS_PATH" 2>/dev/null || echo "")
           fi
           if [ -z "$disp" ]; then
+            # Status file missing/unparseable -> a genuine infra failure. Map the
+            # exit code as a last resort; anything unrecognized is infra.
             case $rc in
               0) disp=clean ;;
               3) disp=regression ;;
@@ -165,7 +172,12 @@ jobs:
           echo "disposition=$disp" >> "$GITHUB_OUTPUT"
           echo "reason=$reason" >> "$GITHUB_OUTPUT"
           echo "body=$REDTEAM_ISSUE_BODY" >> "$GITHUB_OUTPUT"
-          [ "$disp" = "clean" ] && exit 0 || exit 1
+          # Findings are surfaced as issues in access-redteam, not as a red job.
+          # Only a genuine infra failure fails this job; clean/regression/scope/fix/
+          # outage all keep it green (a nightly that goes red on every finding just
+          # trains everyone to ignore it). The disposition is still recorded above
+          # for the downstream issue-filing steps.
+          [ "$disp" = "infra" ] && exit 1 || exit 0
 
       - name: Prune old redteam artifacts (keep last 14 runs)
         if: always()
