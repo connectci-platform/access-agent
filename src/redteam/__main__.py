@@ -20,8 +20,11 @@ from src.eval.judge import Judge
 
 from .gate import GateResult, JudgeMismatch, RedteamOutage, SurfaceOutage, run_gate
 from .replayer import redteam_headers
-from .report import flag_line, issue_body, outage_body, write_artifact
+from .report import findings_file_lines, outage_body, write_artifact
 from .suite import (
+    SuiteIncomplete,
+    SuiteKeyMismatch,
+    SuiteVersionMismatch,
     assert_suite_complete,
     assert_versions_match,
     join_suite,
@@ -180,13 +183,18 @@ def main_argv(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     try:
         result = asyncio.run(run_from_env())
-    except RedteamOutage as e:
+    except (RedteamOutage, SuiteVersionMismatch, SuiteKeyMismatch, SuiteIncomplete) as e:
         # An operational failure, NOT a redacted-regression finding: distinct message
         # and a distinct issue body so it never reads as "the agent regressed." One
-        # handler covers every outage subclass (JudgeOutage/JudgeMismatch and, later,
-        # AgentOutage/SurfaceOutage) — they're told apart by e.reason.
+        # handler covers every outage subclass (JudgeOutage/JudgeMismatch,
+        # AgentOutage/SurfaceOutage) plus the suite-drift exceptions from suite.py
+        # (Suite* aren't RedteamOutage subclasses — suite.py has no runtime import
+        # of gate.py, so broadening this handler avoids an import cycle) — they're
+        # told apart by e.reason. CRITICAL: a suite drift is routine (id-set churn)
+        # and str(e) may embed detail; routing it through this same redacted path
+        # (never str(e) to stdout) is what keeps prompt ids out of public Actions
+        # logs — see FIX 1 in the 2026-08-26 whole-branch review.
         _write_status("outage", e.reason, 0)
-        print(f"REDTEAM OUTAGE ({e.reason}): {e}")
         if args.emit_issue_body:
             body = _reject_in_repo(
                 Path(os.environ.get("REDTEAM_ISSUE_BODY", "issue_body.md")),
@@ -194,18 +202,26 @@ def main_argv(argv: list[str] | None = None) -> None:
             )
             body.write_text(outage_body(e.reason, str(e)))  # redaction: counts/reason only
         raise SystemExit(2) from e
-    regressions = [f for f in result.flags if f.kind == "candidate-regression"]
-    for f in result.flags:
-        print(flag_line(f))  # uses the Flag's precomputed hash — never recomputes from ""
+    regressions = [f for f in result.flags if f.tier == "defended"]
+    scope_findings = [f for f in result.flags if f.tier == "soft"]
+    fixes = [
+        f for f in result.flags if f.tier == "known-jailbreak"
+    ]  # candidate-fix: a tracked hole closed
+    all_findings = regressions + scope_findings + fixes
+    if args.emit_issue_body and all_findings:
+        body = _reject_in_repo(
+            Path(os.environ.get("REDTEAM_ISSUE_BODY", "issue_body.md")), "REDTEAM_ISSUE_BODY"
+        )
+        body.write_text("\n".join(findings_file_lines(all_findings)) + "\n")
     if regressions:
         _write_status("regression", None, len(regressions))
-        if args.emit_issue_body:
-            body = _reject_in_repo(
-                Path(os.environ.get("REDTEAM_ISSUE_BODY", "issue_body.md")),
-                "REDTEAM_ISSUE_BODY",
-            )
-            body.write_text(issue_body(regressions))
         raise SystemExit(3)
+    if scope_findings:
+        _write_status("scope", None, len(scope_findings))
+        raise SystemExit(0)  # scope finding does not fail the job
+    if fixes:
+        _write_status("fix", None, len(fixes))
+        raise SystemExit(0)  # good news, does not fail the job
     _write_status("clean", None, 0)
     raise SystemExit(0)
 

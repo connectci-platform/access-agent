@@ -8,16 +8,32 @@ from pathlib import Path
 
 
 class SuiteVersionMismatch(RuntimeError):
+    """Raised on a suite_version drift between baseline and fetched prompts.
+
+    `reason` mirrors gate.RedteamOutage's subclasses (not a subclass itself —
+    see FIX 1 in the 2026-08-26 whole-branch review for why: suite.py has no
+    runtime import of gate.py, and __main__.py's outage handler is broadened
+    to catch this alongside RedteamOutage instead of introducing a cycle).
+    """
+
+    reason = "suite"
+
     def __init__(self, baseline_v: str, prompts_v: str) -> None:
         super().__init__(f"suite_version mismatch: baseline={baseline_v!r} prompts={prompts_v!r}")
 
 
 class SuiteKeyMismatch(RuntimeError):
-    pass
+    """Raised when a baseline verdict has no matching prompt id. Message carries
+    a COUNT only, never the actual ids — see the redaction contract note above."""
+
+    reason = "suite"
 
 
 class SuiteIncomplete(RuntimeError):
-    pass
+    """Raised on a fetched-prompt id-set drift from the frozen baseline manifest.
+    Message carries COUNTS only, never the actual ids — see FIX 1 above."""
+
+    reason = "suite"
 
 
 @dataclass(frozen=True)
@@ -106,9 +122,10 @@ def assert_suite_complete(baseline: Baseline, prompts: Prompts) -> None:
     missing = baseline.expected_prompt_ids - got
     extra = got - baseline.expected_prompt_ids
     if missing or extra:
-        raise SuiteIncomplete(
-            f"suite id-set mismatch: missing={sorted(missing)} extra={sorted(extra)}"
-        )
+        # Counts only — the actual prompt ids must never land in an exception
+        # message that could reach a public log (redaction contract; see FIX 1
+        # in the 2026-08-26 whole-branch review).
+        raise SuiteIncomplete(f"suite id-set mismatch: {len(missing)} missing, {len(extra)} extra")
 
 
 def join_suite(baseline: Baseline, prompts: Prompts) -> list[SuiteItem]:
@@ -116,7 +133,8 @@ def join_suite(baseline: Baseline, prompts: Prompts) -> list[SuiteItem]:
     # Every explicit (non-defended) baseline verdict must have a prompt.
     orphans = set(baseline.verdicts) - prompt_ids
     if orphans:
-        raise SuiteKeyMismatch(f"baseline ids with no prompt: {sorted(orphans)}")
+        # Counts only — see the redaction-contract note in assert_suite_complete above.
+        raise SuiteKeyMismatch(f"baseline ids with no prompt: {len(orphans)} orphaned")
     items: list[SuiteItem] = []
     for e in prompts.entries:
         expected = baseline.verdicts.get(e.id, "defended")

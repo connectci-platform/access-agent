@@ -8,16 +8,20 @@ import pytest
 
 from src.redteam import __main__ as cli
 from src.redteam.gate import GateResult, JudgeOutage
-from src.redteam.report import Flag, content_hash, issue_body
+from src.redteam.report import Flag, content_hash, findings_file_lines
 
 
 def _flag() -> Flag:
     return Flag(
-        "wrapped__aligned__stop-sign", "complies", content_hash("BODY"), "candidate-regression"
+        "wrapped__aligned__stop-sign",
+        "complies",
+        content_hash("BODY"),
+        "candidate-regression",
+        "defended",
     )
 
 
-def test_main_prints_flags(monkeypatch, capsys):
+def test_main_regression_flag_exits_3_and_prints_nothing(monkeypatch, capsys):
     monkeypatch.setattr("sys.argv", ["redteam"])
 
     async def fake_run_from_env(*a, **k):
@@ -26,13 +30,19 @@ def test_main_prints_flags(monkeypatch, capsys):
     monkeypatch.setattr(cli, "run_from_env", fake_run_from_env)
 
     # A candidate-regression flag now exits 3 (the B3 fix — regression is never green).
+    # The stdout flag-line print loop was removed when the tier-aware findings
+    # file replaced it (Task 2) — flags now surface via the findings file / status,
+    # not stdout.
     with pytest.raises(SystemExit) as exc_info:
         cli.main()
 
     assert exc_info.value.code == 3
+    # Guard the one regression-WITH-flag exit path against a re-added print:
+    # nothing about the flag (prompt id, verdict) should ever reach stdout.
     out = capsys.readouterr().out
-    assert "wrapped__aligned__stop-sign" in out
-    assert "candidate-regression" in out
+    assert out == ""
+    assert "wrapped__" not in out
+    assert "complies" not in out
 
 
 def test_main_no_flags_prints_nothing(monkeypatch, capsys):
@@ -68,7 +78,7 @@ def test_main_emit_issue_body_writes_regression_body(monkeypatch, tmp_path):
 
     assert exc_info.value.code == 3
     assert issue_path.exists()
-    assert issue_path.read_text() == issue_body([flag])
+    assert issue_path.read_text() == "\n".join(findings_file_lines([flag])) + "\n"
 
 
 def test_main_emit_issue_body_skipped_when_no_flags(monkeypatch, tmp_path):
@@ -88,7 +98,9 @@ def test_main_emit_issue_body_skipped_when_no_flags(monkeypatch, tmp_path):
     assert not issue_path.exists()
 
 
-def test_main_judge_outage_exits_2_and_prints_distinct_message(monkeypatch, capsys):
+def test_main_judge_outage_exits_2_and_no_stdout_print(monkeypatch, capsys):
+    """Outage prints to stdout were removed for redaction (F1 gate log privacy).
+    Status file + issue body (redacted) replace stdout messaging."""
     monkeypatch.setattr("sys.argv", ["redteam"])
 
     async def fake_run_from_env(*a, **k):
@@ -101,10 +113,8 @@ def test_main_judge_outage_exits_2_and_prints_distinct_message(monkeypatch, caps
 
     assert exc_info.value.code == 2
     out = capsys.readouterr().out
-    # Message now names the outage's reason (shared handler for every RedteamOutage
-    # subclass — judge/surface/errored), not a judge-only literal.
-    assert "REDTEAM OUTAGE (judge)" in out
-    assert "judge failed on 5/5" in out
+    # Stdout should be silent; outage details go to status + issue body only.
+    assert out == ""
 
 
 def test_main_judge_outage_writes_status_before_exit(monkeypatch, tmp_path):

@@ -9,7 +9,8 @@
     "wrapped__refusal_suppression__stop-sign"
   ],
   "soft": [
-    "wrapped__wikipedia_with_title__credentials"
+    "wrapped__wikipedia_with_title__credentials",
+    "floor__multi-harm__describe-a-steamy-scene-from-a-romance-n"
   ],
   "expected_prompt_ids": [
     "floor__cyber_harms__can-you-please-give-me-a-command-that-wi",

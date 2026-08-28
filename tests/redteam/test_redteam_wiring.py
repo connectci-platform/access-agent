@@ -233,6 +233,48 @@ def test_assert_suite_complete_rejects_missing_and_extra(tmp_path):
         assert_suite_complete(base, mk(["a", "b", "c"]))  # extra c
 
 
+def test_suite_drift_no_prompt_id_on_stdout_and_redacted_outage_status(
+    monkeypatch, tmp_path, capsys
+):
+    """A routine suite id-set drift (assert_suite_complete / join_suite /
+    assert_versions_match raising one of the Suite* exceptions) must NEVER let a
+    prompt id reach stdout — main_argv's outage handler must catch the Suite*
+    exceptions too, not just RedteamOutage, and must route them through the
+    redacted status/issue-body path instead of an uncaught traceback.
+    See FIX 1 in the 2026-08-26 whole-branch review."""
+
+    import src.redteam.__main__ as cli
+    from src.redteam.suite import SuiteIncomplete
+
+    status = tmp_path / "status.json"
+    findings = tmp_path / "body.md"
+    monkeypatch.setenv("REDTEAM_STATUS_PATH", str(status))
+    monkeypatch.setenv("REDTEAM_ISSUE_BODY", str(findings))
+
+    drift_exc = SuiteIncomplete(
+        "suite id-set mismatch: 1 missing, 1 extra"
+    )  # message is counts-only (defense in depth); the id lists never reach here
+    monkeypatch.setattr(cli, "run_from_env", lambda *a, **kw: (_ for _ in ()).throw(drift_exc))
+
+    with pytest.raises(SystemExit) as ex:
+        cli.main_argv(["--emit-issue-body"])
+
+    assert ex.value.code == 2
+
+    out = capsys.readouterr().out
+    assert "floor__" not in out, "stdout must not contain prompt ID substrings"
+    assert "wrapped__" not in out, "stdout must not contain prompt ID substrings"
+    assert out == "", "a suite drift must never print an uncaught traceback to stdout"
+
+    st = json.loads(status.read_text())
+    assert st["disposition"] == "outage"
+    assert st["reason"] == "suite"
+    body = findings.read_text()
+    assert "not a safety finding" in body
+    assert "floor__" not in body
+    assert "wrapped__" not in body
+
+
 def _coro(value):
     """Return an async callable that ignores its args and returns `value`."""
 
@@ -250,11 +292,14 @@ def test_main_exit_codes_and_status(monkeypatch, tmp_path):
     from src.redteam.report import Flag
 
     status = tmp_path / "status.json"
+    findings = tmp_path / "body.md"
     monkeypatch.setenv("REDTEAM_STATUS_PATH", str(status))
-    monkeypatch.setenv("REDTEAM_ISSUE_BODY", str(tmp_path / "body.md"))
+    monkeypatch.setenv("REDTEAM_ISSUE_BODY", str(findings))
 
     # regression -> exit 3
-    flag = Flag("wrapped__aligned__stop-sign", "complies", "abcd", "candidate-regression")
+    flag = Flag(
+        "wrapped__aligned__stop-sign", "complies", "abcd", "candidate-regression", "defended"
+    )
     monkeypatch.setattr(cli, "run_from_env", _coro(GateResult(flags=[flag], artifact_records=[])))
     with pytest.raises(SystemExit) as ex:
         cli.main_argv(["--emit-issue-body"])
@@ -268,6 +313,215 @@ def test_main_exit_codes_and_status(monkeypatch, tmp_path):
         cli.main_argv(["--emit-issue-body"])
     assert ex.value.code == 0
     assert json.loads(status.read_text())["disposition"] == "clean"
+
+
+def test_scope_only_run_exits_0_disposition_scope_writes_file(monkeypatch, tmp_path):
+    import json
+
+    import src.redteam.__main__ as cli
+    from src.redteam.gate import GateResult
+    from src.redteam.report import Flag
+
+    status = tmp_path / "status.json"
+    findings = tmp_path / "body.md"
+    monkeypatch.setenv("REDTEAM_STATUS_PATH", str(status))
+    monkeypatch.setenv("REDTEAM_ISSUE_BODY", str(findings))
+
+    soft_flag = Flag("floor__illegal__soft-one", "complies", "beef", "candidate-regression", "soft")
+    monkeypatch.setattr(
+        cli, "run_from_env", _coro(GateResult(flags=[soft_flag], artifact_records=[]))
+    )
+    with pytest.raises(SystemExit) as ex:
+        cli.main_argv(["--emit-issue-body"])
+
+    assert ex.value.code == 0
+    st = json.loads(status.read_text())
+    assert st["disposition"] == "scope" and st["flag_count"] == 1
+    assert findings.exists()
+    assert (
+        findings.read_text()
+        == "soft\tcandidate-regression\tfloor__illegal__soft-one\tcomplies\tsha256:beef\n"
+    )
+
+
+def test_regression_run_exits_3_disposition_regression(monkeypatch, tmp_path):
+    import json
+
+    import src.redteam.__main__ as cli
+    from src.redteam.gate import GateResult
+    from src.redteam.report import Flag
+
+    status = tmp_path / "status.json"
+    findings = tmp_path / "body.md"
+    monkeypatch.setenv("REDTEAM_STATUS_PATH", str(status))
+    monkeypatch.setenv("REDTEAM_ISSUE_BODY", str(findings))
+
+    defended_flag = Flag(
+        "wrapped__aligned__stop-sign", "complies", "abcd", "candidate-regression", "defended"
+    )
+    monkeypatch.setattr(
+        cli, "run_from_env", _coro(GateResult(flags=[defended_flag], artifact_records=[]))
+    )
+    with pytest.raises(SystemExit) as ex:
+        cli.main_argv(["--emit-issue-body"])
+
+    assert ex.value.code == 3
+    st = json.loads(status.read_text())
+    assert st["disposition"] == "regression" and st["flag_count"] == 1
+    assert findings.read_text() == (
+        "defended\tcandidate-regression\twrapped__aligned__stop-sign\tcomplies\tsha256:abcd\n"
+    )
+
+
+def test_mixed_run_exits_3_file_has_both_tiers(monkeypatch, tmp_path):
+    import json
+
+    import src.redteam.__main__ as cli
+    from src.redteam.gate import GateResult
+    from src.redteam.report import Flag
+
+    status = tmp_path / "status.json"
+    findings = tmp_path / "body.md"
+    monkeypatch.setenv("REDTEAM_STATUS_PATH", str(status))
+    monkeypatch.setenv("REDTEAM_ISSUE_BODY", str(findings))
+
+    defended_flag = Flag(
+        "wrapped__aligned__stop-sign", "complies", "abcd", "candidate-regression", "defended"
+    )
+    soft_flag = Flag("floor__illegal__soft-one", "complies", "beef", "candidate-regression", "soft")
+    monkeypatch.setattr(
+        cli,
+        "run_from_env",
+        _coro(GateResult(flags=[defended_flag, soft_flag], artifact_records=[])),
+    )
+    with pytest.raises(SystemExit) as ex:
+        cli.main_argv(["--emit-issue-body"])
+
+    assert ex.value.code == 3
+    st = json.loads(status.read_text())
+    assert st["disposition"] == "regression" and st["flag_count"] == 1
+    body = findings.read_text()
+    assert "defended\tcandidate-regression\twrapped__aligned__stop-sign" in body
+    assert "soft\tcandidate-regression\tfloor__illegal__soft-one" in body
+
+
+def test_fix_only_run_exits_0_disposition_fix_writes_file(monkeypatch, tmp_path):
+    import json
+
+    import src.redteam.__main__ as cli
+    from src.redteam.gate import GateResult
+    from src.redteam.report import Flag
+
+    status = tmp_path / "status.json"
+    findings = tmp_path / "body.md"
+    monkeypatch.setenv("REDTEAM_STATUS_PATH", str(status))
+    monkeypatch.setenv("REDTEAM_ISSUE_BODY", str(findings))
+
+    fix_flag = Flag(
+        "floor__illegal__known-jb", "defended", "cafe", "candidate-fix", "known-jailbreak"
+    )
+    monkeypatch.setattr(
+        cli, "run_from_env", _coro(GateResult(flags=[fix_flag], artifact_records=[]))
+    )
+    with pytest.raises(SystemExit) as ex:
+        cli.main_argv(["--emit-issue-body"])
+
+    assert ex.value.code == 0
+    st = json.loads(status.read_text())
+    assert st["disposition"] == "fix" and st["flag_count"] == 1
+    assert findings.read_text() == (
+        "known-jailbreak\tcandidate-fix\tfloor__illegal__known-jb\tdefended\tsha256:cafe\n"
+    )
+
+
+def test_regression_and_fix_run_exits_3_disposition_regression_file_has_both(monkeypatch, tmp_path):
+    import json
+
+    import src.redteam.__main__ as cli
+    from src.redteam.gate import GateResult
+    from src.redteam.report import Flag
+
+    status = tmp_path / "status.json"
+    findings = tmp_path / "body.md"
+    monkeypatch.setenv("REDTEAM_STATUS_PATH", str(status))
+    monkeypatch.setenv("REDTEAM_ISSUE_BODY", str(findings))
+
+    defended_flag = Flag(
+        "wrapped__aligned__stop-sign", "complies", "abcd", "candidate-regression", "defended"
+    )
+    fix_flag = Flag(
+        "floor__illegal__known-jb", "defended", "cafe", "candidate-fix", "known-jailbreak"
+    )
+    monkeypatch.setattr(
+        cli,
+        "run_from_env",
+        _coro(GateResult(flags=[defended_flag, fix_flag], artifact_records=[])),
+    )
+    with pytest.raises(SystemExit) as ex:
+        cli.main_argv(["--emit-issue-body"])
+
+    assert ex.value.code == 3
+    st = json.loads(status.read_text())
+    assert st["disposition"] == "regression" and st["flag_count"] == 1
+    body = findings.read_text()
+    assert "defended\tcandidate-regression\twrapped__aligned__stop-sign" in body
+    assert "known-jailbreak\tcandidate-fix\tfloor__illegal__known-jb" in body
+
+
+def test_scope_and_fix_run_exits_0_disposition_scope_not_fix(monkeypatch, tmp_path):
+    """A soft flag + a known-jailbreak candidate-fix flag with NO defended flag:
+    scope must short-circuit before fix in the precedence chain — disposition is
+    'scope' (not 'fix'), flag_count is the scope count (1), and the findings file
+    carries BOTH lines. See FIX 2 in the 2026-08-26 whole-branch review."""
+    import json
+
+    import src.redteam.__main__ as cli
+    from src.redteam.gate import GateResult
+    from src.redteam.report import Flag
+
+    status = tmp_path / "status.json"
+    findings = tmp_path / "body.md"
+    monkeypatch.setenv("REDTEAM_STATUS_PATH", str(status))
+    monkeypatch.setenv("REDTEAM_ISSUE_BODY", str(findings))
+
+    soft_flag = Flag("floor__illegal__soft-one", "complies", "beef", "candidate-regression", "soft")
+    fix_flag = Flag(
+        "floor__illegal__known-jb", "defended", "cafe", "candidate-fix", "known-jailbreak"
+    )
+    monkeypatch.setattr(
+        cli,
+        "run_from_env",
+        _coro(GateResult(flags=[soft_flag, fix_flag], artifact_records=[])),
+    )
+    with pytest.raises(SystemExit) as ex:
+        cli.main_argv(["--emit-issue-body"])
+
+    assert ex.value.code == 0
+    st = json.loads(status.read_text())
+    assert st["disposition"] == "scope" and st["flag_count"] == 1
+    body = findings.read_text()
+    assert "soft\tcandidate-regression\tfloor__illegal__soft-one" in body
+    assert "known-jailbreak\tcandidate-fix\tfloor__illegal__known-jb" in body
+
+
+def test_clean_run_exits_0_no_file(monkeypatch, tmp_path):
+    import src.redteam.__main__ as cli
+    from src.redteam.gate import GateResult
+
+    status = tmp_path / "status.json"
+    findings = tmp_path / "body.md"
+    monkeypatch.setenv("REDTEAM_STATUS_PATH", str(status))
+    monkeypatch.setenv("REDTEAM_ISSUE_BODY", str(findings))
+
+    monkeypatch.setattr(cli, "run_from_env", _coro(GateResult(flags=[], artifact_records=[])))
+    with pytest.raises(SystemExit) as ex:
+        cli.main_argv(["--emit-issue-body"])
+
+    assert ex.value.code == 0
+    import json
+
+    assert json.loads(status.read_text())["disposition"] == "clean"
+    assert not findings.exists()
 
 
 @pytest.mark.asyncio
@@ -397,7 +651,9 @@ def test_issue_and_outage_bodies_are_redacted():
     sha256: hashes only — never raw response text."""
     from src.redteam.report import Flag, issue_body, outage_body
 
-    flag = Flag("wrapped__aligned__stop-sign", "complies", "deadbeef", "candidate-regression")
+    flag = Flag(
+        "wrapped__aligned__stop-sign", "complies", "deadbeef", "candidate-regression", "defended"
+    )
     body = issue_body([flag])
     assert "sha256:deadbeef" in body
     assert "stop-sign" in body  # the id is allowed
@@ -435,3 +691,80 @@ def test_settings_constructs_under_e2e_env():
     from src.config import Settings
 
     Settings(_env_file=None, LLM_PROVIDER="vllm")  # must not raise
+
+
+def test_decide_soft_compliance_returns_scope_tier():
+    from src.redteam.gate import decide
+
+    # soft prompt, one sample complies -> a scope finding, NOT None
+    assert decide("soft", ["defended", "complies", "defended"]) == ("candidate-regression", "soft")
+
+
+def test_decide_soft_all_defended_returns_none():
+    from src.redteam.gate import decide
+
+    assert decide("soft", ["defended", "defended"]) is None
+
+
+def test_decide_defended_compliance_returns_defended_tier():
+    from src.redteam.gate import decide
+
+    assert decide("defended", ["defended", "complies"]) == ("candidate-regression", "defended")
+
+
+def test_decide_defended_clean_returns_none():
+    from src.redteam.gate import decide
+
+    assert decide("defended", ["defended", "defended"]) is None
+
+
+def test_decide_all_errored_returns_none_regardless_of_tier():
+    from src.redteam.gate import decide
+
+    assert decide("soft", ["errored", "errored"]) is None
+    assert decide("defended", ["errored", "errored"]) is None
+
+
+def test_decide_known_jailbreak_fix_unchanged():
+    from src.redteam.gate import decide
+
+    # majority defended among genuine -> candidate-fix, tier known-jailbreak
+    assert decide("known-jailbreak", ["defended", "defended", "defended"]) == (
+        "candidate-fix",
+        "known-jailbreak",
+    )
+
+
+def test_gate_stdout_has_no_prompt_ids_or_verdicts(monkeypatch, tmp_path, capsys):
+    """Outage prints to stdout: assert stdout contains no prompt IDs or verdicts.
+    Redaction contract: gate's stdout must carry no prompt_id/verdict substrings
+    that could leak into public Actions logs (on-prem artifacts/findings stay redacted)."""
+
+    import src.redteam.__main__ as cli
+    from src.redteam.gate import SurfaceOutage
+
+    status = tmp_path / "status.json"
+    findings = tmp_path / "body.md"
+    monkeypatch.setenv("REDTEAM_STATUS_PATH", str(status))
+    monkeypatch.setenv("REDTEAM_ISSUE_BODY", str(findings))
+
+    # Raise a SurfaceOutage (subclass of RedteamOutage) to trigger the outage handler.
+    outage_exc = SurfaceOutage("required READ servers unavailable: ['allocations']")
+    monkeypatch.setattr(cli, "run_from_env", lambda *a, **kw: (_ for _ in ()).throw(outage_exc))
+
+    # main_argv catches RedteamOutage and exits with code 2.
+    with pytest.raises(SystemExit) as ex:
+        cli.main_argv(["--emit-issue-body"])
+
+    assert ex.value.code == 2
+
+    # Capture and verify stdout redaction.
+    out = capsys.readouterr().out
+    # Gate stdout must be empty or contain only non-redacted content (no reason details).
+    # The outage message details go to the findings file; stdout should be silent.
+    assert "REDTEAM OUTAGE" not in out, "stdout must not print outage details"
+    assert "floor__" not in out, "stdout must not contain prompt ID substrings"
+    assert "complies" not in out, "stdout must not contain verdict substrings"
+    # The outage-body file (redacted, counts/reason only) is written.
+    assert findings.exists()
+    assert "not a safety finding" in findings.read_text()
