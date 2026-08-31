@@ -42,6 +42,12 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --locked
 
+      # NOT redundant with the synthetic tool probe below. This trimmed e2e suite
+      # no longer asserts tool selection or answer facts (that moved to the probe +
+      # access-agent-reporting), but it UNIQUELY owns the scope-decline refusal check
+      # (did the agent refuse "run a job for me" vs. hallucinate doing it) — a
+      # zero-tool LLM behavior the probe structurally cannot express. Do not delete
+      # this step as "vestigial"; the probe does not replace it.
       - name: Run e2e tests
         id: e2e
         if: always()
