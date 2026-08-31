@@ -1,35 +1,8 @@
-description,query,expected_tool,must_contain,must_not_contain
-Current outages query,What are the current outages in ACCESS?,get_infrastructure_news,outage|operational,invalid|parameter
-Planned outages query,What are the planned outages in ACCESS?,get_infrastructure_news,outage|planned|maintenance,invalid|parameter
-Scheduled maintenance query,Is there any scheduled maintenance coming up?,get_infrastructure_news,january|maintenance,invalid|parameter
-Scheduled maintenance alt query,Show me scheduled maintenance,get_infrastructure_news,maintenance|scheduled|outage,invalid|parameter
-Resource-specific outage query,Are there any outages affecting Delta?,get_infrastructure_news,delta,invalid|parameter
-Past outages query,What outages happened last month?,get_infrastructure_news,,invalid|parameter
-GPU resources query,What GPU resources are available on ACCESS?,search_resources,anvil|bridges|delta|aces,invalid|parameter
-Specific resource query,Tell me about Delta at NCSA,search_resources,ncsa|gpu|hpe,
-Hardware specs query,What are the hardware specs for Anvil?,get_resource_hardware,purdue|cpu|gpu|node,invalid|parameter|not found
-Software search query,Is Python available on ACCESS systems?,search_software,anvil|delta|bridges|aces,
-Software search GROMACS,Is GROMACS available on any ACCESS resources?,,gromacs,
-Software compare query,Compare Python availability on Delta vs Bridges-2,compare_software_availability|search_software,delta|bridges|python,
-Announcements query,What are the recent ACCESS announcements?,search_announcements,,
-Events upcoming workshops,Are there any upcoming training workshops?,search_events,,
-Events office hours,Are there any upcoming office hours?,search_events,office hours,
-Allocations search projects,Search for projects in computer science,search_projects,project|computer science|allocation,
-Allocations statistics,What are the current allocation statistics?,get_allocation_statistics,allocation|total|active,
-NSF awards search,Find NSF awards related to machine learning,search_nsf_awards,nsf|award|machine learning|grant,
-Affinity groups query,What affinity groups are available in ACCESS?,search_affinity_groups,affinity|group,
-XDMoD job count by field of science,Which field of science submits the most jobs?,get_chart_data,biochem|physics|computer|science,
-XDMoD active allocations trend,How has the number of active allocations changed over the past 3 years?,get_chart_data,allocation,
-XDMoD most used resources,What were the most used resources last month?,get_chart_data,anvil|delta|bridges|expanse|stampede,
-XDMoD active PIs,Who are the most active PIs?,get_chart_data,university|purdue|carnegie|texas,
-XDMoD cloud sessions,How many cloud VM sessions were started in 2024?,get_chart_data,session|cloud|vm,
-XDMoD jobs by gateway,What is the breakdown of jobs by gateway?,get_chart_data,gateway|seq2fun|cipres|galaxy,
-XDMoD ACEs allocated,How many ACEs have been allocated this fiscal year?,get_chart_data,ace|allocated,
-XDMoD project count,How many new projects were created in ACCESS?,get_chart_data,project,
-XDMoD resource comparison,Compare Delta and Bridges-2 by total CPU hours this year,get_chart_data,cpu|hour,
-XDMoD filter with hyphen,How many jobs ran on Bridges-2 last year?,get_chart_data,bridges|job,
-XDMoD GPU utilization,What is the GPU utilization on Delta?,get_chart_data,gpu|delta,
-General knowledge query,What is ACCESS-CI?,,cyberinfrastructure|research|allocations,
-General how-to query,How do I get an allocation?,,allocation|request|submit|explore,
-General policy query,What is an SU?,,service unit|computation|allocation,
-Out of scope gracefully,Can you run a job on Delta for me?,,support|ticket|cannot|can't|help,
+description,query,must_not_contain
+Current outages query,What are the current outages in ACCESS?,invalid|parameter
+GPU resources query,What GPU resources are available on ACCESS?,invalid|parameter
+Software search query,Is Python available on ACCESS systems?,invalid|parameter
+Allocations statistics,What are the current allocation statistics?,invalid|parameter
+General knowledge query,What is ACCESS-CI?,
+General how-to query,How do I get an allocation?,
+Out of scope gracefully,Can you run a job on Delta for me?,

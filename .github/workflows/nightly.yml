@@ -43,13 +43,15 @@ jobs:
         run: uv sync --extra dev --locked
 
       - name: Run e2e tests
+        id: e2e
+        if: always()
         run: uv run pytest tests/ -m e2e -v
         env:
           VLLM_API_KEY: ${{ secrets.VLLM_API_KEY }}
           ACCESS_AI_API_KEY: ${{ secrets.ACCESS_AI_API_KEY }}
 
       - name: Open issue on failure
-        if: failure()
+        if: always() && steps.e2e.outcome == 'failure'
         uses: actions/github-script@v9
         with:
           script: |
@@ -60,6 +62,33 @@ jobs:
               title: `Nightly e2e failure — ${date}`,
               body: `The nightly live-dep test run failed. See the workflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
               labels: ['nightly-failure', 'bug']
+            });
+
+      - name: Run synthetic tool probe
+        id: probe
+        if: always()
+        run: uv run python -m src.probe
+        env:
+          # ENVIRONMENT=production is CRITICAL here: without it, config.mcp_server_urls
+          # falls back to docker-internal service names the runner can't reach. The
+          # probe needs no LLM, but ENVIRONMENT=production also trips the data-residency
+          # guard in src/config.py (Settings construction), which requires
+          # EVAL_JUDGE_BASE_URL to be set even though this probe never calls a judge.
+          ENVIRONMENT: production
+          EVAL_JUDGE_BASE_URL: ${{ secrets.EVAL_JUDGE_BASE_URL }}
+
+      - name: Open issue on probe failure
+        if: always() && steps.probe.outcome == 'failure'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const date = new Date().toISOString().split('T')[0];
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Tool health probe failure — ${date}`,
+              body: `The nightly synthetic per-tool probe found at least one MCP tool returning a backend error. See the workflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              labels: ['tool-health', 'bug']
             });
 
   redteam-gate:
