@@ -121,6 +121,20 @@ class TestSearchAccessDocuments:
         assert result["status_code"] is None
 
     @pytest.mark.asyncio
+    async def test_xdmod_backend_error_returns_error_dict(self, mock_client: Any) -> None:
+        # The xdmod path uses client.ask (not retrieve); its except block must also
+        # surface a backend error as a structured dict, same as the general path.
+        request = httpx.Request("POST", "https://uky.example/api/ask")
+        response = httpx.Response(400, request=request)
+        mock_client.ask.side_effect = httpx.HTTPStatusError(
+            "Bad Request", request=request, response=response
+        )
+        result = await _search_access_documents(query="anything", source="xdmod")
+        assert isinstance(result, dict)
+        assert "error" in result
+        assert result["status_code"] == 400
+
+    @pytest.mark.asyncio
     async def test_empty_response_returns_guidance(self, mock_client: Any) -> None:
         mock_client.retrieve.return_value = UKYRetrieval(chunks=[])
         result = await _search_access_documents(query="anything")
