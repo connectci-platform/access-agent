@@ -9,7 +9,9 @@ from src.tools.mcp_client import MCPToolResult
 SMALL_TABLE = [
     ProbeCase(server="allocations", tool_name="broken_tool", args={}),
     ProbeCase(server="events", tool_name="search_events", args={"date": "upcoming", "limit": 20}),
-    ProbeCase(server="nsf-awards", tool_name="search_nsf_awards", args={"query": "cyberinfrastructure"}),
+    ProbeCase(
+        server="nsf-awards", tool_name="search_nsf_awards", args={"query": "cyberinfrastructure"}
+    ),
 ]
 
 _RESULTS_BY_TOOL: dict[str, MCPToolResult] = {
