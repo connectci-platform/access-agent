@@ -31,7 +31,17 @@ class ToolCaller(Protocol):
 async def run_probe(client: ToolCaller, table: list[ProbeCase]) -> list[ProbeResult]:
     results: list[ProbeResult] = []
     for case in table:
-        outcome = await client.call_tool(case.server, case.tool_name, case.args)
+        try:
+            outcome = await client.call_tool(case.server, case.tool_name, case.args)
+        except Exception as exc:  # a broken tool must not abort the whole probe
+            results.append(
+                ProbeResult(
+                    tool_name=case.tool_name,
+                    success=False,
+                    error=f"probe call raised: {exc}",
+                )
+            )
+            continue
         results.append(
             ProbeResult(
                 tool_name=case.tool_name,

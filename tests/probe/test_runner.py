@@ -32,3 +32,26 @@ async def test_run_probe_flags_backend_error_and_passes_empty_result() -> None:
     assert [r.success for r in results] == [False, True, True]
     assert results[0].error == "HTTP 400"
     assert results[0].tool_name == "broken_tool"
+
+
+class RaisingMCPClient:
+    async def call_tool(
+        self, server: str, tool_name: str, arguments: dict[str, Any]
+    ) -> MCPToolResult:
+        if tool_name == "search_events":
+            raise RuntimeError("otel export failed")
+        return _RESULTS_BY_TOOL[tool_name]
+
+
+async def test_run_probe_isolates_a_raising_case_and_continues() -> None:
+    results = await run_probe(RaisingMCPClient(), SMALL_TABLE)
+
+    assert [r.tool_name for r in results] == [
+        "broken_tool",
+        "search_events",
+        "search_nsf_awards",
+    ]
+    assert [r.success for r in results] == [False, False, True]
+    assert results[1].tool_name == "search_events"
+    assert results[1].error is not None
+    assert "otel export failed" in results[1].error
