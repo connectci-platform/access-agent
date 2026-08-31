@@ -53,3 +53,18 @@ def test_main_defense_in_depth_catches_run_exception(capsys):
     out = capsys.readouterr().out
     assert "probe run failed to execute" in out
     assert "network exploded" in out
+
+
+def test_main_entrypoint_delegates_to_main_argv(monkeypatch):
+    # `main()` is the `python -m src.probe` entrypoint; it just delegates to
+    # main_argv. Stub main_argv so this touches no network and only exercises
+    # the entrypoint wrapper.
+    called = False
+
+    def fake_main_argv():
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(cli, "main_argv", fake_main_argv)
+    cli.main()
+    assert called
