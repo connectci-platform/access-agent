@@ -10,6 +10,10 @@ from src.probe import __main__ as cli
 from src.probe.runner import ProbeResult
 
 
+async def _fake_docs_probe_ok(client=None):
+    return ProbeResult("search_access_documents", True, None)
+
+
 def test_main_exits_nonzero_on_any_backend_error(capsys):
     async def fake_run(client, table):
         return [
@@ -18,7 +22,7 @@ def test_main_exits_nonzero_on_any_backend_error(capsys):
         ]
 
     with pytest.raises(SystemExit) as exc_info:
-        cli.main_argv([], _run=fake_run)
+        cli.main_argv([], _run=fake_run, _run_docs=_fake_docs_probe_ok)
 
     assert exc_info.value.code != 0
     out = capsys.readouterr().out
@@ -34,7 +38,7 @@ def test_main_exits_zero_when_all_pass(capsys):
         ]
 
     with pytest.raises(SystemExit) as exc_info:
-        cli.main_argv([], _run=fake_run)
+        cli.main_argv([], _run=fake_run, _run_docs=_fake_docs_probe_ok)
 
     assert exc_info.value.code == 0
     out = capsys.readouterr().out
@@ -47,12 +51,56 @@ def test_main_defense_in_depth_catches_run_exception(capsys):
         raise RuntimeError("network exploded")
 
     with pytest.raises(SystemExit) as exc_info:
-        cli.main_argv([], _run=fake_run)
+        cli.main_argv([], _run=fake_run, _run_docs=_fake_docs_probe_ok)
 
     assert exc_info.value.code != 0
     out = capsys.readouterr().out
     assert "probe run failed to execute" in out
     assert "network exploded" in out
+
+
+def test_main_includes_docs_result_in_summary_when_docs_pass(capsys):
+    async def fake_run(client, table):
+        return [ProbeResult("a", True, None)]
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main_argv([], _run=fake_run, _run_docs=_fake_docs_probe_ok)
+
+    assert exc_info.value.code == 0
+    out = capsys.readouterr().out
+    assert "OK: search_access_documents" in out
+
+
+def test_main_exits_nonzero_when_only_docs_fails(capsys):
+    async def fake_run(client, table):
+        return [ProbeResult("a", True, None)]
+
+    async def fake_docs_probe(client=None):
+        return ProbeResult("search_access_documents", False, "probe call raised: HTTP 400")
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main_argv([], _run=fake_run, _run_docs=fake_docs_probe)
+
+    assert exc_info.value.code != 0
+    out = capsys.readouterr().out
+    assert "OK: a" in out
+    assert "FAIL: search_access_documents — probe call raised: HTTP 400" in out
+
+
+def test_main_defense_in_depth_catches_docs_probe_exception(capsys):
+    async def fake_run(client, table):
+        return [ProbeResult("a", True, None)]
+
+    async def fake_docs_probe(client=None):
+        raise RuntimeError("docs probe blew up")
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main_argv([], _run=fake_run, _run_docs=fake_docs_probe)
+
+    assert exc_info.value.code != 0
+    out = capsys.readouterr().out
+    assert "probe run failed to execute" in out
+    assert "docs probe blew up" in out
 
 
 def test_main_entrypoint_delegates_to_main_argv(monkeypatch):

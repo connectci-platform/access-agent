@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from src.tools.mcp_client import MCPClient
 
+from .docs import probe_docs_tool
 from .runner import ProbeResult, run_probe
 from .table import PROBE_TABLE
 
@@ -20,11 +21,13 @@ if TYPE_CHECKING:
 def main_argv(
     argv: list[str] | None = None,
     _run: Callable[..., Coroutine[object, object, list[ProbeResult]]] = run_probe,
+    _run_docs: Callable[..., Coroutine[object, object, ProbeResult]] = probe_docs_tool,
 ) -> None:
     del argv  # no CLI flags yet; parameter kept for interface parity with redteam's main_argv
     try:
         client = MCPClient()
         results: list[ProbeResult] = asyncio.run(_run(client, PROBE_TABLE))
+        results.append(asyncio.run(_run_docs()))
     except Exception as exc:  # defense in depth: never a bare traceback for a nightly step
         print(f"probe run failed to execute: {exc}")
         raise SystemExit(1) from exc
