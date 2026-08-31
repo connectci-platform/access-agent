@@ -82,6 +82,12 @@ jobs:
           # EVAL_JUDGE_BASE_URL to be set even though this probe never calls a judge.
           ENVIRONMENT: production
           EVAL_JUDGE_BASE_URL: ${{ secrets.EVAL_JUDGE_BASE_URL }}
+          # The docs-tool probe case calls UKY chat-mcp, which needs the ACCESS-CI
+          # credential (resolves the chat-mcp key). Without it, is_chatmcp_configured()
+          # is false and the docs case reports a benign "skipped", so a missing secret
+          # degrades gracefully rather than false-failing — but set it so the docs
+          # tool is actually exercised.
+          ACCESS_AI_API_KEY: ${{ secrets.ACCESS_AI_API_KEY }}
 
       - name: Open issue on probe failure
         if: always() && steps.probe.outcome == 'failure'

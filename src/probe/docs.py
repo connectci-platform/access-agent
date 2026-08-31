@@ -42,6 +42,10 @@ async def probe_docs_tool(client: DocsRetriever | None = None) -> ProbeResult:
     else:
         retriever = client
 
+    # No config gate: the docs tool IS configured in production (verified:
+    # is_chatmcp_configured=True there via ACCESS_AI_API_KEY). A missing credential
+    # would make retrieve() fail here, which is the CORRECT signal — a docs tool the
+    # nightly cannot reach IS a real tool-health failure, not something to skip green.
     try:
         await retriever.retrieve(query=_DOCS_PROBE_QUERY)
     except Exception as exc:  # a broken docs tool must not abort the whole probe
