@@ -21,8 +21,9 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Literal
+from typing import Any, Literal
 
+import httpx
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
@@ -95,11 +96,24 @@ def _format_chunks(query: str, chunks: list[UKYChunk]) -> str:
     return "\n\n".join(parts)
 
 
+def _error_payload(exc: Exception) -> dict[str, Any]:
+    """Build the structured error dict returned on a backend failure.
+
+    Returning a dict (vs. the old prose string) lets ``_parse_tool_message``
+    downstream flag ``success=False`` — see module docstring context in
+    task-4-brief.md. ``status_code`` is populated for HTTP errors raised by
+    ``uky_client`` and ``None`` for transport-level errors (no response to
+    read a status from).
+    """
+    status_code = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+    return {"error": f"Documentation search failed: {exc}", "status_code": status_code}
+
+
 async def _search_access_documents_inner(
     query: str,
     source: Literal["general", "xdmod"] = "general",
     rp_name: str | None = None,
-) -> str:
+) -> str | dict[str, Any]:
     """Search the ACCESS-CI documentation RAG.
 
     The general corpus is retrieved as raw chunks from UKY's chat-mcp
@@ -136,7 +150,7 @@ async def _search_access_documents_inner(
             result = await client.ask(query=query, endpoint_type="xdmod", rp_name=rp_name)
         except Exception as exc:
             logger.warning("search_access_documents (xdmod) failed: %s", exc)
-            return f"Documentation search failed: {exc}. Try another approach."
+            return _error_payload(exc)
         return result.response or (
             "Documentation search returned no content for that query. "
             "Try rephrasing or call a different tool."
@@ -156,7 +170,7 @@ async def _search_access_documents_inner(
         retrieval = await client.retrieve(query=query, rp_name=rp_name)
     except Exception as exc:
         logger.warning("search_access_documents (chat-mcp) failed: %s", exc)
-        return f"Documentation search failed: {exc}. Try another approach."
+        return _error_payload(exc)
 
     record_retrieved_chunks(retrieval.chunks)
     return _format_chunks(query, retrieval.chunks)
@@ -166,7 +180,7 @@ async def _search_access_documents(
     query: str,
     source: Literal["general", "xdmod"] = "general",
     rp_name: str | None = None,
-) -> str:
+) -> str | dict[str, Any]:
     """Timing wrapper: guarantees exactly one timing record per call (1:1 invariant)."""
     start = time.monotonic()
     try:
