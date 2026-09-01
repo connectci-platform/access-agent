@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from src.agent.tools.access_documents import (
@@ -65,6 +66,7 @@ class TestSearchAccessDocuments:
             ]
         )
         result = await _search_access_documents(query="how do allocations work")
+        assert isinstance(result, str)
         assert "ACCESS allocations are awarded via XRAS." in result
         assert "https://allocations.access-ci.org/" in result
 
@@ -92,11 +94,45 @@ class TestSearchAccessDocuments:
         mock_client.retrieve.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_uky_exception_returns_string_not_raise(self, mock_client: Any) -> None:
-        mock_client.retrieve.side_effect = RuntimeError("connection reset")
+    async def test_uky_http_status_error_returns_error_dict_with_status_code(
+        self, mock_client: Any
+    ) -> None:
+        request = httpx.Request("POST", "https://uky.example/api/retrieve-docs")
+        response = httpx.Response(400, request=request)
+        mock_client.retrieve.side_effect = httpx.HTTPStatusError(
+            "Bad Request", request=request, response=response
+        )
         result = await _search_access_documents(query="anything")
-        assert "failed" in result.lower()
-        assert "connection reset" in result
+        assert isinstance(result, dict)
+        assert "error" in result
+        assert "failed" in result["error"].lower()
+        assert result["status_code"] == 400
+
+    @pytest.mark.asyncio
+    async def test_uky_request_error_returns_error_dict_with_none_status_code(
+        self, mock_client: Any
+    ) -> None:
+        request = httpx.Request("POST", "https://uky.example/api/retrieve-docs")
+        mock_client.retrieve.side_effect = httpx.RequestError("connection reset", request=request)
+        result = await _search_access_documents(query="anything")
+        assert isinstance(result, dict)
+        assert "error" in result
+        assert "connection reset" in result["error"]
+        assert result["status_code"] is None
+
+    @pytest.mark.asyncio
+    async def test_xdmod_backend_error_returns_error_dict(self, mock_client: Any) -> None:
+        # The xdmod path uses client.ask (not retrieve); its except block must also
+        # surface a backend error as a structured dict, same as the general path.
+        request = httpx.Request("POST", "https://uky.example/api/ask")
+        response = httpx.Response(400, request=request)
+        mock_client.ask.side_effect = httpx.HTTPStatusError(
+            "Bad Request", request=request, response=response
+        )
+        result = await _search_access_documents(query="anything", source="xdmod")
+        assert isinstance(result, dict)
+        assert "error" in result
+        assert result["status_code"] == 400
 
     @pytest.mark.asyncio
     async def test_empty_response_returns_guidance(self, mock_client: Any) -> None:

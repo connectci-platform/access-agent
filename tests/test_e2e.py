@@ -1,10 +1,14 @@
-"""End-to-end tests for the ACCESS Documentation Agent.
+"""End-to-end smoke tests for the ACCESS Documentation Agent.
 
 These tests run actual queries through the full agent pipeline against
-live MCP servers. They verify that:
-1. The planner selects appropriate tools with valid parameters
-2. MCP tools execute successfully
-3. The agent produces helpful responses
+live MCP servers. Per docs/superpowers/specs/2026-08-28-e2e-smoke-test-rescope-design.md,
+this suite no longer asserts tool selection or answer content/quality —
+those are owned by the synthetic per-tool probe (src/probe/, operation-level
+tool health) and access-agent-reporting (selection + quality, human/on-demand)
+respectively. This suite now only checks:
+1. The agent produces a non-empty answer (liveness)
+2. No raw backend error leaks into the answer (safety)
+3. The scope-decline case is refused rather than hallucinated (best-effort)
 
 Test cases are defined in e2e_test_cases.csv for easy maintenance.
 
@@ -37,6 +41,24 @@ pytestmark = [
 
 TEST_CASES_FILE = Path(__file__).parent / "e2e_test_cases.csv"
 
+# The one retained natural-language assertion: catches the agent hallucinating
+# "I ran the job" for a request it's out of scope to perform, rather than
+# refusing. No probe covers this. Best-effort / known-fragile: a keyword match
+# against free-form LLM prose, not a semantic check — broaden this set rather
+# than trust it will never need adjustment.
+SCOPE_DECLINE_DESCRIPTION = "Out of scope gracefully"
+SCOPE_DECLINE_KEYWORDS = [
+    "support",
+    "ticket",
+    "cannot",
+    "can't",
+    "help",
+    "unable",
+    "not able",
+    "don't have the ability",
+    "won't",
+]
+
 
 def load_test_cases():
     """Load test cases from CSV file."""
@@ -50,22 +72,6 @@ def get_test_id(case):
 
 
 _catalog_cache = None
-
-# The production model intermittently routes these usage-stats questions to
-# other live tools instead of get_chart_data; membership flickers run to run.
-# Tracked in #173 (tool-description fix in access-mcp). Remove entries as the
-# fix lands and the nightly stays green.
-XFAIL_CHART_SELECTION = {
-    "xdmod_most_used_resources",
-    "xdmod_active_pis",
-    "xdmod_jobs_by_gateway",
-    "xdmod_project_count",
-    "xdmod_active_allocations_trend",
-    "xdmod_gpu_utilization",
-    "xdmod_job_count_by_field_of_science",
-    "xdmod_aces_allocated",
-    "xdmod_filter_with_hyphen",
-}
 
 
 @pytest.fixture
@@ -117,18 +123,16 @@ def run_query(tool_catalog):
 
 
 @pytest.mark.parametrize("case", load_test_cases(), ids=get_test_id)
-async def test_e2e_query(case, run_query, request):
-    """Run a single e2e test case from CSV."""
-    if get_test_id(case) in XFAIL_CHART_SELECTION:
-        request.applymarker(
-            pytest.mark.xfail(
-                reason="model under-selects get_chart_data; see #173",
-                strict=False,
-            )
-        )
+async def test_e2e_query(case, run_query):
+    """Run a single e2e test case from CSV.
+
+    Tool selection (expected_tool) and answer-content assertions (must_contain)
+    are retired here — they are owned by the synthetic per-tool probe
+    (operation-level tool health) and access-agent-reporting (selection +
+    quality) respectively. See
+    docs/superpowers/specs/2026-08-28-e2e-smoke-test-rescope-design.md.
+    """
     query = case["query"]
-    expected_tool = case.get("expected_tool", "").strip()
-    must_contain = case.get("must_contain", "").strip()
     must_not_contain = case.get("must_not_contain", "").strip()
 
     # Run the query
@@ -138,24 +142,16 @@ async def test_e2e_query(case, run_query, request):
     assert result.get("final_answer"), f"Should produce an answer for: {query}"
 
     answer = result.get("final_answer", "").lower()
-    tools_used = result.get("tools_used", [])
 
-    # Check expected tool was used (pipe-separated = any-of, like must_contain)
-    if expected_tool:
-        accepted = [t.strip() for t in expected_tool.split("|")]
-        assert any(t in tools_used for t in accepted), (
-            f"Expected one of tools {accepted} not used. Got: {tools_used}"
-        )
-
-    # Check must_contain words (pipe-separated)
-    if must_contain:
-        words = [w.strip().lower() for w in must_contain.split("|")]
-        assert any(word in answer for word in words), (
-            f"Answer should contain one of {words}. Got: {answer[:200]}"
-        )
-
-    # Check must_not_contain words (pipe-separated)
+    # Check must_not_contain words (pipe-separated) — safety leak guard, e.g.
+    # raw backend error text ("invalid"/"parameter") should never surface.
     if must_not_contain:
         words = [w.strip().lower() for w in must_not_contain.split("|")]
         for word in words:
             assert word not in answer, f"Answer should not contain '{word}'. Got: {answer[:200]}"
+
+    # Scope-decline refusal check (best-effort/known-fragile keyword match).
+    if case.get("description", "").strip() == SCOPE_DECLINE_DESCRIPTION:
+        assert any(word in answer for word in SCOPE_DECLINE_KEYWORDS), (
+            f"Expected a refusal for out-of-scope request. Got: {answer[:200]}"
+        )
