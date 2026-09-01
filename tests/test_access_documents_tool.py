@@ -165,3 +165,176 @@ class TestSearchAccessDocuments:
         mock_client.retrieve.return_value = UKYRetrieval(chunks=[])
         result = await _search_access_documents(query="anything")
         assert "no excerpts" in result.lower()
+
+
+class TestInvalidRpNameRetry:
+    """Invalid-rp_name 400 triggers exactly one unscoped retry, with a caveat note."""
+
+    @staticmethod
+    def _invalid_rp_name_error() -> httpx.HTTPStatusError:
+        request = httpx.Request("POST", "https://uky.example/api/retrieve-docs")
+        response = httpx.Response(400, request=request, text="Invalid rp_name: 'bogus'")
+        return httpx.HTTPStatusError("Bad Request", request=request, response=response)
+
+    @staticmethod
+    def _other_400_error() -> httpx.HTTPStatusError:
+        request = httpx.Request("POST", "https://uky.example/api/retrieve-docs")
+        response = httpx.Response(400, request=request, text="Bad query syntax")
+        return httpx.HTTPStatusError("Bad Request", request=request, response=response)
+
+    @pytest.mark.asyncio
+    async def test_invalid_rp_name_400_retries_unscoped_with_note(self, mock_client: Any) -> None:
+        general_chunks = UKYRetrieval(
+            chunks=[
+                UKYChunk(
+                    rank=1,
+                    text="General ACCESS onboarding info.",
+                    url="https://access-ci.org/onboarding",
+                )
+            ]
+        )
+        mock_client.retrieve.side_effect = [self._invalid_rp_name_error(), general_chunks]
+
+        with patch("src.agent.tools.access_documents.record_retrieved_chunks") as mock_record:
+            result = await _search_access_documents(
+                query="what GPUs", source="general", rp_name="bogus"
+            )
+
+        assert isinstance(result, str)
+        assert "General ACCESS onboarding info." in result
+        assert "general ACCESS results" in result
+
+        assert mock_client.retrieve.await_count == 2
+        first_kwargs = mock_client.retrieve.await_args_list[0].kwargs
+        second_kwargs = mock_client.retrieve.await_args_list[1].kwargs
+        assert first_kwargs["rp_name"] == "bogus"
+        assert second_kwargs["rp_name"] is None
+
+        mock_record.assert_called_once_with(general_chunks.chunks)
+
+    @pytest.mark.asyncio
+    async def test_non_rp_name_400_does_not_retry(self, mock_client: Any) -> None:
+        mock_client.retrieve.side_effect = self._other_400_error()
+
+        result = await _search_access_documents(
+            query="what GPUs", source="general", rp_name="bogus"
+        )
+
+        assert isinstance(result, dict)
+        assert "error" in result
+        assert result["status_code"] == 400
+        assert mock_client.retrieve.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_non_400_error_does_not_retry(self, mock_client: Any) -> None:
+        request = httpx.Request("POST", "https://uky.example/api/retrieve-docs")
+        mock_client.retrieve.side_effect = httpx.RequestError("connection reset", request=request)
+
+        result = await _search_access_documents(
+            query="what GPUs", source="general", rp_name="bogus"
+        )
+
+        assert isinstance(result, dict)
+        assert "error" in result
+        assert mock_client.retrieve.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_invalid_rp_name_retry_also_fails_surfaces_error(self, mock_client: Any) -> None:
+        request = httpx.Request("POST", "https://uky.example/api/retrieve-docs")
+        mock_client.retrieve.side_effect = [
+            self._invalid_rp_name_error(),
+            httpx.RequestError("connection reset", request=request),
+        ]
+
+        result = await _search_access_documents(
+            query="what GPUs", source="general", rp_name="bogus"
+        )
+
+        assert isinstance(result, dict)
+        assert "error" in result
+        assert "connection reset" in result["error"]
+        assert mock_client.retrieve.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_xdmod_invalid_rp_name_retries_unscoped_with_note(self, mock_client: Any) -> None:
+        request = httpx.Request("POST", "https://uky.example/api/ask")
+        response = httpx.Response(400, request=request, text="Invalid rp_name: 'bogus'")
+        error = httpx.HTTPStatusError("Bad Request", request=request, response=response)
+        mock_client.ask.side_effect = [
+            error,
+            UKYResponse(response="XDMoD general usage summary.", endpoint_type="xdmod"),
+        ]
+
+        result = await _search_access_documents(
+            query="usage on bogus", source="xdmod", rp_name="bogus"
+        )
+
+        assert isinstance(result, str)
+        assert "XDMoD general usage summary." in result
+        assert "general ACCESS results" in result
+
+        assert mock_client.ask.await_count == 2
+        first_kwargs = mock_client.ask.await_args_list[0].kwargs
+        second_kwargs = mock_client.ask.await_args_list[1].kwargs
+        assert first_kwargs["rp_name"] == "bogus"
+        assert second_kwargs["rp_name"] is None
+
+    @pytest.mark.asyncio
+    async def test_xdmod_invalid_rp_name_retry_also_fails_surfaces_error(
+        self, mock_client: Any
+    ) -> None:
+        request = httpx.Request("POST", "https://uky.example/api/ask")
+        response = httpx.Response(400, request=request, text="Invalid rp_name: 'bogus'")
+        error = httpx.HTTPStatusError("Bad Request", request=request, response=response)
+        mock_client.ask.side_effect = [
+            error,
+            httpx.RequestError("connection reset", request=request),
+        ]
+
+        result = await _search_access_documents(
+            query="usage on bogus", source="xdmod", rp_name="bogus"
+        )
+
+        assert isinstance(result, dict)
+        assert "error" in result
+        assert "connection reset" in result["error"]
+        assert mock_client.ask.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_400_with_other_status_body_is_not_treated_as_invalid_rp_name(
+        self, mock_client: Any
+    ) -> None:
+        # A non-400 status must short-circuit _is_invalid_rp_name before the body
+        # is even inspected (covers the status_code != 400 branch explicitly).
+        request = httpx.Request("POST", "https://uky.example/api/retrieve-docs")
+        response = httpx.Response(500, request=request, text="invalid rp_name: 'bogus'")
+        error = httpx.HTTPStatusError("Server Error", request=request, response=response)
+        mock_client.retrieve.side_effect = error
+
+        result = await _search_access_documents(
+            query="what GPUs", source="general", rp_name="bogus"
+        )
+
+        assert isinstance(result, dict)
+        assert "error" in result
+        assert result["status_code"] == 500
+        assert mock_client.retrieve.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_successful_scoped_call_has_no_note(self, mock_client: Any) -> None:
+        mock_client.retrieve.return_value = UKYRetrieval(
+            chunks=[
+                UKYChunk(
+                    rank=1,
+                    text="Delta-specific GPU details.",
+                    url="https://access-ci.org/delta",
+                )
+            ]
+        )
+        result = await _search_access_documents(
+            query="what GPUs", source="general", rp_name="delta"
+        )
+        assert isinstance(result, str)
+        assert "Delta-specific GPU details." in result
+        assert "general ACCESS results" not in result
+        assert mock_client.retrieve.await_count == 1

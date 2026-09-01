@@ -106,6 +106,21 @@ def _normalize_rp_name(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
+_SCOPE_DROPPED_NOTE = (
+    "(Note: documentation could not be scoped to the requested resource; "
+    "showing general ACCESS results.)\n\n"
+)
+
+
+def _is_invalid_rp_name(exc: Exception) -> bool:
+    """True iff ``exc`` is UKY's 400 for an rp_name it doesn't recognize."""
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return False
+    if exc.response.status_code != 400:
+        return False
+    return "invalid rp_name" in exc.response.text.lower()
+
+
 def _error_payload(exc: Exception) -> dict[str, Any]:
     """Build the structured error dict returned on a backend failure.
 
@@ -117,6 +132,55 @@ def _error_payload(exc: Exception) -> dict[str, Any]:
     """
     status_code = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
     return {"error": f"Documentation search failed: {exc}", "status_code": status_code}
+
+
+async def _retry_xdmod_unscoped(
+    query: str, rp_name: str | None, exc: Exception
+) -> dict[str, Any] | str | None:
+    """Handle the xdmod except-block's invalid-rp_name retry.
+
+    Returns ``None`` if ``exc`` doesn't qualify for a retry (caller should
+    fall through to its own ``_error_payload(exc)``); otherwise returns the
+    final str/dict result of the retry attempt.
+    """
+    if not rp_name or not _is_invalid_rp_name(exc):
+        return None
+    logger.warning("search_access_documents: UKY rejected rp_name=%r; retrying unscoped", rp_name)
+    client = get_uky_client()
+    try:
+        result = await client.ask(query=query, endpoint_type="xdmod", rp_name=None)
+    except Exception as exc2:
+        logger.warning("search_access_documents unscoped retry failed: %s", exc2)
+        return _error_payload(exc2)
+    return _SCOPE_DROPPED_NOTE + (
+        result.response
+        or (
+            "Documentation search returned no content for that query. "
+            "Try rephrasing or call a different tool."
+        )
+    )
+
+
+async def _retry_general_unscoped(
+    query: str, rp_name: str | None, exc: Exception
+) -> dict[str, Any] | str | None:
+    """Handle the general except-block's invalid-rp_name retry.
+
+    Returns ``None`` if ``exc`` doesn't qualify for a retry (caller should
+    fall through to its own ``_error_payload(exc)``); otherwise returns the
+    final str/dict result of the retry attempt.
+    """
+    if not rp_name or not _is_invalid_rp_name(exc):
+        return None
+    logger.warning("search_access_documents: UKY rejected rp_name=%r; retrying unscoped", rp_name)
+    client = get_uky_client()
+    try:
+        retrieval = await client.retrieve(query=query, rp_name=None)
+    except Exception as exc2:
+        logger.warning("search_access_documents unscoped retry failed: %s", exc2)
+        return _error_payload(exc2)
+    record_retrieved_chunks(retrieval.chunks)
+    return _SCOPE_DROPPED_NOTE + _format_chunks(query, retrieval.chunks)
 
 
 async def _search_access_documents_inner(
@@ -162,6 +226,9 @@ async def _search_access_documents_inner(
         try:
             result = await client.ask(query=query, endpoint_type="xdmod", rp_name=rp_name)
         except Exception as exc:
+            retried = await _retry_xdmod_unscoped(query, rp_name, exc)
+            if retried is not None:
+                return retried
             logger.warning("search_access_documents (xdmod) failed: %s", exc)
             return _error_payload(exc)
         return result.response or (
@@ -182,6 +249,9 @@ async def _search_access_documents_inner(
     try:
         retrieval = await client.retrieve(query=query, rp_name=rp_name)
     except Exception as exc:
+        retried = await _retry_general_unscoped(query, rp_name, exc)
+        if retried is not None:
+            return retried
         logger.warning("search_access_documents (chat-mcp) failed: %s", exc)
         return _error_payload(exc)
 
