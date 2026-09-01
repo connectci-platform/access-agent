@@ -145,7 +145,9 @@ async def _retry_xdmod_unscoped(
     """
     if not rp_name or not _is_invalid_rp_name(exc):
         return None
-    logger.warning("search_access_documents: UKY rejected rp_name=%r; retrying unscoped", rp_name)
+    logger.warning(
+        "search_access_documents (xdmod): UKY rejected rp_name=%r; retrying unscoped", rp_name
+    )
     client = get_uky_client()
     try:
         result = await client.ask(query=query, endpoint_type="xdmod", rp_name=None)
@@ -172,7 +174,9 @@ async def _retry_general_unscoped(
     """
     if not rp_name or not _is_invalid_rp_name(exc):
         return None
-    logger.warning("search_access_documents: UKY rejected rp_name=%r; retrying unscoped", rp_name)
+    logger.warning(
+        "search_access_documents (general): UKY rejected rp_name=%r; retrying unscoped", rp_name
+    )
     client = get_uky_client()
     try:
         retrieval = await client.retrieve(query=query, rp_name=None)
