@@ -20,6 +20,7 @@ synthesis endpoint. The tool's outward parameter shape is unchanged.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any, Literal
 
@@ -97,6 +98,14 @@ def _format_chunks(query: str, chunks: list[UKYChunk]) -> str:
     return "\n\n".join(parts)
 
 
+def _normalize_rp_name(s: str) -> str:
+    # UKY accepts short lowercase slugs (bridges2, delta). The LLM may produce a
+    # display-name variant (Bridges-2); normalize to the slug shape. No-op on
+    # already-valid slugs (verified against UKY's set). Residual mismatches are
+    # caught by the unscoped retry (a later task).
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
 def _error_payload(exc: Exception) -> dict[str, Any]:
     """Build the structured error dict returned on a backend failure.
 
@@ -138,6 +147,9 @@ async def _search_access_documents_inner(
     if rp_name and not registry.scoped_rag_enabled():
         logger.info("search_access_documents: dropping rp_name=%s (scoped RAG disabled)", rp_name)
         rp_name = None
+
+    if rp_name:
+        rp_name = _normalize_rp_name(rp_name)
 
     # XDMoD: legacy synthesis endpoint.
     if source == "xdmod":

@@ -87,6 +87,32 @@ class TestSearchAccessDocuments:
         assert kwargs["rp_name"] == "delta"
 
     @pytest.mark.asyncio
+    async def test_rp_name_normalized_before_call(self, mock_client: Any) -> None:
+        # A guessed display-name variant ('Bridges-2') must reach UKY as the slug.
+        mock_client.retrieve.return_value = UKYRetrieval(chunks=[])
+        await _search_access_documents(query="what GPUs", source="general", rp_name="Bridges-2")
+        kwargs = mock_client.retrieve.await_args.kwargs
+        assert kwargs["rp_name"] == "bridges2"
+
+    @pytest.mark.asyncio
+    async def test_normalize_noop_on_valid_slug(self, mock_client: Any) -> None:
+        # An already-valid slug must not be corrupted by normalization.
+        mock_client.retrieve.return_value = UKYRetrieval(chunks=[])
+        await _search_access_documents(query="what GPUs", source="general", rp_name="bridges2")
+        kwargs = mock_client.retrieve.await_args.kwargs
+        assert kwargs["rp_name"] == "bridges2"
+
+    @pytest.mark.asyncio
+    async def test_rp_name_normalized_before_xdmod_call(self, mock_client: Any) -> None:
+        # The xdmod path (client.ask) must also receive the normalized value.
+        mock_client.ask.return_value = UKYResponse(response="XDMoD fields:", endpoint_type="xdmod")
+        await _search_access_documents(
+            query="usage on bridges", source="xdmod", rp_name="Bridges-2"
+        )
+        kwargs = mock_client.ask.await_args.kwargs
+        assert kwargs["rp_name"] == "bridges2"
+
+    @pytest.mark.asyncio
     async def test_unconfigured_client_returns_user_visible_string(self, mock_client: Any) -> None:
         mock_client.is_chatmcp_configured = False
         result = await _search_access_documents(query="anything")
