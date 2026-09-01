@@ -73,21 +73,15 @@ jobs:
       - name: Run synthetic tool probe
         id: probe
         if: always()
-        run: uv run python -m src.probe
-        env:
-          # ENVIRONMENT=production is CRITICAL here: without it, config.mcp_server_urls
-          # falls back to docker-internal service names the runner can't reach. The
-          # probe needs no LLM, but ENVIRONMENT=production also trips the data-residency
-          # guard in src/config.py (Settings construction), which requires
-          # EVAL_JUDGE_BASE_URL to be set even though this probe never calls a judge.
-          ENVIRONMENT: production
-          EVAL_JUDGE_BASE_URL: ${{ secrets.EVAL_JUDGE_BASE_URL }}
-          # The docs-tool probe case calls UKY chat-mcp, which needs the ACCESS-CI
-          # credential (resolves the chat-mcp key). Without it, is_chatmcp_configured()
-          # is false and the docs case reports a benign "skipped", so a missing secret
-          # degrades gracefully rather than false-failing — but set it so the docs
-          # tool is actually exercised.
-          ACCESS_AI_API_KEY: ${{ secrets.ACCESS_AI_API_KEY }}
+        # Source the deployed agent's own .env so the probe authenticates with the
+        # same credentials the running container uses (MCP_API_KEY, ACCESS_AI_API_KEY,
+        # EVAL_JUDGE_BASE_URL) — no second copy to drift out of sync. ENVIRONMENT is
+        # forced to production so mcp_server_urls resolves to reachable hosts.
+        run: |
+          set -a
+          . "$HOME/access-agent/.env"
+          set +a
+          ENVIRONMENT=production uv run python -m src.probe
 
       - name: Open issue on probe failure
         if: always() && steps.probe.outcome == 'failure'
