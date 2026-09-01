@@ -29,9 +29,10 @@ software reference, login portals, and similar reference material. \
 Pass `source='xdmod'` for XDMoD features/dashboards/metrics \
 documentation and aggregate-across-ACCESS questions (job counts, CPU \
 hours, GPU utilization, gateway/project/storage/capacity totals); \
-otherwise leave `source` as 'general'. Pass `rp_name` (e.g. 'delta', \
-'bridges-2', 'expanse', 'anvil') when scoping to a specific resource \
-provider.
+otherwise leave `source` as 'general'. When scoping to a specific \
+resource provider, pass `rp_name` as the resource name lowercased with \
+spaces and punctuation removed (e.g. 'Bridges-2' -> 'bridges2', 'Delta' \
+-> 'delta').
 
 2. **Then enrich with MCP tools where the topic touches live data.** \
 The documentation gives you context, policy, and stable reference \

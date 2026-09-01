@@ -61,10 +61,11 @@ class _SearchAccessDocumentsArgs(BaseModel):
     rp_name: str | None = Field(
         default=None,
         description=(
-            "Optional resource provider slug (e.g. 'delta', 'bridges-2', "
-            "'expanse', 'anvil') to scope the search to that RP's "
-            "documentation set. Leave unset for cross-resource or "
-            "general-process questions."
+            "Optional resource provider slug to scope the search to that RP's "
+            "documentation set. The slug is the resource name lowercased with "
+            "spaces and punctuation removed (e.g. 'Bridges-2' -> 'bridges2', "
+            "'Delta' -> 'delta', 'Stampede3' -> 'stampede3'). Leave unset for "
+            "cross-resource or general-process questions."
         ),
     )
 
