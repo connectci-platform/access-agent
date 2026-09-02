@@ -70,7 +70,6 @@ async def main():
     print()
     print("=== RESULT ===")
     print(f"Tools used: {result.get('tools_used', [])}")
-    print(f"Strategy: {result.get('execution_strategy')}")
     print()
     print("Answer:")
     print(result.get("final_answer", "No answer"))

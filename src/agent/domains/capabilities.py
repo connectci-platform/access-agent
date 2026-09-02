@@ -7,10 +7,12 @@ three runtime components read from:
 
 1. **Tool catalog loader** (``src.tools.registry.ToolRegistry``) filters
    the MCP catalog to only servers whose owning capability is enabled.
-2. **RAG answer node** consults ``enabled_rag_endpoints()`` before calling
-   the RAG service, and ``scoped_rag_enabled()`` before doing scoped lookups.
-3. **Graph router** (``route_after_rag``) and **domain agent node** check
-   ``is_domain_enabled()`` before dispatching to a domain agent.
+2. **Doc-search tool** (``search_access_documents``) consults
+   ``enabled_rag_endpoints()`` before calling the RAG service, and
+   ``scoped_rag_enabled()`` before doing scoped lookups.
+3. ``is_domain_enabled()`` remains as a registry query (exercised by
+   tests); the legacy graph router and domain-agent nodes that consumed
+   it were removed with the tool-calling-loop migration.
 
 The operator interface is two env vars with deny-wins semantics:
 
@@ -352,7 +354,7 @@ class CapabilityRegistry:
     def enabled_rag_endpoints(self) -> set[str]:
         """Set of RAG endpoints ('general', 'xdmod') enabled.
 
-        Used by rag_answer_node to skip calls to disabled endpoints.
+        Used by the search_access_documents tool to skip disabled endpoints.
         """
         endpoints: set[str] = set()
         for cap in self._capabilities.values():
