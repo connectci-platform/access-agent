@@ -6,6 +6,14 @@ path: it decides for itself when to consult docs by calling
 mixed into its catalog and picks them up based on user intent.
 Per-domain choreographies (announcements preview/confirm/create,
 JSM field-gather) are appended to this prompt.
+
+JWT-gate seam: per-user XDMoD routing (`get_user_data` /
+`get_smart_filters`) was removed from the enrichment-paths list while
+the `extract_xdmod_data` capability is disabled in production
+(DISABLED_CAPABILITIES — see capabilities.py, pending the XDMoD
+per-user token flow). The prompt currently tells the model per-user
+usage is unavailable and points at xdmod.access-ci.org. When that
+capability is re-enabled, restore the per-user routing here.
 """
 
 from __future__ import annotations
@@ -27,9 +35,10 @@ benefits from grounding in ACCESS-CI's documentation — how-to guides \
 (what is ACCESS, how SUs work, what's an allocation), hardware and \
 software reference, login portals, and similar reference material. \
 Pass `source='xdmod'` for XDMoD features/dashboards/metrics \
-documentation and aggregate-across-ACCESS questions (job counts, CPU \
-hours, GPU utilization, gateway/project/storage/capacity totals); \
-otherwise leave `source` as 'general'. When scoping to a specific \
+documentation — what metrics exist and how to interpret them. For the \
+actual current numbers (job counts, CPU hours, GPU utilization, \
+gateway/project/storage/capacity totals) use `get_chart_data`, not doc \
+search; otherwise leave `source` as 'general'. When scoping to a specific \
 resource provider, pass `rp_name` as the resource name lowercased with \
 spaces and punctuation removed (e.g. 'Bridges-2' -> 'bridges2', 'Delta' \
 -> 'delta').
@@ -56,9 +65,13 @@ project lookups → `search_projects`
 tools
    - NSF award lookups, award-to-resource crosswalks → \
 `search_nsf_awards`
-   - XDMoD usage metrics, "my usage last quarter", hardware/job-level \
-filters → `get_user_data` or `get_smart_filters` (these need an \
-authenticated acting user for personal data)
+   - Usage statistics, counts, and trends — job counts, CPU/GPU \
+hours, utilization, most-used resources, active PIs, allocation usage \
+("how many jobs ran on Delta last month") → `get_chart_data`. \
+Per-user XDMoD extracts ("my usage last quarter") are NOT available \
+through this assistant yet; say so plainly and point the user to \
+https://xdmod.access-ci.org for their personal usage — do not attempt \
+it with other tools.
    - Creating/updating/deleting announcements → see the Announcements \
 workflow below.
    - Filing a support ticket / login-issue ticket / security report \
