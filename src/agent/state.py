@@ -180,9 +180,6 @@ class AgentState(TypedDict):
     # Read by telemetry/spans.py for span attributes; not written on the current path.
     planned_tools: Annotated[list[ToolCall], "Tools selected for execution"]
 
-    # Read by api/routes.py for response metadata; not written on the current path.
-    execution_strategy: Literal["sequential", "parallel", "mixed"]
-
     # Loop populates these as it calls tools.
     tool_results: Annotated[list[ToolResult], "Results from tool execution"]
     tools_used: Annotated[
@@ -250,7 +247,6 @@ def create_initial_state(
         rag_matches=[],
         query_analysis=None,
         planned_tools=[],
-        execution_strategy="parallel",
         # Written by the loop as it runs.
         tool_results=[],
         tools_used=[],

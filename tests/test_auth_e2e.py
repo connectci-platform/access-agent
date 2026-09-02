@@ -107,7 +107,6 @@ FAKE_AGENT_RESULT = {
     "tools_used": [],
     "query_analysis": None,
     "query_classification": None,
-    "execution_strategy": "test",
 }
 
 

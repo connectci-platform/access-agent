@@ -337,7 +337,6 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                 "agent": "access-documentation-langgraph",
                 "tool_count": len(tools_used),
                 "tools_used": tools_used,
-                "execution_strategy": final_state.get("execution_strategy", "parallel"),
                 "checkpointing_enabled": USE_CHECKPOINTING,
                 "duration_ms": duration_ms,
                 "classification": classification_info,
