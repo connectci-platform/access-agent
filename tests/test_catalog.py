@@ -223,6 +223,42 @@ class TestAggregatorCapabilityFilter:
         assert "xdmod-data__tool" not in refreshed["quick_lookup"]
 
     @pytest.mark.asyncio
+    async def test_compute_resources_is_owned_and_retained(self, httpx_mock: HTTPXMock):
+        """compute-resources had no owning capability until 2026-09-03 —
+        the agent silently lost search_resources/get_resource_hardware. Pin
+        the ownership so the fail-closed filter can't orphan it again."""
+        from src.agent.domains.capabilities import get_capability_registry
+
+        assert "compute-resources" in get_capability_registry().enabled_mcp_servers()
+
+        urls = {"compute-resources": "http://compute-resources:3000"}
+        self._mock_both(httpx_mock, urls)
+        aggregator = CatalogAggregator(server_urls=urls)
+        catalog = await aggregator.fetch_catalog()
+        assert "compute-resources" in [s["server"] for s in catalog["servers"]]
+
+    @pytest.mark.asyncio
+    async def test_all_servers_filtered_reports_healthy(self, httpx_mock: HTTPXMock):
+        """Degenerate pin: with every fetched server capability-filtered,
+        counts are 0/0 and /health stays "healthy" — disabled-by-config is
+        an operator choice, not an outage. (A genuinely down enabled server
+        still degrades; see test_down_enabled_server_still_degrades_health.)"""
+        from src.api import routes
+        from src.config import settings
+
+        urls = {"xdmod-data": "http://xdmod-data:3000"}
+        self._mock_both(httpx_mock, urls)
+
+        with patch.object(settings, "DISABLED_CAPABILITIES", "extract_xdmod_data"):
+            aggregator = CatalogAggregator(server_urls=urls)
+            catalog = await aggregator.fetch_catalog()
+            with patch.object(routes, "get_catalog_aggregator", return_value=aggregator):
+                result = await routes.health_check()
+
+        assert catalog["total_servers"] == catalog["servers_available"] == 0
+        assert result["status"] == "healthy"
+
+    @pytest.mark.asyncio
     async def test_unknown_server_is_dropped(self, httpx_mock: HTTPXMock):
         """A server no capability owns is filtered (fail closed), not passed."""
         urls = {"allocations": "http://allocations:3000", "mystery": "http://mystery:3000"}
@@ -340,6 +376,78 @@ class TestRefreshInvalidatesRegistry:
         ):
             await routes.get_catalog(refresh=True)
             assert routes._registry is None
+
+    @pytest.mark.asyncio
+    async def test_failed_refresh_keeps_registry(self):
+        """A refresh whose fetch raises must 500 and leave the cached
+        registry intact — never invalidate on failure."""
+        from fastapi import HTTPException
+
+        from src.api import routes
+
+        class _BoomAggregator:
+            async def fetch_catalog(self, force_refresh: bool = False):
+                raise RuntimeError("all servers on fire")
+
+        sentinel = object()
+        with (
+            patch.object(routes, "get_catalog_aggregator", return_value=_BoomAggregator()),
+            patch.object(routes, "_registry", sentinel),
+        ):
+            with pytest.raises(HTTPException):
+                await routes.refresh_catalog()
+            assert routes._registry is sentinel
+
+    @pytest.mark.asyncio
+    async def test_blip_refresh_keeps_registry(self, httpx_mock: HTTPXMock):
+        """A refresh that catches every MCP server down (per-server failures
+        don't fail the fetch) must not be adopted into the agent — an
+        unauthenticated refresh timed during a blip would otherwise strip
+        the agent's tools until the next refresh or restart."""
+        from src.api import routes
+
+        httpx_mock.add_response(
+            method="GET",
+            url="http://allocations:3000/tools",
+            status_code=500,
+        )
+        aggregator = CatalogAggregator(server_urls={"allocations": "http://allocations:3000"})
+        sentinel = object()
+        with (
+            patch.object(routes, "get_catalog_aggregator", return_value=aggregator),
+            patch.object(routes, "_registry", sentinel),
+        ):
+            await routes.refresh_catalog()
+            assert routes._registry is sentinel
+
+    @pytest.mark.asyncio
+    async def test_rebuilt_registry_reflects_refreshed_catalog(self, httpx_mock: HTTPXMock):
+        """End to end: after a successful refresh, the rebuilt registry
+        serves the refreshed, capability-filtered catalog — the disabled
+        server's tools are gone from what the agent sees."""
+        from src.api import routes
+        from src.config import settings
+
+        urls = {"allocations": "http://allocations:3000", "xdmod-data": "http://xdmod-data:3000"}
+        for name, url in urls.items():
+            httpx_mock.add_response(
+                method="GET",
+                url=f"{url}/tools",
+                json={"tools": [{"name": f"{name}__tool", "description": f"{name} tool"}]},
+            )
+
+        with patch.object(settings, "DISABLED_CAPABILITIES", "extract_xdmod_data"):
+            aggregator = CatalogAggregator(server_urls=urls)
+            sentinel = object()
+            with (
+                patch.object(routes, "get_catalog_aggregator", return_value=aggregator),
+                patch.object(routes, "_registry", sentinel),
+            ):
+                await routes.refresh_catalog()
+                assert routes._registry is None
+                rebuilt = await routes.get_registry()
+                assert "allocations__tool" in rebuilt.tools
+                assert "xdmod-data__tool" not in rebuilt.tools
 
     @pytest.mark.asyncio
     async def test_get_without_refresh_keeps_registry(self, httpx_mock: HTTPXMock):

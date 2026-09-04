@@ -85,11 +85,17 @@ async def tool_catalog():
     if _catalog_cache is None:
         import asyncio
 
+        from src.agent.domains.capabilities import get_capability_registry
         from src.config import settings
         from src.tools import CatalogAggregator
 
         aggregator = CatalogAggregator(timeout=15.0)
-        expected = len(settings.mcp_server_urls)
+        # The aggregator capability-filters every build, so the reachable
+        # ceiling is the ENABLED server count, not the configured count —
+        # comparing against the raw URL map would defeat the retry's early
+        # exit and always burn all attempts.
+        enabled = get_capability_registry().enabled_mcp_servers()
+        expected = len(set(settings.mcp_server_urls) & enabled)
         best: dict = {}
         for attempt in range(1, 4):
             catalog = await aggregator.fetch_catalog(force_refresh=True)
