@@ -4,6 +4,7 @@ Uses ES256 (ECDSA P-256) key pairs — no shared secret.
 """
 
 import json
+import logging
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
@@ -376,3 +377,178 @@ def test_configure_trusted_issuers_production_has_no_custom_ssl_context():
 
     ssl_ctx = getattr(client, "ssl_context", None)
     assert ssl_ctx is None, "Expected no custom ssl_context for production environment"
+
+
+# --- Failure classification: user state vs infrastructure (issue #243) ---
+#
+# Every failure path returns the same (None, True), so the caller cannot tell
+# an expired session from a JWKS outage. Operators must be able to: a wave of
+# expired cookies is normal, a JWKS outage is an incident. These tests pin the
+# log classification — the return value deliberately stays fail-open.
+
+
+def test_expired_cookie_logs_as_user_state(caplog):
+    """An expired session is the ordinary end of a session, not an incident."""
+    server, jwks_url = _start_jwks_server()
+    try:
+        _setup_issuers(jwks_url)
+        token = _make_jwt("jsmith@access-ci.org", expired=True)
+        request = _mock_request(cookies={"SESSaccess_auth": token})
+
+        with caplog.at_level(logging.INFO, logger="src.auth"):
+            user, _ = get_acting_user_from_cookie(request)
+
+        assert user is None
+        assert any("AUTH_USER" in r.message for r in caplog.records)
+        assert not any("AUTH_INFRA" in r.message for r in caplog.records)
+    finally:
+        server.shutdown()
+
+
+def test_tampered_cookie_logs_as_user_state(caplog):
+    """A malformed token is user state (or an attack), not an outage."""
+    server, jwks_url = _start_jwks_server()
+    try:
+        _setup_issuers(jwks_url)
+        request = _mock_request(cookies={"SESSaccess_auth": "this-is-not-a-jwt"})
+
+        with caplog.at_level(logging.INFO, logger="src.auth"):
+            user, _ = get_acting_user_from_cookie(request)
+
+        assert user is None
+        assert any("AUTH_USER" in r.message for r in caplog.records)
+        assert not any("AUTH_INFRA" in r.message for r in caplog.records)
+    finally:
+        server.shutdown()
+
+
+def test_jwks_outage_logs_as_infrastructure_at_error(caplog):
+    """A JWKS outage is an ops incident, not a user who logged out.
+
+    ``PyJWKClientConnectionError`` is not an ``InvalidTokenError`` subclass, so
+    before this classification it fell into the bare ``except Exception`` and
+    was indistinguishable from a bad token.
+    """
+    configure_trusted_issuers({ISSUER: "http://127.0.0.1:1"})
+    token = _make_jwt("jsmith@access-ci.org")
+    request = _mock_request(cookies={"SESSaccess_auth": token})
+
+    with caplog.at_level(logging.INFO, logger="src.auth"):
+        user, cookie_present = get_acting_user_from_cookie(request)
+
+    # Fail-open contract unchanged: an upstream outage degrades to anonymous
+    # rather than locking every authenticated user out.
+    assert user is None
+    assert cookie_present is True
+
+    infra = [r for r in caplog.records if "AUTH_INFRA" in r.message]
+    assert infra, "JWKS outage must be logged as AUTH_INFRA"
+    assert all(r.levelno >= logging.ERROR for r in infra)
+    assert not any("AUTH_USER" in r.message for r in caplog.records)
+
+
+def test_untrusted_issuer_is_not_log_injectable(caplog):
+    """The issuer is attacker-controlled; a newline in it must not forge log
+    lines. Unquoted, an attacker could fabricate fake AUTH_INFRA outage
+    records and defeat this classification."""
+    server, jwks_url = _start_jwks_server()
+    try:
+        _setup_issuers(jwks_url)
+        evil = "https://evil.example\nERROR:src.auth:AUTH_INFRA: FORGED OUTAGE"
+        token = _make_jwt("jsmith@access-ci.org", issuer=evil)
+        request = _mock_request(cookies={"SESSaccess_auth": token})
+
+        with caplog.at_level(logging.INFO, logger="src.auth"):
+            user, _ = get_acting_user_from_cookie(request)
+
+        assert user is None
+        # The payload text may appear *inside* the escaped issuer string —
+        # that is fine. What must not happen is a raw newline reaching the
+        # log, which is what would split one record into two and let the
+        # attacker forge the second.
+        rendered = [r.getMessage() for r in caplog.records]
+        assert rendered, "the untrusted issuer must still be logged"
+        assert all("\n" not in m for m in rendered), "issuer must be escaped, not raw"
+        # And the forged text must be quoted as data, not standing alone as
+        # its own record.
+        assert all(not m.startswith("ERROR:") for m in rendered)
+    finally:
+        server.shutdown()
+
+
+def test_unknown_kid_is_warning_not_error(caplog):
+    """A bogus `kid` is attacker-controlled and expected during key rotation,
+    so it must not let anonymous callers raise ERROR-level alerts."""
+    server, jwks_url = _start_jwks_server()
+    try:
+        _setup_issuers(jwks_url)
+        token = jwt.encode(
+            {
+                "iss": ISSUER,
+                "sub": "jsmith@access-ci.org",
+                "iat": int(time.time()) - 60,
+                "exp": int(time.time()) + 3600,
+            },
+            PRIVATE_PEM,
+            algorithm="ES256",
+            headers={"kid": "no-such-key-id"},
+        )
+        request = _mock_request(cookies={"SESSaccess_auth": token})
+
+        with caplog.at_level(logging.INFO, logger="src.auth"):
+            user, cookie_present = get_acting_user_from_cookie(request)
+
+        assert user is None
+        assert cookie_present is True
+        assert caplog.records, "the kid miss must still be logged"
+        assert all(r.levelno < logging.ERROR for r in caplog.records), (
+            "an attacker-supplied kid must not generate ERROR alerts"
+        )
+    finally:
+        server.shutdown()
+
+
+def test_unexpected_error_logs_as_infrastructure_at_error(caplog, monkeypatch):
+    """An unclassified failure is treated as infrastructure, not user state.
+
+    We cannot know that an unrecognized exception means the user's token is
+    bad, so it must not be filed alongside expired/tampered cookies.
+    """
+    server, jwks_url = _start_jwks_server()
+    try:
+        _setup_issuers(jwks_url)
+
+        def _boom(*args, **kwargs):
+            raise MemoryError("something unrecognized went wrong")
+
+        monkeypatch.setattr(_jwks_clients[ISSUER], "get_signing_key_from_jwt", _boom)
+        token = _make_jwt("jsmith@access-ci.org")
+        request = _mock_request(cookies={"SESSaccess_auth": token})
+
+        with caplog.at_level(logging.INFO, logger="src.auth"):
+            user, cookie_present = get_acting_user_from_cookie(request)
+
+        assert user is None
+        assert cookie_present is True
+        infra = [r for r in caplog.records if "AUTH_INFRA" in r.message]
+        assert infra
+        assert all(r.levelno >= logging.ERROR for r in infra)
+        assert not any("AUTH_USER" in r.message for r in caplog.records)
+    finally:
+        server.shutdown()
+
+
+def test_no_issuers_configured_logs_as_infrastructure_at_error(caplog):
+    """An empty TRUSTED_JWKS_URLS silently anonymizes every logged-in user —
+    a deploy problem that must not look like ordinary logged-out traffic."""
+    configure_trusted_issuers({})
+    token = _make_jwt("jsmith@access-ci.org")
+    request = _mock_request(cookies={"SESSaccess_auth": token})
+
+    with caplog.at_level(logging.INFO, logger="src.auth"):
+        user, _ = get_acting_user_from_cookie(request)
+
+    assert user is None
+    infra = [r for r in caplog.records if "AUTH_INFRA" in r.message]
+    assert infra
+    assert all(r.levelno >= logging.ERROR for r in infra)
