@@ -396,7 +396,7 @@ def build_system_prompt(
             "## Acting user\n\n"
             "The user is anonymous (not logged in). Tools that require "
             "identity will return auth errors — handle those gracefully "
-            "and suggest login at https://access-ci.org/sign-in. Write "
+            "and suggest login at https://support.access-ci.org/login. Write "
             "actions (create/update/delete announcements, file tickets) "
             "are also unavailable to anonymous users."
         )
