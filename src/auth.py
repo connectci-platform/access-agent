@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 import jwt
 from jwt import PyJWKClient
+from jwt.exceptions import PyJWKClientConnectionError, PyJWKClientError
 
 if TYPE_CHECKING:
     from fastapi import Request
@@ -111,7 +112,14 @@ def _decode_jwt(token: str) -> str | None:
     4. Verifies the signature, expiration, and issuer.
     """
     if not _jwks_clients:
-        logger.warning("No trusted issuers configured; cannot validate JWT")
+        # Infrastructure, not user state: every logged-in user silently
+        # degrades to anonymous until TRUSTED_JWKS_URLS is set. Logged at
+        # ERROR so a misconfigured deploy is visible rather than looking
+        # like a site full of logged-out users.
+        logger.error(
+            "AUTH_INFRA: no trusted issuers configured (TRUSTED_JWKS_URLS empty); "
+            "all authenticated users are being treated as anonymous"
+        )
         return None
 
     try:
@@ -122,13 +130,23 @@ def _decode_jwt(token: str) -> str | None:
         )
         issuer = unverified.get("iss")
         if not issuer:
-            logger.warning("JWT cookie missing 'iss' claim")
+            logger.warning("AUTH_USER: JWT cookie missing 'iss' claim; treating as anonymous")
             return None
 
         # Find the JWKS client for this issuer.
         jwks_client = _jwks_clients.get(issuer)
         if jwks_client is None:
-            logger.warning("JWT from untrusted issuer: %s", issuer)
+            # Ambiguous by nature: either a token from somewhere we don't
+            # trust, or a deploy whose TRUSTED_JWKS_URLS is missing a real
+            # issuer. The issuer is logged so the two can be told apart.
+            # %r, not %s: the issuer is attacker-controlled, and an unquoted
+            # newline in it would forge log lines — including fake AUTH_INFRA
+            # records, defeating this very classification.
+            logger.warning(
+                "AUTH_USER: JWT from untrusted issuer %r; treating as anonymous "
+                "(if this issuer is legitimate, it is missing from TRUSTED_JWKS_URLS)",
+                issuer,
+            )
             return None
 
         # Fetch the signing key using the kid from the JWT header.
@@ -145,15 +163,40 @@ def _decode_jwt(token: str) -> str | None:
         sub = payload.get("sub")
         if sub:
             return str(sub)
-        logger.warning("JWT cookie missing 'sub' claim")
+        logger.warning("AUTH_USER: JWT cookie missing 'sub' claim; treating as anonymous")
         return None
 
     except jwt.ExpiredSignatureError:
-        logger.warning("Expired JWT cookie")
+        # User state: the ordinary end of a session (rolling 18h TTL), so
+        # INFO — an idle overnight tab is expected, not an incident.
+        logger.info("AUTH_USER: expired JWT cookie; treating as anonymous")
         return None
     except jwt.InvalidTokenError:
-        logger.warning("Invalid JWT cookie")
+        # User state: malformed, tampered, or wrongly-signed token.
+        logger.warning("AUTH_USER: invalid JWT cookie; treating as anonymous")
+        return None
+    except PyJWKClientConnectionError:
+        # Infrastructure: the JWKS endpoint was unreachable (down, timeout,
+        # TLS failure, HTTP error), so we never got to check the token. Not
+        # the user's fault and not an auth decision. Kept fail-open so an
+        # upstream outage degrades rather than locking everyone out, but
+        # ERROR so it is not mistaken for a wave of logged-out users (#243).
+        logger.exception(
+            "AUTH_INFRA: JWKS endpoint unreachable; token could not be verified "
+            "and the user is being treated as anonymous"
+        )
+        return None
+    except PyJWKClientError:
+        # Key lookup failed against a REACHABLE JWKS — usually a `kid` that
+        # isn't in the key set. Deliberately WARNING, not ERROR: the kid is
+        # attacker-controlled, so an anonymous caller could otherwise
+        # generate ERROR-level alerts at will. It is also the expected,
+        # benign state during key rotation.
+        logger.warning("AUTH_INFRA: JWKS key lookup failed (unknown key id); treating as anonymous")
         return None
     except Exception:
-        logger.warning("Failed to validate JWT cookie", exc_info=True)
+        # Unclassified — treat as infrastructure until proven otherwise.
+        # Also catches malformed/non-JWKS response bodies (JSONDecodeError,
+        # PyJWKSetError), which are infrastructure but not PyJWKClientError.
+        logger.exception("AUTH_INFRA: unexpected failure validating JWT cookie")
         return None
