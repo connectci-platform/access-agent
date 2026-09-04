@@ -5,8 +5,11 @@ that says what system actually serves it.  The registry aggregates
 backends across enabled capabilities and exposes derived queries that
 three runtime components read from:
 
-1. **Tool catalog loader** (``src.tools.registry.ToolRegistry``) filters
-   the MCP catalog to only servers whose owning capability is enabled.
+1. **Tool catalog layer** (``src.tools.registry``): both
+   ``CatalogAggregator`` (every build of the public catalog) and
+   ``ToolRegistry`` (the agent's tool set) filter the MCP catalog to only
+   servers whose owning capability is enabled. A server no capability owns
+   is dropped — fail closed.
 2. **Doc-search tool** (``search_access_documents``) consults
    ``enabled_rag_endpoints()`` before calling the RAG service, and
    ``scoped_rag_enabled()`` before doing scoped lookups.
@@ -223,6 +226,19 @@ GENERAL_CAPABILITIES: list[Capability] = [
         requires_auth=False,
     ),
     # ── MCP-backed capabilities ────────────────────────────────────────
+    # compute-resources had NO owning capability from the introduction of
+    # capability-based server filtering until 2026-09-03 — the agent silently
+    # lost search_resources/get_resource_hardware and answered hardware
+    # questions from documentation only (found by PR #241's review).
+    Capability(
+        "browse_resources",
+        "Browse compute resources",
+        "Search ACCESS compute resources and their hardware specs",
+        "explore",
+        backend=McpBackend(servers=("compute-resources",)),
+        requires_auth=False,
+        example_query="Which ACCESS resources have GPUs?",
+    ),
     Capability(
         "check_allocations",
         "Check allocations",

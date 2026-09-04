@@ -391,10 +391,12 @@ class CatalogAggregator:
         truthful across refreshes. Counts are recomputed so they reflect the
         filtered catalog.
         """
-        # Local import to avoid a circular dependency at module load.
-        from ..agent.domains.capabilities import get_capability_registry
-
         try:
+            # Local import (inside the try so an import failure degrades to
+            # skip-filter rather than 500ing /catalog) to avoid a circular
+            # dependency at module load.
+            from ..agent.domains.capabilities import get_capability_registry
+
             allowed = get_capability_registry().enabled_mcp_servers()
         except Exception as exc:
             # Belt-and-suspenders: if the registry fails to build, don't

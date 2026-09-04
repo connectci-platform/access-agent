@@ -67,13 +67,25 @@ def redteam_report_context(headers: Headers) -> dict[str, Any]:
 _registry: ToolRegistry | None = None
 
 
-def _invalidate_registry() -> None:
+def _maybe_invalidate_registry(catalog: dict[str, Any]) -> None:
     """Drop the cached ToolRegistry so the next query rebuilds it.
 
     Called by the catalog-refresh paths: without this, a refresh only
     updated the public /catalog payload while the agent kept serving tools
     (and tool descriptions) from the registry built at startup (#240).
+
+    Guarded: a refresh that caught every MCP server down (a network blip —
+    per-server failures don't fail the fetch) must not be adopted into the
+    agent, or an unauthenticated refresh call timed during a blip would
+    strip the agent's tools until the next refresh or restart. The public
+    payload still updates (and /health goes degraded, so the blip is
+    visible); the agent keeps its last-good registry.
     """
+    if catalog.get("servers_available", 0) <= 0:
+        logger.warning(
+            "Catalog refresh found no available servers; keeping the agent's current registry"
+        )
+        return
     global _registry
     _registry = None
 
@@ -712,7 +724,7 @@ async def get_catalog(refresh: bool = False) -> dict[str, Any]:
         aggregator = get_catalog_aggregator()
         catalog = await aggregator.fetch_catalog(force_refresh=refresh)
         if refresh:
-            _invalidate_registry()
+            _maybe_invalidate_registry(catalog)
         return catalog
     except Exception as e:
         logger.exception(f"Failed to fetch catalog: {e}")
@@ -734,7 +746,7 @@ async def refresh_catalog() -> dict[str, Any]:
     try:
         aggregator = get_catalog_aggregator()
         catalog = await aggregator.fetch_catalog(force_refresh=True)
-        _invalidate_registry()
+        _maybe_invalidate_registry(catalog)
         return {
             "success": True,
             "message": f"Catalog refreshed with {catalog['total_tools']} tools",
