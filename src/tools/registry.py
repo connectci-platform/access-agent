@@ -366,14 +366,57 @@ class CatalogAggregator:
             "servers": servers,
             "quick_lookup": quick_lookup,
         }
+        # Filter on every build, not just the first: the catalog used to be
+        # capability-filtered only via ToolRegistry mutating this dict by
+        # reference at startup, so a force_refresh rebuilt it UNFILTERED and
+        # the public /catalog endpoint advertised disabled servers' tools
+        # until restart (#240). Applying the filter here makes every
+        # (re)build truthful on its own.
+        self._apply_capability_filter()
         self._last_refresh = datetime.now(UTC)
 
         logger.info(
-            f"Catalog aggregated: {total_tools} tools from "
+            f"Catalog aggregated: {self._catalog['total_tools']} tools from "
             f"{self._catalog['servers_available']}/{len(server_urls)} servers"
         )
 
         return self._catalog
+
+    def _apply_capability_filter(self) -> None:
+        """Drop servers whose owning capability is disabled, in place.
+
+        Sibling of ``ToolRegistry._apply_capability_filter`` (which filters
+        the registry's own tool/lookup state); this one keeps the
+        aggregator's cached dict — the payload behind ``/api/v1/catalog`` —
+        truthful across refreshes. Counts are recomputed so they reflect the
+        filtered catalog.
+        """
+        # Local import to avoid a circular dependency at module load.
+        from ..agent.domains.capabilities import get_capability_registry
+
+        try:
+            allowed = get_capability_registry().enabled_mcp_servers()
+        except Exception as exc:
+            # Belt-and-suspenders: if the registry fails to build, don't
+            # silently drop every server. Log and skip the filter.
+            logger.warning("Capability registry unavailable, skipping catalog filter: %s", exc)
+            return
+
+        servers = [s for s in self._catalog.get("servers", []) if s.get("server", "") in allowed]
+        self._catalog["servers"] = servers
+        self._catalog["quick_lookup"] = {
+            name: info
+            for name, info in self._catalog.get("quick_lookup", {}).items()
+            if info.get("server", "") in allowed
+        }
+        # ALL counts must describe the filtered universe. /health reports
+        # "degraded" (and the production deploy gate hard-fails) whenever
+        # servers_available < total_servers, so leaving total_servers at the
+        # raw configured count would mark every deployment with a disabled
+        # capability degraded — the default prod config disables one.
+        self._catalog["total_servers"] = len(servers)
+        self._catalog["servers_available"] = sum(1 for s in servers if s["status"] == "available")
+        self._catalog["total_tools"] = sum(s.get("tool_count", 0) for s in servers)
 
     async def _fetch_server_tools(
         self,

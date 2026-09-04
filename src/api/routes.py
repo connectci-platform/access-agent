@@ -67,6 +67,17 @@ def redteam_report_context(headers: Headers) -> dict[str, Any]:
 _registry: ToolRegistry | None = None
 
 
+def _invalidate_registry() -> None:
+    """Drop the cached ToolRegistry so the next query rebuilds it.
+
+    Called by the catalog-refresh paths: without this, a refresh only
+    updated the public /catalog payload while the agent kept serving tools
+    (and tool descriptions) from the registry built at startup (#240).
+    """
+    global _registry
+    _registry = None
+
+
 async def get_registry() -> ToolRegistry:
     """Get or create the tool registry from aggregated catalog.
 
@@ -699,7 +710,10 @@ async def get_catalog(refresh: bool = False) -> dict[str, Any]:
     """
     try:
         aggregator = get_catalog_aggregator()
-        return await aggregator.fetch_catalog(force_refresh=refresh)
+        catalog = await aggregator.fetch_catalog(force_refresh=refresh)
+        if refresh:
+            _invalidate_registry()
+        return catalog
     except Exception as e:
         logger.exception(f"Failed to fetch catalog: {e}")
         raise HTTPException(
@@ -720,6 +734,7 @@ async def refresh_catalog() -> dict[str, Any]:
     try:
         aggregator = get_catalog_aggregator()
         catalog = await aggregator.fetch_catalog(force_refresh=True)
+        _invalidate_registry()
         return {
             "success": True,
             "message": f"Catalog refreshed with {catalog['total_tools']} tools",
