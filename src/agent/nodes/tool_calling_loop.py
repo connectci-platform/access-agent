@@ -300,6 +300,38 @@ class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
         ]
 
 
+def _attribute_tool_calls(
+    timings: list[dict[str, Any]], result_messages: list[Any]
+) -> tuple[list[str], int]:
+    """Return (distinct tool names, total invocations) for this turn.
+
+    Prefers ``tool_timings``, which the tool wrappers append to per
+    invocation on a ContextVar independent of the message list — so it holds
+    even when compaction rewrites the thread or the exhaustion path replaces
+    it. Falls back to a message scan when no timing was recorded.
+
+    Names stay distinct: ``db_reports.py`` aggregates per-tool over
+    ``tools_used``, so duplicates would inflate those counts.
+    """
+    tools_used: list[str] = []
+    for timing in timings:
+        name = timing.get("tool_name")
+        if name and name not in tools_used:
+            tools_used.append(name)
+    if tools_used:
+        return tools_used, len(timings)
+
+    scanned = 0
+    for msg in result_messages:
+        if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+            for tc in msg.tool_calls:
+                scanned += 1
+                name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+                if name and name not in tools_used:
+                    tools_used.append(name)
+    return tools_used, len(timings) or scanned
+
+
 def _build_context_editing_middleware() -> ContextEditingMiddleware:
     """Reclaim tool-result bloat before summarization can evict the question.
 
@@ -427,30 +459,25 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
                     final_answer = _coerce_content_to_text(msg.content)
                     break
 
-        tools_used: list[str] = []
-        for msg in result_messages:
-            if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
-                for tc in msg.tool_calls:
-                    name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
-                    if name and name not in tools_used:
-                        tools_used.append(name)
+        timings = get_turn_capture().get("tool_timings", [])
+        tools_used, tool_call_count = _attribute_tool_calls(timings, result_messages)
 
         tool_result_count = sum(1 for m in result_messages if isinstance(m, ToolMessage))
-        tool_results, orphan_count = _build_tool_results(
-            result_messages, tools, get_turn_capture().get("tool_timings", [])
-        )
+        tool_results, orphan_count = _build_tool_results(result_messages, tools, timings)
 
         answer_length = len(final_answer) if final_answer else 0
         span.set_attribute("agent.answer_length", answer_length)
-        span.set_attribute("agent.tool_calls_made", len(tools_used))
+        span.set_attribute("agent.tool_calls_made", tool_call_count)
+        span.set_attribute("agent.distinct_tools_used", len(tools_used))
         span.set_attribute("agent.tool_results_received", tool_result_count)
         if orphan_count > 0:
             span.set_attribute("agent.tool_results_orphaned", orphan_count)
 
         logger.info(
-            "tool_calling_loop complete: %d messages, %d tool calls, "
-            "%d tool results, answer_len=%d",
+            "tool_calling_loop complete: %d messages, %d tool calls "
+            "(%d distinct), %d tool results, answer_len=%d",
             len(result_messages),
+            tool_call_count,
             len(tools_used),
             tool_result_count,
             answer_length,
@@ -460,6 +487,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
             "final_answer": final_answer,
             "messages": result_messages,
             "tools_used": tools_used,
+            "tool_call_count": tool_call_count,
             "total_tokens": token_accumulator.total_tokens,
             "model_calls": token_accumulator.model_calls,
             "tool_results": tool_results,
@@ -467,7 +495,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
                 {
                     "node": "tool_calling_loop",
                     "tool_count": len(tools),
-                    "tool_calls_made": len(tools_used),
+                    "tool_calls_made": tool_call_count,
                     "tools_called": list(tools_used),
                     "tool_results": tool_result_count,
                     "answer_length": answer_length,

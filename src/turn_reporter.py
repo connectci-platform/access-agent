@@ -200,7 +200,9 @@ def _assemble_turn_report(
         "user_hash": _hash_user(acting_user),
         "success": success,
         "duration_ms": duration_ms,
-        "tool_count": len(tools_used),
+        # Invocations, not distinct names: the dashboard buckets tool_count == 0
+        # as a "zero_tool" turn, so this has to be the real call count.
+        "tool_count": final_state.get("tool_call_count") or len(tools_used),
         "tool_failure_count": failures,
         "any_tool_failed": failures > 0,
         "invoked_write": invoked_write,

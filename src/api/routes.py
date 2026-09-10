@@ -307,6 +307,10 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
         # Build metadata from final state (mirrors non-streaming QueryResponse fields)
         final_answer = final_state.get("final_answer") or "No answer generated"
         tools_used = final_state.get("tools_used", [])
+        # Invocations, not distinct names; older state lacks the field.
+        tool_call_count = final_state.get("tool_call_count")
+        if tool_call_count is None:
+            tool_call_count = len(tools_used)
         duration_ms = (time.time() - start_time) * 1000
 
         query_classification = final_state.get("query_classification")
@@ -358,7 +362,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
             "confidence": confidence,
             "metadata": {
                 "agent": "access-documentation-langgraph",
-                "tool_count": len(tools_used),
+                "tool_count": tool_call_count,
                 "tools_used": tools_used,
                 "checkpointing_enabled": USE_CHECKPOINTING,
                 "duration_ms": duration_ms,
@@ -383,6 +387,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                 query_type=query_type,
                 confidence=confidence,
                 tools_used=tools_used,
+                tool_call_count=tool_call_count,
                 duration_ms=duration_ms,
                 response_length=len(final_answer),
                 acting_user=acting_user,

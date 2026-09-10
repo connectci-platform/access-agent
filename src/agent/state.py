@@ -184,7 +184,11 @@ class AgentState(TypedDict):
     tool_results: Annotated[list[ToolResult], "Results from tool execution"]
     tools_used: Annotated[
         list[str],
-        "Names of tools the loop attempted (success or failure); inspect tool_results[].success for outcome",
+        "DISTINCT names of tools the loop attempted (success or failure); inspect tool_results[].success for outcome. See tool_call_count for how many invocations those names cover",
+    ]
+    tool_call_count: Annotated[
+        int,
+        "Total tool INVOCATIONS this turn, counted at the tool wrapper; a 14-call fan-out over one tool is 14 here and one entry in tools_used",
     ]
 
     # Tracing (accumulated by every node via operator.add reducer)
@@ -250,6 +254,7 @@ def create_initial_state(
         # Written by the loop as it runs.
         tool_results=[],
         tools_used=[],
+        tool_call_count=0,
         node_trace=[],
         # Legacy domain-agent flag; the loop does not write it.
         domain_completed=None,
