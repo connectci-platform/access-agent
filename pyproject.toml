@@ -28,10 +28,14 @@ dependencies = [
     "opentelemetry-instrumentation-httpx>=0.41b0",
     "opentelemetry-instrumentation-langchain>=0.62.1",
     "opentelemetry-instrumentation-logging>=0.41b0",
-    # opentelemetry-instrumentation-langchain (Traceloop openllmetry) calls
-    # wrap_function_wrapper(module=...), but wrapt 2.x dropped the `module=`
-    # kwarg — TypeError on import. Pin wrapt<2 until upstream ships a wrapt-2
-    # compatible release (tracking: traceloop/openllmetry#4025, #4048).
+    # Was pinned <2: opentelemetry-instrumentation-langchain (Traceloop
+    # openllmetry) called wrap_function_wrapper(module=...) and wrapt 2.x
+    # dropped the `module=` kwarg, a TypeError on import (closed #23, #105,
+    # #208 on those grounds). Resolved upstream — openllmetry 0.62.3 passes
+    # `module` positionally, and wrapt 2.4.0 imports and instruments cleanly
+    # against it (verified by running LangchainInstrumentor().instrument()).
+    # Still capped below the next major, since openllmetry declares no wrapt
+    # constraint of its own and so offers no compatibility guarantee.
     "wrapt<3",
     # Reporting
     "google-analytics-data>=0.23.0",
