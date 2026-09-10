@@ -97,6 +97,33 @@ jobs:
               labels: ['tool-health', 'bug']
             });
 
+      # Write tools ship from access_mcp, a different repo, so this repo's CI
+      # cannot see a new one at PR time — the deny-list that strips writes
+      # under READ_ONLY can only be checked against the live catalog, which is
+      # reachable only from this runner. Hence nightly rather than CI (#200).
+      - name: Check write-tool deny-list for drift
+        id: writeguard
+        if: always()
+        run: |
+          set -a
+          . "$HOME/access-agent/.env"
+          set +a
+          ENVIRONMENT=production uv run python -m src.writeguard
+
+      - name: Open issue on write-guard failure
+        if: always() && steps.writeguard.outcome == 'failure'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const date = new Date().toISOString().split('T')[0];
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Write-tool deny-list drift — ${date}`,
+              body: `A live MCP tool looks like a write but is not in \`WRITE_MCP_TOOL_NAMES\`, so \`READ_ONLY\` does not strip it. The run log names the tool.\n\nScope: production does not set \`READ_ONLY\` (prod write-gating is the system prompt, Layer 1), so this is not a production exposure. The affected consumers are the red-team gate in this workflow and any read-only/staging run — and the gate points at **production MCP servers**, so an attack prompt reaching an unstripped write tool could perform a real mutation (file a real ticket, create a real event).\n\nAlternatively the guard may be reporting a tool that is genuinely read-only but trips the naming heuristic — in that case add it to \`HEURISTIC_EXCEPTIONS\` in \`src/writeguard/__init__.py\` with a reason. See the workflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              labels: ['bug']
+            });
+
   redteam-gate:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, nightly-e2e]
