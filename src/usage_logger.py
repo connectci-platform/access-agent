@@ -149,6 +149,7 @@ class UsageLogger:
         subtopic: str | None = None,
         confidence: str | None = None,
         tools_used: list[str] | None = None,
+        tool_call_count: int | None = None,
         duration_ms: float | None = None,
         response_length: int | None = None,
         acting_user: str | None = None,
@@ -174,7 +175,13 @@ class UsageLogger:
                 subtopic=subtopic,
                 confidence=confidence,
                 tools_used=tools_used or [],
-                tool_count=len(tools_used) if tools_used else 0,
+                # Invocations when the caller knows them; the fallback
+                # undercounts any fan-out.
+                tool_count=(
+                    tool_call_count
+                    if tool_call_count is not None
+                    else (len(tools_used) if tools_used else 0)
+                ),
                 duration_ms=duration_ms,
                 user_hash=self._hash_user(acting_user),
                 response_length=response_length,
