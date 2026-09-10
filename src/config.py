@@ -146,6 +146,26 @@ class Settings(BaseSettings):
     SUMMARIZATION_TRIGGER_TOKENS: int = 24000
     SUMMARIZATION_KEEP_TOKENS: int = 8000
 
+    # ContextEditingMiddleware — the FIRST line of defence against tool-result
+    # bloat, sized to fire BEFORE summarization.
+    #
+    # Summarization is destructive and recency-ordered: it rewrites state and
+    # keeps only the newest KEEP_TOKENS, so on a heavy single-turn fan-out the
+    # oldest message — the user's own question — gets evicted, and the model is
+    # left answering a question it can no longer see (observed in production
+    # 2026-09-10 on a 14-call fan-out). Context editing instead replaces the
+    # bodies of the OLDEST tool results with a placeholder, never touches the
+    # human turn, and applies per-request via `request.override` without
+    # rewriting state — so message ids and thread structure survive, which
+    # `_build_tool_results` and the multi-turn eval both depend on.
+    #
+    # Sizing: TRIGGER must sit below SUMMARIZATION_TRIGGER_TOKENS so fan-out
+    # bloat is reclaimed here and summarization stays a genuine backstop for
+    # long multi-turn conversations. KEEP is a count of the most recent tool
+    # results left verbatim — the model needs those to actually answer.
+    CONTEXT_EDIT_TRIGGER_TOKENS: int = 16000
+    CONTEXT_EDIT_KEEP_TOOL_RESULTS: int = 4
+
     # MCP Server base host (configurable, defaults to production IP)
     MCP_SERVER_HOST: str = "localhost"
 

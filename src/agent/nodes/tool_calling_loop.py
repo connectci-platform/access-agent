@@ -17,7 +17,11 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import SummarizationMiddleware
+from langchain.agents.middleware import (
+    ClearToolUsesEdit,
+    ContextEditingMiddleware,
+    SummarizationMiddleware,
+)
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.config import get_stream_writer
@@ -273,6 +277,47 @@ class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
             mark_summarized()
         return result
 
+    @staticmethod
+    def _build_new_messages(summary: str) -> list[Any]:
+        """Frame the summary as the agent's own recall, not a user turn.
+
+        Upstream injects ``HumanMessage("Here is a summary of the conversation
+        to date: ...")``. On a single-turn request that fabricates a
+        conversation the user never had: the model sees a "human" narrating
+        history and, with the real question compacted away, answers "I don't
+        have access to the previous conversation history" — which is a correct
+        reading of that transcript. Anthropic's compaction API injects its
+        summary as an assistant turn for exactly this reason.
+        """
+        return [
+            AIMessage(
+                content=(
+                    "Notes from my earlier tool calls in this turn "
+                    f"(condensed to save context):\n\n{summary}"
+                ),
+                additional_kwargs={"lc_source": "summarization"},
+            )
+        ]
+
+
+def _build_context_editing_middleware() -> ContextEditingMiddleware:
+    """Reclaim tool-result bloat before summarization can evict the question.
+
+    Clears the bodies of the oldest tool results once the thread crosses
+    ``CONTEXT_EDIT_TRIGGER_TOKENS``, keeping the most recent
+    ``CONTEXT_EDIT_KEEP_TOOL_RESULTS`` verbatim so the model still has
+    material to answer from. Non-destructive: applied per model request, so
+    state, message ids and thread structure are untouched.
+    """
+    return ContextEditingMiddleware(
+        edits=[
+            ClearToolUsesEdit(
+                trigger=settings.CONTEXT_EDIT_TRIGGER_TOKENS,
+                keep=settings.CONTEXT_EDIT_KEEP_TOOL_RESULTS,
+            )
+        ],
+    )
+
 
 async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
     """Run the tool-calling loop.
@@ -317,6 +362,11 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
             tools=tools,
             system_prompt=system_prompt,
             middleware=[
+                # Order matters: context editing runs first and reclaims
+                # tool-result bloat non-destructively, so summarization stays a
+                # backstop for genuinely long conversations rather than firing
+                # on a single heavy fan-out and evicting the user's question.
+                _build_context_editing_middleware(),
                 _FlaggingSummarizationMiddleware(
                     model=llm,
                     trigger=("tokens", settings.SUMMARIZATION_TRIGGER_TOKENS),
