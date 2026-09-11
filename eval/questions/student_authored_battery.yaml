@@ -1,0 +1,326 @@
+# Student-authored question battery — 49 questions submitted by the student
+# reviewers in four groups (9 / 8 / 10 / 22), preserved in submission order.
+#
+# required_facts is DELIBERATELY ABSENT on every entry. These questions exist so
+# the students can author their own required_facts in the dashboard
+# (/dashboard/facts), which is the source of truth: the eval's fact resolver
+# reads reporting.question_facts and falls back to a battery's required_facts
+# only when the table has no facts for the question. Seeding a question with no
+# facts creates the reporting.questions row and zero fact rows, which is what
+# puts it in front of a student with an empty fact list to fill.
+#
+# capability_area and expected_tool are FIRST-PASS GUESSES from the existing
+# battery vocabulary, not verified routing. expected_tool: null means the answer
+# is expected from document retrieval rather than a live-data tool. Correct these
+# as the students' facts reveal what a good answer actually requires.
+#
+# Several questions are deliberately under-specified ("this cluster", "a slice"),
+# because they are real questions asked in real words. Those are worth keeping:
+# how the agent handles a missing referent is itself a behavior to grade.
+
+# --- Group 1: onboarding, eligibility, credits, proposals (9) ---
+
+- id: sa-onboard-01
+  question: How do I make an ACCESS account?
+  capability_area: account_management
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-alloc-01
+  question: How do I get an allocation on ACCESS?
+  capability_area: allocations
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-onboard-02
+  question: How do I log into ACCESS?
+  capability_area: account_management
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-onboard-03
+  question: Who is eligible to use ACCESS?
+  capability_area: documentation
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-alloc-02
+  question: How do I see how many credits I have left on ACCESS?
+  capability_area: allocations
+  battery: student_authored
+  expected_tool: get_my_rp_accounts
+
+- id: sa-alloc-03
+  question: How do I get more credits on ACCESS?
+  capability_area: allocations
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-alloc-04
+  question: How do I write a proposal to use ACCESS?
+  capability_area: allocations
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-alloc-05
+  question: How long does it take for them to review my access proposal?
+  capability_area: allocations
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-alloc-06
+  question: How much does it cost to use ACCESS?
+  capability_area: allocations
+  battery: student_authored
+  expected_tool: search_docs
+
+# --- Group 2: cluster mechanics, asked with an unresolved referent (8) ---
+# "this cluster" / "this system" have no antecedent in a single-turn eval. Kept
+# verbatim: whether the agent asks which resource or silently assumes one is a
+# real behavior to grade, not a defect in the question.
+
+- id: sa-cluster-01
+  question: How do I add my SSH key to this cluster?
+  capability_area: compute_resources
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-cluster-02
+  question: Does this system use the standard module load command for packages?
+  capability_area: software
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-cluster-03
+  question: How can I see the status for the queues of the cluster?
+  capability_area: compute_resources
+  battery: student_authored
+  expected_tool: get_resource_hardware
+
+- id: sa-cluster-04
+  question: If my job script is submitted correctly and I have the number, where can I see the log file?
+  capability_area: documentation
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-storage-01
+  question: How long are my files saved for after my allocation ends?
+  capability_area: documentation
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-storage-02
+  question: Is the storage on this cluster long term or short term, and if I need long term, where should I put it?
+  capability_area: compute_resources
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-alloc-07
+  question: What are the different tiers of access allocations, and how do I know which one to ask for?
+  capability_area: allocations
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-alloc-08
+  question: How are my credits usable on different clusters? Do I have to request access to use my allocation on different systems?
+  capability_area: allocations
+  battery: student_authored
+  expected_tool: search_docs
+
+# --- Group 3: allocation lifecycle and resource selection (10) ---
+
+- id: sa-alloc-09
+  question: How do I request my first allocation on ACCESS?
+  capability_area: allocations
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-alloc-10
+  question: What should I do if I need more computing credits for my existing ACCESS project?
+  capability_area: allocations
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-resource-01
+  question: How can I figure out which ACCESS resource is best for my research workload?
+  capability_area: compute_resources
+  battery: student_authored
+  expected_tool: search_resources
+
+- id: sa-onboard-04
+  question: Where can I find the username I should use to log in to an ACCESS resource?
+  capability_area: account_management
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-resource-02
+  question: How do I find out which job scheduler an ACCESS resource uses?
+  capability_area: compute_resources
+  battery: student_authored
+  expected_tool: get_resource_hardware
+
+- id: sa-resource-03
+  question: How can I find the available queues or partitions for an ACCESS resource?
+  capability_area: compute_resources
+  battery: student_authored
+  expected_tool: get_resource_hardware
+
+- id: sa-resource-04
+  question: What are the different queues or partitions available on Delta GPU?
+  capability_area: compute_resources
+  battery: student_authored
+  expected_tool: get_resource_hardware
+
+- id: sa-storage-03
+  question: What is the difference between home and scratch storage on an ACCESS resource?
+  capability_area: compute_resources
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-transfer-01
+  question: How can I transfer a large dataset to an ACCESS resource?
+  capability_area: file_transfer
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-support-01
+  question: Where should I go for help if I am having a problem using an ACCESS resource or have a general question?
+  capability_area: documentation
+  battery: student_authored
+  expected_tool: search_docs
+
+# --- Group 4: mixed depth — partitions, hardware, usage, policy (22) ---
+
+- id: sa-resource-05
+  question: For running a small simple test on CPU only, what queue (partition) will be the cheapest?
+  capability_area: compute_resources
+  battery: student_authored
+  expected_tool: get_resource_hardware
+
+- id: sa-resource-06
+  question: What is the maximum number of GPUs I can request in GPU-shared?
+  capability_area: compute_resources
+  battery: student_authored
+  expected_tool: get_resource_hardware
+
+- id: sa-onboard-05
+  question: How do I reset my password?
+  capability_area: account_management
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-resource-07
+  question: Can I run multiple jobs on a single partition at once?
+  capability_area: compute_resources
+  battery: student_authored
+  expected_tool: search_docs
+
+# "Slice" is Jetstream2 terminology. Left as asked — resolving the platform is
+# part of what a good answer has to do.
+- id: sa-resource-08
+  question: How do I renew a slice before it expires, and how do I delete it?
+  capability_area: compute_resources
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-resource-09
+  question: What are all the GPU types offered in the ACCESS resources and how much RAM does each have?
+  capability_area: compute_resources
+  battery: student_authored
+  expected_tool: get_resource_hardware
+
+- id: sa-general-01
+  question: What is ACCESS?
+  capability_area: documentation
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-jobs-01
+  question: How do I submit and run a batch job using SLURM?
+  capability_area: documentation
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-alloc-11
+  question: Is there a tool to estimate how many units my allocation is worth on a specific ACCESS resource?
+  capability_area: allocations
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-usage-01
+  question: How can I view my past usage and job statistics across ACCESS resources?
+  capability_area: xdmod
+  battery: student_authored
+  expected_tool: get_user_data
+
+- id: sa-status-01
+  question: How do I check whether an ACCESS resource is currently down or has scheduled maintenance?
+  capability_area: system_status
+  battery: student_authored
+  expected_tool: get_infrastructure_news
+
+- id: sa-software-01
+  question: How do I find which ACCESS resources have a particular software package installed?
+  capability_area: software_discovery
+  battery: student_authored
+  expected_tool: search_software
+
+- id: sa-alloc-12
+  question: How do I add a colleague or student to my ACCESS project so they can use the allocation?
+  capability_area: allocations
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-alloc-13
+  question: How do I request an extension of the end date for my current ACCESS allocation?
+  capability_area: allocations
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-support-02
+  question: What is a Campus Champion and how can one help me get started with ACCESS?
+  capability_area: affinity_groups
+  battery: student_authored
+  expected_tool: search_affinity_groups
+
+- id: sa-onboard-06
+  question: How do I set up Duo multi-factor authentication for logging into ACCESS resources?
+  capability_area: account_management
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-policy-01
+  question: How should I acknowledge ACCESS in a publication that used an ACCESS resource?
+  capability_area: documentation
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-general-02
+  question: What is ACCESS OnDemand and what can I do with it?
+  capability_area: documentation
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-onboard-07
+  question: What training or onboarding resources does ACCESS provide for first-time users?
+  capability_area: events
+  battery: student_authored
+  expected_tool: search_events
+
+- id: sa-general-03
+  question: What is a science gateway and how do I use ACCESS resources through one?
+  capability_area: documentation
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-policy-02
+  question: Can I use my ACCESS allocation on commercial cloud resources like AWS or Azure?
+  capability_area: allocations
+  battery: student_authored
+  expected_tool: search_docs
+
+- id: sa-alloc-14
+  question: How do I check the current status of an allocation request I already submitted?
+  capability_area: allocations
+  battery: student_authored
+  expected_tool: search_docs
