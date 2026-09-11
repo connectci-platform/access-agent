@@ -61,21 +61,41 @@ def conn(tmp_path):
                     fact_text TEXT NOT NULL,
                     status TEXT NOT NULL,
                     version INTEGER NOT NULL,
-                    display_order INTEGER NOT NULL
+                    display_order INTEGER NOT NULL,
+                    retracted_at TIMESTAMP
                 )
             """)
         )
         yield c
 
 
-def _seed(conn, question_id, fact_id, fact_text, *, status="draft", version=1, order=1):
+def _seed(
+    conn,
+    question_id,
+    fact_id,
+    fact_text,
+    *,
+    status="draft",
+    version=1,
+    order=1,
+    retracted_at=None,
+):
     conn.execute(
         text("""
             INSERT INTO reporting.question_facts
-                (question_id, fact_id, fact_text, status, version, display_order)
-            VALUES (:q, :f, :t, :s, :v, :o)
+                (question_id, fact_id, fact_text, status, version, display_order,
+                 retracted_at)
+            VALUES (:q, :f, :t, :s, :v, :o, :r)
         """),
-        {"q": question_id, "f": fact_id, "t": fact_text, "s": status, "v": version, "o": order},
+        {
+            "q": question_id,
+            "f": fact_id,
+            "t": fact_text,
+            "s": status,
+            "v": version,
+            "o": order,
+            "r": retracted_at,
+        },
     )
 
 
@@ -144,8 +164,58 @@ def test_identical_text_is_skipped_silently(conn, capsys):
     _seed(conn, "q1", "q1-a", "alpha", status="confirmed", version=1)
     counts = script.apply_rows(conn, [_row("q1", "q1-a", "alpha")])
 
-    assert counts == {"inserted": 0, "bumped": 0, "skipped_same": 1, "skipped_stale": 0}
+    assert counts == {
+        "inserted": 0,
+        "bumped": 0,
+        "skipped_same": 1,
+        "skipped_stale": 0,
+        "skipped_retracted": 0,
+    }
     assert capsys.readouterr().err == ""
+
+
+def test_retracted_draft_is_not_revived_by_an_edit(conn, capsys):
+    """The revival hole: a retracted DRAFT whose YAML text changed would take the
+    bump branch and insert a version with no retraction stamp, silently putting the
+    fact back into scoring. The status guard does not cover it — draft is the one
+    status that branch lets through."""
+    _seed(
+        conn,
+        "q1",
+        "q1-a",
+        "withdrawn text",
+        status="draft",
+        version=1,
+        retracted_at="2026-09-11 12:00:00",
+    )
+    counts = script.apply_rows(conn, [_row("q1", "q1-a", "edited yaml text")])
+
+    assert counts["skipped_retracted"] == 1
+    assert counts["bumped"] == 0
+    assert len(_versions(conn, "q1-a")) == 1  # no reviving version inserted
+
+    warning = capsys.readouterr().err
+    assert "q1/q1-a" in warning
+    assert "retracted" in warning
+
+
+def test_retracted_fact_is_reported_even_when_text_matches(conn, capsys):
+    """Checked before the text-equality skip: the battery naming a retracted fact at
+    all is what needs resolving, so an unchanged copy must not pass silently."""
+    _seed(
+        conn,
+        "q1",
+        "q1-a",
+        "withdrawn text",
+        status="draft",
+        version=1,
+        retracted_at="2026-09-11 12:00:00",
+    )
+    counts = script.apply_rows(conn, [_row("q1", "q1-a", "withdrawn text")])
+
+    assert counts["skipped_retracted"] == 1
+    assert counts["skipped_same"] == 0
+    assert "retracted" in capsys.readouterr().err
 
 
 # --- identity is the id, not the position ------------------------------------
@@ -163,7 +233,13 @@ def test_reordering_and_deleting_facts_touches_nothing_else(conn):
         conn, [_row("q1", "q1-c", "gamma", 1), _row("q1", "q1-b", "beta", 2)]
     )
 
-    assert counts == {"inserted": 0, "bumped": 0, "skipped_same": 2, "skipped_stale": 0}
+    assert counts == {
+        "inserted": 0,
+        "bumped": 0,
+        "skipped_same": 2,
+        "skipped_stale": 0,
+        "skipped_retracted": 0,
+    }
     # The dropped fact keeps its row untouched — retirement is flagging, not deletion.
     assert [(v.version, v.fact_text) for v in _versions(conn, "q1-a")] == [(1, "alpha")]
 

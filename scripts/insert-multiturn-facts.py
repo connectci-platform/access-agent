@@ -8,9 +8,13 @@ to identity, so there are no positional guards here — no shrink counts, no
 delete-shift detection, no bulk-edit flag. Duplicate fact_ids within a turn are
 refused when the battery loads (``load_thread_battery``).
 
-Per fact, the DB's latest version and its status decide the branch:
+Per fact, the DB's latest version decides the branch:
 
   * absent → insert version 1 (draft),
+  * latest is RETRACTED → SKIP with a warning, whether or not the text differs.
+    Retraction is a reviewer's decision that the fact is not a requirement, and
+    INSERT_VERSION does not carry the stamp forward, so versioning up would clear
+    it and silently return the fact to scoring,
   * latest is a DRAFT and the text CHANGED → insert version latest+1 — the
     resolver takes the latest non-flagged version, so this is how an AUTHOR-pass
     edit actually reaches the judge,
@@ -20,13 +24,14 @@ Per fact, the DB's latest version and its status decide the branch:
   * text unchanged → skip silently.
 
 A fact_id present in the DB but absent from the YAML is not touched. Retirement
-is flagging the fact in the dashboard; the resolver already excludes facts whose
-latest version is flagged.
+is flagging or retracting the fact in the dashboard; the resolver excludes facts
+whose latest version is flagged or retracted.
 
-Exit codes: 0 success, 2 completed with stale-YAML skips. A stale skip means the
-DB's reviewed text differs from the YAML, so the YAML edit was DROPPED — that
-must not be a silent success, or automation reports green while a correction
-never landed. The exit happens after all other work completes.
+Exit codes: 0 success, 2 completed with stale-YAML or retracted skips. Both mean
+authored content did not land — a stale skip DROPPED the YAML edit, a retracted
+skip means the battery still names a withdrawn fact — and neither must be a
+silent success, or automation reports green while a correction never landed or a
+retraction is pending resolution. The exit happens after all other work completes.
 
 Run over the 5433 tunnel:
 
@@ -67,7 +72,7 @@ BATTERIES = [
 # and its status — status decides whether an edit may version up or must be refused
 # as stale YAML, so it is part of the branch, not decoration.
 LATEST = text("""
-    SELECT version, fact_text, status
+    SELECT version, fact_text, status, retracted_at
     FROM reporting.question_facts
     WHERE question_id = :question_id AND fact_id = :fact_id
     ORDER BY version DESC
@@ -83,6 +88,13 @@ INSERT_VERSION = text("""
 STALE_REMEDY = (
     "Not overwriting. Two paths that work: update the YAML to the reviewed text, "
     "or author the correction as a new draft version in the dashboard."
+)
+
+RETRACTED_REMEDY = (
+    "Not reviving. A retraction is a reviewer's decision that this is not a "
+    "requirement for the question; bumping a new version would clear it and put the "
+    "fact back into scoring. Remove the fact from the battery file, or un-retract it "
+    "in the dashboard first."
 )
 
 
@@ -123,12 +135,30 @@ def apply_rows(conn: Connection, rows: list[FactRow]) -> dict[str, int]:
     One ``_latest`` fetch per fact: the branch and the next version number both
     come from that single read.
     """
-    counts = {"inserted": 0, "bumped": 0, "skipped_same": 0, "skipped_stale": 0}
+    counts = {
+        "inserted": 0,
+        "bumped": 0,
+        "skipped_same": 0,
+        "skipped_stale": 0,
+        "skipped_retracted": 0,
+    }
     for r in rows:
         latest = _latest(conn, r["question_id"], r["fact_id"])
         if latest is None:
             version = 1
             counts["inserted"] += 1
+        elif latest.retracted_at is not None:
+            # Checked before the text-equality skip: a retracted fact must be
+            # reported even when the YAML still matches, because the battery file
+            # naming it at all is what needs resolving. Drives a non-zero exit.
+            counts["skipped_retracted"] += 1
+            print(
+                f"WARNING retracted fact in battery: {r['question_id']}/{r['fact_id']} "
+                f"was retracted in the dashboard at {latest.retracted_at}. "
+                f"{RETRACTED_REMEDY}",
+                file=sys.stderr,
+            )
+            continue
         elif latest.fact_text == r["fact_text"]:
             counts["skipped_same"] += 1
             continue
@@ -171,13 +201,16 @@ def main() -> int:
 
     print(
         f"inserted {counts['inserted']} new, bumped {counts['bumped']} edited, "
-        f"skipped {counts['skipped_same']} unchanged, skipped {counts['skipped_stale']} stale"
+        f"skipped {counts['skipped_same']} unchanged, skipped {counts['skipped_stale']} stale, "
+        f"skipped {counts['skipped_retracted']} retracted"
     )
-    if counts["skipped_stale"]:
+    if counts["skipped_stale"] or counts["skipped_retracted"]:
         # Non-zero so automation cannot report green while an authored correction
-        # was silently dropped. Everything else already committed.
+        # was silently dropped, or while a battery still names a retracted fact.
+        # Everything else already committed.
         print(
-            f"EXIT 2: {counts['skipped_stale']} authored edit(s) were DROPPED as stale YAML "
+            f"EXIT 2: {counts['skipped_stale']} authored edit(s) DROPPED as stale YAML, "
+            f"{counts['skipped_retracted']} fact(s) skipped as retracted "
             "(see warnings above). All other inserts completed.",
             file=sys.stderr,
         )
