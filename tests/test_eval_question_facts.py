@@ -17,11 +17,14 @@ def _make_db(tmp_path) -> EvalDB:
     return EvalDB(f"sqlite:///{tmp_path}/facts.db")
 
 
-def _seeded_db(tmp_path, rows: list[dict]) -> EvalDB:
+def _seeded_db(tmp_path, rows: list[dict], *, retraction_columns: bool = True) -> EvalDB:
     """A db whose engine has a persistent `reporting` schema seeded with rows.
 
     Uses a single shared in-memory attached db via a static pool so every
     connection from the engine sees the same reporting.question_facts.
+
+    ``retraction_columns=False`` reproduces the pre-migration dashboard schema, where
+    reporting.question_facts has no retracted_by/retracted_at yet.
     """
     from sqlalchemy import create_engine, event
     from sqlalchemy.pool import StaticPool
@@ -46,31 +49,35 @@ def _seeded_db(tmp_path, rows: list[dict]) -> EvalDB:
 
     db._session_factory = sessionmaker(bind=engine)
 
+    retraction_ddl = ",\n                    retracted_at TEXT" if retraction_columns else ""
     with db._session_factory() as session:
         session.execute(
             text(
-                """
+                f"""
                 CREATE TABLE reporting.question_facts (
                     fact_id       INTEGER NOT NULL,
                     version       INTEGER NOT NULL DEFAULT 1,
                     question_id   TEXT    NOT NULL,
                     display_order INTEGER NOT NULL DEFAULT 0,
                     fact_text     TEXT    NOT NULL,
-                    status        TEXT    NOT NULL DEFAULT 'draft',
+                    status        TEXT    NOT NULL DEFAULT 'draft'{retraction_ddl},
                     PRIMARY KEY (fact_id, version)
                 )
                 """
             )
         )
         for r in rows:
+            row = dict(r)
+            retracted_at = row.pop("retracted_at", None)
+            cols = "fact_id, version, question_id, display_order, fact_text, status"
+            vals = ":fact_id, :version, :question_id, :display_order, :fact_text, :status"
+            if retraction_columns:
+                cols += ", retracted_at"
+                vals += ", :retracted_at"
+                row["retracted_at"] = retracted_at
             session.execute(
-                text(
-                    "INSERT INTO reporting.question_facts "
-                    "(fact_id, version, question_id, display_order, fact_text, status) "
-                    "VALUES (:fact_id, :version, :question_id, :display_order, "
-                    ":fact_text, :status)"
-                ),
-                r,
+                text(f"INSERT INTO reporting.question_facts ({cols}) VALUES ({vals})"),
+                row,
             )
         session.commit()
     return db
@@ -184,6 +191,116 @@ def test_selects_latest_version_and_excludes_flagged(tmp_path):
         {"fact_id": 100, "fact_text": "v2 latest text"},
         {"fact_id": 300, "fact_text": "draft latest"},
     ]
+
+
+# --- retraction: a fact withdrawn in the dashboard must stop being scored ---
+
+
+def test_excludes_retracted_facts(tmp_path):
+    # The dashboard retracts by appending a version that keeps status and text and
+    # stamps retracted_at. Status alone cannot distinguish it, so a scorer filtering
+    # only on status would keep grading a withdrawn requirement.
+    db = _seeded_db(
+        tmp_path,
+        [
+            {
+                "fact_id": 1,
+                "version": 1,
+                "question_id": "q",
+                "display_order": 1,
+                "fact_text": "still required",
+                "status": "confirmed",
+            },
+            {
+                "fact_id": 2,
+                "version": 1,
+                "question_id": "q",
+                "display_order": 2,
+                "fact_text": "withdrawn requirement",
+                "status": "confirmed",
+            },
+            {
+                "fact_id": 2,
+                "version": 2,
+                "question_id": "q",
+                "display_order": 2,
+                "fact_text": "withdrawn requirement",
+                "status": "confirmed",
+                "retracted_at": "2026-09-11T12:00:00Z",
+            },
+        ],
+    )
+    assert load_question_facts(db, "q") == [{"fact_id": 1, "fact_text": "still required"}]
+
+
+def test_retraction_does_not_resurrect_previous_version(tmp_path):
+    # Guards the filter's placement: applied before latest-version selection, the
+    # retracting version would be skipped and v1 would surface as "latest", silently
+    # un-retracting the fact.
+    db = _seeded_db(
+        tmp_path,
+        [
+            {
+                "fact_id": 7,
+                "version": 1,
+                "question_id": "q",
+                "display_order": 0,
+                "fact_text": "original text",
+                "status": "confirmed",
+            },
+            {
+                "fact_id": 7,
+                "version": 2,
+                "question_id": "q",
+                "display_order": 0,
+                "fact_text": "original text",
+                "status": "confirmed",
+                "retracted_at": "2026-09-11T12:00:00Z",
+            },
+        ],
+    )
+    assert load_question_facts(db, "q") is None
+
+
+def test_retraction_of_only_fact_falls_back_to_yaml(tmp_path):
+    # Retracting every fact leaves no DB rows, which the loader reports as None —
+    # so resolve_required_facts falls back to YAML rather than scoring zero facts.
+    db = _seeded_db(
+        tmp_path,
+        [
+            {
+                "fact_id": 9,
+                "version": 1,
+                "question_id": "q",
+                "display_order": 0,
+                "fact_text": "gone",
+                "status": "confirmed",
+                "retracted_at": "2026-09-11T12:00:00Z",
+            }
+        ],
+    )
+    assert resolve_required_facts(db, "q", ["yaml fact"]) == ["yaml fact"]
+
+
+def test_works_against_schema_without_retraction_columns(tmp_path):
+    # The dashboard added the retraction columns after this table shipped, and the two
+    # services deploy independently. Against the older schema the query must still run
+    # (flag filter only) rather than raise and silently fall back to stale YAML.
+    db = _seeded_db(
+        tmp_path,
+        [
+            {
+                "fact_id": 1,
+                "version": 1,
+                "question_id": "q",
+                "display_order": 0,
+                "fact_text": "pre-migration fact",
+                "status": "confirmed",
+            }
+        ],
+        retraction_columns=False,
+    )
+    assert load_question_facts(db, "q") == [{"fact_id": 1, "fact_text": "pre-migration fact"}]
 
 
 # --- resolve_required_facts: prefer DB facts, fall back to YAML ---
