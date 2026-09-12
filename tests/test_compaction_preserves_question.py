@@ -23,15 +23,26 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from src.agent.nodes.tool_calling_loop import _build_context_editing_middleware
 
 
-def _fat_fanout_messages(n_calls: int = 14, chars_per_result: int = 9000) -> list:
+def _fat_fanout_messages(n_calls: int | None = None, chars_per_result: int = 9000) -> list:
     """A single-turn thread: one question, then n fat tool results.
 
-    Mirrors the production shape — ~14 tool results at the sizes UKY's
-    retrieve-docs actually returns. Measured 2026-09-10: individual documents
-    run 5-17KB (one outlier at 99KB), and a typical whole response is ~33KB.
-    9000 chars/result is deliberately mid-range, and 14 of them is what
-    crossed the trigger in production.
+    Mirrors the production shape at the sizes UKY's retrieve-docs actually
+    returns. Measured 2026-09-10: individual documents run 5-17KB (one outlier
+    at 99KB), a typical whole response is ~33KB, so 9000 chars/result is
+    mid-range.
+
+    The CALL COUNT is derived from the configured trigger rather than fixed at
+    the 14 that crossed it in production, so these tests keep exercising the
+    over-threshold path when the thresholds are retuned. (They did not: raising
+    the trigger to 70,000 left the old fixed fixture at 31,510 tokens, below
+    both the summarization and context-edit triggers, and the tests failed
+    while the behaviour they cover was fine.)
     """
+    if n_calls is None:
+        from src.config import settings
+
+        # 4 chars/token, doubled for comfortable margin over the trigger.
+        n_calls = max(14, (settings.SUMMARIZATION_TRIGGER_TOKENS * 4 * 2) // chars_per_result)
     messages: list = [HumanMessage(content="What GPU types do ACCESS resources have?", id="q-1")]
     for i in range(n_calls):
         messages.append(

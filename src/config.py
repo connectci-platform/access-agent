@@ -143,8 +143,23 @@ class Settings(BaseSettings):
     # compactions. Total post-compaction state ≈ SUMMARIZATION_KEEP_TOKENS
     # + ~500 token summary; budget the rest of the model context for
     # system prompt + tool schemas + new-turn growth.
-    SUMMARIZATION_TRIGGER_TOKENS: int = 24000
-    SUMMARIZATION_KEEP_TOKENS: int = 8000
+    #
+    # Measured against the deployment 2026-09-12 rather than estimated. The
+    # endpoint reports Max Input Tokens=131072 (read off vLLM's own overflow
+    # error). Fixed overhead per request is 29,028: 18,611 of tool schemas
+    # across 47 tools, 4,417 system prompt, 6,000 reply budget. That leaves
+    # 102,044 for conversation.
+    #
+    # At trigger 70,000 the peak request is 99,028, 76% of the window, and
+    # post-compaction state settles at 54,528. Keeping 25,000 preserves roughly
+    # eight turns of real dialogue verbatim instead of the two or three the
+    # previous 8,000 allowed.
+    #
+    # The previous 24,000/8,000 was sized for a ~32K window and used a quarter
+    # of the available budget, so the destructive compaction path ran far more
+    # often than the context required.
+    SUMMARIZATION_TRIGGER_TOKENS: int = 70000
+    SUMMARIZATION_KEEP_TOKENS: int = 25000
 
     # ContextEditingMiddleware — the FIRST line of defence against tool-result
     # bloat, sized to fire BEFORE summarization.
@@ -163,7 +178,10 @@ class Settings(BaseSettings):
     # bloat is reclaimed here and summarization stays a genuine backstop for
     # long multi-turn conversations. KEEP is a count of the most recent tool
     # results left verbatim — the model needs those to actually answer.
-    CONTEXT_EDIT_TRIGGER_TOKENS: int = 16000
+    # 45,000 holds the same ~2/3 relationship to the summarization trigger the
+    # previous 16,000/24,000 pair had, so editing still reclaims fan-out bloat
+    # before summarization is reached.
+    CONTEXT_EDIT_TRIGGER_TOKENS: int = 45000
     CONTEXT_EDIT_KEEP_TOOL_RESULTS: int = 4
 
     # MCP Server base host (configurable, defaults to production IP)
