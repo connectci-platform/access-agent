@@ -18,6 +18,7 @@ from ..agent.graph import stream_agent
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..auth import get_acting_user_from_cookie
 from ..config import settings
+from ..llm import is_empty_answer
 from ..tools import ToolRegistry, get_catalog_aggregator
 from ..turnstile import get_turnstile_guard, verify_turnstile_token
 from ..usage_logger import get_usage_logger
@@ -249,6 +250,33 @@ def _format_sse_event(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
+def _should_stream_token(msg: Any, metadata: dict[str, Any]) -> bool:
+    """Whether a LangGraph message chunk should reach the browser as a token.
+
+    Extracted from _stream_events so it can be tested without standing up the
+    registry, reporter and Turnstile machinery that generator also drives.
+
+    Four conditions, all load-bearing:
+
+    * AIMessageChunk only — the messages stream also carries complete AIMessage
+      objects added to state, and streaming those duplicates the whole answer.
+    * tool_calling_loop only — other nodes' chatter is not the user's answer.
+    * Non-empty — nothing to render.
+    * Not the empty-answer sentinel — the LLM client emits that in place of a
+      response that stripped to nothing, so the assistant turn stays non-empty
+      for vLLM. It is wire-protocol only, and qa-bot-core concatenates every
+      token event it receives (qa-flow.tsx), so streaming it would paste the
+      marker into the visible answer. tool_calling_loop substitutes real prose
+      when it builds final_answer, which the done event carries.
+    """
+    return (
+        isinstance(msg, AIMessageChunk)
+        and metadata.get("langgraph_node") == "tool_calling_loop"
+        and bool(msg.content)
+        and not is_empty_answer(msg.content if isinstance(msg.content, str) else None)
+    )
+
+
 async def _stream_events(  # noqa: PLR0912, PLR0915
     request: QueryRequest,
     acting_user: str | None,
@@ -291,11 +319,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                 # LangGraph's messages stream emits both AIMessageChunk (tokens)
                 # and AIMessage (complete messages added to state). We only want
                 # the chunks to avoid duplicating the full response.
-                if (
-                    isinstance(msg, AIMessageChunk)
-                    and metadata.get("langgraph_node") == "tool_calling_loop"
-                    and msg.content
-                ):
+                if _should_stream_token(msg, metadata):
                     yield _format_sse_event("token", {"content": msg.content})
 
             elif stream_type == "updates" and isinstance(chunk, dict):

@@ -13,6 +13,29 @@ from pydantic import SecretStr
 
 from ..config import settings
 
+# Wire-protocol sentinel, NOT user-facing text. Stands in for a response whose
+# visible content stripped to nothing, so the assistant turn is non-empty: UKY's
+# vLLM rejects a blank assistant turn on the next request in the loop ("No user
+# query found in messages"), failing the whole turn with a 400.
+#
+# tool_calling_loop translates this into a real apology before it can reach a
+# user, and src/eval/runner.py treats it as a failed turn so a reasoning-only
+# response stays countable instead of being judged as a bad answer. Anything
+# that reads a final answer must recognise it — grep before changing the value.
+EMPTY_ANSWER_SENTINEL = "\u0000__no_answer__"
+
+
+def is_empty_answer(text: str | None) -> bool:
+    """Whether a final answer is the sentinel rather than real content.
+
+    Not an equality test: the streaming path forwards post-</think> whitespace
+    chunks verbatim (inter-word spacing arrives as its own chunk), so a trailing
+    "\n\n" before the model stops yields "\n\n" + sentinel. An == check misses
+    that and the marker reaches the user.
+    """
+    return text is not None and text.strip() == EMPTY_ANSWER_SENTINEL
+
+
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
 # Non-greedy paired-block match. DOTALL so newlines inside the trace match.
@@ -96,7 +119,25 @@ def _strip_generations(result: ChatResult) -> None:
         content = getattr(msg, "content", None)
         if isinstance(content, str):
             answer, reasoning = _split_think_block(content)
-            msg.content = answer
+            # A reasoning-only response ("...thinking...</think>" with nothing
+            # after) strips to "". Assigning that leaves a blank assistant turn
+            # in the thread, and UKY's vLLM rejects the next request with
+            # "No user query found in messages" — killing the whole turn with a
+            # 400 rather than degrading. Substitute a neutral placeholder so the
+            # turn stays valid.
+            #
+            # The reasoning itself is NOT used as the fallback. A response
+            # truncated mid-trace (max_tokens hit before </think>) also strips
+            # to "", and handing that buffer to the user is the chain-of-thought
+            # leak closed in 1d66cff. The two cases are not reliably
+            # distinguishable here, so neither one leaks.
+            #
+            # Tool-calling turns keep their empty content: tool_calls carry the
+            # intent, and a placeholder would render as spurious prose.
+            if not answer and not getattr(msg, "tool_calls", None):
+                msg.content = EMPTY_ANSWER_SENTINEL
+            else:
+                msg.content = answer
             if reasoning:
                 _record_model_reasoning(reasoning)
 
@@ -125,14 +166,41 @@ class _ThinkStripState:
         self._buffer = ""
         self._seen_close = False
         self.reasoning = ""
+        # Whether any meaningful answer text has been emitted. A reasoning-only
+        # response closes the trace and emits nothing; flush() uses this to
+        # emit the sentinel rather than yield an empty message.
+        self._emitted_any = False
+        # Set when a chunk carries a tool-call delta; suppresses the sentinel.
+        self._saw_tool_call = False
 
     @property
     def seen_close(self) -> bool:
         return self._seen_close
 
+    def mark_tool_call_seen(self) -> None:
+        """Record that this response carries a tool call.
+
+        A tool-calling turn legitimately has no prose — tool_calls carry the
+        intent — so flush() must not append the sentinel, which would surface as
+        spurious text beside the call. Mirrors the tool_calls check the
+        non-streaming path makes in _strip_generations.
+        """
+        self._saw_tool_call = True
+
+    def mark_emitted(self) -> None:
+        """Record that answer text reached the consumer.
+
+        Needed because ``_apply_strip_to_chunk`` short-circuits post-``</think>``
+        chunks straight to the consumer without calling :meth:`feed`, so the
+        state machine would otherwise never learn that an answer was streamed.
+        """
+        self._emitted_any = True
+
     def feed(self, content: str) -> str | None:
         """Feed one chunk's text; return what should be emitted now."""
         if self._seen_close:
+            if content.strip():
+                self._emitted_any = True
             return content
         self._buffer += content
         # Capture paired-block traces before stripping them.
@@ -150,11 +218,17 @@ class _ThinkStripState:
             if before.strip():
                 parts.append(before.strip())
             self.reasoning = "\n".join(parts)
-            return after.lstrip() or None
+            out = after.lstrip() or None
+            if out:
+                self._emitted_any = True
+            return out
         self.reasoning = "\n".join(parts)
         # Only paired blocks were present. ``lstrip`` only — a trailing
         # space here connects to the next chunk; ``strip`` would eat it.
-        return new_buffer.lstrip() or None
+        out = new_buffer.lstrip() or None
+        if out:
+            self._emitted_any = True
+        return out
 
     def flush(self) -> str | None:
         """End-of-stream: emit remaining safe content.
@@ -167,12 +241,30 @@ class _ThinkStripState:
           — we're at end-of-stream, no more chunks to connect to.
         """
         if self._seen_close:
+            # Reasoning-only stream: the trace closed but no answer followed, so
+            # nothing was emitted and the aggregated message would be empty.
+            # UKY's vLLM rejects a blank assistant turn on the next request with
+            # "No user query found in messages", failing the turn with a 400.
+            # Emit a neutral placeholder, never the buffered trace — that would
+            # be the chain-of-thought leak closed in 1d66cff.
+            if not self._emitted_any and not self._saw_tool_call:
+                self._emitted_any = True
+                return EMPTY_ANSWER_SENTINEL
             return None
         answer, reasoning = _split_think_block(self._buffer)
         if reasoning:
             self.reasoning = reasoning
         self._buffer = ""
-        return answer or None
+        if answer:
+            self._emitted_any = True
+            return answer
+        # Truncated mid-trace (max_tokens hit before </think>): the trace is
+        # correctly dropped, leaving nothing. Same empty-turn problem as the
+        # reasoning-only case, so the same sentinel — never the buffer.
+        if not self._emitted_any and not self._saw_tool_call:
+            self._emitted_any = True
+            return EMPTY_ANSWER_SENTINEL
+        return None
 
 
 def _replace_chunk_content(chunk: ChatGenerationChunk, new_content: str) -> ChatGenerationChunk:
@@ -292,7 +384,23 @@ def _apply_strip_to_chunk(
     msg = chunk.message
     raw = msg.content if isinstance(msg.content, str) else ""
 
+    # Deliberately narrower than _chunk_carries_non_text_payload, which is true
+    # for ANY additional_kwargs: only a real tool call should suppress the
+    # sentinel. Otherwise an unrelated kwarg (a provider adding "refusal", say)
+    # silently disables the empty-turn guard and the 400 comes back.
+    if getattr(chunk.message, "tool_call_chunks", None) or (
+        getattr(chunk.message, "additional_kwargs", None) or {}
+    ).get("function_call"):
+        state.mark_tool_call_seen()
+
     if state.seen_close:
+        # Post-trace chunks pass through without re-entering feed(), so record
+        # here that real answer text reached the consumer — flush() relies on it
+        # to tell "answered normally" from "reasoning only, nothing emitted".
+        # strip(): a whitespace-only tail is a blank turn to vLLM, so it must not
+        # count as an answer or flush() would skip the sentinel.
+        if raw.strip():
+            state.mark_emitted()
         return [chunk]
 
     if not raw:

@@ -268,6 +268,8 @@ def _turn_delta_state(state: Any, turn_tool_entries: list[Any] | None = None) ->
     (``tool_results``, ``tools_used``, ``resource_context``, ``total_tokens``,
     ``final_answer``, ``node_trace``, ``model_calls``). Adding a key here is
     required when either consumer starts reading a new one.
+    ``answer_unavailable`` marks a ``final_answer`` that is a substituted
+    apology rather than a real answer, so the turn is recorded as failed.
 
     ``rag_matches`` is passed through un-sliced: no node on the current path
     writes it (see src/agent/state.py), so it is always the empty per-turn
@@ -280,6 +282,7 @@ def _turn_delta_state(state: Any, turn_tool_entries: list[Any] | None = None) ->
     node_trace = list(state.get("node_trace", []) or [])
     return {
         "final_answer": state.get("final_answer"),
+        "answer_unavailable": bool(state.get("answer_unavailable")),
         "tool_results": delta_tool_results,
         "tools_used": _tool_names(entries),
         "node_trace": copy.deepcopy(node_trace[-1:]),
@@ -468,6 +471,11 @@ async def run_thread(
             turn_tool_entries = _turn_tool_entries(state)
             tools_used = _tool_names(turn_tool_entries)
             answer = state.get("final_answer", "") or ""
+            # An apology substituted for a missing answer is a failed turn, not
+            # a bad answer. Beyond the scoring effect, a "successful" apology
+            # would be appended to `history` and replayed as context into every
+            # later turn of the thread instead of FAILED_TURN_MARKER.
+            answer_unavailable = bool(state.get("answer_unavailable"))
             turn_result = TurnResult(
                 turn_id=turn_id,
                 question=question_text,
@@ -475,7 +483,7 @@ async def run_thread(
                 tools_used=tools_used,
                 message_count=len(messages),
                 duration_ms=duration_ms,
-                success=bool(answer),
+                success=bool(answer) and not answer_unavailable,
             )
             logger.info(
                 f"  -> answer_len={len(answer)} tools={tools_used} "
