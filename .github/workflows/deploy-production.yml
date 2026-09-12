@@ -11,7 +11,27 @@ env:
   IMAGE_NAME: ${{ github.repository }}/access-agent
 
 jobs:
+  # CI is a separate workflow on the same push, so `needs:` cannot reach it and
+  # the two would otherwise race. Waiting here keeps `push` as the trigger; a
+  # workflow_run trigger would repoint github.sha/ref_name, which stamp the image.
+  await-ci:
+    runs-on: ubuntu-latest
+    # A manual dispatch may have no CI run for that ref; the wait would hang.
+    if: github.event_name != 'workflow_dispatch'
+    steps:
+      - name: Wait for CI to pass on this commit
+        uses: lewagon/wait-on-check-action@v1.4.0
+        with:
+          ref: ${{ github.sha }}
+          check-name: lint-and-test
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 15
+          allowed-conclusions: success
+
   build-and-push:
+    needs: await-ci
+    # Lets the skipped await-ci through on dispatch; a real failure still blocks.
+    if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
