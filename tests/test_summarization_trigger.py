@@ -27,10 +27,19 @@ def _fanout(calls: int, result_chars: int) -> list:
     return msgs
 
 
-def test_heavy_fanout_no_longer_trips_summarization():
-    # The observed production case: 14 calls of ~9k chars. Raw this is ~31.5k
-    # against a 24k trigger; edited it is ~9k and should not fire.
-    msgs = _fanout(14, 9000)
+def test_editing_is_what_keeps_a_big_fanout_under_the_trigger():
+    """Sized off the configured trigger, not a fixed magnitude.
+
+    The point is the relationship: a fan-out large enough to trip summarization
+    on its raw size must fall under it once edited. Hardcoding token counts ties
+    the test to whatever the thresholds happen to be — this one keeps holding
+    when they are retuned.
+    """
+    per_result = 9000
+    # Enough calls that the raw thread exceeds the trigger with margin.
+    calls = (settings.SUMMARIZATION_TRIGGER_TOKENS * 4 * 2) // per_result
+    msgs = _fanout(calls, per_result)
+
     assert count_tokens_approximately(msgs) > settings.SUMMARIZATION_TRIGGER_TOKENS
     assert _edit_aware_token_counter()(msgs) < settings.SUMMARIZATION_TRIGGER_TOKENS
 
@@ -45,10 +54,16 @@ def test_counting_does_not_mutate_the_caller_s_messages():
 
 
 def test_a_genuinely_long_thread_still_trips_summarization():
-    # Summarization must remain a real backstop. Editing keeps the most recent
-    # CONTEXT_EDIT_KEEP_TOOL_RESULTS verbatim, so enough large recent results
-    # still exceed the trigger even after editing.
-    huge = _fanout(settings.CONTEXT_EDIT_KEEP_TOOL_RESULTS, 40000)
+    """Summarization must stay a real backstop, not be disabled by editing.
+
+    Editing keeps the most recent CONTEXT_EDIT_KEEP_TOOL_RESULTS verbatim, so
+    results large enough in that preserved window still exceed the trigger.
+    """
+    # Size each preserved result so the kept window alone clears the trigger.
+    per_result = (settings.SUMMARIZATION_TRIGGER_TOKENS * 4) // (
+        settings.CONTEXT_EDIT_KEEP_TOOL_RESULTS
+    ) + 4000
+    huge = _fanout(settings.CONTEXT_EDIT_KEEP_TOOL_RESULTS, per_result)
     assert _edit_aware_token_counter()(huge) > settings.SUMMARIZATION_TRIGGER_TOKENS
 
 
