@@ -10,6 +10,7 @@ from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResu
 from langchain_openai import ChatOpenAI
 
 from src.llm.providers import (
+    EMPTY_ANSWER_SENTINEL,
     OpenAICompatibleProvider,
     OpenAIProvider,
     _strip_generations,
@@ -140,6 +141,76 @@ class TestStripGenerations:
         result = ChatResult(generations=[ChatGeneration(message=AIMessage(content=multimodal))])
         _strip_generations(result)
         assert result.generations[0].message.content == multimodal
+
+
+class TestEmptyStrippedContentNeverBlankNeverLeaks:
+    """A response whose visible content strips to nothing must stay non-empty.
+
+    Observed in production 2026-09-11: 12 of 49 eval questions died with
+    ``400 No user query found in messages`` from UKY's vLLM. Qwen had answered
+    with reasoning that ended at ``</think>`` and nothing after; stripping set
+    content to "", and the blank assistant turn made the NEXT request in the
+    loop invalid — so the whole turn failed instead of degrading.
+
+    The substitute is a neutral placeholder, never the buffered reasoning: a
+    response truncated mid-trace also strips to "", and emitting that buffer is
+    the chain-of-thought leak closed in 1d66cff.
+    """
+
+    def test_reasoning_only_gets_placeholder(self):
+        result = ChatResult(
+            generations=[
+                ChatGeneration(message=AIMessage(content="deciding which resource</think>"))
+            ]
+        )
+        _strip_generations(result)
+        assert result.generations[0].message.content == EMPTY_ANSWER_SENTINEL
+
+    def test_truncated_mid_think_does_not_leak_the_trace(self):
+        # The leak guard: an unpaired <think> means max_tokens cut the trace
+        # short. The reasoning must never reach the user as the answer.
+        secret = "<think>step one is to enumerate every possible resource"
+        result = ChatResult(generations=[ChatGeneration(message=AIMessage(content=secret))])
+        _strip_generations(result)
+        content = result.generations[0].message.content
+        assert content == EMPTY_ANSWER_SENTINEL
+
+    def test_keeps_real_answer_when_present(self):
+        result = ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content="reasoned</think>real answer"))]
+        )
+        _strip_generations(result)
+        assert result.generations[0].message.content == "real answer"
+
+    def test_tool_call_turn_stays_empty(self):
+        # A tool-calling turn legitimately has no prose; its tool_calls carry
+        # the intent, so a placeholder would render as spurious prose.
+        msg = AIMessage(
+            content="picking a tool</think>",
+            tool_calls=[{"name": "search", "args": {}, "id": "c1"}],
+        )
+        _strip_generations(ChatResult(generations=[ChatGeneration(message=msg)]))
+        assert msg.content == ""
+
+    def test_streaming_reasoning_only_gets_placeholder(self):
+        from src.llm.providers import _ThinkStripState
+
+        state = _ThinkStripState()
+        emitted = [out for c in ["deciding which", " resource</think>"] if (out := state.feed(c))]
+        flushed = state.flush()
+        if flushed:
+            emitted.append(flushed)
+        joined = "".join(emitted)
+        assert joined == EMPTY_ANSWER_SENTINEL
+        assert "deciding which" not in joined
+
+    def test_streaming_keeps_real_answer_and_flushes_nothing_extra(self):
+        from src.llm.providers import _ThinkStripState
+
+        state = _ThinkStripState()
+        emitted = [out for c in ["reasoned", "</think>", "real answer"] if (out := state.feed(c))]
+        assert state.flush() is None
+        assert "".join(emitted) == "real answer"
 
 
 class TestOpenAICompatibleProviderEnableThinking:
@@ -438,11 +509,17 @@ class TestReasoningCapture:
         assert state.reasoning == "step one, step two"
 
     def test_stream_state_flush_captures_truncated_reasoning(self):
-        from src.llm.providers import _ThinkStripState
+        from src.llm.providers import EMPTY_ANSWER_SENTINEL, _ThinkStripState
 
         state = _ThinkStripState()
         assert state.feed("<think>never closed") is None
-        assert state.flush() is None
+        # The trace is still never emitted — but the turn cannot be left empty
+        # either, so flush yields the sentinel the loop translates. Previously
+        # this returned None, which is what produced the blank assistant turn
+        # and the vLLM 400.
+        flushed = state.flush()
+        assert flushed == EMPTY_ANSWER_SENTINEL
+        assert "never closed" not in flushed
         assert state.reasoning == "never closed"
 
     def test_stream_state_no_reasoning_stays_empty(self):
@@ -452,3 +529,277 @@ class TestReasoningCapture:
         state.feed("plain ")
         assert state.flush() == "plain"
         assert state.reasoning == ""
+
+
+class TestSentinelNeverReachesAUser:
+    """The empty-answer sentinel is wire-protocol only.
+
+    It exists so a reasoning-only response leaves a non-empty assistant turn
+    (vLLM 400s on a blank one). If it escaped to the chat UI the user would read
+    a bare internal marker as their answer, and the eval would judge it as a bad
+    answer instead of recording a failed turn.
+    """
+
+    def test_sentinel_is_not_text_a_model_could_emit(self):
+        from src.llm.providers import EMPTY_ANSWER_SENTINEL
+
+        # NUL-prefixed: no model emits this, so a real answer can never collide
+        # with it and be replaced by an apology.
+        assert EMPTY_ANSWER_SENTINEL.startswith("\x00")
+
+    def test_loop_translates_it_to_prose_and_tags_the_span(self):
+        from unittest.mock import MagicMock
+
+        from src.agent.nodes.tool_calling_loop import _answer_unavailable_message
+        from src.llm.providers import EMPTY_ANSWER_SENTINEL
+
+        span = MagicMock()
+        msg = _answer_unavailable_message(48, span)
+        assert EMPTY_ANSWER_SENTINEL not in msg
+        assert "support.access-ci.org" in msg
+        # Countable: these turns used to die as an opaque 400 with no signal.
+        span.set_attribute.assert_called_once_with("agent.empty_answer", True)
+
+    def test_streaming_suppresses_the_sentinel_on_a_tool_call_turn(self):
+        # A tool-calling turn has no prose by design; the sentinel would render
+        # as spurious text beside the call. Mirrors the non-streaming behavior.
+        from src.llm.providers import _apply_strip_to_chunk, _flush_strip_state, _ThinkStripState
+
+        state = _ThinkStripState()
+        for raw in ("picking a tool", "</think>"):
+            _apply_strip_to_chunk(ChatGenerationChunk(message=AIMessageChunk(content=raw)), state)
+        _apply_strip_to_chunk(
+            ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content="",
+                    tool_call_chunks=[{"name": "search", "args": "{}", "id": "c1", "index": 0}],
+                )
+            ),
+            state,
+        )
+        assert _flush_strip_state(state) is None
+
+    def test_whitespace_tail_through_the_chunk_path_is_detected_as_empty(self):
+        """The shape an == guard misses.
+
+        A post-</think> whitespace chunk is forwarded verbatim (inter-word
+        spacing arrives as its own chunk), so the aggregate is "\n\n" + sentinel,
+        not the sentinel. Asserting membership in the emitted LIST passes while
+        the joined content still leaks the marker to the user — which is exactly
+        what an earlier version of this test did. Assert the aggregate, and
+        assert the consumer-side predicate recognises it.
+        """
+        from langchain_core.messages import AIMessageChunk
+        from langchain_core.outputs import ChatGenerationChunk
+
+        from src.llm.providers import (
+            EMPTY_ANSWER_SENTINEL,
+            _apply_strip_to_chunk,
+            _flush_strip_state,
+            _ThinkStripState,
+            is_empty_answer,
+        )
+
+        state = _ThinkStripState()
+        emitted: list[str] = []
+        for raw in ["Let me think", "</think>", "\n\n"]:
+            for out in _apply_strip_to_chunk(
+                ChatGenerationChunk(message=AIMessageChunk(content=raw)), state
+            ):
+                if out.message.content:
+                    emitted.append(str(out.message.content))
+        tail = _flush_strip_state(state)
+        if tail is not None and tail.message.content:
+            emitted.append(str(tail.message.content))
+
+        aggregate = "".join(emitted)
+        # The raw aggregate is NOT equal to the sentinel — an == guard misses it.
+        assert aggregate != EMPTY_ANSWER_SENTINEL
+        # But it must still be recognised, or the marker reaches the user.
+        assert is_empty_answer(aggregate)
+
+
+class TestSseTokenGuard:
+    """_should_stream_token decides what reaches the browser as a token event.
+
+    qa-bot-core concatenates every `token` event it receives (qa-flow.tsx:
+    `if (evType === 'token') collectedTokens += (parsed.content || '')`), so
+    whatever this returns True for lands verbatim in the visible answer.
+    """
+
+    @staticmethod
+    def _loop(content, node="tool_calling_loop", chunk=True):
+        from langchain_core.messages import AIMessage, AIMessageChunk
+
+        cls = AIMessageChunk if chunk else AIMessage
+        return cls(content=content), {"langgraph_node": node}
+
+    def test_sentinel_is_not_streamed(self):
+        # The reason this predicate exists: the sentinel is wire-protocol only,
+        # and tool_calling_loop substitutes real prose into final_answer, which
+        # the done event carries. Streaming it would paste the marker into the
+        # answer text the user reads.
+        from src.api.routes import _should_stream_token
+        from src.llm.providers import EMPTY_ANSWER_SENTINEL
+
+        assert _should_stream_token(*self._loop(EMPTY_ANSWER_SENTINEL)) is False
+
+    def test_ordinary_content_is_streamed(self):
+        # Positive control. Without it the sentinel assertion above can pass
+        # vacuously against a predicate that streams nothing at all.
+        from src.api.routes import _should_stream_token
+
+        assert _should_stream_token(*self._loop("Anvil supports Python.")) is True
+
+    def test_whitespace_is_streamed(self):
+        # Deliberate: inter-word spacing arrives as its own chunk, so dropping
+        # whitespace would run words together. Unlike the strip layer, where a
+        # whitespace-only RESPONSE is a blank turn, here it is a fragment.
+        from src.api.routes import _should_stream_token
+
+        assert _should_stream_token(*self._loop("   ")) is True
+
+    def test_empty_content_is_not_streamed(self):
+        from src.api.routes import _should_stream_token
+
+        assert _should_stream_token(*self._loop("")) is False
+
+    def test_other_nodes_are_not_streamed(self):
+        from src.api.routes import _should_stream_token
+
+        assert _should_stream_token(*self._loop("internal", node="other")) is False
+
+    def test_complete_messages_are_not_streamed(self):
+        # The messages stream carries both AIMessageChunk (tokens) and the
+        # complete AIMessage added to state; streaming the latter would emit
+        # the entire answer a second time.
+        from src.api.routes import _should_stream_token
+
+        assert _should_stream_token(*self._loop("whole answer", chunk=False)) is False
+
+
+class TestSentinelDoesNotOutliveTheLoop:
+    """Findings from the second review round, each with its own failure mode."""
+
+    def test_unrelated_additional_kwargs_do_not_suppress_the_sentinel(self):
+        # _chunk_carries_non_text_payload is true for ANY additional_kwargs. If
+        # that gated the tool-call check, a provider adding e.g. "refusal" would
+        # silently disable the empty-turn guard and the vLLM 400 would return.
+        from langchain_core.messages import AIMessageChunk
+        from langchain_core.outputs import ChatGenerationChunk
+
+        from src.llm.providers import (
+            EMPTY_ANSWER_SENTINEL,
+            _apply_strip_to_chunk,
+            _flush_strip_state,
+            _ThinkStripState,
+        )
+
+        state = _ThinkStripState()
+        for raw, kwargs in [("reasoning", {}), ("</think>", {"refusal": None})]:
+            _apply_strip_to_chunk(
+                ChatGenerationChunk(message=AIMessageChunk(content=raw, additional_kwargs=kwargs)),
+                state,
+            )
+        tail = _flush_strip_state(state)
+        assert tail is not None
+        assert tail.message.content == EMPTY_ANSWER_SENTINEL
+
+    def test_is_empty_answer_tolerates_surrounding_whitespace(self):
+        from src.llm.providers import EMPTY_ANSWER_SENTINEL, is_empty_answer
+
+        assert is_empty_answer(EMPTY_ANSWER_SENTINEL)
+        assert is_empty_answer(f"\n\n{EMPTY_ANSWER_SENTINEL}")
+        assert is_empty_answer(f"  {EMPTY_ANSWER_SENTINEL}  ")
+        # Must not swallow a real answer that merely mentions it.
+        assert not is_empty_answer(f"the marker is {EMPTY_ANSWER_SENTINEL}")
+        assert not is_empty_answer("Anvil supports Python.")
+        assert not is_empty_answer("")
+        assert not is_empty_answer(None)
+
+    def test_loop_rewrites_the_sentinel_message_not_just_final_answer(self):
+        # With checkpointing on, messages are persisted and replayed as prior
+        # context. A raw sentinel would come back as an uninterpretable
+        # assistant turn and feed into summarization.
+        from langchain_core.messages import AIMessage
+
+        from src.agent.nodes.tool_calling_loop import _replace_sentinel_message
+        from src.llm.providers import EMPTY_ANSWER_SENTINEL
+
+        messages = [
+            AIMessage(content="earlier real answer"),
+            AIMessage(content=f"\n\n{EMPTY_ANSWER_SENTINEL}"),
+        ]
+        _replace_sentinel_message(messages, "sorry, no answer")
+        assert messages[1].content == "sorry, no answer"
+        assert messages[0].content == "earlier real answer"
+
+
+class TestEmptyAnswerIntegrationPaths:
+    """Cover the integration points the unit tests bypass."""
+
+    def test_truncated_stream_never_seeing_close_yields_the_sentinel(self):
+        # flush()'s no-close branch: max_tokens cut the response before
+        # </think>, so the trace is dropped and nothing would be emitted.
+        from src.llm.providers import EMPTY_ANSWER_SENTINEL, _flush_strip_state, _ThinkStripState
+
+        state = _ThinkStripState()
+        assert state.feed("<think>reasoning that never closes") is None
+        tail = _flush_strip_state(state)
+        assert tail is not None
+        assert tail.message.content == EMPTY_ANSWER_SENTINEL
+        assert "never closes" not in str(tail.message.content)
+
+    def test_loop_substitutes_prose_for_a_sentinel_final_answer(self):
+        # The three lines that turn a sentinel into a user-facing answer, and
+        # flag the turn so the eval records a failure rather than judging it.
+        from unittest.mock import MagicMock
+
+        from langchain_core.messages import AIMessage
+
+        from src.agent.nodes.tool_calling_loop import (
+            _answer_unavailable_message,
+            _replace_sentinel_message,
+        )
+        from src.llm.providers import EMPTY_ANSWER_SENTINEL, is_empty_answer
+
+        final_answer = f"\n\n{EMPTY_ANSWER_SENTINEL}"
+        assert is_empty_answer(final_answer)
+
+        span = MagicMock()
+        messages = [AIMessage(content=final_answer)]
+        final_answer = _answer_unavailable_message(12, span)
+        _replace_sentinel_message(messages, final_answer)
+
+        assert EMPTY_ANSWER_SENTINEL not in final_answer
+        assert EMPTY_ANSWER_SENTINEL not in str(messages[0].content)
+        assert not is_empty_answer(final_answer)
+
+    def test_stream_events_calls_the_token_predicate(self):
+        # routes.py's call site: the predicate must gate the yield, so a
+        # sentinel chunk produces no token event while real content does.
+        import inspect
+
+        from langchain_core.messages import AIMessageChunk
+
+        from src.api import routes
+        from src.llm.providers import EMPTY_ANSWER_SENTINEL
+
+        src = inspect.getsource(routes._stream_events)
+        assert "_should_stream_token(msg, metadata)" in src
+
+        loop = {"langgraph_node": "tool_calling_loop"}
+        assert not routes._should_stream_token(
+            AIMessageChunk(content=f"\n{EMPTY_ANSWER_SENTINEL}"), loop
+        )
+        assert routes._should_stream_token(AIMessageChunk(content="real"), loop)
+
+    def test_flush_adds_nothing_when_a_tool_call_already_streamed(self):
+        # The no-close fall-through: a tool-calling turn that ends without
+        # </think> must not get a sentinel appended beside its tool call.
+        from src.llm.providers import _ThinkStripState
+
+        state = _ThinkStripState()
+        state.mark_tool_call_seen()
+        assert state.feed("<think>choosing a tool") is None
+        assert state.flush() is None

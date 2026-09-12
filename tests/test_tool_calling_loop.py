@@ -900,3 +900,50 @@ async def test_node_passes_status_emitter_via_callbacks(base_state):
     assert any(isinstance(cb, _ToolStatusEmitter) for cb in callbacks), (
         f"Expected _ToolStatusEmitter in callbacks, got: {callbacks}"
     )
+
+
+@pytest.mark.asyncio
+async def test_sentinel_answer_becomes_prose_and_flags_the_turn(base_state):
+    """A response that stripped to nothing must not surface as the sentinel.
+
+    The LLM client emits EMPTY_ANSWER_SENTINEL so the assistant turn stays
+    non-empty for vLLM (a blank one 400s the next request). It is wire-protocol
+    only: the loop swaps in a real apology, rewrites the message so a
+    checkpointed thread does not replay the marker as prior context, and sets
+    answer_unavailable so the eval records a failed turn instead of judging the
+    apology as a bad answer.
+    """
+    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
+    from src.llm.providers import EMPTY_ANSWER_SENTINEL
+
+    # Trailing whitespace is the shape an equality guard misses: the streaming
+    # path forwards post-</think> whitespace chunks verbatim.
+    sentinel_message = AIMessage(content=f"\n\n{EMPTY_ANSWER_SENTINEL}")
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke.return_value = {"messages": [*base_state["messages"], sentinel_message]}
+
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
+        result = await tool_calling_loop_node(base_state)
+
+    assert EMPTY_ANSWER_SENTINEL not in result["final_answer"]
+    assert "support.access-ci.org" in result["final_answer"]
+    assert result["answer_unavailable"] is True
+    # The message itself is rewritten too, or checkpointing replays the marker.
+    assert EMPTY_ANSWER_SENTINEL not in str(sentinel_message.content)
+
+
+@pytest.mark.asyncio
+async def test_ordinary_answer_is_not_flagged_unavailable(base_state):
+    """Positive control: a real answer must not be treated as unavailable."""
+    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
+
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke.return_value = {
+        "messages": [*base_state["messages"], AIMessage(content="Delta has A100 GPUs.")]
+    }
+
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
+        result = await tool_calling_loop_node(base_state)
+
+    assert result["final_answer"] == "Delta has A100 GPUs."
+    assert result["answer_unavailable"] is False

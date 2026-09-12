@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
 
 from ...config import settings
-from ...llm import get_llm
+from ...llm import get_llm, is_empty_answer
 from ...telemetry import get_tracer
 from ..domains.capabilities import WRITE_MCP_TOOL_NAMES
 from ..domains.tools import create_mcp_tools_from_catalog
@@ -351,6 +351,43 @@ def _build_context_editing_middleware() -> ContextEditingMiddleware:
     )
 
 
+def _answer_unavailable_message(tool_count: int, span: Any) -> str:
+    """User-facing prose for a response that carried no usable answer.
+
+    The LLM client substitutes EMPTY_ANSWER_SENTINEL when a response strips to
+    nothing (reasoning-only, or truncated mid-trace), so the assistant turn is
+    non-empty and the next request in the loop stays valid. That marker is
+    wire-protocol only and must never reach a user, so it is swapped here — the
+    same shape the recursion-limit path uses. The span attribute makes the
+    occurrence countable; these turns previously died as an opaque 400.
+    """
+    logger.warning(
+        "tool_calling_loop got an answer-less response "
+        "(reasoning-only or truncated); tool_count=%d",
+        tool_count,
+    )
+    span.set_attribute("agent.empty_answer", True)
+    return (
+        "I wasn't able to put together an answer for that. You can try "
+        "rephrasing, or open a support ticket at "
+        "https://support.access-ci.org/open-a-ticket."
+    )
+
+
+def _replace_sentinel_message(messages: list[Any], replacement: str) -> None:
+    """Overwrite the sentinel-bearing AIMessage with user-facing prose.
+
+    final_answer alone is not enough. With checkpointing on, these messages are
+    persisted and replayed as prior context on the next turn, so a raw sentinel
+    would reach the model as an uninterpretable assistant turn and feed into
+    summarization. The sentinel must not outlive this node.
+    """
+    for msg in reversed(messages):
+        if isinstance(msg, AIMessage) and is_empty_answer(_coerce_content_to_text(msg.content)):
+            msg.content = replacement
+            return
+
+
 async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
     """Run the tool-calling loop.
 
@@ -416,6 +453,8 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
 
         final_answer: str | None = None
         recursion_limit_hit = False
+        # Set when final_answer is a substituted apology, not a real answer.
+        answer_unavailable = False
 
         # recursion_limit = 2 * max_tool_turns + 1; gives the LLM room for
         # roughly 10 tool turns before LangGraph hard-stops.
@@ -445,6 +484,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
                 len(messages),
             )
             span.set_attribute("agent.recursion_limit_hit", True)
+            answer_unavailable = True
             result_messages = list(messages)
             final_answer = (
                 "I wasn't able to complete an answer for this query within "
@@ -458,6 +498,11 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
                 if isinstance(msg, AIMessage) and msg.content:
                     final_answer = _coerce_content_to_text(msg.content)
                     break
+
+            if is_empty_answer(final_answer):
+                final_answer = _answer_unavailable_message(len(tools), span)
+                _replace_sentinel_message(result_messages, final_answer)
+                answer_unavailable = True
 
         timings = get_turn_capture().get("tool_timings", [])
         tools_used, tool_call_count = _attribute_tool_calls(timings, result_messages)
@@ -488,6 +533,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
             "messages": result_messages,
             "tools_used": tools_used,
             "tool_call_count": tool_call_count,
+            "answer_unavailable": answer_unavailable,
             "total_tokens": token_accumulator.total_tokens,
             "model_calls": token_accumulator.model_calls,
             "tool_results": tool_results,

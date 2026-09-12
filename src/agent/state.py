@@ -190,6 +190,10 @@ class AgentState(TypedDict):
         int,
         "Total tool INVOCATIONS this turn, counted at the tool wrapper; a 14-call fan-out over one tool is 14 here and one entry in tools_used",
     ]
+    answer_unavailable: Annotated[
+        bool,
+        "True when the model produced no usable answer (reasoning-only, truncated mid-trace, or tool-turn budget exhausted) and final_answer is a substituted apology rather than a real answer. The eval reads this to record a failed turn instead of judging the apology as a bad answer",
+    ]
 
     # Tracing (accumulated by every node via operator.add reducer)
     node_trace: Annotated[list[dict[str, Any]], operator.add]
@@ -255,6 +259,7 @@ def create_initial_state(
         tool_results=[],
         tools_used=[],
         tool_call_count=0,
+        answer_unavailable=False,
         node_trace=[],
         # Legacy domain-agent flag; the loop does not write it.
         domain_completed=None,

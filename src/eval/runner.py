@@ -242,7 +242,7 @@ async def _run_agent(
             duration_ms=duration_ms,
             battery_id=battery_id,
             battery_run_id=battery_run_id,
-            success=bool(answer),
+            success=bool(answer) and not state.get("answer_unavailable"),
         )
     return RunResult(
         question_id=question_id,
@@ -252,7 +252,10 @@ async def _run_agent(
         tool_results=format_tool_results(state),
         node_trace=format_node_trace(state),
         tools_used=state.get("tools_used", []),
-        success=bool(answer),
+        # An apology substituted for a missing answer is a failed turn, not a
+        # bad answer: judging it would average a near-zero composite into the
+        # run while `skipped` read 0, hiding the breakage that caused it.
+        success=bool(answer) and not state.get("answer_unavailable"),
     )
 
 
