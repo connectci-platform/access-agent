@@ -13,7 +13,8 @@ import json
 import logging
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
 from langchain.agents import create_agent
@@ -24,12 +25,14 @@ from langchain.agents.middleware import (
 )
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_stream_writer
 from langgraph.errors import GraphRecursionError
 
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from langchain.agents.middleware.summarization import TokenCounter
     from langchain_core.tools import BaseTool
 
 from ...config import settings
@@ -332,6 +335,35 @@ def _attribute_tool_calls(
     return tools_used, len(timings) or scanned
 
 
+def _edit_aware_token_counter() -> TokenCounter:
+    """Count the thread as the model will receive it, with context edits applied.
+
+    SummarizationMiddleware decides whether to fire from
+    ``self.token_counter(state["messages"])`` — the raw thread. ContextEditingMiddleware
+    hooks ``wrap_model_call`` instead, so its edits rewrite one request via
+    ``request.override`` and never reach state. Different hooks, so the
+    middleware list order has no bearing on it: summarization always measured
+    the unedited size and fired on fan-outs the edits had already reclaimed.
+    Measured on a 14-call fan-out: 31,504 raw against a 24,000 trigger, versus
+    9,026 once edited.
+
+    Applying the same edits to a copy before counting makes the trigger reflect
+    what the model actually sees, so summarization stays the long-conversation
+    backstop the sizing comments in src/config.py describe.
+    """
+    edit = ClearToolUsesEdit(
+        trigger=settings.CONTEXT_EDIT_TRIGGER_TOKENS,
+        keep=settings.CONTEXT_EDIT_KEEP_TOOL_RESULTS,
+    )
+
+    def count(messages: Iterable[Any]) -> int:
+        edited = deepcopy(list(messages))
+        edit.apply(edited, count_tokens=count_tokens_approximately)
+        return int(count_tokens_approximately(edited))
+
+    return count
+
+
 def _build_context_editing_middleware() -> ContextEditingMiddleware:
     """Reclaim tool-result bloat before summarization can evict the question.
 
@@ -431,13 +463,14 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
             tools=tools,
             system_prompt=system_prompt,
             middleware=[
-                # Order matters: context editing runs first and reclaims
-                # tool-result bloat non-destructively, so summarization stays a
-                # backstop for genuinely long conversations rather than firing
-                # on a single heavy fan-out and evicting the user's question.
+                # These hook different points — context editing wraps the model
+                # call, summarization runs before it — so list order does not
+                # sequence them. What makes summarization a backstop rather than
+                # a fan-out tripwire is the edit-aware token counter below.
                 _build_context_editing_middleware(),
                 _FlaggingSummarizationMiddleware(
                     model=llm,
+                    token_counter=_edit_aware_token_counter(),
                     trigger=("tokens", settings.SUMMARIZATION_TRIGGER_TOKENS),
                     keep=("tokens", settings.SUMMARIZATION_KEEP_TOKENS),
                 ),
