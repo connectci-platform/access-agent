@@ -11,6 +11,8 @@ import logging
 import sys
 from typing import Any
 
+from ..telemetry import init_telemetry, shutdown_telemetry
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -708,11 +710,21 @@ def main() -> None:
     }
 
     handler = handlers.get(args.command)
-    if handler:
-        handler(args)
-    else:
+    if not handler:
         parser.print_help()
         sys.exit(1)
+
+    # Separate process from the API server, so src/main.py's lifespan hooks
+    # never run and eval spans would go to a no-op provider. Tagged
+    # service.component=access-agent-eval (service.name is the Honeycomb
+    # dataset) to tell an eval run from live traffic. The flush must be in a
+    # finally: a crashing run is the one worth tracing, and a CLI exits before
+    # the batch processor would send anything.
+    init_telemetry(service_name="access-agent-eval")
+    try:
+        handler(args)
+    finally:
+        shutdown_telemetry()
 
 
 if __name__ == "__main__":
