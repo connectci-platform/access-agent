@@ -24,7 +24,7 @@ from langchain.agents.middleware import (
     SummarizationMiddleware,
 )
 from langchain_core.callbacks import AsyncCallbackHandler
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_stream_writer
 from langgraph.errors import GraphRecursionError
@@ -272,12 +272,14 @@ class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
         result = super().before_model(state, runtime)
         if result is not None:
             mark_summarized()
+            _restore_questions(result, state)
         return result
 
     async def abefore_model(self, state: Any, runtime: Any) -> Any:
         result = await super().abefore_model(state, runtime)
         if result is not None:
             mark_summarized()
+            _restore_questions(result, state)
         return result
 
     @staticmethod
@@ -333,6 +335,62 @@ def _attribute_tool_calls(
                 if name and name not in tools_used:
                     tools_used.append(name)
     return tools_used, len(timings) or scanned
+
+
+def _restore_questions(result: dict[str, Any], state: Any) -> None:
+    """Put the user's questions back after compaction, in place.
+
+    Upstream rebuilds the thread as ``RemoveMessage(REMOVE_ALL_MESSAGES)`` plus
+    the summary plus a positional tail, and ``_partition_messages`` splits purely
+    by index. On a single-turn request the question is index 0, so it is always
+    in the summarized half and always evicted. Upstream compensates by making the
+    summary a ``HumanMessage``; ``_build_new_messages`` deliberately does not (see
+    there), which leaves a request carrying no user turn at all — and UKY's vLLM
+    rejects that with "No user query found in messages", failing the turn.
+
+    Every question missing from the rebuilt thread is restored, matched by id, not
+    just the ones missing when none survived. A positional tail can happen to
+    preserve the newest question while older ones are summarized away, and those
+    older ones are the conversation's structure: "how do I get an allocation" then
+    "what about for a student" only parses as a pair.
+
+    Matching by id also makes this idempotent — a second call finds every id
+    already present — and means original message objects are reused. The reducer
+    (langgraph ``add_messages``) discards everything up to and including the
+    REMOVE_ALL_MESSAGES sentinel and returns the remainder verbatim, so
+    re-adding an id is clean and index 1 is the only correct insertion point.
+
+    Ordering: questions, then the summary, then the preserved tail — what you
+    were asked, what you have learned, the recent detail. Restoring them to their
+    original interleaved positions is not possible: the assistant turns they were
+    interleaved with are the material the summary replaced.
+    """
+    messages = result.get("messages")
+    if not messages:
+        return
+
+    present = {id(m) for m in messages} | {
+        m.id for m in messages if isinstance(m, HumanMessage) and m.id is not None
+    }
+    missing = [
+        m
+        for m in state.get("messages", [])
+        if isinstance(m, HumanMessage) and id(m) not in present and m.id not in present
+    ]
+    if not missing:
+        return
+
+    # Index 1, not 0: the reducer discards everything up to and including the
+    # REMOVE_ALL_MESSAGES sentinel, so questions placed before it are thrown
+    # away. Upstream emits that sentinel as element 0 unconditionally on both
+    # the sync and async paths; if a version ever stops doing so, insertion
+    # would silently lose the questions, so assert rather than guess a position.
+    if not isinstance(messages[0], RemoveMessage):  # pragma: no cover - upstream invariant
+        logger.warning(
+            "summarization returned no RemoveMessage sentinel; skipping question restore"
+        )
+        return
+    result["messages"] = [messages[0], *missing, *messages[1:]]
 
 
 def _edit_aware_token_counter() -> TokenCounter:

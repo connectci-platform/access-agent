@@ -194,7 +194,8 @@ def _turn_tool_entries(state: Any) -> list[Any]:
     stamps against the INNER list ``create_agent`` returns, which compaction may
     have rewritten; the boundary here reads the OUTER merged list, which never
     shrinks (compaction's ``RemoveMessage`` is consumed inside the inner subgraph)
-    and adopts the summary HumanMessage as its last human. Comparing positions
+    and keeps the turn's own question as its last human — the summary is an
+    AIMessage, and the questions are restored ahead of it on compaction. Comparing positions
     across the two silently empties every post-compaction turn's delta. Under the
     id-keyed ``add_messages`` merge, preserved old messages keep their original
     pre-boundary positions while this turn's messages append after the boundary,
