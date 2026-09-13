@@ -1,13 +1,27 @@
-# Student-authored question battery — 49 questions submitted by the student
-# reviewers in four groups (9 / 8 / 10 / 22), preserved in submission order.
+# Student-authored question battery — 47 questions submitted by the student
+# reviewers, in submission order. Two of the original 49 were dropped as
+# duplicates: sa-alloc-10 (same answer as sa-alloc-03) and sa-onboard-06 (same
+# as gapfill's gf-docs-01, which already has confirmed facts).
 #
-# required_facts is DELIBERATELY ABSENT on every entry. These questions exist so
-# the students can author their own required_facts in the dashboard
-# (/dashboard/facts), which is the source of truth: the eval's fact resolver
-# reads reporting.question_facts and falls back to a battery's required_facts
-# only when the table has no facts for the question. Seeding a question with no
-# facts creates the reporting.questions row and zero fact rows, which is what
-# puts it in front of a student with an empty fact list to fill.
+# required_facts are DRAFTS, authored 2026-09-13 from authoritative ACCESS and
+# resource-provider documentation, NOT from the agent's own answers — grading an
+# answer against a rubric derived from it proves nothing. Each carries the source
+# URL and verification date. Student reviewers confirm, flag or edit them in the
+# dashboard, which is the resolver's source of truth; these are the fallback and
+# the reviewable artifact.
+#
+# authoring_notes starting with AUTHOR: mark claims the sources did not support.
+# They are deliberate gaps, not omissions — several agent answers carry specific
+# numbers that live on JS-rendered pages, and confirming those from the answer
+# text is the circularity this whole exercise avoids.
+#
+# Notes starting with DISAGREEMENT: are findings. Twelve live sources contradict
+# what the agent said, including scratch purge windows off by more than 10x and
+# an SSH key-propagation claim the support docs directly refute. Three of the
+# twelve are ACCESS pages contradicting each other, not agent errors.
+#
+# sa-general-02 and sa-resource-09 have no facts yet: both failed their eval run
+# on upstream 500s from chat-mcp, so there was no answer to work from.
 #
 # capability_area and expected_tool are FIRST-PASS GUESSES from the existing
 # battery vocabulary, not verified routing. expected_tool: null means the answer
@@ -25,54 +39,220 @@
   capability_area: account_management
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Answer directs the user to register for an ACCESS ID through the official ACCESS account
+    registration flow (account.access-ci.org/register, reached via identity.access-ci.org or
+    the ACCESS get-started page), not to a resource provider's own signup.
+  - Answer conveys that a user can register using an existing institutional/federated identity
+    via CILogon, or with an ACCESS-issued username and password, and that whichever identity
+    provider you register with is the one you must select at login.
+  - Per ACCESS documentation, former XSEDE users must not create a new account - the ACCESS
+    ID is the same as the XSEDE Portal account username, with the same password and Duo registration.
+    Answer states this rather than telling XSEDE users to register fresh.
+  - Answer does not claim ACCESS account creation requires an allocation, a grant, or a fee.
+  sources:
+  - https://support.access-ci.org/documentation/your-access-account (verified 2026-09-13)
+  - https://operations.access-ci.org/identity/faq (verified 2026-09-13)
+  - https://allocations.access-ci.org/get-your-first-project (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: The answer cites identity.access-ci.org/new-user-federated and identity.access-ci.org/new-user-direct
+    as the two registration URLs. Both currently return a redirect stub pointing at https://account.access-ci.org/register
+    (checked 2026-09-13), and the live ACCESS Support account page links only to the account.access-ci.org
+    registration flow. I could not confirm the two split URLs are still the documented entry
+    points, so fact 1 grades the destination rather than the exact URL. A human should decide
+    whether citing the older new-user-federated / new-user-direct URLs should count against
+    an answer.'
 
 - id: sa-alloc-01
   question: How do I get an allocation on ACCESS?
   capability_area: allocations
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Answer names the four ACCESS allocation opportunities by name — Explore, Discover, Accelerate,
+    Maximize — as the tiers a researcher chooses between.
+  - Answer states that an ACCESS ID / ACCESS account is a prerequisite before requesting an
+    allocation, and points to registration (identity.access-ci.org or the ACCESS account registration
+    page).
+  - Answer conveys that Explore, Discover and Accelerate can be submitted at any time (rolling)
+    while Maximize is only accepted in periodic windows (every six months / semi-annual). Does
+    not claim Maximize is submittable anytime.
+  - Answer does not claim allocations are requested per-resource up front; awards for Explore/Discover/Accelerate
+    are made in ACCESS Credits that are later exchanged for resource units.
+  sources:
+  - https://allocations.access-ci.org/project-types (verified 2026-09-13)
+  - https://allocations.access-ci.org/allocations-policy (verified 2026-09-13)
+  - https://allocations.access-ci.org/how-to (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: The agent states Explore turnaround is "as little as 1-2 business days". allocations-policy
+    says only that Explore/Discover/Accelerate are "typically reviewed and processed within
+    two weeks of submission"; project-types gives no turnaround at all. The 1-2 business day
+    figure could not be verified on any allocations.access-ci.org page. A human should confirm
+    whether ACCESS publishes that number anywhere before it is graded either way. Not written
+    as a required fact.'
+  - 'AUTHOR: The agent says Explore "requires only an abstract". prepare-requests says Explore
+    requires no formal project description but still requires a project summary, PI/co-PI CVs
+    (2-page max), project info, and a signed advisor letter for graduate students. "Only an
+    abstract" understates this. Left out of the facts because the question is broad; consider
+    adding a document-requirements fact if this question is meant to test that.'
 
 - id: sa-onboard-02
   question: How do I log into ACCESS?
   capability_area: account_management
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Answer states that login goes through CILogon, where the user selects an identity provider
+    — either "ACCESS CI (XSEDE)" for an ACCESS ID and password, or their own university/institution
+    if it is listed.
+  - Answer conveys that the identity provider chosen at login must be the same one used at registration.
+  - Answer conveys that MFA is required, and does not claim Duo specifically is required on
+    every ACCESS login — Duo applies when logging in with the ACCESS CI (XSEDE) identity provider,
+    whereas an institutional login uses that institution's MFA.
+  sources:
+  - https://operations.access-ci.org/faqs/account-setup-and-management (verified 2026-09-13)
+  - https://support.access-ci.org/documentation/your-access-account (verified 2026-09-13)
+  authoring_notes:
+  - 'DISAGREEMENT: https://operations.access-ci.org/faqs/account-setup-and-management (verified
+    2026-09-13) states "If you are using \"ACCESS CI (XSEDE)\" to login you will be using Duo
+    for MFA. If you login with your university account you will use your university MFA." The
+    agent''s answer says "ACCESS requires MFA on every login. Complete the Duo prompt", presenting
+    Duo as universal. Duo is specific to the ACCESS CI identity provider, not to every ACCESS
+    login path.'
+  - 'AUTHOR: The agent instructs the user to start at https://portal.access-ci.org. That host
+    was not verified as the canonical entry point; ACCESS support documents account actions
+    under support.access-ci.org and account.access-ci.org, and the identity FAQ links CILogon
+    directly. A human should confirm whether portal.access-ci.org is current before an answer
+    is penalized or credited for it. No fact requires a particular entry URL.'
 
 - id: sa-onboard-03
   question: Who is eligible to use ACCESS?
   capability_area: documentation
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Answer states that leading an allocation requires being a U.S.-based researcher or educator
+    at the graduate-student level or higher, at a two- or four-year post-secondary institution.
+  - Answer states the PI must use an organizational email matching their listed affiliation;
+    public domains such as gmail.com are not accepted.
+  - Answer does not claim undergraduates, K-12 students, or unaffiliated or retired individuals
+    can lead an allocation.
+  sources:
+  - https://allocations.access-ci.org/allocations-policy (verified 2026-09-13)
 
 - id: sa-alloc-02
   question: How do I see how many credits I have left on ACCESS?
   capability_area: allocations
   battery: student_authored
   expected_tool: get_my_rp_accounts
+  required_facts:
+  - Answer directs the user to log in to the ACCESS Allocations portal at allocations.access-ci.org
+    (not to a resource provider site or a support ticket) to see their credit balance.
+  - Answer names the "Credits + Resources" tab (or equivalently the My Projects screen leading
+    to it) as where the credit/resource balance is shown.
+  - Answer does not claim the Exchange Calculator page shows the user's own remaining balance;
+    that page is a conversion tool only. Mentioning it purely as background on how credits convert
+    to resource units is acceptable.
+  sources:
+  - https://allocations.access-ci.org/how-to (verified 2026-09-13)
+  - https://allocations.access-ci.org/exchange_calculator (verified 2026-09-13)
 
 - id: sa-alloc-03
   question: How do I get more credits on ACCESS?
   capability_area: allocations
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Answer identifies the mechanism as a supplement request submitted through the ACCESS allocations
+    portal (allocations.access-ci.org), not a new proposal or a support ticket.
+  - Answer conveys that Explore/Discover/Accelerate projects are initially awarded only half
+    the project type's ACCESS Credit limit, and the supplement is how the remaining half is
+    requested once the project is underway.
+  - Answer notes a progress report / justification is required with the supplement request.
+  - Answer does not claim credits are granted automatically or that a supplement is unlimited;
+    for Explore/Discover/Accelerate the supplement is bounded by the project type's credit limit
+    (upgrading to a larger project type is the path beyond it).
+  sources:
+  - https://allocations.access-ci.org/how-to (verified 2026-09-13)
+  - https://allocations.access-ci.org/allocations-policy (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: The source is ambiguous about whether a supplement can exceed the half-not-yet-granted
+    amount. allocations-policy describes a "one-time increase of up to half the current ACCESS
+    Credit limit"; the how-to frames it purely as "request the other half of your project''s
+    credits". A human should decide whether a correct answer must distinguish these, or whether
+    "request the remaining half" is sufficient. Fact 4 is written conservatively to avoid grading
+    on this ambiguity.'
 
 - id: sa-alloc-04
   question: How do I write a proposal to use ACCESS?
   capability_area: allocations
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Answer states the project-description page limit for Discover is one page and for Accelerate
+    is three pages, per prepare-requests. Answer does not inflate the Accelerate limit (e.g.
+    to 3-5 pages).
+  - Answer states that two-page (maximum) CVs are required for the PI and each co-PI, in PDF.
+  - Answer states that a graduate student requesting a project must supply a signed letter from
+    their advisor on institutional letterhead.
+  - Answer conveys that Maximize requires a substantially larger package than the other tiers
+    — a 10-page main document plus supporting documents (e.g. 3-page progress report for renewals,
+    5-page code performance/resource-costs section).
+  sources:
+  - https://allocations.access-ci.org/prepare-requests (verified 2026-09-13)
+  - https://allocations.access-ci.org/project-types (verified 2026-09-13)
+  authoring_notes:
+  - 'DISAGREEMENT: https://allocations.access-ci.org/prepare-requests (verified 2026-09-13)
+    states the Accelerate project description is "A three-page description of the project".
+    The agent''s answer for sa-alloc-01 says Accelerate "Requires a 3-5 page project description".
+    Three pages is the documented maximum; 3-5 pages is wrong.'
+  - 'DISAGREEMENT: https://allocations.access-ci.org/project-types (verified 2026-09-13) labels
+    the tiers with different proposal lengths than prepare-requests: project-types lists Explore
+    "1-page proposal", Discover "3-page proposal (max. length)", Accelerate "10-page proposal
+    (max. length)", Maximize "10-page proposal (max. length)". prepare-requests says Explore
+    has no formal project description, Discover is one page, Accelerate is three pages, Maximize
+    is a 10-page main document. These two official ACCESS pages contradict each other on Discover
+    and Accelerate. I graded against prepare-requests because it is the page that gives the
+    detailed per-document formatting rules, but a human should resolve which page is authoritative
+    before this fact is used to score a national-project metric.'
 
 - id: sa-alloc-05
   question: How long does it take for them to review my access proposal?
   capability_area: allocations
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Per the ACCESS allocations policy, Explore, Discover and Accelerate requests are accepted
+    continuously and are typically reviewed and processed within two weeks of submission.
+  - Answer distinguishes Maximize ACCESS as a separate, semi-annual cycle with a substantially
+    longer timeline rather than applying the two-week figure to all request types.
+  - If the answer gives specific Maximize cycle dates, they match the published cycle (window
+    opens Jun 15, closes Jul 31, review meeting Aug 31, notifications mid-September, start Oct
+    1; and window opens Dec 15, closes Jan 31, review meeting Mar 8, notifications mid-March,
+    start Apr 1).
+  sources:
+  - https://allocations.access-ci.org/allocations-policy (verified 2026-09-13)
+  - https://allocations.access-ci.org/prepare-requests (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: support.access-ci.org/announcements/upcoming-allocation-request-periods lists a
+    DIFFERENT Maximize cycle (opens Mar 15, closes Apr 15, review early June, notifications
+    mid-June, start Jul 1; second cycle opens Jun 15, closes Jul 15, start Oct 1) than allocations.access-ci.org/prepare-requests.
+    The announcements page is probably stale, but a human should confirm which cycle calendar
+    is current before this fact is used to fail an answer that cites the other set of dates.'
 
 - id: sa-alloc-06
   question: How much does it cost to use ACCESS?
   capability_area: allocations
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Answer states there is no cost to the researcher for ACCESS allocations, which are NSF-funded.
+  - Answer does not quote a price, rate, or fee schedule for ACCESS resources.
+  sources:
+  - https://allocations.access-ci.org/project-types (verified 2026-09-13, tiers only)
+  authoring_notes:
+  - 'AUTHOR: the no-cost claim is NOT stated on allocations-policy or project-types. Find the
+    authoritative page that says so, or reword.'
 
 # --- Group 2: cluster mechanics, asked with an unresolved referent (8) ---
 # "this cluster" / "this system" have no antecedent in a single-turn eval. Kept
@@ -84,136 +264,585 @@
   capability_area: compute_resources
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Answer explains that ACCESS provides a central SSH public key registry tied to your ACCESS
+    ID rather than requiring you to edit authorized_keys on each machine, and names the correct
+    entry point (operations.access-ci.org/identity/ssh-pubkey, account.access-ci.org, or registry.access-ci.org).
+  - Answer does not claim that a key registered centrally is automatically propagated to every
+    ACCESS resource provider. Per ACCESS support documentation, RPs pull the stored key when
+    activating an account, and several RPs use their own path instead (their own web portal
+    with ACCESS or RP-specific credentials, ACCESS OnDemand, or emailing the key to RP support).
+  - Answer either asks which resource the user means or explicitly says the exact procedure
+    varies by resource provider, rather than presenting one RP's procedure as universal. The
+    question says "this cluster" with no resource named.
+  sources:
+  - https://support.access-ci.org/documentation/ssh-login (verified 2026-09-13)
+  - https://operations.access-ci.org/identity/ssh-pubkey (verified 2026-09-13)
+  authoring_notes:
+  - 'DISAGREEMENT: https://support.access-ci.org/documentation/ssh-login says ACCESS stores
+    the key and RPs pull it when activating your account, and lists five distinct upload methods
+    including RP web portals with RP-specific logins and emailing the key to RP support. The
+    agent answer said the key is "automatically propagated to all ACCESS resource providers
+    that support ACCESS-managed identity". The source does not support automatic propagation
+    to all RPs. The agent also gave registry.access-ci.org as the sole entry point, while the
+    support documentation points to operations.access-ci.org/identity/ssh-pubkey and account.access-ci.org.'
 
 - id: sa-cluster-02
   question: Does this system use the standard module load command for packages?
   capability_area: software
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - The question names no resource ("this system"). Answer either asks which ACCESS resource
+    the user means, or makes clear that the answer is resource-dependent, rather than silently
+    assuming one specific system.
+  - Answer conveys that environment modules with the `module load` command are the standard
+    mechanism for loading software on ACCESS HPC resources, and gives at least one correct companion
+    command (module avail, module list, module spider, or module purge).
+  - Answer does not assert that every ACCESS resource uses Lmod or module load. Cloud resources
+    in the ACCESS portfolio, notably Jetstream2, are VM/instance platforms rather than module-based
+    HPC clusters.
+  sources:
+  - https://support.access-ci.org/documentation/finding-software (verified 2026-09-13)
+  - https://docs.rcac.purdue.edu/userguides/anvil/anvil-software/ (verified 2026-09-13)
+  - https://docs.jetstream-cloud.org/ (verified 2026-09-13)
+  authoring_notes:
+  - 'DISAGREEMENT: The agent''s answer opens "Yes. All ACCESS-CI resources use Lmod, the standard
+    hierarchical module system". That universal is not supported. The ACCESS Support software
+    page (https://support.access-ci.org/documentation/finding-software, verified 2026-09-13)
+    says software is loaded using "the Environment Modules system" without asserting Lmod everywhere,
+    and https://docs.jetstream-cloud.org/ (verified 2026-09-13) describes Jetstream2 as "a user-friendly
+    cloud computing environment" where users provision VM instances, not a module-based cluster.
+    The companion scheduler page (https://support.access-ci.org/documentation/schedulers) makes
+    the parallel point explicitly for schedulers: "Most ACCESS resources use Slurm, but not
+    all." Fact 3 is the negative guard.'
+  - 'AUTHOR: The answer''s per-resource table claims REPACSS (Texas Tech) uses "Lmod + Spack"
+    and Launch (TAMU) uses hierarchical toolchains. I did not verify REPACSS or Launch against
+    authoritative RP documentation - REPACSS has no page on the allowed-domain list, and I did
+    not reach an hprc.tamu.edu Launch software page. A human should confirm those two rows if
+    the rubric is ever tightened to grade per-resource module-system claims.'
 
 - id: sa-cluster-03
   question: How can I see the status for the queues of the cluster?
   capability_area: compute_resources
   battery: student_authored
   expected_tool: get_resource_hardware
+  required_facts:
+  - Answer recognizes the question is resource-dependent, or at minimum states which scheduler/cluster
+    its commands apply to, rather than presenting one command as universal across ACCESS.
+  - Answer gives sinfo as the Slurm command for partition/queue status and squeue for job status
+    on Slurm-based ACCESS resources.
+  - Answer does not claim a single ACCESS-wide queue-status command or web page exists that
+    works for every resource.
+  sources:
+  - https://docs.tacc.utexas.edu/hpc/stampede3/ (verified 2026-09-13)
+  - https://docs.ncsa.illinois.edu/systems/delta/en/latest/user_guide/running_jobs.html (verified
+    2026-09-13)
+  - https://docs.rcac.purdue.edu/userguides/anvil/jobs/ (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: The question says "the cluster" with no named resource, so it is partly a clarification
+    test. Facts are written to reward either asking which resource or explicitly scoping the
+    answer per scheduler. A grader should not penalize an answer that asks for the resource
+    name instead of listing commands.'
+  - 'AUTHOR: qlimits and showq are confirmed TACC-specific utilities (docs.tacc.utexas.edu/hpc/stampede3/).
+    Anvil documents showpartitions (docs.rcac.purdue.edu/userguides/anvil/jobs/) and Delta documents
+    sview. The agent presents qlimits under a heading "Slurm-based TACC systems", which is correct
+    scoping. The agent''s PBS/Derecho qstat -Q section was not verified against NCAR docs, which
+    are outside the allowed domain list.'
 
 - id: sa-cluster-04
   question: If my job script is submitted correctly and I have the number, where can I see the log file?
   capability_area: documentation
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - For a Slurm batch job with no output directive, answer states the default output file is
+    slurm-<jobid>.out written in the directory the job was submitted from, and that stdout and
+    stderr both go there unless separated.
+  - 'Answer notes that an explicit #SBATCH --output (and/or --error) directive in the script
+    overrides the default location and name.'
+  - Answer does not assume a single named cluster's specifics as universal; the question names
+    no resource, so it either asks which resource or frames the answer around the scheduler
+    in use.
+  sources:
+  - https://docs.rcac.purdue.edu/userguides/anvil/jobs/ (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: The agent suggested `scontrol show job <jobid>` and reading its StdOut/StdErr fields.
+    The Anvil job guide documents scontrol show job as giving useful job information but does
+    not itself list StdOut/StdErr among the displayed fields. The claim is true of stock Slurm
+    but was not verified against an ACCESS-domain source; do not fail an answer for including
+    it, and a human may want to confirm before making it a required fact.'
 
 - id: sa-storage-01
   question: How long are my files saved for after my allocation ends?
   capability_area: documentation
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Answer states that retention depends on the storage system and resource rather than giving
+    one global figure, and does not claim files are deleted immediately when an allocation ends.
+  - Per ACCESS data and storage documentation, archival and stand-alone storage is retained
+    for a defined grace period past allocation expiry, specifically Ranch (TACC) 6 months, and
+    Ocean (PSC) and Expanse (SDSC) 3 months. Any specific retention figures the answer gives
+    for these systems match these.
+  - Answer conveys that scratch is purged on an access-age basis independent of the allocation
+    end date, and that scratch and project space are generally not backed up, so users should
+    move data they need off the system.
+  sources:
+  - https://support.access-ci.org/documentation/data-and-storage (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: The agent gave NCAR Derecho specifics (scratch purged after 180 days of no access,
+    campaign storage 90 days after project expiry, $HOME for the life of the account, $WORK
+    not age-purged). Those were not verified; ncar-hpc-docs is outside the allowed domain list.
+    The ACCESS data-and-storage page gives a generic scratch purge window of typically 30 to
+    90 days depending on resource. A human should decide whether Derecho-specific numbers belong
+    here.'
 
 - id: sa-storage-02
   question: Is the storage on this cluster long term or short term, and if I need long term, where should I put it?
   capability_area: compute_resources
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - The question says "this cluster" with no named resource. Answer either asks which resource
+    the user means, or answers in a way that is explicitly general across ACCESS compute resources,
+    rather than silently assuming one system.
+  - Answer conveys that compute-resource storage is for active computation and is not archival
+    - on Delta the documentation states plainly that it "does not provide storage resources
+    for archiving data or other long-term storage".
+  - Answer conveys that scratch/project filesystems are generally not backed up and are subject
+    to purge or quota policies, so users must not treat them as the only copy of their data.
+  - Answer conveys that data must be moved off the resource for long-term retention, and names
+    a concrete route for doing so - Globus transfer to institutional or archival storage being
+    the documented mechanism on ACCESS resources.
+  sources:
+  - https://docs.ncsa.illinois.edu/systems/delta/en/latest/user_guide/data_mgmt.html (verified
+    2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: The 30-day grace period after project expiration IS confirmed for Delta ("There
+    is a 30-day grace period for expired Delta projects to allow for data management access
+    only"), but the agent presents it as a general ACCESS pattern ("you typically get 30 days").
+    I did not verify a 30-day grace period on Anvil, Bridges-2, Expanse, or Stampede3, so I
+    left it out of the required facts rather than grade a possibly resource-specific number
+    as universal. A human should check two or three other RPs if they want a grace-period fact.'
+  - 'AUTHOR: One nuance the answer gets slightly wrong. Delta''s filesystem table shows /u (HOME)
+    DOES have snapshots ("Yes (30 days)"), while /projects is "No/TBA" and /work is "No". The
+    answer''s claim of "no backups, no snapshots" is correct for /work/hdd and /projects but
+    would be wrong if generalized to home. Not encoded as a fact because the question is about
+    long-term versus short-term rather than snapshot inventory.'
 
 - id: sa-alloc-07
   question: What are the different tiers of access allocations, and how do I know which one to ask for?
   capability_area: allocations
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Answer names all four project types - Explore, Discover, Accelerate, Maximize - as the allocation
+    tiers.
+  - Per allocations.access-ci.org/project-types the ACCESS Credit limits are Explore 400,000,
+    Discover 1,500,000, Accelerate 3,000,000; Maximize is awarded in resource units rather than
+    ACCESS Credits. Answer gets these amounts substantially right.
+  - Answer conveys that Explore/Discover/Accelerate can be requested at any time with multiple
+    requests allowed, while Maximize is accepted only every 6 months and is limited to one request
+    (with some exceptions).
+  - Answer conveys the review distinction - Explore and Discover are checked for eligibility
+    and suitability of requested resources, while Accelerate and Maximize get panel merit review.
+  sources:
+  - https://allocations.access-ci.org/project-types (verified 2026-09-13)
+  - https://allocations.access-ci.org/allocations-policy (verified 2026-09-13)
+  authoring_notes:
+  - 'DISAGREEMENT: https://allocations.access-ci.org/project-types (verified 2026-09-13) gives
+    the proposal-length ladder as Explore = "Overview" (abstract, no page count), Discover =
+    "1-page proposal", Accelerate = "3-page proposal (max. length)", Maximize = "10-page proposal
+    (max. length)". The agent''s answer gives Explore = "Summary + CVs", Discover = "1 page
+    + CVs", Accelerate = "3 pages + CVs", Maximize = "10-15 pages + CVs + progress report +
+    code performance data". The Discover and Accelerate page counts match, but the answer''s
+    "10-15 pages" for Maximize overstates the documented 10-page maximum. I deliberately did
+    NOT write a required_fact on proposal page lengths because of this; a human should confirm
+    the Maximize page limit against the current Prepare Requests page before adding one.'
+  - 'AUTHOR: The answer states Maximize submission windows as "June 15-July 31, Dec 15-Jan 31".
+    Those specific dates are corroborated by ACCESS Support announcements for the 2026/2027
+    cycles (awards starting Oct 1 and Apr 1), but the canonical project-types page says only
+    "Every 6 months". Because named dates roll forward each cycle, I graded on "every 6 months
+    / twice a year" rather than the literal dates. A human may want a date-anchored fact if
+    this battery is re-run against a fixed snapshot date.'
 
 - id: sa-alloc-08
   question: How are my credits usable on different clusters? Do I have to request access to use my allocation on different systems?
   capability_area: allocations
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Answer states that ACCESS Credits are awarded to the project as a general currency and are
+    not tied to one resource at award time.
+  - Answer states that the user must actively exchange credits for units on each resource they
+    want to use — credits are not automatically usable on every system.
+  - Answer describes the exchange as done in the allocations portal (allocations.access-ci.org),
+    e.g. via the "Credits + Resources" tab / add a resource to your exchange, and that the exchange
+    is submitted for approval.
+  - Answer conveys that each resource has its own fixed exchange rate, so the same number of
+    credits buys different amounts of units on different resources.
+  sources:
+  - https://allocations.access-ci.org/how-to (verified 2026-09-13)
+  - https://allocations.access-ci.org/exchange_calculator (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: The agent gives specific rates ("1,000 ACCESS Credits might get you 1,000 core-hours
+    on NCSA Delta CPU, 15 GPU-hours on NCSA Delta GPU, 19 GPU-hours on PSC Bridges-2 GPU").
+    The exchange_calculator page states each resource has a fixed rate but does not publish
+    the rate table in static HTML — rates are computed by the live calculator widget. None of
+    these specific numbers could be verified. A human should spot-check them against the live
+    calculator, or the fact set should stay rate-agnostic as written.'
+  - 'AUTHOR: The agent says "30+ resources in the ACCESS catalog". The exchange calculator page
+    suggests 40+ selectable resource entries. Resource counts drift; no count fact is asserted
+    here deliberately.'
 
-# --- Group 3: allocation lifecycle and resource selection (10) ---
+# --- Group 3: allocation lifecycle and resource selection (9) ---
 
 - id: sa-alloc-09
   question: How do I request my first allocation on ACCESS?
   capability_area: allocations
   battery: student_authored
   expected_tool: search_docs
-
-- id: sa-alloc-10
-  question: What should I do if I need more computing credits for my existing ACCESS project?
-  capability_area: allocations
-  battery: student_authored
-  expected_tool: search_docs
+  required_facts:
+  - Answer tells the user to create an ACCESS ID / account before requesting an allocation,
+    and points to the official registration path (operations.access-ci.org/identity/new-user
+    or the equivalent identity.access-ci.org/new-user redirect).
+  - Answer names Explore ACCESS as the recommended starting point for a first-time user who
+    does not yet know how their needs translate into resource units.
+  - Answer conveys that ACCESS has four opportunity types (Explore, Discover, Accelerate, Maximize)
+    differing in size and in the documentation required, with Explore requiring the least.
+  - Answer conveys that credits awarded to a project must be exchanged for resource-specific
+    units on a chosen resource before the resource can be used.
+  sources:
+  - https://allocations.access-ci.org/get-your-first-project (verified 2026-09-13)
+  - https://allocations.access-ci.org/project-types (verified 2026-09-13)
+  - https://allocations.access-ci.org/prepare-requests (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: The two authoritative pages disagree on proposal page limits, so no fact requires
+    a page count. allocations.access-ci.org/project-types says Explore = 1-page proposal, Discover
+    = 3-page max, Accelerate = 10-page max. allocations.access-ci.org/prepare-requests says
+    Discover = 1 page, Accelerate = 3 pages, Maximize main document = 10 pages. The agent answer
+    used the prepare-requests numbering (Discover one page, Accelerate 3-5 pages). A human should
+    establish which page is authoritative before grading page counts.'
 
 - id: sa-resource-01
   question: How can I figure out which ACCESS resource is best for my research workload?
   capability_area: compute_resources
   battery: student_authored
   expected_tool: search_resources
+  required_facts:
+  - Answer names the ACCESS Resource Advisor (ARA) at https://ara.access-ci.org/ as the tool
+    that recommends resources based on answers about the user's research and computing needs.
+  - Answer names a way to check software availability across resources, specifically the Software
+    Discovery Service at https://sds.access-ci.org/.
+  - Answer does not assert a specific total count of ACCESS resources as settled fact (the catalog
+    changes and no official count was verifiable).
+  sources:
+  - https://support.access-ci.org/tools (verified 2026-09-13)
+  - https://allocations.access-ci.org/exchange_calculator (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: The agent states "Browse all 23 available resources" at allocations.access-ci.org/resources.
+    That count could not be verified — the resources page is JS-rendered, and the exchange calculator
+    page suggests 40+ selectable resource entries, which points the other way. The third fact
+    is written as a negative guard rather than asserting a number. A human should decide whether
+    to grade resource counts at all given they drift.'
 
 - id: sa-onboard-04
   question: Where can I find the username I should use to log in to an ACCESS resource?
   capability_area: account_management
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Answer states that your username on a resource is generally NOT the same as your ACCESS
+    ID.
+  - Answer directs the user to the My Projects screen on the ACCESS Allocations website (allocations.access-ci.org)
+    to see their resource username(s).
+  sources:
+  - https://allocations.access-ci.org/get-your-first-project (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: The agent added troubleshooting claims not found on the source page, specifically
+    that accounts "can take a few days" to set up, that credits must be exchanged before accounts
+    are created, and that some RPs send a welcome email. These are plausible and roughly consistent
+    with the get-your-first-project note that an exchange request can take up to a week to be
+    approved, but none is stated as an account-provisioning rule. They are deliberately not
+    required facts; a human should decide whether to add a negative guard against inventing
+    specific SLAs.'
 
 - id: sa-resource-02
   question: How do I find out which job scheduler an ACCESS resource uses?
   capability_area: compute_resources
   battery: student_authored
   expected_tool: get_resource_hardware
+  required_facts:
+  - Answer states that Slurm is the scheduler on the large majority of ACCESS-allocated resources,
+    while making clear it is not universal and must be confirmed per resource.
+  - Answer gives at least one concrete way to determine a specific resource's scheduler, such
+    as the per-resource documentation pages at support.access-ci.org/documentation/resources/<resource>
+    or the resource provider's own user guide, which state the batch environment explicitly.
+  - Answer does not assert a single scheduler for all ACCESS resources.
+  sources:
+  - https://support.access-ci.org/documentation/resources/expanse-cpu (verified 2026-09-13)
+  - https://support.access-ci.org/documentation/resources/tamu-launch (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: The agent listed Derecho (NCAR) as the PBS Pro counterexample and cited ncar-hpc-docs.readthedocs.io,
+    which is outside the allowed authoritative domain list, so the PBS Pro claim and Derecho''s
+    current ACCESS-allocated status were not verified here. The facts above therefore require
+    only that the answer avoid claiming Slurm is universal, without requiring a specific non-Slurm
+    example. A human familiar with the current resource catalog should confirm whether a PBS
+    resource is still ACCESS-allocated.'
 
 - id: sa-resource-03
   question: How can I find the available queues or partitions for an ACCESS resource?
   capability_area: compute_resources
   battery: student_authored
   expected_tool: get_resource_hardware
+  required_facts:
+  - Answer conveys that partition/queue names and limits are resource-specific and set by each
+    resource provider, so there is no single ACCESS-wide list to consult.
+  - Answer gives `sinfo` as the on-system Slurm command for showing partitions and node availability,
+    which is what ACCESS Support documents.
+  - Answer directs the user to the specific resource's own user guide or the ACCESS resource
+    catalog for per-system partition names, walltime limits, and GPU request syntax.
+  - Answer does not claim every ACCESS resource uses Slurm. ACCESS Support states most do but
+    not all, with some systems on PBS/Torque or other schedulers.
+  sources:
+  - https://support.access-ci.org/documentation/schedulers (verified 2026-09-13)
 
 - id: sa-resource-04
   question: What are the different queues or partitions available on Delta GPU?
   capability_area: compute_resources
   battery: student_authored
   expected_tool: get_resource_hardware
+  required_facts:
+  - Answer covers the full set of Delta GPU node types, including the H200 (gpuH200x8) and MI100
+    (gpuMI100x8) partitions, not only the A100 and A40 partitions.
+  - Answer identifies gpuA100x4 as the default GPU partition.
+  - Answer gives correct charge factors for the partitions it names, per the Delta partitions
+    table — e.g. gpuA100x4 1.0, gpuA100x8 1.5, gpuA40x4 0.5, gpuMI100x8 0.25, gpuH200x8 3.0;
+    preempt variants are half the base factor and interactive variants are double.
+  - Answer conveys the standard limits — 48 hr max duration on the production GPU partitions
+    and 1 hr on the -interactive variants.
+  sources:
+  - https://docs.ncsa.illinois.edu/systems/delta/en/latest/user_guide/running_jobs.html (verified
+    2026-09-13)
+  authoring_notes:
+  - 'DISAGREEMENT: https://docs.ncsa.illinois.edu/systems/delta/en/latest/user_guide/running_jobs.html
+    (verified 2026-09-13) lists 12 GPU partitions in the Delta Partitions/Queues table: gpuA100x4,
+    gpuA100x4-interactive, gpuA100x4-preempt, gpuA100x8, gpuA100x8-interactive, gpuH200x8, gpuH200x8-interactive,
+    gpuA40x4, gpuA40x4-interactive, gpuA40x4-preempt, gpuMI100x8, gpuMI100x8-interactive. The
+    agent''s answer states "Delta GPU has 15 partitions". The count is wrong.'
+  - 'DISAGREEMENT: The same Delta table gives the gpuA40x4 charge factor as 0.5 and gpuA40x4-interactive
+    as 1.0. The agent''s A40 table is truncated at 900 chars so its A40 charge factors are not
+    visible, but its A100 section gives gpuA100x4 1.0, gpuA100x4-interactive 2.0, gpuA100x4-preempt
+    0.5, gpuA100x8 1.5, gpuA100x8-interactive 3.0 — all of which match the source. The visible
+    A100 numbers are correct; only the partition count and the omission of H200/MI100 are wrong.'
+  - 'AUTHOR: The agent supplies per-partition CPU-count and RAM figures (64 CPUs / 256 GB for
+    quad-A100, 128 CPUs / ~2 TB for octa-A100) and node counts (100 quad-A100 nodes, 6 octa-A100
+    nodes). Those are not in the running_jobs partitions table; they would come from the Delta
+    architecture page, which was not fetched. Unverified, so no fact grades them.'
 
 - id: sa-storage-03
   question: What is the difference between home and scratch storage on an ACCESS resource?
   capability_area: compute_resources
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Answer states that home is small and intended for source code, scripts and configuration,
+    while scratch is large and intended for active job I/O and large working datasets.
+  - Answer states that scratch is not backed up and is subject to purge, while home is the more
+    durable of the two.
+  - Answer conveys that scratch purge windows and quotas are set per resource and differ between
+    systems, rather than asserting one universal purge period across ACCESS.
+  - Answer does not state a single specific scratch purge period as ACCESS-wide fact; real values
+    differ widely (Expanse purges scratch 90 days from creation date, Stampede3 purges files
+    not accessed in ten days).
+  sources:
+  - https://www.sdsc.edu/support/user_guides/expanse.html (verified 2026-09-13)
+  - https://docs.tacc.utexas.edu/hpc/stampede3/ (verified 2026-09-13)
+  authoring_notes:
+  - 'DISAGREEMENT: The agent''s table says scratch files "not accessed in ~180 days are automatically
+    deleted" and presents this as the general ACCESS behaviour. Neither verified source supports
+    180 days. https://www.sdsc.edu/support/user_guides/expanse.html (verified 2026-09-13) states
+    "Scratch files will be purged 90 days from creation date" — creation date, not access date.
+    https://docs.tacc.utexas.edu/hpc/stampede3/ (verified 2026-09-13) states "Files that have
+    not been accessed in ten days are subject to purge". The agent''s figure is wrong on both
+    the number and, for Expanse, the trigger.'
+  - 'DISAGREEMENT: The agent''s table says home is "Backed up — Yes, nightly or several times
+    per week" and gives a home quota of "typically 10-50 GB". Stampede3 $HOME is 15 GB and is
+    documented as backed up regularly, which is consistent. But the agent also claims scratch
+    quotas of "1 TB-30 TB": Stampede3 $SCRATCH has no quota, and Expanse Lustre is governed
+    by purge rather than a per-user TB quota. The specific quota ranges are not supported by
+    the sources checked.'
+  - 'AUTHOR: Expanse documentation additionally warns that the Lustre filesystem "IS NOT an
+    archival file system" and "IS NOT backed up", and that project space is purged 90 days after
+    the allocation expires. If this question is meant to test the durability warning, consider
+    adding a fact requiring the answer to tell the user to move important results off scratch
+    themselves.'
 
 - id: sa-transfer-01
   question: How can I transfer a large dataset to an ACCESS resource?
   capability_area: file_transfer
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Answer recommends Globus as the tool for transferring large datasets to ACCESS resources,
+    on the grounds that it handles large files and large file counts reliably and resumes interrupted
+    transfers.
+  - Answer states that the user authenticates to Globus with their ACCESS identity via CILogon,
+    and that an existing Globus account can be linked to the ACCESS identity rather than requiring
+    a new account.
+  - Answer conveys that the user locates the destination as a Globus collection/endpoint for
+    the target ACCESS resource.
+  - Answer does not recommend scp or rsync as the primary method for a large dataset; those
+    are for smaller transfers.
+  sources:
+  - https://support.access-ci.org/documentation/data-and-storage/using-globus (verified 2026-09-13)
+  - https://support.access-ci.org/documentation/data-and-storage (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: The agent tells the user to look for a "green Greek columns icon" to identify an
+    official Globus-supported collection, and to search collections by resource name plus "ACCESS"
+    (e.g. "Anvil ACCESS", "Delta ACCESS"). The ACCESS using-globus page does not describe how
+    to locate individual resource collections, and the icon convention is Globus UI detail on
+    docs.globus.org, which is outside the allowed domain list. Unverified; not encoded as a
+    fact.'
+  - 'AUTHOR: The agent describes choosing "ACCESS-CI (formerly XSEDE)" from an organization
+    list at globus.org. The ACCESS page describes searching for "ACCESS" at globus.org and logging
+    in with ACCESS-CI credentials plus Duo, which is consistent in substance. The exact label
+    was not verified, so no fact requires particular wording.'
 
 - id: sa-support-01
   question: Where should I go for help if I am having a problem using an ACCESS resource or have a general question?
   capability_area: documentation
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Answer directs the user to open an ACCESS help ticket as the primary route, at support.access-ci.org/help-ticket.
+  - Answer names at least one additional genuine channel with the correct destination, such
+    as the ACCESS knowledge base / documentation, the Ask.CI forum at ask.cyberinfrastructure.org,
+    MATCH services for longer-term hands-on help, or affinity groups.
+  - Answer does not send the user to a resource provider help desk or a generic web search as
+    the primary path for a general ACCESS question.
+  sources:
+  - https://support.access-ci.org/ (verified 2026-09-13)
 
-# --- Group 4: mixed depth — partitions, hardware, usage, policy (22) ---
+# --- Group 4: mixed depth — partitions, hardware, usage, policy (21) ---
 
 - id: sa-resource-05
   question: For running a small simple test on CPU only, what queue (partition) will be the cheapest?
   capability_area: compute_resources
   battery: student_authored
   expected_tool: get_resource_hardware
+  required_facts:
+  - Answer does not name a single cheapest queue as if the question had one answer; it establishes
+    that charge rates and partition names are per-resource and either asks which resource the
+    user is on or presents the options as resource-specific.
+  - 'Answer conveys the substantive cost principle for a small CPU test, that a shared or per-core
+    billed partition charges only the cores requested while a whole-node partition charges the
+    full node regardless of how little of it you use. Bridges-2 RM-shared is the canonical example:
+    it is charged as cores used times hours with 2 GB memory per core, whereas RM charges all
+    128 cores on every node the job touches.'
+  - If the answer cites Stampede3 rates, skx and skx-dev are both 1 SU per node-hour, with skx-dev
+    limited to 2 hours and 16 nodes and intended for short development and test jobs. Answer
+    does not claim skx-dev is cheaper per node-hour than skx.
+  sources:
+  - https://www.psc.edu/resources/bridges-2/user-guide/ (verified 2026-09-13)
+  - https://docs.tacc.utexas.edu/hpc/stampede3/ (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: The agent also cited REPACSS (Texas Tech) zen4 at 1 credit per CPU core-hour. That
+    rate was not verified against an authoritative source in this pass. It is not a required
+    fact and should not be graded either way until a human confirms it.'
 
 - id: sa-resource-06
   question: What is the maximum number of GPUs I can request in GPU-shared?
   capability_area: compute_resources
   battery: student_authored
   expected_tool: get_resource_hardware
+  required_facts:
+  - The question names no resource - "GPU-shared" is a partition name on more than one ACCESS
+    system. Answer either asks which resource the user means, or answers per-resource, rather
+    than silently assuming one system.
+  - Per the PSC Bridges-2 user guide partition summary, GPU-shared allows a maximum of 4 GPUs
+    per job, on 1 node, with a default of 1 GPU and a maximum runtime of 48 hours. If the answer
+    addresses Bridges-2 it must give 4 as the maximum.
+  - Per the SDSC Expanse user guide partition table, gpu-shared is a single-node job "using
+    fewer than 4 GPUs" with a 48-hour maximum walltime. If the answer addresses Expanse it must
+    not overstate the per-job GPU ceiling.
+  - Answer does not present a single ACCESS-wide GPU-shared limit as though it applied to every
+    resource.
+  sources:
+  - https://www.psc.edu/resources/bridges-2/user-guide/ (verified 2026-09-13)
+  - https://www.sdsc.edu/systems/expanse/user_guide.html (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: Possible off-by-one on Expanse. https://www.sdsc.edu/systems/expanse/user_guide.html
+    (verified 2026-09-13) describes gpu-shared in its partition table as "Single-node job using
+    fewer than 4 GPUs" - which reads as a maximum of 3 - while the agent''s answer states "Expanse
+    (SDSC) - 4 GPUs per job" and shows "--gpus=2 (or 1-4)". The same table lists the gpu-shared
+    TRES limit as "24 (24 Tres GPU)", and an Expanse GPU node has 4 GPUs, so the "fewer than
+    4" wording may be loose phrasing for "part of a node" rather than a hard ceiling of 3. I
+    wrote fact 3 to grade only that the answer not overstate the ceiling. A human with an Expanse
+    account should run `sinfo`/`scontrol show partition gpu-shared` (or ask SDSC) to settle
+    whether 4 GPUs is actually accepted in gpu-shared before tightening this fact.'
+  - 'AUTHOR: The answer also asserts that Delta/DeltaAI, Anvil, Derecho, Stampede3, ACES and
+    Launch "do not have a GPU-shared partition". I did not verify that negative across all six
+    resources. A human should check before this becomes a graded claim; broad negatives about
+    partition inventories go stale quickly.'
 
 - id: sa-onboard-05
   question: How do I reset my password?
   capability_area: account_management
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - The question names no system. Answer either asks which account/system the user means, or
+    makes the resource-dependence explicit, rather than assuming one system silently.
+  - For an ACCESS-issued password, answer points the user at the official ACCESS password reset
+    page (account.access-ci.org/password, per ACCESS Support; identity.access-ci.org/password-reset
+    is the equivalent identity-portal route), not at a generic "Forgot Password" link.
+  - Answer conveys that password reset only applies if the user logs in with ACCESS CI credentials
+    - a user who authenticates with a university or other federated identity provider must reset
+    that password with their own institution, not with ACCESS.
+  - Answer does not conflate the ACCESS password with Duo MFA enrollment; MFA is managed separately
+    (identity.access-ci.org/manage-mfa).
+  sources:
+  - https://support.access-ci.org/documentation/your-access-account (verified 2026-09-13)
+  - https://operations.access-ci.org/identity/faq (verified 2026-09-13)
+  - https://www.psc.edu/resources/bridges-2/user-guide/ (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: The answer''s ACCESS-portal paragraph says only to "go to the ACCESS login page
+    and use the Forgot Password link" and never gives the canonical reset URL. ACCESS Support
+    states plainly: "Reset your password Visit account.access-ci.org/password." This is a substantive
+    gap rather than a contradiction, so I encoded it as fact 2 rather than a DISAGREEMENT. The
+    answer''s Bridges-2 detail (apr.psc.edu, and use kpasswd rather than passwd) IS confirmed
+    verbatim in the PSC user guide. I did not verify the REPACSS/eRaider or CloudBank rows.'
 
 - id: sa-resource-07
   question: Can I run multiple jobs on a single partition at once?
   capability_area: compute_resources
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Answer confirms that multiple jobs from the same user or project can run concurrently in
+    one partition — this is normal Slurm behaviour, not an exception.
+  - Answer conveys that partitions impose concurrency caps, expressed as a maximum number of
+    running jobs and often also a maximum of running-plus-queued jobs.
+  - Answer conveys that the caps vary by resource and by partition, and does not present one
+    resource's numbers as an ACCESS-wide limit.
+  - Any specific limits the answer cites are correct for the named resource and partition —
+    e.g. Expanse compute 32 running / 64 running+queued, Expanse shared 4096 / 4096, Expanse
+    gpu 4 / 8; Anvil wholenode 64 running / 2500 running+submitted, Anvil wide 5 / 10, Anvil
+    shared capped at 1,280 cores per user, Anvil GPU limits of 12 GPUs per user and 32 GPUs
+    per allocation.
+  sources:
+  - https://www.sdsc.edu/support/user_guides/expanse.html (verified 2026-09-13)
+  - https://docs.rcac.purdue.edu/userguides/anvil/jobs/ (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: The agent says these limits are "typically per project (allocation), not per user".
+    This is resource-dependent and the agent overgeneralizes. The Expanse user guide says its
+    partition limits apply "per group (allocation)". Anvil''s table column is literally "Max
+    Running Jobs per User", and Anvil separately states 12 GPUs per user AND 32 GPUs per allocation.
+    So Expanse is per-group and Anvil is per-user for job counts. A human should decide whether
+    to add a fact penalizing the per-project generalization; I did not encode one because the
+    two cited resources genuinely differ and the claim is only partly wrong.'
 
 # "Slice" is Jetstream2 terminology. Left as asked — resolving the platform is
 # part of what a good answer has to do.
@@ -222,6 +851,20 @@
   capability_area: compute_resources
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Answer recognises that "slice" is not current ACCESS or Jetstream2 terminology and does
+    not invent a slice object or a slice renewal workflow. Jetstream2 documentation calls a
+    virtual machine an instance; the term slice does not appear.
+  - Answer asks what the user actually means, or separates the two distinct things the question
+    could refer to, rather than silently picking one. The plausible readings are a Jetstream2
+    instance (created and deleted in Exosphere, CACAO or Horizon) and an ACCESS allocation (extended,
+    supplemented or renewed through allocations.access-ci.org).
+  - 'If the answer covers allocation renewal, it reflects the real distinctions in the ACCESS
+    allocations policy: a supplement adds credits to a project that still has time, an extension
+    pushes out the end date, and a renewal is the path when a project is ending.'
+  sources:
+  - https://docs.jetstream-cloud.org/ (verified 2026-09-13)
+  - https://allocations.access-ci.org/allocations-policy (verified 2026-09-13)
 
 - id: sa-resource-09
   question: What are all the GPU types offered in the ACCESS resources and how much RAM does each have?
@@ -234,66 +877,235 @@
   capability_area: documentation
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - 'Answer expands the acronym as "Advanced Cyberinfrastructure Coordination Ecosystem: Services
+    & Support".'
+  - Answer identifies ACCESS as a program established and funded by the U.S. National Science
+    Foundation, and conveys that it is free / at no cost to researchers and educators.
+  - Answer conveys that ACCESS provides advanced computing systems and services broadly - not
+    just supercomputers, but some combination of data/storage, science gateways, expertise or
+    support, and training.
+  - Answer does not describe ACCESS as itself a single supercomputer or a single machine; it
+    is an ecosystem coordinating resources across multiple resource providers.
+  sources:
+  - https://access-ci.org/about/ (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: The "$52 million over five years to five lead institutions" figure and the "builds
+    upon the 11-year XSEDE project" framing are both verbatim on https://access-ci.org/about/
+    (verified 2026-09-13), and the agent''s answer states them correctly. I did not make either
+    a required fact because a good short answer to "What is ACCESS?" need not include the budget
+    or the XSEDE lineage. A human may want to add the XSEDE-successor point if the PI considers
+    it essential context.'
 
 - id: sa-jobs-01
   question: How do I submit and run a batch job using SLURM?
   capability_area: documentation
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - 'Answer describes the batch workflow as writing a shell script containing #SBATCH resource
+    directives followed by the commands to run, then submitting it with sbatch.'
+  - 'Answer states that #SBATCH directives must appear before any executable commands in the
+    script.'
+  - Answer names a way to monitor the submitted job, such as squeue (e.g. squeue -u $USER) or
+    scontrol show job.
+  - Answer conveys that specific directives, partition/queue names and limits are resource-specific,
+    rather than presenting one system's queue names as valid everywhere.
+  sources:
+  - https://docs.rcac.purdue.edu/userguides/anvil/jobs/ (verified 2026-09-13)
+  - https://docs.tacc.utexas.edu/hpc/stampede3/ (verified 2026-09-13)
 
 - id: sa-alloc-11
   question: Is there a tool to estimate how many units my allocation is worth on a specific ACCESS resource?
   capability_area: allocations
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Answer identifies the ACCESS Exchange Calculator at https://allocations.access-ci.org/exchange_calculator
+    as the tool that does this.
+  - Answer describes the mechanic correctly — enter a number of ACCESS Credits, select a target
+    resource, and it returns the equivalent amount in that resource's native units.
+  - Answer conveys that units differ by resource type (core-hours for most multicore systems,
+    GPU-hours for GPU resources, GB for storage).
+  sources:
+  - https://allocations.access-ci.org/exchange_calculator (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: The agent renders a table of specific per-resource rates (Delta CPU 1,000 core-hours,
+    Delta GPU 15 GPU-hours, Anvil CPU 833, Anvil GPU 15, Bridges-2 GPU 19, Expanse CPU 1,000,
+    Expanse GPU 19, Stampede3 16, all per 1,000 credits). These could not be verified — the
+    calculator page does not publish a static rate table. A human with the live calculator should
+    verify a couple of these before any fact asserts specific rates. Deliberately not encoded
+    as required facts.'
 
 - id: sa-usage-01
   question: How can I view my past usage and job statistics across ACCESS resources?
   capability_area: xdmod
   battery: student_authored
   expected_tool: get_user_data
+  required_facts:
+  - Answer names ACCESS XDMoD at xdmod.access-ci.org as the place to see past usage and job
+    statistics across ACCESS resources.
+  - Answer states that the user must sign in (via CILogon with ACCESS credentials) to see their
+    own personal usage, as opposed to the aggregate program-wide view available publicly.
+  - Answer names at least one correct place inside XDMoD for personal job data, such as the
+    Dashboard tab's Jobs window showing recent jobs, the Job Viewer tab with its Search button
+    for older jobs, or the Usage and Metric Explorer tabs for plotting historical usage.
+  sources:
+  - https://support.access-ci.org/tools/xdmod (verified 2026-09-13)
+  - https://xdmod.access-ci.org/user_manual/ (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: The agent described a "Summary tab" as the landing view for personal activity.
+    ACCESS documentation describes the Dashboard tab as what is displayed when you log in, with
+    the Jobs window listing your recent jobs; the XDMoD manual separately documents a Summary
+    tab that defaults to a utilization overview. These are distinct tabs and the agent may have
+    conflated them. Graded loosely above (any of the correct personal-data locations passes);
+    a human who knows the current ACCESS XDMoD build should tighten this if the distinction
+    matters.'
 
 - id: sa-status-01
   question: How do I check whether an ACCESS resource is currently down or has scheduled maintenance?
   capability_area: system_status
   battery: student_authored
   expected_tool: get_infrastructure_news
+  required_facts:
+  - Answer points the user to an authoritative ACCESS status/outage listing — either https://support.access-ci.org/outages
+    or https://operations.access-ci.org/infrastructure_news_view.
+  - Answer conveys that both current/active outages and planned or scheduled future downtimes
+    can be checked, not just active ones.
+  - If the answer asserts a live status (e.g. "no outages right now"), it attributes that to
+    a lookup at a point in time rather than presenting it as a standing fact.
+  sources:
+  - https://support.access-ci.org/outages (verified 2026-09-13)
+  - https://operations.access-ci.org/infrastructure_news_view (URL confirmed 2026-09-13; page
+    is JS-rendered)
+  authoring_notes:
+  - 'AUTHOR: The agent opens with "no active outages right now. All ACCESS resources are operational."
+    support.access-ci.org/outages did show "There are no current outages" and "There are no
+    planned outages scheduled" when verified on 2026-09-13, so the claim was accurate at that
+    moment. It is time-varying, so the third fact grades the framing rather than the value.
+    A grader must not treat the live status as ground truth at a later date.'
+  - 'AUTHOR: The agent describes the operations page filters ("scheduled", "past", "all", by
+    resource, by severity: Full outage, Partial, Degraded, Reconfiguration) and an API taking
+    time= and resource= parameters. infrastructure_news_view renders client-side and returned
+    only a nav shell to static fetch, so the filter names, severity vocabulary and API parameters
+    could not be verified. A human should check these in a browser, or against https://operations-api.access-ci.org/docs/,
+    before grading them.'
+  - 'AUTHOR: support.access-ci.org/outages is the user-facing outages page and is arguably the
+    better first answer to this question; the agent does not mention it. The first fact accepts
+    either page, but a human may want to require the support page specifically if that is the
+    intended canonical answer.'
 
 - id: sa-software-01
   question: How do I find which ACCESS resources have a particular software package installed?
   capability_area: software_discovery
   battery: student_authored
   expected_tool: search_software
+  required_facts:
+  - Answer names the ACCESS Software Documentation Service (SDS) at sds.access-ci.org as the
+    tool for finding which ACCESS resources have a given software package installed.
+  - Answer conveys that SDS is a searchable catalog showing, per package, which resources have
+    it installed - i.e. it answers the cross-resource question directly rather than requiring
+    the user to check each resource's docs one at a time.
+  - Answer mentions at least one correct fallback for software not in the catalog - installing
+    into your home directory (pip install --user, conda, spack), using a Singularity/Apptainer
+    container, or opening a ticket asking the RP to install it.
+  - Answer does not claim SDS covers every ACCESS resource; it indexes only participating reporting
+    providers.
+  sources:
+  - https://support.access-ci.org/documentation/finding-software (verified 2026-09-13)
+  - https://sds.access-ci.org/ (verified 2026-09-13)
+  authoring_notes:
+  - 'DISAGREEMENT: https://sds.access-ci.org/ (verified 2026-09-13) states its reporting providers
+    as exactly "ACES, Anvil, Bridges-2, Delta, DeltaAI, Jetstream2, KyRIC, Stampede3" - eight
+    resources. The agent''s answer says SDS "indexes software across ACES, Anvil, Bridges-2,
+    Delta, DeltaAI, Derecho, Expanse, Jetstream2, KyRIC, Stampede3, Voyager, and others", adding
+    Derecho, Expanse and Voyager, which are not in the live reporting-provider list. Fact 4
+    guards the general shape of this error (over-claiming coverage) rather than requiring the
+    exact eight names, since the provider list changes as RPs onboard.'
 
 - id: sa-alloc-12
   question: How do I add a colleague or student to my ACCESS project so they can use the allocation?
   capability_area: allocations
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Answer directs the PI/co-PI/Allocation Manager to the "Users + Roles" tab for the project
+    in the ACCESS Allocations portal.
+  - Answer states the person is added by entering their ACCESS ID, and that they must already
+    have an ACCESS ID (they cannot be added by name or email alone).
+  - Answer conveys that adding the user to the project is not sufficient by itself; access must
+    be granted per resource by checking the box under the specific resource(s).
+  sources:
+  - https://allocations.access-ci.org/how-to (verified 2026-09-13)
 
 - id: sa-alloc-13
   question: How do I request an extension of the end date for my current ACCESS allocation?
   capability_area: allocations
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Answer directs the user to request the extension in the allocations portal via the "Extend
+    End Date" button on the project, rather than by email or a new proposal.
+  - Per allocations.access-ci.org/how-to, extensions can only be requested when 90 days or less
+    remain on an active project. Answer states this timing constraint.
+  - Answer conveys that the extension length depends on whether the project has a supporting
+    grant - a grant-supported project can be extended out to the end of the award (including
+    a no-cost extension), while a project with no supporting grant can be extended in 12-month
+    increments.
+  - Answer does not claim the extension is automatic or granted on request; a reason must be
+    supplied and a decision is returned separately.
+  sources:
+  - https://allocations.access-ci.org/how-to (verified 2026-09-13)
+  - https://allocations.access-ci.org/allocations-policy (verified 2026-09-13)
+  authoring_notes:
+  - 'DISAGREEMENT: The agent''s answer says "Explore, Discover, or Accelerate projects with
+    funding: Up to 6 months past the end of your funding award". Neither source supports "past
+    the end of". https://allocations.access-ci.org/how-to (verified 2026-09-13) says a grant-supported
+    project can be extended "out to the end of the award - including if you have received a
+    no-cost extension to the award", i.e. up to the award end, not beyond it. https://allocations.access-ci.org/allocations-policy
+    (verified 2026-09-13) says non-grant credit projects get "12-month extensions, up to a total
+    of five years", and separately that the six-month extension applies to Maximize: "With a
+    brief explanation, a PI can request up to a six-month extension". The answer appears to
+    have attached the Maximize six-month rule to funded Explore/Discover/Accelerate projects.
+    Fact 3 is written to the sources, so the answer should fail it.'
 
 - id: sa-support-02
   question: What is a Campus Champion and how can one help me get started with ACCESS?
   capability_area: affinity_groups
   battery: student_authored
   expected_tool: search_affinity_groups
-
-- id: sa-onboard-06
-  question: How do I set up Duo multi-factor authentication for logging into ACCESS resources?
-  capability_area: account_management
-  battery: student_authored
-  expected_tool: search_docs
+  required_facts:
+  - Answer describes a Campus Champion as a person at the user's own institution/campus who
+    helps local researchers and educators use ACCESS and other cyberinfrastructure - not as
+    ACCESS central staff or a helpdesk role.
+  - Answer conveys that Champions help users get started with allocations, per the official
+    description that they "assist users to quickly get start-up allocations of computing time".
+  - Answer tells the user how to find a Champion at their own institution, pointing to the Campus
+    Champions site (campuschampions.cyberinfrastructure.org) or its champions directory/map.
+  - Answer does not claim a Campus Champion grants, approves, or awards allocations; they help
+    the user navigate the process, while allocation decisions are made by ACCESS Allocations.
+  sources:
+  - https://campuschampions.cyberinfrastructure.org/ (verified 2026-09-13)
+  - https://support.access-ci.org/affinity-groups/campus-champions (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: The agent links the directory as campuschampions.cyberinfrastructure.org/champions/current-campus-champions,
+    which returns HTTP 200 (checked 2026-09-13), so the deep link is live. I graded on reaching
+    the Champions site generally, since deep links are the likeliest part of this answer to
+    rot.'
 
 - id: sa-policy-01
   question: How should I acknowledge ACCESS in a publication that used an ACCESS resource?
   capability_area: documentation
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - 'Answer gives the acknowledgement statement citing NSF grants #2138259, #2138286, #2138307,
+    #2137603, and #2138296.'
+  - Answer cites Boerner, Deems, Furlani, Knuth and Towns (2023), PEARC '23, DOI 10.1145/3569951.3597559.
+  - Answer conveys that both the citation and the acknowledgement statement are required, not
+    either one alone.
+  sources:
+  - https://access-ci.org/about/acknowledging-access/ (verified 2026-09-13)
 
 - id: sa-general-02
   question: What is ACCESS OnDemand and what can I do with it?
@@ -306,21 +1118,88 @@
   capability_area: events
   battery: student_authored
   expected_tool: search_events
+  required_facts:
+  - Answer points to the official ACCESS starting points for new users, at minimum the Get Started
+    path at access-ci.org/get-started and/or the first-project walkthrough at allocations.access-ci.org/get-your-first-project.
+  - 'Answer names at least two distinct kinds of ongoing support beyond static documentation,
+    drawn from the real ACCESS offerings: the events and training calendar (support.access-ci.org/events),
+    the Ask.CI Q&A forum (ask.cyberinfrastructure.org), MATCH mentoring/consulting services,
+    affinity groups, or the Video Learning Center / New User Tutorial playlist.'
+  - Answer does not fabricate named programs, cohorts, or scheduled courses that do not exist
+    in ACCESS documentation.
+  sources:
+  - https://access-ci.org/get-started/ (verified 2026-09-13)
+  - https://support.access-ci.org/ (verified 2026-09-13)
 
 - id: sa-general-03
   question: What is a science gateway and how do I use ACCESS resources through one?
   capability_area: documentation
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Answer defines a science gateway as a community-developed set of tools, applications and
+    data integrated through a web-based portal or suite of applications, giving browser-based
+    access without requiring HPC command-line skills.
+  - Answer states that a researcher does not need their own ACCESS allocation to use a science
+    gateway — the gateway provides the underlying ACCESS compute/storage on behalf of its users.
+  - Answer points the user to a way to find gateways, such as the science gateways catalog at
+    catalog.sciencegateways.org.
+  sources:
+  - https://support.access-ci.org/tools/science-gateways (verified 2026-09-13)
+  - https://access-ci.org/glossary/ (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: The "no separate allocation needed" point is the load-bearing correction here —
+    support.access-ci.org/tools/science-gateways states plainly that "Researchers can access
+    these gateways without needing their own ACCESS allocation." The truncated agent answer
+    does not visibly make this point, but it is truncated at 900 chars, so this is not scored
+    as a disagreement. A grader reading the full answer should check whether the claim is present
+    or contradicted.'
 
 - id: sa-policy-02
   question: Can I use my ACCESS allocation on commercial cloud resources like AWS or Azure?
   capability_area: allocations
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Answer says yes and identifies CloudBank as the ACCESS mechanism for using commercial cloud
+    resources, rather than saying ACCESS allocations cannot be used on commercial cloud.
+  - Per ACCESS Support, CloudBank awards are made in dollars and spent as resources are used
+    - not in SUs, core-hours, or ACCESS Credits. Answer conveys the dollar denomination.
+  - Answer names the supported commercial cloud platforms substantially correctly - Amazon Web
+    Services, Google Cloud, IBM Cloud, and Microsoft Azure.
+  - Answer conveys that the user signs in with an identity provider account they already have
+    (federated ACCESS login) rather than creating separate cloud vendor accounts with a credit
+    card.
+  sources:
+  - https://support.access-ci.org/documentation/resources/cloudbank-research (verified 2026-09-13)
+  - https://allocations.access-ci.org/resources/cloudbank.access-ci.org (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: The CloudBank Research page (verified 2026-09-13) adds "with Oracle Cloud Infrastructure
+    estimated for 2026", which the agent''s answer omits. I did not make this a required fact
+    since it is forward-looking and not yet live, but a human may want to add it as a bonus
+    fact or re-check whether OCI has since gone live and become required.'
 
 - id: sa-alloc-14
   question: How do I check the current status of an allocation request I already submitted?
   capability_area: allocations
   battery: student_authored
   expected_tool: search_docs
+  required_facts:
+  - Answer directs the user to log in to the allocations portal at allocations.access-ci.org
+    to see their submitted request / project status.
+  - Answer states that the PI is notified by email when a decision on the request is finalized.
+  - Answer conveys that Explore, Discover and Accelerate requests are typically reviewed and
+    processed within about two weeks of submission, while Maximize is on a semi-annual review
+    cycle rather than a rolling one.
+  sources:
+  - https://allocations.access-ci.org/allocations-policy (verified 2026-09-13)
+  - https://allocations.access-ci.org/how-to (verified 2026-09-13)
+  authoring_notes:
+  - 'AUTHOR: The agent gives precise Maximize notification timing ("mid-September for the June
+    cycle, mid-March for the December cycle"). allocations-policy and prepare-requests confirm
+    semi-annual cycles with submission windows (June 15-July 31, 2026 and December 15, 2026-January
+    31, 2027) but do not state notification months. Unverified; not encoded as a fact.'
+  - 'AUTHOR: The agent names a specific portal page, "My Projects". how-to describes the portal
+    generally and names a "Credits + Resources" tab; it does not confirm a page literally titled
+    "My Projects". The fact above is written to accept any correct pointer to the portal rather
+    than requiring that label.'
