@@ -20,7 +20,7 @@ jobs:
     if: github.event_name != 'workflow_dispatch'
     steps:
       - name: Wait for CI to pass on this commit
-        uses: lewagon/wait-on-check-action@v1.4.0
+        uses: lewagon/wait-on-check-action@v1.9.1
         with:
           ref: ${{ github.sha }}
           check-name: lint-and-test
