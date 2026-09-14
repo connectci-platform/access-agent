@@ -119,6 +119,10 @@
     agent''s answer says "ACCESS requires MFA on every login. Complete the Duo prompt", presenting
     Duo as universal. Duo is specific to the ACCESS CI identity provider, not to every ACCESS
     login path.'
+  - 'CORPUS: Checked the retrieved chunks for this question in eval run loop-20260913-045422-cf2d7c.
+    Duo appears 17 times and CILogon 37 times, but "university MFA" appears zero times and the
+    institutional-IdP caveat is absent from what was retrieved. The agent had Duo-heavy sources
+    and no signal that Duo is provider-specific. Corpus coverage gap, not invention.'
   - 'AUTHOR: The agent instructs the user to start at https://portal.access-ci.org. That host
     was not verified as the canonical entry point; ACCESS support documents account actions
     under support.access-ci.org and account.access-ci.org, and the identity FAQ links CILogon
@@ -268,10 +272,11 @@
   - Answer explains that ACCESS provides a central SSH public key registry tied to your ACCESS
     ID rather than requiring you to edit authorized_keys on each machine, and names the correct
     entry point (operations.access-ci.org/identity/ssh-pubkey, account.access-ci.org, or registry.access-ci.org).
-  - Answer does not claim that a key registered centrally is automatically propagated to every
-    ACCESS resource provider. Per ACCESS support documentation, RPs pull the stored key when
-    activating an account, and several RPs use their own path instead (their own web portal
-    with ACCESS or RP-specific credentials, ACCESS OnDemand, or emailing the key to RP support).
+  - Answer does not claim the key reaches every resource provider with no further action. RPs
+    pull the stored key when activating an account, and several RPs use their own path instead
+    (their own web portal with ACCESS or RP-specific credentials, ACCESS OnDemand, or emailing
+    the key to RP support). Describing the central registry itself as the normal mechanism is
+    correct and expected; the defect is only the unqualified "all RPs, automatically".
   - Answer either asks which resource the user means or explicitly says the exact procedure
     varies by resource provider, rather than presenting one RP's procedure as universal. The
     question says "this cluster" with no resource named.
@@ -286,6 +291,14 @@
     that support ACCESS-managed identity". The source does not support automatic propagation
     to all RPs. The agent also gave registry.access-ci.org as the sole entry point, while the
     support documentation points to operations.access-ci.org/identity/ssh-pubkey and account.access-ci.org.'
+  - 'CORPUS: Checked the retrieved chunks for this question in eval run loop-20260913-045422-cf2d7c.
+    support.access-ci.org/documentation/ssh-login was never retrieved - zero mentions in 31KB
+    of tool results. What came back was a scatter of RP-specific pages (PSC Bridges-2, SDSC
+    Expanse, OSC OnDemand) plus operations.access-ci.org/identity/ssh-pubkey, and the only
+    "propagate" in the whole payload is about SDSC 2FA enrollment taking 15 minutes. So the
+    agent bridged a central-registry page and several RP pages into a universal claim no chunk
+    makes. This is a corpus coverage gap, not invention: registry.access-ci.org does appear
+    verbatim in the retrieved text, so that entry point came from the sources.'
 
 - id: sa-cluster-02
   question: Does this system use the standard module load command for packages?
@@ -631,11 +644,17 @@
     gpuA100x4-interactive, gpuA100x4-preempt, gpuA100x8, gpuA100x8-interactive, gpuH200x8, gpuH200x8-interactive,
     gpuA40x4, gpuA40x4-interactive, gpuA40x4-preempt, gpuMI100x8, gpuMI100x8-interactive. The
     agent''s answer states "Delta GPU has 15 partitions". The count is wrong.'
-  - 'DISAGREEMENT: The same Delta table gives the gpuA40x4 charge factor as 0.5 and gpuA40x4-interactive
-    as 1.0. The agent''s A40 table is truncated at 900 chars so its A40 charge factors are not
-    visible, but its A100 section gives gpuA100x4 1.0, gpuA100x4-interactive 2.0, gpuA100x4-preempt
-    0.5, gpuA100x8 1.5, gpuA100x8-interactive 3.0 — all of which match the source. The visible
-    A100 numbers are correct; only the partition count and the omission of H200/MI100 are wrong.'
+  - 'AUTHOR: The A100 charge factors the agent gave (gpuA100x4 1.0, -interactive 2.0, -preempt
+    0.5, gpuA100x8 1.5, -interactive 3.0) all match the source. The stored eval answer is capped
+    at 900 chars, so the A40 rows are not visible in the record - that is a limit of the stored
+    answer, not a defect in the agent output. Only the partition count and the H200/MI100 omission
+    are graded.'
+  - 'CORPUS: Checked the retrieved chunks for this question in eval run loop-20260913-045422-cf2d7c.
+    All four GPU families are present in what was retrieved (gpuA100x4 x12, gpuA40x4 x14, gpuH200x8
+    x6, gpuMI100x8 x6), and the string "15 partition" appears nowhere. So the agent had the
+    complete partition table in context and still miscounted while omitting families it had
+    been handed. This is a synthesis failure, not a retrieval gap - unlike most findings in
+    this battery, better corpus coverage would not fix it.'
   - 'AUTHOR: The agent supplies per-partition CPU-count and RAM figures (64 CPUs / 256 GB for
     quad-A100, 128 CPUs / ~2 TB for octa-A100) and node counts (100 quad-A100 nodes, 6 octa-A100
     nodes). Those are not in the running_jobs partitions table; they would come from the Delta
@@ -661,18 +680,22 @@
   - https://docs.tacc.utexas.edu/hpc/stampede3/ (verified 2026-09-13)
   authoring_notes:
   - 'DISAGREEMENT: The agent''s table says scratch files "not accessed in ~180 days are automatically
-    deleted" and presents this as the general ACCESS behaviour. Neither verified source supports
-    180 days. https://www.sdsc.edu/support/user_guides/expanse.html (verified 2026-09-13) states
-    "Scratch files will be purged 90 days from creation date" — creation date, not access date.
-    https://docs.tacc.utexas.edu/hpc/stampede3/ (verified 2026-09-13) states "Files that have
-    not been accessed in ten days are subject to purge". The agent''s figure is wrong on both
-    the number and, for Expanse, the trigger.'
+    deleted" and presents this as the general ACCESS behaviour. The defect is the missing scope,
+    not the number. Corpus check on eval run loop-20260913-045422-cf2d7c: 180 days and the "30
+    TB" scratch quota both come verbatim from the retrieved chunks, which describe NCAR''s GLADE
+    filesystem serving Derecho and Casper ("Scratch (30 TB with a 180-day purge)"). Retrieval
+    returned NCAR and TAMU/ACES storage pages and nothing from Stampede3 or Expanse, so the
+    agent had exactly one detailed storage policy in front of it and restated it as ACCESS-wide.
+    Other resources differ sharply: Expanse purges 90 days from creation date, Stampede3 purges
+    files not accessed in ten days. An answer that said "on Derecho and Casper, 180 days" would
+    have been correct.'
   - 'DISAGREEMENT: The agent''s table says home is "Backed up — Yes, nightly or several times
     per week" and gives a home quota of "typically 10-50 GB". Stampede3 $HOME is 15 GB and is
     documented as backed up regularly, which is consistent. But the agent also claims scratch
     quotas of "1 TB-30 TB": Stampede3 $SCRATCH has no quota, and Expanse Lustre is governed
-    by purge rather than a per-user TB quota. The specific quota ranges are not supported by
-    the sources checked.'
+    by purge rather than a per-user TB quota. As with the purge window, the "30 TB" upper bound
+    traces to NCAR GLADE in the retrieved chunks; the error is presenting one RP''s numbers as
+    a general ACCESS range.'
   - 'AUTHOR: Expanse documentation additionally warns that the Lustre filesystem "IS NOT an
     archival file system" and "IS NOT backed up", and that project space is purged 90 days after
     the allocation expires. If this question is meant to test the durability warning, consider
@@ -1022,6 +1045,12 @@
     Derecho, Expanse and Voyager, which are not in the live reporting-provider list. Fact 4
     guards the general shape of this error (over-claiming coverage) rather than requiring the
     exact eight names, since the provider list changes as RPs onboard.'
+  - 'CORPUS: Checked the retrieved chunks for this question in eval run loop-20260913-045422-cf2d7c.
+    The eight-name reporting-provider list is not in the retrieved text at all - SDS is described
+    functionally (how to filter by discipline, by "Installed on" resource) with no roster. The
+    resource names the agent listed do appear scattered across the chunks in other contexts,
+    so it assembled a coverage claim from names it had seen rather than from any list. Corpus
+    coverage gap.'
 
 - id: sa-alloc-12
   question: How do I add a colleague or student to my ACCESS project so they can use the allocation?
@@ -1068,6 +1097,12 @@
     brief explanation, a PI can request up to a six-month extension". The answer appears to
     have attached the Maximize six-month rule to funded Explore/Discover/Accelerate projects.
     Fact 3 is written to the sources, so the answer should fail it.'
+  - 'CORPUS: Checked the retrieved chunks for this question in eval run loop-20260913-045422-cf2d7c.
+    "6 month" appears zero times and "end of the award" zero times in 90KB of retrieved text.
+    Unlike the generalization findings in this battery, the agent''s "up to 6 months past the
+    end of your funding award" traces to neither the corpus nor the documentation. This is the
+    closest thing in the battery to genuine invention, and the existing grounding rule in the
+    system prompt already prohibits it.'
 
 - id: sa-support-02
   question: What is a Campus Champion and how can one help me get started with ACCESS?
