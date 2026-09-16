@@ -278,6 +278,23 @@
     font-size: 15px;
   }
 
+  /* Rendered markdown inside answer cells (see md() in the script below). */
+  .qtext .md-h { font-weight: 600; margin: 8px 0 3px; }
+  .qtext .md-h1, .qtext .md-h2 { font-size: 1.02em; }
+  .qtext .md-h3, .qtext .md-h4 { font-size: 0.98em; }
+  .qtext .md-li { padding-left: 14px; text-indent: -8px; margin: 1px 0; }
+  .qtext .md-gap { height: 6px; }
+  .qtext code { font-family: var(--mono); font-size: 0.92em;
+                background: rgba(0,0,0,.05); padding: 0 3px; border-radius: 2px; }
+  .qtext .md-pre { font-family: var(--mono); font-size: 0.86em; white-space: pre-wrap;
+                   background: rgba(0,0,0,.04); padding: 6px 8px; border-radius: 3px;
+                   margin: 6px 0; overflow-x: auto; }
+  .qtext table.md { border-collapse: collapse; margin: 8px 0; font-size: 0.9em;
+                    display: block; overflow-x: auto; max-width: 100%; }
+  .qtext table.md th, .qtext table.md td { border: 1px solid rgba(0,0,0,.14);
+                    padding: 3px 7px; text-align: left; vertical-align: top; }
+  .qtext table.md th { background: rgba(0,0,0,.04); font-weight: 600; }
+
   /* Agent execution trace — full width above the answer columns */
   .trace {
     background: var(--panel);
@@ -490,6 +507,53 @@
       };
 
   function esc(s) { return (s || '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+  // Agent answers are markdown (headings, bold, tables, fenced code). esc()
+  // alone showed the raw syntax, so render a deliberately small subset on top
+  // of the escaped text — escape first, so this never introduces markup from
+  // answer content.
+  function md(src) {
+    let t = esc(src);
+    if (!t) return '';
+    const fences = [];
+    t = t.replace(/```[a-z]*\n?([\s\S]*?)```/g, (_, code) => {
+      fences.push(code.replace(/\n$/, ''));
+      return `\u0000FENCE${fences.length - 1}\u0000`;
+    });
+    const lines = t.split('\n');
+    const out = [];
+    let tbl = null;
+    const flush = () => {
+      if (!tbl) return;
+      const cells = row => row.split('|').slice(1, -1).map(c => c.trim());
+      const head = cells(tbl[0]);
+      const body = tbl.slice(2).map(cells);
+      out.push('<table class="md"><thead><tr>' + head.map(h => `<th>${h}</th>`).join('')
+        + '</tr></thead><tbody>'
+        + body.map(r => '<tr>' + r.map(c => `<td>${c}</td>`).join('') + '</tr>').join('')
+        + '</tbody></table>');
+      tbl = null;
+    };
+    for (const line of lines) {
+      const isRow = /^\s*\|.*\|\s*$/.test(line);
+      if (isRow) { (tbl = tbl || []).push(line); continue; }
+      flush();
+      const h = line.match(/^(#{1,4})\s+(.*)$/);
+      if (h) { out.push(`<div class="md-h md-h${h[1].length}">${h[2]}</div>`); continue; }
+      const li = line.match(/^\s*[-*]\s+(.*)$/);
+      if (li) { out.push(`<div class="md-li">${li[1]}</div>`); continue; }
+      const ol = line.match(/^\s*(\d+)\.\s+(.*)$/);
+      if (ol) { out.push(`<div class="md-li">${ol[1]}. ${ol[2]}</div>`); continue; }
+      out.push(line.trim() ? `<div>${line}</div>` : '<div class="md-gap"></div>');
+    }
+    flush();
+    let html = out.join('');
+    html = html
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
+               '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    return html.replace(/\u0000FENCE(\d+)\u0000/g, (_, i) => `<pre class="md-pre">${fences[+i]}</pre>`);
+  }
   function fmtSec(ms) { return (ms != null) ? (ms/1000).toFixed(1) + 's' : '—'; }
   // Rewrite the compare-judge's "System A" / "System B" phrasing to the
   // labeled system in that slot. Longer first so "System" doesn't collide.
@@ -877,14 +941,14 @@
                   <span class="sys">${esc(SYS.A.label)}</span>
                   <span class="meta">${fmtSec(r.duration_ms)}</span>
                 </div>
-                <div class="qtext">${esc(r.answer) || '<em>(no answer)</em>'}</div>
+                <div class="qtext">${md(r.answer) || '<em>(no answer)</em>'}</div>
               </div>
               <div class="qcol ${SYS.B.css_class}">
                 <div class="qhead">
                   <span class="sys">${esc(SYS.B.label)}</span>
                   <span class="meta">${fmtSec(a.duration_ms)}</span>
                 </div>
-                <div class="qtext">${esc(a.answer) || '<em>(no answer)</em>'}</div>
+                <div class="qtext">${md(a.answer) || '<em>(no answer)</em>'}</div>
               </div>
             </div>
             ${renderFactVerdicts(e)}
