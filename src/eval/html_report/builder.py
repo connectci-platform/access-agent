@@ -84,11 +84,20 @@ class RunRef:
 
 
 def _normalize_question_set(raw: str | None) -> str:
-    """Turn 'eval/questions/friendly_battery.json' into 'friendly_battery'."""
+    """Turn 'eval/questions/friendly_battery.json' into 'friendly_battery'.
+
+    Strips .json and .yaml/.yml alike. Batteries authored after the original
+    four are YAML; leaving the suffix on made every key miss BATTERY_ORDER and
+    BATTERY_INFO, so per_battery came back empty and the header rendered
+    "undefined" instead of failing.
+    """
     if not raw:
         return ""
     base = Path(raw).name
-    return base[:-5] if base.endswith(".json") else base
+    for suffix in (".json", ".yaml", ".yml"):
+        if base.endswith(suffix):
+            return base[: -len(suffix)]
+    return base
 
 
 def pick_run_ids(
@@ -349,8 +358,21 @@ def _build_per_battery_views(
     battery_labels: dict[str, str] = {}
     battery_order_out: list[str] = []
 
-    for qs_key in ordered_qs_keys:
-        short = qs_key.replace("_battery", "") if qs_key.endswith("_battery") else qs_key
+    # Visit every battery present in all_pairs, not just the preset's list:
+    # BATTERY_ORDER names the original four, so a battery outside it was never
+    # visited and per_battery came back empty (the renderer then showed
+    # "undefined"). Preset order first, then any remaining batteries.
+    def _short(key: str) -> str:
+        return key.replace("_battery", "") if key.endswith("_battery") else key
+
+    present = {e["battery"] for e in all_pairs}
+    ordered_short = [_short(k) for k in ordered_qs_keys]
+    shorts = [s for s in ordered_short if s in present]
+    shorts += sorted(s for s in present if s not in ordered_short)
+    short_to_key = {_short(k): k for k in ordered_qs_keys}
+
+    for short in shorts:
+        qs_key = short_to_key.get(short, short)
         items = [e for e in all_pairs if e["battery"] == short]
         if not items:
             continue
