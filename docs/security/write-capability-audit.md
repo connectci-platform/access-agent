@@ -16,6 +16,7 @@ Enumerate every capability in the access-agent that performs writes against an e
 
 | Capability ID | Domain | Backend (MCP server) | Effect | Classifier gate |
 | ------------- | ------ | -------------------- | ------ | --------------- |
+| `manage_events` | `events` | `events` | Create / update events, manage occurrences, submit for review (organizer) | No classifier gate: events organizer tools reach the agent only through the `tool_calling_loop`. This id exists so `READ_ONLY` removes the capability from the discovery registry (`GET /capabilities`, "show my options"), so a read-only deployment does not advertise writes it will refuse. The load-bearing control on the tools themselves is `WRITE_MCP_TOOL_NAMES` below. |
 | `manage_announcements` | `announcements` | `announcements` | Create / update / delete ACCESS-CI announcements | Classifier must set `domain == "announcements"` AND `capability_id == "manage_announcements"`. Classifier prompt requires explicit imperative language: "create an announcement", "update this announcement", "delete the announcement" (see `src/agent/nodes/classify.py`). |
 | `open_ticket` | `jsm` | `jsm` | Create a new JSM support ticket | Classifier must set `domain == "jsm"` AND `capability_id == "open_ticket"`. Prompt requires explicit ticket-creation verbs ("open a ticket", "file a ticket", "submit a ticket"). Described problems without those verbs do NOT trigger this capability. |
 | `report_login_problem` | `jsm` | `jsm` | Create a login-issue JSM ticket | Same classifier rule as `open_ticket`, scoped to login problems. |
@@ -23,9 +24,11 @@ Enumerate every capability in the access-agent that performs writes against an e
 
 The source of truth for this list is the `WRITE_CAPABILITY_IDS` constant in `src/agent/domains/capabilities.py`. Any change to that set must be reflected in this table (enforced by code review).
 
-### Events writes (no `WRITE_CAPABILITY_IDS` entry — guarded by tool name only)
+### Events writes (guarded by tool name; capability id gates discovery only)
 
-The `events` MCP server exposes write tools, but they are **not** owned by any registry write capability: the only events capability in `GENERAL_CAPABILITIES` is `browse_events`, which is read-only. Events writes reach the agent solely through the `tool_calling_loop`, which builds tools directly from the MCP catalog. They are therefore guarded by their MCP tool name in `WRITE_MCP_TOOL_NAMES` (Layer 3, loop path), with no corresponding `WRITE_CAPABILITY_IDS` id. The legacy chain never surfaces these tools, so a capability-id entry there would gate nothing; the tool-name deny-list is the load-bearing control.
+The `events` MCP server exposes write tools that reach the agent solely through the `tool_calling_loop`, which builds tools directly from the MCP catalog and never consults the registry. Their load-bearing guard is therefore the MCP tool name in `WRITE_MCP_TOOL_NAMES` (Layer 3, loop path), listed below.
+
+The `manage_events` capability id does **not** gate these tools — the legacy chain never surfaces them, so a capability entry cannot. It exists for a separate reason: the registry is the user-facing discovery surface (`GET /capabilities` and the "show my options" response), so without an entry no user is told the agent can author events, and under `READ_ONLY` a deployment would otherwise advertise event creation it refuses. Treat the two as independent: removing the capability id would silently reduce discoverability; removing a tool name from `WRITE_MCP_TOOL_NAMES` would remove an actual control.
 
 | MCP tool name | Server | Effect | Guard |
 | ------------- | ------ | ------ | ----- |
