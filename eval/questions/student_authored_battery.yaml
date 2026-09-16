@@ -1078,9 +1078,10 @@
   - Per allocations.access-ci.org/how-to, extensions can only be requested when 90 days or less
     remain on an active project. Answer states this timing constraint.
   - Answer conveys that the extension length depends on whether the project has a supporting
-    grant - a grant-supported project can be extended out to the end of the award (including
-    a no-cost extension), while a project with no supporting grant can be extended in 12-month
-    increments.
+    grant, and that a project with no supporting grant can be extended in 12-month increments.
+  - Answer does not claim a grant-supported project can be extended past the end of its funding
+    award. Per allocations.access-ci.org/how-to the extension runs out to the end of the award,
+    including a no-cost extension; the six-month extension is a Maximize-specific rule.
   - Answer does not claim the extension is automatic or granted on request; a reason must be
     supplied and a decision is returned separately.
   sources:
@@ -1103,6 +1104,14 @@
     end of your funding award" traces to neither the corpus nor the documentation. This is the
     closest thing in the battery to genuine invention, and the existing grounding rule in the
     system prompt already prohibits it.'
+  - 'AUTHOR: F3 was split after eval run loop-20260916-154249-762304 scored it a false pass.
+    The original single fact led with "conveys that the extension length depends on whether
+    the project has a supporting grant" and carried the award-end limit in a subordinate
+    clause; the judge tested the leading clause, which the answer satisfies, and credited the
+    answer''s own "up to 6 months past the end of the funding award" as correct. The specific
+    wrong value now has its own negative guard, matching the sa-cluster-02 F3 pattern that
+    does catch its universal. This is the permissive-fact failure mode the paper records for
+    a sign-in fact.'
 
 - id: sa-support-02
   question: What is a Campus Champion and how can one help me get started with ACCESS?
