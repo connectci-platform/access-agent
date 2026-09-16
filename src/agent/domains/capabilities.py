@@ -103,6 +103,7 @@ _DOC_SEARCH_TOOL_NAME = "search_access_documents"
 WRITE_CAPABILITY_IDS: frozenset[str] = frozenset(
     {
         "manage_announcements",  # announcements domain: create/update/delete
+        "manage_events",  # events domain: organizer create/update/occurrences
         "open_ticket",  # jsm domain: create support ticket
         "report_login_problem",  # jsm domain: create login-issue ticket
         "report_security",  # jsm domain: create security-concern ticket
@@ -274,6 +275,15 @@ GENERAL_CAPABILITIES: list[Capability] = [
         backend=McpBackend(servers=("events",)),
         requires_auth=False,
         example_query="Find upcoming workshops and training events",
+    ),
+    Capability(
+        "manage_events",
+        "Manage your events",
+        "Create and update events you organize, and submit them for review",
+        "content",
+        backend=McpBackend(servers=("events",)),
+        requires_auth=True,
+        example_query="Create a GPU training event for next month",
     ),
     Capability(
         "browse_affinity_groups",

@@ -42,6 +42,7 @@ def test_write_capability_ids_constant_matches_known_writes():
         frozenset(
             {
                 "manage_announcements",
+                "manage_events",
                 "open_ticket",
                 "report_login_problem",
                 "report_security",
@@ -94,6 +95,7 @@ def test_baseline_write_caps_enabled_without_read_only(monkeypatch, fresh_regist
 
     for cap_id in (
         "manage_announcements",
+        "manage_events",
         "open_ticket",
         "report_login_problem",
         "report_security",
@@ -111,6 +113,7 @@ def test_read_only_disables_all_write_capabilities(monkeypatch, fresh_registry):
 
     for cap_id in (
         "manage_announcements",
+        "manage_events",
         "open_ticket",
         "report_login_problem",
         "report_security",
