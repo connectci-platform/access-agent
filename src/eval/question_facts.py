@@ -43,10 +43,10 @@ logger = logging.getLogger(__name__)
 # the retracting version and resurrect the pre-retraction one as "latest". Ordered by
 # display_order for stable prompt rendering.
 _LATEST_SQL = """
-SELECT fact_id, fact_text
+SELECT fact_id, fact_text{kind_col}
 FROM (
     SELECT DISTINCT ON (fact_id)
-        fact_id, fact_text, status, display_order{retraction_col}
+        fact_id, fact_text{kind_col}, status, display_order{retraction_col}
     FROM reporting.question_facts
     WHERE question_id = :question_id
     ORDER BY fact_id, version DESC
@@ -59,7 +59,7 @@ ORDER BY display_order, fact_id
 # max(version) subquery. Here the correlated subquery resolves the true latest version
 # independently of these filters, so the retraction predicate is safe inline.
 _LATEST_SQL_SQLITE = """
-SELECT fact_id, fact_text
+SELECT fact_id, fact_text{kind_col}
 FROM reporting.question_facts qf
 WHERE question_id = :question_id
   AND version = (
@@ -72,19 +72,21 @@ ORDER BY display_order, fact_id
 
 _RETRACTION_FILTER = "\n  AND retracted_at IS NULL"
 _RETRACTION_COL = ", retracted_at"
+_KIND_COL = ", fact_kind"
 
 
-def _has_retraction_column(db: EvalDB) -> bool:
-    """Whether reporting.question_facts carries the dashboard's retraction columns.
+def _fact_columns(db: EvalDB) -> set[str]:
+    """Column names present on reporting.question_facts.
 
-    The dashboard added ``retracted_at`` in a later migration than the one that created
-    this table, and the two services deploy independently. Referencing the column
-    unconditionally would make an agent that is ahead of the dashboard raise, get
-    swallowed by the caller's except, and silently fall back to stale YAML facts —
-    scoring the wrong fact set rather than merely ignoring retractions.
+    The dashboard added ``retracted_at`` and ``fact_kind`` in later migrations than
+    the one that created this table, and the two services deploy independently.
+    Referencing either unconditionally would make an agent that is ahead of the
+    dashboard raise, get swallowed by the caller's except, and silently fall back to
+    stale YAML facts — scoring the wrong fact set rather than merely ignoring a
+    column.
     """
     try:
-        return "retracted_at" in {
+        return {
             col["name"]
             for col in inspect(db._engine).get_columns(  # noqa: SLF001  # eval-internal
                 "question_facts", schema="reporting"
@@ -92,7 +94,7 @@ def _has_retraction_column(db: EvalDB) -> bool:
         }
     except SQLAlchemyError:
         # Table or schema absent entirely — the caller's query falls back anyway.
-        return False
+        return set()
 
 
 def load_question_facts(db: EvalDB, question_id: str) -> list[dict[str, Any]] | None:
@@ -105,10 +107,13 @@ def load_question_facts(db: EvalDB, question_id: str) -> list[dict[str, Any]] | 
     """
     dialect = db._engine.dialect.name  # noqa: SLF001  # eval-internal DB access
     template = _LATEST_SQL_SQLITE if dialect == "sqlite" else _LATEST_SQL
-    if _has_retraction_column(db):
-        sql = template.format(retraction=_RETRACTION_FILTER, retraction_col=_RETRACTION_COL)
-    else:
-        sql = template.format(retraction="", retraction_col="")
+    cols = _fact_columns(db)
+    has_retraction = "retracted_at" in cols
+    sql = template.format(
+        retraction=_RETRACTION_FILTER if has_retraction else "",
+        retraction_col=_RETRACTION_COL if has_retraction else "",
+        kind_col=_KIND_COL if "fact_kind" in cols else "",
+    )
     try:
         with db._session_factory() as session:  # noqa: SLF001  # eval-internal DB access
             rows = session.execute(sa_text(sql), {"question_id": question_id}).fetchall()
@@ -119,7 +124,18 @@ def load_question_facts(db: EvalDB, question_id: str) -> list[dict[str, Any]] | 
 
     if not rows:
         return None
-    return [{"fact_id": r.fact_id, "fact_text": r.fact_text} for r in rows]
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        fact: dict[str, Any] = {"fact_id": r.fact_id, "fact_text": r.fact_text}
+        # Omit rather than carry None: an untyped fact keeps the exact dict shape
+        # it had before fact_kind existed, so nothing downstream has to special-case
+        # null. flatten_required_facts reads only fact_id/fact_text, so this extra
+        # key reaches eval_scores.context without touching the judge prompt.
+        kind = getattr(r, "fact_kind", None)
+        if kind:
+            fact["fact_kind"] = kind
+        out.append(fact)
+    return out
 
 
 def resolve_required_facts(

@@ -307,6 +307,64 @@ def _handle_rejudge(args: argparse.Namespace) -> None:
     print(_json.dumps(summary, indent=2, default=str))
 
 
+def _handle_drift(args: argparse.Namespace) -> None:
+    """Attribute every pass->fail verdict flip between two runs of one battery."""
+    from src.config import settings
+
+    from .db import EvalDB
+    from .drift import Verdict, compare_runs
+
+    db = EvalDB(settings.DATABASE_URL)
+    report = compare_runs(db, args.baseline, args.candidate)
+
+    print(f"baseline:  {report.baseline_run_id}")
+    print(f"candidate: {report.candidate_run_id}")
+    if not report.system_fixed:
+        # Not fatal: a deliberate before/after comparison of a prompt change is a
+        # legitimate use. But drift attribution assumes the system held still, so
+        # say plainly which assumption is broken.
+        print("\nWARNING the system was not held fixed; drift attribution is unreliable:")
+        for diff in report.system_differences:
+            print(f"  {diff}")
+
+    counts = report.counts()
+    print("\n" + "  ".join(f"{k}={v}" for k, v in counts.items() if v))
+    if not report.changes:
+        print("no pass->fail verdict flips")
+        return
+
+    labels = {
+        Verdict.DRIFT: "DRIFT      the world moved",
+        Verdict.REGRESSION: "REGRESSION the system moved",
+        Verdict.SUSPECTED_MISTYPE: "MISTYPE?   behavioral fact, but retrieval changed",
+        Verdict.UNTYPED: "UNTYPED    no fact_kind; cannot attribute",
+        Verdict.NOISE: "NOISE      no material change",
+    }
+    for verdict in (
+        Verdict.REGRESSION,
+        Verdict.SUSPECTED_MISTYPE,
+        Verdict.DRIFT,
+        Verdict.UNTYPED,
+        Verdict.NOISE,
+    ):
+        group = [c for c in report.changes if c.verdict is verdict]
+        if not group:
+            continue
+        print(f"\n{labels[verdict]}")
+        for c in group:
+            kind = c.fact_kind or "untyped"
+            print(
+                f"  {c.question_id} fact {c.fact_id} [{kind}] retrieval_changed={c.retrieval_changed}"
+            )
+            if c.fact_text:
+                print(f"      {c.fact_text[:150]}")
+
+    if report.regressions:
+        # Regressions are the only class that should block a release; drift means
+        # the ground truth needs re-authoring, not that the agent got worse.
+        sys.exit(1)
+
+
 def _handle_grand_prix(args: argparse.Namespace) -> None:
     import json as _json
 
@@ -501,6 +559,13 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915  # all subcomman
     )
     rejudge_parser.add_argument("--run-id", required=True, help="Run ID to re-judge")
     rejudge_parser.add_argument("--judge-model", default=None, help="Override judge model")
+
+    drift_parser = subparsers.add_parser(
+        "drift",
+        help="Attribute verdict flips between two runs to drift, regression, or noise",
+    )
+    drift_parser.add_argument("--baseline", required=True, help="Earlier run ID")
+    drift_parser.add_argument("--candidate", required=True, help="Later run ID")
 
     gp_parser = subparsers.add_parser(
         "grand-prix",
@@ -699,6 +764,7 @@ def main() -> None:
         "compare": _handle_compare,
         "comparison": _handle_comparison,
         "rejudge": _handle_rejudge,
+        "drift": _handle_drift,
         "compare-judge": _handle_compare_judge,
         "grand-prix": _handle_grand_prix,
         "report": _handle_report,
