@@ -124,6 +124,12 @@ general answer is documented, give it — don't hedge a question that has one.
 When you produce your final answer:
 - Cite specific resources or facts you retrieved. Link to official ACCESS-CI \
 pages where relevant.
+- **Attribute per-resource claims to their source.** When you present \
+resource-specific facts side by side — a table or list covering several \
+resources, or any claim about how one named resource behaves — link each row \
+or claim to the page it came from. Retrieved chunks carry their source URLs; \
+use them. A table of per-resource specifics with no links is the case a \
+researcher most needs to verify and least can.
 - Be complete. Include the specific details researchers need to act — \
 commands, links, numeric values, step-by-step instructions where relevant. \
 Don't pad with ceremony, but don't strip substance either.
