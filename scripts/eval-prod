@@ -6,7 +6,7 @@
 # asserts the loaded environment is actually configured for production, and
 # then execs the eval CLI with the given arguments.
 #
-# Prod Postgres lives in a Docker container on mcp.access-ci.org. Open an
+# Prod Postgres lives in a Docker container on burrow. Open an
 # SSH tunnel first with ./scripts/eval-tunnel-open before running this.
 #
 # Usage:

@@ -2,9 +2,9 @@
 #
 # eval-tunnel-open — open an SSH tunnel to prod Postgres.
 #
-# Prod Postgres runs inside a Docker container on mcp.access-ci.org and
-# is not directly reachable from a workstation. This script opens an
-# SSH tunnel so DATABASE_URL in .env.eval.prod can point at
+# Prod Postgres runs inside a Docker container on burrow and is not
+# directly reachable from a workstation. This script opens an SSH
+# tunnel so DATABASE_URL in .env.eval.prod can point at
 # localhost:5432 transparently.
 #
 # Run this in one terminal, leave it running, then use scripts/eval-prod
@@ -15,8 +15,11 @@
 
 set -euo pipefail
 
-SSH_HOST="${EVAL_PROD_SSH_HOST:-mcp.access-ci.org}"
-REMOTE_PORT="${EVAL_PROD_DB_REMOTE_PORT:-5432}"
+# Resolved through the `burrow` alias in ~/.ssh/config, which supplies the
+# hostname, user, and identity file — kept out of the repo deliberately.
+# The container publishes 5433 on the remote loopback, not 5432.
+SSH_HOST="${EVAL_PROD_SSH_HOST:-burrow}"
+REMOTE_PORT="${EVAL_PROD_DB_REMOTE_PORT:-5433}"
 LOCAL_PORT="${EVAL_PROD_DB_LOCAL_PORT:-5432}"
 
 echo "Opening SSH tunnel: localhost:${LOCAL_PORT} → ${SSH_HOST}:${REMOTE_PORT}"
