@@ -17,7 +17,13 @@ def _make_db(tmp_path) -> EvalDB:
     return EvalDB(f"sqlite:///{tmp_path}/facts.db")
 
 
-def _seeded_db(tmp_path, rows: list[dict], *, retraction_columns: bool = True) -> EvalDB:
+def _seeded_db(
+    tmp_path,
+    rows: list[dict],
+    *,
+    retraction_columns: bool = True,
+    kind_columns: bool = False,
+) -> EvalDB:
     """A db whose engine has a persistent `reporting` schema seeded with rows.
 
     Uses a single shared in-memory attached db via a static pool so every
@@ -50,6 +56,7 @@ def _seeded_db(tmp_path, rows: list[dict], *, retraction_columns: bool = True) -
     db._session_factory = sessionmaker(bind=engine)
 
     retraction_ddl = ",\n                    retracted_at TEXT" if retraction_columns else ""
+    kind_ddl = ",\n                    fact_kind TEXT" if kind_columns else ""
     with db._session_factory() as session:
         session.execute(
             text(
@@ -60,7 +67,7 @@ def _seeded_db(tmp_path, rows: list[dict], *, retraction_columns: bool = True) -
                     question_id   TEXT    NOT NULL,
                     display_order INTEGER NOT NULL DEFAULT 0,
                     fact_text     TEXT    NOT NULL,
-                    status        TEXT    NOT NULL DEFAULT 'draft'{retraction_ddl},
+                    status        TEXT    NOT NULL DEFAULT 'draft'{retraction_ddl}{kind_ddl},
                     PRIMARY KEY (fact_id, version)
                 )
                 """
@@ -69,12 +76,17 @@ def _seeded_db(tmp_path, rows: list[dict], *, retraction_columns: bool = True) -
         for r in rows:
             row = dict(r)
             retracted_at = row.pop("retracted_at", None)
+            fact_kind = row.pop("fact_kind", None)
             cols = "fact_id, version, question_id, display_order, fact_text, status"
             vals = ":fact_id, :version, :question_id, :display_order, :fact_text, :status"
             if retraction_columns:
                 cols += ", retracted_at"
                 vals += ", :retracted_at"
                 row["retracted_at"] = retracted_at
+            if kind_columns:
+                cols += ", fact_kind"
+                vals += ", :fact_kind"
+                row["fact_kind"] = fact_kind
             session.execute(
                 text(f"INSERT INTO reporting.question_facts ({cols}) VALUES ({vals})"),
                 row,
@@ -344,3 +356,65 @@ def test_resolve_falls_back_to_yaml_when_reporting_absent(tmp_path):
 def test_resolve_returns_none_when_neither_source(tmp_path):
     db = _make_db(tmp_path)
     assert resolve_required_facts(db, "tc-software-02", None) is None
+
+
+def test_fact_kind_is_surfaced_when_the_column_exists(tmp_path):
+    """fact_kind reaches the returned dict so eval_scores.context carries it.
+
+    The drift classifier attributes a verdict flip using this value; without it
+    a world fact going stale is indistinguishable from a regression.
+    """
+    db = _seeded_db(
+        tmp_path,
+        [
+            {
+                "fact_id": 40,
+                "version": 1,
+                "question_id": "q1",
+                "display_order": 0,
+                "fact_text": "Anvil outage postponed as of July 2",
+                "status": "draft",
+                "fact_kind": "snapshot",
+            },
+            {
+                "fact_id": 41,
+                "version": 1,
+                "question_id": "q1",
+                "display_order": 1,
+                "fact_text": "Answer does not invent a firm date",
+                "status": "draft",
+                "fact_kind": None,
+            },
+        ],
+        kind_columns=True,
+    )
+
+    facts = load_question_facts(db, "q1")
+
+    assert facts is not None
+    assert facts[0]["fact_kind"] == "snapshot"
+    # An untyped fact keeps the pre-fact_kind dict shape rather than carrying None,
+    # so nothing downstream has to special-case a null kind.
+    assert "fact_kind" not in facts[1]
+
+
+def test_fact_kind_absent_from_schema_is_not_referenced(tmp_path):
+    """An agent ahead of the dashboard must not raise and fall back to YAML."""
+    db = _seeded_db(
+        tmp_path,
+        [
+            {
+                "fact_id": 1,
+                "version": 1,
+                "question_id": "q1",
+                "display_order": 0,
+                "fact_text": "f",
+                "status": "draft",
+            }
+        ],
+        kind_columns=False,
+    )
+
+    facts = load_question_facts(db, "q1")
+
+    assert facts == [{"fact_id": 1, "fact_text": "f"}]
