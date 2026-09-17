@@ -14,10 +14,12 @@ env:
   VLLM_MODEL_NAME: ccs/Qwen/Qwen3.6-35B-A3B-FP8
   # e2e tests + the red-team gate live-aggregate the catalog from the prod MCP
   # servers (CatalogAggregator), so point them at the prod host. Sourced from a
-  # secret so the host moves with the deployment without a code change; the
-  # fallback is burrow's current IP (mcp.access-ci.org -> 128.163.202.94 after
-  # the DNS cutover), NOT the retired droplet.
-  MCP_SERVER_HOST: ${{ secrets.PRODUCTION_MCP_HOST || '128.163.202.94' }}
+  # secret so the host moves with the deployment without a code change. No
+  # literal fallback: a hardcoded host is a stale-value hazard (it already went
+  # stale once, after the droplet-to-burrow move) and, in a public repo, it is
+  # infrastructure detail nobody needs. An unset secret now fails the preflight
+  # loudly instead of silently testing against whatever the literal points at.
+  MCP_SERVER_HOST: ${{ secrets.PRODUCTION_MCP_HOST }}
   DATABASE_URL: ""
 
 jobs:
@@ -38,6 +40,16 @@ jobs:
 
       - name: Set up Python
         run: uv python install 3.14
+
+      - name: Require the prod MCP host secret
+        run: |
+          if [ -z "${MCP_SERVER_HOST:-}" ]; then
+            echo "::error::PRODUCTION_MCP_HOST is not set. The e2e suite and the" \
+                 "red-team gate both aggregate the tool catalog from the prod MCP" \
+                 "servers, so an unset host would fail later with a connection" \
+                 "error that reads like an outage. Set the secret."
+            exit 1
+          fi
 
       - name: Install dependencies
         run: uv sync --extra dev --locked
@@ -188,18 +200,19 @@ jobs:
           REDTEAM_N: "5"
           # Persistent, host-local, per-run: $RUNNER_TEMP is wiped after the job,
           # so a flagged regression's transcripts must land somewhere durable to
-          # be investigable. Host-local + gofer-only keeps the harmful response
+          # be investigable. Host-local, owner-only perms keep the harmful response
           # text on-prem (never in the public issue). Pruned to the last 14 runs
           # below. (The issue-body/status stay in $RUNNER_TEMP — transient, used
           # only within the run.)
-          REDTEAM_ARTIFACT_DIR: /home/gofer/redteam-artifacts/${{ github.run_id }}
+          REDTEAM_ARTIFACT_BASE: ${{ secrets.REDTEAM_ARTIFACT_BASE || '/var/tmp/redteam-artifacts' }}
+          REDTEAM_ARTIFACT_DIR: ${{ secrets.REDTEAM_ARTIFACT_BASE || '/var/tmp/redteam-artifacts' }}/${{ github.run_id }}
           REDTEAM_ISSUE_BODY: ${{ runner.temp }}/redteam/body-${{ github.run_id }}.md
           REDTEAM_STATUS_PATH: ${{ runner.temp }}/redteam/status-${{ github.run_id }}.json
         run: |
           : > "$REDTEAM_ISSUE_BODY"; : > "$REDTEAM_STATUS_PATH"
-          # gofer-only perms on the persistent transcript dir (harmful response
+          # owner-only perms on the persistent transcript dir (harmful response
           # text stays host-local; not PII, but keep it off other users' eyes).
-          mkdir -p "$REDTEAM_ARTIFACT_DIR" && chmod 700 "$REDTEAM_ARTIFACT_DIR" /home/gofer/redteam-artifacts
+          mkdir -p "$REDTEAM_ARTIFACT_DIR" && chmod 700 "$REDTEAM_ARTIFACT_DIR" "$REDTEAM_ARTIFACT_BASE"
           set +e
           uv run python -m src.redteam --emit-issue-body
           rc=$?
@@ -244,7 +257,7 @@ jobs:
       - name: Prune old redteam artifacts (keep last 14 runs)
         if: always()
         run: |
-          cd /home/gofer/redteam-artifacts 2>/dev/null || exit 0
+          cd "${{ secrets.REDTEAM_ARTIFACT_BASE || '/var/tmp/redteam-artifacts' }}" 2>/dev/null || exit 0
           # newest-first; drop everything past the 14 most recent run dirs
           ls -1dt */ 2>/dev/null | tail -n +15 | xargs -r rm -rf
 
