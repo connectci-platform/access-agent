@@ -418,3 +418,73 @@ def test_fact_kind_absent_from_schema_is_not_referenced(tmp_path):
     facts = load_question_facts(db, "q1")
 
     assert facts == [{"fact_id": 1, "fact_text": "f"}]
+
+
+def test_fact_kind_present_without_retraction_columns(tmp_path):
+    """The two columns are probed independently, so either migration order works.
+
+    The dashboard added retracted_at and fact_kind in separate migrations. This
+    covers the ordering the other tests miss (kind present, retraction absent),
+    which the module docstring claims to support.
+    """
+    db = _seeded_db(
+        tmp_path,
+        [
+            {
+                "fact_id": 5,
+                "version": 1,
+                "question_id": "q1",
+                "display_order": 0,
+                "fact_text": "f",
+                "status": "draft",
+                "fact_kind": "world",
+            }
+        ],
+        retraction_columns=False,
+        kind_columns=True,
+    )
+
+    facts = load_question_facts(db, "q1")
+
+    assert facts == [{"fact_id": 5, "fact_text": "f", "fact_kind": "world"}]
+
+
+def test_column_probe_failure_is_not_cached(tmp_path, monkeypatch):
+    """A transient probe error must not disable the retraction filter for the run.
+
+    Caching an empty column set would drop the retraction filter on every
+    subsequent question, silently scoring retracted facts.
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from src.eval import question_facts as qf
+
+    db = _seeded_db(
+        tmp_path,
+        [
+            {
+                "fact_id": 6,
+                "version": 1,
+                "question_id": "q1",
+                "display_order": 0,
+                "fact_text": "f",
+                "status": "draft",
+            }
+        ],
+    )
+    qf._FACT_COLUMNS_CACHE.clear()
+
+    calls = {"n": 0}
+    real_inspect = qf.inspect
+
+    def flaky_inspect(engine):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise SQLAlchemyError("transient")
+        return real_inspect(engine)
+
+    monkeypatch.setattr(qf, "inspect", flaky_inspect)
+
+    assert qf._fact_columns(db) == set()  # first probe fails
+    assert "retracted_at" in qf._fact_columns(db)  # retried, not cached
+    assert calls["n"] == 2

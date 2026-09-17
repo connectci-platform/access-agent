@@ -75,6 +75,14 @@ _RETRACTION_COL = ", retracted_at"
 _KIND_COL = ", fact_kind"
 
 
+# Memoized per engine: load_question_facts runs once per battery question (~50 a
+# run), and the schema cannot change mid-run, so one inspect() round trip per
+# engine is enough. Keyed by id() rather than the engine itself because Engine is
+# not hashable in a way we want to rely on; entries are tiny and an eval process
+# builds one or two engines.
+_FACT_COLUMNS_CACHE: dict[int, set[str]] = {}
+
+
 def _fact_columns(db: EvalDB) -> set[str]:
     """Column names present on reporting.question_facts.
 
@@ -83,25 +91,37 @@ def _fact_columns(db: EvalDB) -> set[str]:
     Referencing either unconditionally would make an agent that is ahead of the
     dashboard raise, get swallowed by the caller's except, and silently fall back to
     stale YAML facts — scoring the wrong fact set rather than merely ignoring a
-    column.
+    column. The two columns are probed independently, so they may arrive in either
+    migration order.
+
+    A probe failure is NOT cached: it cannot be distinguished from a transient
+    connection error, and caching it would drop the retraction filter for the rest
+    of the run — silently scoring retracted facts. Retrying per question is the
+    cheaper mistake.
     """
+    engine = db._engine  # noqa: SLF001  # eval-internal DB access
+    cached = _FACT_COLUMNS_CACHE.get(id(engine))
+    if cached is not None:
+        return cached
     try:
-        return {
-            col["name"]
-            for col in inspect(db._engine).get_columns(  # noqa: SLF001  # eval-internal
-                "question_facts", schema="reporting"
-            )
+        cols = {
+            col["name"] for col in inspect(engine).get_columns("question_facts", schema="reporting")
         }
     except SQLAlchemyError:
-        # Table or schema absent entirely — the caller's query falls back anyway.
+        # Table/schema absent, or a transient failure — indistinguishable here. The
+        # caller's query falls back either way; do not cache, so a transient error
+        # does not disable the retraction filter for the whole run.
         return set()
+    _FACT_COLUMNS_CACHE[id(engine)] = cols
+    return cols
 
 
 def load_question_facts(db: EvalDB, question_id: str) -> list[dict[str, Any]] | None:
     """Load latest non-flagged, non-retracted facts from reporting.question_facts.
 
     Returns a list of ``{"fact_id": ..., "fact_text": ...}`` dicts ordered by
-    ``display_order``, or ``None`` when the reporting schema/table is absent or the
+    ``display_order``, each also carrying ``fact_kind`` when the column exists and
+    the fact is typed, or ``None`` when the reporting schema/table is absent or the
     question has no facts. Never raises on a missing schema — that is the local-dev
     signal to fall back to the YAML battery.
     """
