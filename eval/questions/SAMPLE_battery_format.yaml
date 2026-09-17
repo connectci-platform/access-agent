@@ -1,0 +1,175 @@
+# Question battery — format sample
+#
+# Five real questions with their required facts, sources, and authoring notes
+# intact — four from the 34-question battery reported in "From Answering to
+# Acting" (HUST 2026), one from a later student-authored battery. Nothing here
+# is invented.
+#
+# This is a FORMAT sample, not the battery: the full fact set is the
+# reviewer-maintained ground truth the paper's results are scored against, and
+# publishing all of it would let a system be tuned to pass rather than measured.
+#
+# What this is for: showing another center enough of the shape to write their
+# own. The interesting part of fact authoring is not the format — it is which
+# claims are worth grading, and the five below were chosen to show that rather
+# than to be representative.
+#
+# Notes on the fields
+#
+#   required_facts        The claims an answer must support. Graded fact by fact
+#                         by the judge, each verdict stored separately, so a
+#                         score change is attributable to a specific claim.
+#
+#   ground_truth_stability
+#                         Whether the fact can go stale. `stable` facts come
+#                         from durable documentation; `time_bound` facts depend
+#                         on live data and must be written relative to eval
+#                         time, not pinned to an observation date. Getting this
+#                         wrong is the most common authoring mistake — see
+#                         mcp-cov-003 below.
+#
+#   sources               Where the fact was verified, with a date. A `tool:`
+#                         source records the exact call; a `doc:` source the URL.
+#                         Facts without a source are not written.
+#
+#   authoring_notes       The record of how the fact was arrived at, including
+#                         what could not be verified. Kept because a fact whose
+#                         provenance is lost cannot be re-checked later.
+#                         `STUDENT-CHECK` marks what a reviewer should confirm.
+#
+# What a fact is NOT: a paraphrase of the answer the system already gives.
+# A rubric written from the system's own output measures nothing. Facts here
+# were drafted from documentation and tool output before the answer was read.
+
+# ---------------------------------------------------------------------------
+# 1. A negative guard. The non-obvious half of fact authoring.
+#
+# The tool returns loose matches and says so in its own response
+# (query_relevance='loose_match'). The failure mode is not a wrong fact — it is
+# an answer that presents approximate results as exact ones. No generic rubric
+# dimension catches that; a fact has to name it.
+# ---------------------------------------------------------------------------
+- id: tc-allocations-02
+  question: Search for ACCESS projects on Delta related to climate modeling.
+  capability_area: allocations
+  expected_tool: search_projects
+  ground_truth_stability: time_bound
+  required_facts:
+  - The tool returns LOOSE matches (query_relevance='loose_match'), not strict topic+resource
+    matches. A correct answer does NOT present the loose matches as actual climate-modeling
+    projects primarily on Delta GPU (verified 2026-07-06 — the returned items' primary
+    resources / topics do not align).
+  - Answer does not overstate loose-match results as real Delta climate-modeling projects.
+  sources:
+  - "tool: search_projects(query='climate modeling', resource_name='Delta') -> loose_match
+    (verified 2026-07-06)"
+  authoring_notes:
+  - "VERIFIED VALID 2026-07-06 (an initial \"inverted / 49 real projects\" reading was a
+    truncated-read error; the loose-match guard is correct and doing its job).
+    STUDENT-CHECK the loose-match behavior."
+
+# ---------------------------------------------------------------------------
+# 2. A fact that depends on reading the whole tool response.
+#
+# PyTorch appears under four different package names across resources. An answer
+# built from a truncated read of the tool output names two resources and misses
+# two. The authoring note records that the author made exactly that mistake
+# first — which is why the note is kept rather than cleaned up.
+# ---------------------------------------------------------------------------
+- id: tc-software-01
+  question: Which ACCESS resources have PyTorch available?
+  capability_area: software_discovery
+  expected_tool: search_software
+  ground_truth_stability: time_bound
+  required_facts:
+  - Per search_software(query='pytorch') READING FULL OUTPUT, PyTorch is available on Anvil,
+    Delta, DeltaAI (and Bridges-2) — under multiple package names ('pytorch' on
+    Bridges-2/Anvil, 'pytorch-conda' on Delta, 'miniforge3_pytorch' on DeltaAI). A shallow
+    reader seeing only 'pytorch' misses Delta/DeltaAI.
+  - Answer does not falsely claim PyTorch on resources the tool did not return; correct
+    qualifiers about conda/container installability are fine.
+  sources:
+  - "tool: search_software(query='pytorch') -> available_on_resources across 3 packages
+    (verified 2026-07-06)"
+  authoring_notes:
+  - "Verified 2026-07-06 (April fact confirmed correct; an initial truncated read was wrong).
+    STUDENT-CHECK the multi-package mapping stays complete."
+
+# ---------------------------------------------------------------------------
+# 3. A time_bound fact written correctly — relative to eval time.
+#
+# Contrast this with the wrong version in the note below. The fact constrains
+# what the answer must do with whatever the feed says, and does not assert what
+# the feed says.
+# ---------------------------------------------------------------------------
+- id: mcp-cov-003
+  question: What's the current status of Anvil?
+  capability_area: system_status
+  expected_tool: get_infrastructure_news
+  ground_truth_stability: time_bound
+  required_facts:
+  - Answer reports Anvil's current status from get_infrastructure_news, reflecting the live
+    feed at eval time (operational, or the actual status of any posted maintenance).
+  - Answer conveys the feed's actual state, not a flat "Anvil is down right now"; does not
+    invent a firm date.
+  sources:
+  - "tool: get_infrastructure_news(ids=['Anvil'])"
+  authoring_notes:
+  - "This fact was originally written as a snapshot — it asserted that a specific maintenance
+    outage was posted but postponed, as of a specific date. Ten weeks later the world had
+    moved and an answer correct about the present had to fail it, which read as a system
+    regression rather than expired ground truth. Rewritten to constrain how the answer
+    handles the feed rather than to assert the feed's contents. A time_bound fact that names
+    a date is usually a snapshot in disguise."
+
+# ---------------------------------------------------------------------------
+# 4. A stable control.
+#
+# Durable documentation, no live data. A battery needs these: if the stable
+# facts move, the cause is the system, not the world.
+# ---------------------------------------------------------------------------
+- id: tc-rag-02
+  question: What's the difference between an Explore allocation and an Accelerate allocation?
+  capability_area: documentation
+  expected_tool: none
+  ground_truth_stability: stable
+  required_facts:
+  - Explore provides up to 400,000 ACCESS Credits; intended for entry-level/small-scale use;
+    lightweight review.
+  - Accelerate provides up to 3,000,000 ACCESS Credits; for mid-scale needs; panel merit
+    review (longer proposal).
+  - Both accept requests anytime.
+  sources:
+  - "doc: https://allocations.access-ci.org/project-types"
+  - "doc: https://allocations.access-ci.org/allocations-policy"
+  authoring_notes:
+  - "Durable docs question (control). STUDENT-CHECK credit figures against current policy."
+
+# ---------------------------------------------------------------------------
+# 5. A fact whose own premise could not be sourced — and the note that says so.
+#
+# From the student-authored battery rather than the paper's, because this is
+# where the pattern shows up. The fact asserts ACCESS allocations are free to
+# the researcher, which is true and universally believed, and the author could
+# not find an authoritative page stating it. Rather than quietly keep a fact
+# with no source, or drop the claim, the gap is recorded for a reviewer.
+#
+# This is the discipline that keeps a battery honest. The alternative — writing
+# facts from the system's own answer — produces a rubric it passes by
+# construction. In the student battery, 43 claims across 47 questions were left
+# ungraded this way rather than promoted to facts on the system's authority.
+# ---------------------------------------------------------------------------
+- id: sa-alloc-06
+  question: How much does it cost to use ACCESS?
+  capability_area: allocations
+  expected_tool: search_docs
+  ground_truth_stability: stable
+  required_facts:
+  - Answer states there is no cost to the researcher for ACCESS allocations, which are
+    NSF-funded.
+  - Answer does not quote a price, rate, or fee schedule for ACCESS resources.
+  sources:
+  - "doc: https://allocations.access-ci.org/project-types (verified 2026-09-13, tiers only)"
+  authoring_notes:
+  - "AUTHOR: the no-cost claim is NOT stated on allocations-policy or project-types. Find the
+    authoritative page that says so, or reword."
