@@ -488,3 +488,43 @@ def test_column_probe_failure_is_not_cached(tmp_path, monkeypatch):
     assert qf._fact_columns(db) == set()  # first probe fails
     assert "retracted_at" in qf._fact_columns(db)  # retried, not cached
     assert calls["n"] == 2
+
+
+def test_column_probe_is_cached_per_engine(tmp_path, monkeypatch):
+    """The probe runs once per engine, not once per question.
+
+    load_question_facts is called for every battery question (~50 a run) and the
+    schema cannot change mid-run, so a second call must not re-inspect.
+    """
+    from src.eval import question_facts as qf
+
+    db = _seeded_db(
+        tmp_path,
+        [
+            {
+                "fact_id": 7,
+                "version": 1,
+                "question_id": "q1",
+                "display_order": 0,
+                "fact_text": "f",
+                "status": "draft",
+            }
+        ],
+    )
+    qf._FACT_COLUMNS_CACHE.clear()
+
+    calls = {"n": 0}
+    real_inspect = qf.inspect
+
+    def counting_inspect(engine):
+        calls["n"] += 1
+        return real_inspect(engine)
+
+    monkeypatch.setattr(qf, "inspect", counting_inspect)
+
+    first = qf._fact_columns(db)
+    second = qf._fact_columns(db)
+
+    assert "retracted_at" in first
+    assert second is first  # same cached object, not a fresh probe
+    assert calls["n"] == 1
