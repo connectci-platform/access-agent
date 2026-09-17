@@ -23,7 +23,50 @@ env:
   DATABASE_URL: ""
 
 jobs:
+  # Both jobs below aggregate the tool catalog from the prod MCP servers, and
+  # both read MCP_SERVER_HOST from the workflow env, which no longer carries a
+  # literal fallback. They run in parallel with no dependency on each other, so
+  # the check has to be its own job that both require — a step inside e2e would
+  # leave redteam-gate running unguarded against an empty host, where the
+  # resulting connection error is reported as a surface outage and points
+  # triage at the wrong cause.
+  preflight:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Require the prod MCP host secret
+        id: host
+        run: |
+          if [ -z "${MCP_SERVER_HOST:-}" ]; then
+            echo "::error title=PRODUCTION_MCP_HOST is not set::The e2e suite and" \
+                 "the red-team gate both aggregate the tool catalog from the prod" \
+                 "MCP servers. Without this secret they would fail with a" \
+                 "connection error that reads like an outage. Set the repo secret" \
+                 "PRODUCTION_MCP_HOST."
+            exit 1
+          fi
+
+      # Every other failure path in this workflow files an issue, because nobody
+      # watches a 09:00 UTC schedule live. A config failure that only reddens the
+      # Actions tab would be the weakest signal here, so it files one too.
+      - name: Open issue on missing configuration
+        if: always() && steps.host.outcome == 'failure'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const date = new Date().toISOString().split('T')[0];
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Nightly blocked: PRODUCTION_MCP_HOST not set — ${date}`,
+              body: `The nightly preflight failed: the \`PRODUCTION_MCP_HOST\` secret is unset, so the e2e suite and the red-team gate were both skipped rather than run against an unknown host. Set the secret to restore the nightly. Workflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              labels: ['nightly-failure', 'bug']
+            });
+
   e2e:
+    needs: preflight
     # Self-hosted runner on burrow (UKy's perimeter blocks external access to the
     # MCP ports, so a GitHub-hosted runner can't reach them). The runner was
     # migrated from the retired Linode droplet to burrow on 2026-08-14; the
@@ -40,16 +83,6 @@ jobs:
 
       - name: Set up Python
         run: uv python install 3.14
-
-      - name: Require the prod MCP host secret
-        run: |
-          if [ -z "${MCP_SERVER_HOST:-}" ]; then
-            echo "::error::PRODUCTION_MCP_HOST is not set. The e2e suite and the" \
-                 "red-team gate both aggregate the tool catalog from the prod MCP" \
-                 "servers, so an unset host would fail later with a connection" \
-                 "error that reads like an outage. Set the secret."
-            exit 1
-          fi
 
       - name: Install dependencies
         run: uv sync --extra dev --locked
@@ -137,6 +170,7 @@ jobs:
             });
 
   redteam-gate:
+    needs: preflight
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, nightly-e2e]
     permissions:
