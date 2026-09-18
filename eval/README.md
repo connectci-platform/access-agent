@@ -74,7 +74,7 @@ The IDs are lex-sortable by timestamp, fit in the existing `String(36)` column (
 ## Running Against Production
 
 For the two-way baseline comparison described in
-[Decision 007](https://github.com/necyberteam/access-qa-planning/blob/main/decisions/007-production-baseline-comparison.md),
+[Decision 007](https://github.com/connectci-platform/access-qa-planning/blob/main/decisions/007-production-baseline-comparison.md),
 the eval runs against **production infrastructure** (prod Postgres, prod MCP
 servers, prod Argilla) from a workstation. The setup is deliberately separated
 from `.env` so prod eval runs cannot accidentally use local values.
