@@ -10,6 +10,13 @@ jobs:
   lint-and-test:
     runs-on: ubuntu-latest
 
+    # The coverage-comment step posts to the PR. Declared explicitly because
+    # this org's default workflow token is read-only; deploy-production.yml and
+    # nightly.yml already declare their own for the same reason.
+    permissions:
+      contents: read
+      pull-requests: write
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
