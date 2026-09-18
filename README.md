@@ -182,5 +182,5 @@ src/
 
 ## Related Repos
 
-- [access-qa-service](https://github.com/necyberteam/access-qa-service) - RAG retrieval service
-- [access_mcp](https://github.com/necyberteam/access_mcp) - MCP servers for ACCESS data
+- [access-qa-service](https://github.com/connectci-platform/access-qa-service) - RAG retrieval service
+- [access_mcp](https://github.com/connectci-platform/access-mcp) - MCP servers for ACCESS data

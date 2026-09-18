@@ -22,7 +22,7 @@ services:
           memory: 128M
 
   access-agent:
-    image: ghcr.io/${GITHUB_REPOSITORY:-necyberteam/access-agent}/access-agent:latest
+    image: ghcr.io/${GITHUB_REPOSITORY:-connectci-platform/access-agent}/access-agent:latest
     # Internal only - Caddy handles external traffic
     expose:
       - "8000"

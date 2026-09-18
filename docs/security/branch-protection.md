@@ -4,7 +4,7 @@
 
 Enforcement activates automatically — without reconfiguration — if any of the following happens:
 
-- `necyberteam` upgrades from GitHub Free to GitHub Team (~$4/user/month).
+- `connectci-platform` upgrades from GitHub Free to GitHub Team (~$4/user/month).
 - This repository is made public.
 - The repository moves to an org on a paid plan.
 
@@ -40,7 +40,7 @@ A weekly GitHub Action (`.github/workflows/branch-protection-drift-check.yml`) f
 The snapshot cannot be captured until the ruleset becomes enforced (`gh api ... /branches/main/protection` returns 403 on unenforced configurations). Once the enforcement blocker above is resolved:
 
 ```bash
-gh api repos/necyberteam/access-agent/branches/main/protection > docs/security/branch-protection-snapshot.json
+gh api repos/connectci-platform/access-agent/branches/main/protection > docs/security/branch-protection-snapshot.json
 ```
 
 Commit the snapshot as a reviewable change. The drift check will accept the new baseline and start diffing against it weekly.

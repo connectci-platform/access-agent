@@ -197,7 +197,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/redteam"
           gh release download "suite-${{ steps.pin.outputs.suite_version }}" \
-            --repo necyberteam/access-redteam \
+            --repo connectci-platform/access-redteam \
             --pattern prompts.json \
             --dir "$RUNNER_TEMP/redteam"
 
@@ -302,7 +302,7 @@ jobs:
           github-token: ${{ secrets.REDTEAM_FINDINGS_TOKEN }}
           script: |
             const fs = require('fs');
-            const owner = 'necyberteam', repo = 'access-redteam';
+            const owner = 'connectci-platform', repo = 'access-redteam';
             const lines = fs.readFileSync(process.env.BODY, 'utf8').split('\n').filter(Boolean);
             // known-jailbreak always `continue`s above before reaching the LABEL
             // lookup below (candidate-fix never files an issue); the entry here is
@@ -346,7 +346,7 @@ jobs:
           github-token: ${{ secrets.REDTEAM_FINDINGS_TOKEN }}
           script: |
             const fs = require('fs');
-            const owner = 'necyberteam', repo = 'access-redteam';
+            const owner = 'connectci-platform', repo = 'access-redteam';
             const date = new Date().toISOString().split('T')[0];
             const reason = process.env.REASON || '';
             const map = { judge:['Red-team judge outage','redteam-judge-outage'],
