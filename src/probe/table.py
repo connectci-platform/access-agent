@@ -1,8 +1,9 @@
 """The synthetic per-tool health probe's declarative tool -> server -> args table.
 
-Args are grounded in the eval batteries' real provenance (tool_coverage_battery.yaml,
-capability_review_battery.yaml, gapfill_battery.yaml, multiturn_support_battery.yaml),
-not invented.
+Args are grounded in the eval batteries' real provenance (capability_review_battery.yaml,
+gapfill_battery.yaml, multiturn_support_battery.yaml), not invented. Some originally came
+from tool_coverage_battery.yaml, retired 2026-09-18 — capability_review carries its kept
+questions.
 """
 
 from __future__ import annotations

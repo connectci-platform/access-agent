@@ -1,8 +1,10 @@
 # Capability review battery — the FINALIZED student-review set (2026-07-06).
-# Non-destructive: assembled from kept questions in tool_coverage_battery.yaml + mcp_coverage_battery.json
+# Assembled from kept questions in tool_coverage_battery.yaml + mcp_coverage_battery.json
 # + gapfill_battery.yaml, with facts corrected per the triage doc
-# (docs/collaboration/2026-07-06-tc-facts-refresh-triage.md). Source batteries left INTACT (grand_prix
-# and reports depend on them).
+# (docs/collaboration/2026-07-06-tc-facts-refresh-triage.md). mcp_coverage_battery.json is kept —
+# grand_prix reads it. tool_coverage_battery.yaml and its subsets were retired (2026-09-18): they
+# carried the pre-triage facts under these same question ids, so running them scored against ground
+# truth this file supersedes.
 #
 # DROPPED for tool/data reasons (all "for now"): affinity questions (thin description content),
 # NSF questions (NSF API/MCP query issue — future todo), xdmod-data personal-usage (needs Metrics JWT).
