@@ -1,3 +1,9 @@
+# WHERE FACTS LIVE: once a question's facts are loaded into
+# reporting.question_facts, the DB copy is what scoring uses and the
+# required_facts below are inert. Editing them here does NOT change any score.
+# Correct facts in the reporting dashboard, where they are versioned and
+# attributed. This file's job is to say which questions make up the battery.
+#
 # Capability review battery — the FINALIZED student-review set (2026-07-06).
 # Assembled from kept questions in tool_coverage_battery.yaml + mcp_coverage_battery.json
 # + gapfill_battery.yaml, with facts corrected per the triage doc

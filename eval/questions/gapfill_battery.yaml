@@ -1,3 +1,9 @@
+# WHERE FACTS LIVE: once a question's facts are loaded into
+# reporting.question_facts, the DB copy is what scoring uses and the
+# required_facts below are inert. Editing them here does NOT change any score.
+# Correct facts in the reporting dashboard, where they are versioned and
+# attributed. This file's job is to say which questions make up the battery.
+#
 # Gap-fill capability battery — brings the capability set into the 30-40 range.
 # First-pass required_facts authored from VERIFIED current hosted-tool output (2026-07-06), tc-* template.
 # Every fact is a STUDENT-CHECK first pass, NOT final ground truth. Some facts need exact values filled

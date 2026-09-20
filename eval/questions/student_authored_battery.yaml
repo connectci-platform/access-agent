@@ -1,3 +1,9 @@
+# WHERE FACTS LIVE: once a question's facts are loaded into
+# reporting.question_facts, the DB copy is what scoring uses and the
+# required_facts below are inert. Editing them here does NOT change any score.
+# Correct facts in the reporting dashboard, where they are versioned and
+# attributed. This file's job is to say which questions make up the battery.
+#
 # Student-authored question battery — 47 questions submitted by the student
 # reviewers, in submission order. Two of the original 49 were dropped as
 # duplicates: sa-alloc-10 (same answer as sa-alloc-03) and sa-onboard-06 (same
