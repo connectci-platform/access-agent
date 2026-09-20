@@ -19,6 +19,44 @@ from .scoring import persist_skipped_turn, score_and_persist_turn
 logger = logging.getLogger(__name__)
 
 
+def preflight_fact_coverage(
+    db: EvalDB,
+    questions: list[Any],
+    allow_factless: bool,
+) -> None:
+    """Refuse to score questions that resolve to no facts, before the first call.
+
+    A fact-less question does not score zero — ``rubric.py`` renders no Required
+    Facts block while still instructing the judge to grade correctness from
+    per-fact verdicts, so the judge falls back to surface plausibility and the
+    question scores *higher* than a graded one. Silent, and in the wrong
+    direction.
+
+    Batteries where NO question has facts are smoke and coverage sets that do not
+    do fact scoring (friendly, real_user, mcp_coverage, ...); those run
+    untouched. The refusal is for a battery that grades some questions and
+    silently skips others.
+    """
+    resolved = {
+        q.id: resolve_required_facts(db, q.id, q.metadata.get("required_facts")) for q in questions
+    }
+    if not any(resolved.values()):
+        return
+
+    factless = sorted(qid for qid, facts in resolved.items() if not facts)
+    if not factless:
+        return
+    if not allow_factless:
+        raise ValueError(
+            f"{len(factless)} question(s) in a fact-scored battery resolve to no "
+            f"required facts: {', '.join(factless)} — add facts, or pass "
+            f"--allow-factless to score them ungrounded"
+        )
+    logger.warning(
+        f"scoring {len(factless)} question(s) with no required facts: {', '.join(factless)}"
+    )
+
+
 async def run_eval(
     question_set_path: str,
     system: SystemMode = "agent_full",
@@ -26,6 +64,7 @@ async def run_eval(
     judge_base_url: str | None = None,
     judge_api_key: str | None = None,
     judge_model: str | None = None,
+    allow_factless: bool = False,
 ) -> dict[str, Any]:
     db_url = database_url or settings.DATABASE_URL
     j_base = judge_base_url or settings.EVAL_JUDGE_BASE_URL or None
@@ -52,6 +91,10 @@ async def run_eval(
     }
 
     db = EvalDB(db_url)
+    # Before the first agent call, so a coverage gap is a refusal rather than a
+    # run's worth of quietly ungrounded scores.
+    preflight_fact_coverage(db, questions, allow_factless)
+
     judge = Judge(
         base_url=j_base, api_key=j_key, model=j_model, thinking=settings.EVAL_JUDGE_THINKING
     )

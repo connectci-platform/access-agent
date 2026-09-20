@@ -28,6 +28,7 @@ def _handle_run(args: argparse.Namespace) -> None:
             question_set_path=args.questions,
             system=args.system,
             judge_model=args.judge_model,
+            allow_factless=args.allow_factless,
         )
     )
     print_run_summary(summary)
@@ -431,6 +432,16 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915  # all subcomman
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     run_parser = subparsers.add_parser("run", help="Run pre-production eval")
+    run_parser.add_argument(
+        "--allow-factless",
+        action="store_true",
+        dest="allow_factless",
+        help=(
+            "Score questions that resolve to no required facts. Without facts the "
+            "judge grades on plausibility alone and scores HIGHER than a graded "
+            "question, so this is for smoke runs only."
+        ),
+    )
     run_parser.add_argument(
         "--system",
         choices=["agent_full", "raw_rag"],
