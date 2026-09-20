@@ -32,10 +32,13 @@ def preflight_fact_coverage(
     question scores *higher* than a graded one. Silent, and in the wrong
     direction.
 
-    Batteries where NO question has facts are smoke and coverage sets that do not
-    do fact scoring (friendly, real_user, mcp_coverage, ...); those run
-    untouched. The refusal is for a battery that grades some questions and
-    silently skips others.
+    Two kinds of factless question are expected, and neither is a gap. A battery
+    where NO question has facts is a smoke or coverage set that does not do fact
+    scoring (friendly, real_user, mcp_coverage, ...). And a battery assembled
+    from several sources — loop_smoke draws from tool_coverage, combined,
+    friendly and real_user — carries questions from both kinds; those tag
+    themselves with ``source_battery``, so a factless question is only a gap when
+    some OTHER question from the same source has facts.
     """
     resolved = {
         q.id: resolve_required_facts(db, q.id, q.metadata.get("required_facts")) for q in questions
@@ -43,7 +46,14 @@ def preflight_fact_coverage(
     if not any(resolved.values()):
         return
 
-    factless = sorted(qid for qid, facts in resolved.items() if not facts)
+    # Sources that grade at least one question; a factless question from any
+    # other source came from a battery that does no fact scoring.
+    scored_sources = {q.metadata.get("source_battery") for q in questions if resolved.get(q.id)}
+    factless = sorted(
+        q.id
+        for q in questions
+        if not resolved.get(q.id) and q.metadata.get("source_battery") in scored_sources
+    )
     if not factless:
         return
     if not allow_factless:

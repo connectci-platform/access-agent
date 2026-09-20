@@ -19,12 +19,13 @@ def _db(tmp_path) -> EvalDB:
     return EvalDB(f"sqlite:///{tmp_path}/preflight.db")
 
 
-def _q(qid: str, facts: list[str] | None) -> EvalQuestion:
-    return EvalQuestion(
-        id=qid,
-        question=f"question {qid}?",
-        metadata={"required_facts": facts} if facts is not None else {},
-    )
+def _q(qid: str, facts: list[str] | None, source: str | None = None) -> EvalQuestion:
+    metadata: dict = {}
+    if facts is not None:
+        metadata["required_facts"] = facts
+    if source is not None:
+        metadata["source_battery"] = source
+    return EvalQuestion(id=qid, question=f"question {qid}?", metadata=metadata)
 
 
 def test_unscored_battery_runs_untouched(tmp_path):
@@ -68,3 +69,33 @@ def test_refusal_names_every_gap_not_just_the_first(tmp_path):
         preflight_fact_coverage(_db(tmp_path), questions, allow_factless=False)
     for n in range(2, 6):
         assert f"sa-{n:02d}" in str(exc.value)
+
+
+def test_mixed_source_battery_only_flags_its_scored_sources(tmp_path):
+    """loop_smoke draws from four batteries — two grade, two do not.
+
+    Its tc-* questions come from tool_coverage and carry facts; the comb-*,
+    friendly-* and real-* ones come from batteries that never author facts. A
+    factless question is a gap only when a sibling from the SAME source is
+    graded.
+    """
+    questions = [
+        _q("tc-01", ["fact a"], source="tool_coverage"),
+        _q("tc-02", ["fact b"], source="tool_coverage"),
+        _q("comb-011", None, source="combined"),
+        _q("friendly-001", None, source="friendly"),
+        _q("real-022", None, source="real_user"),
+    ]
+    preflight_fact_coverage(_db(tmp_path), questions, allow_factless=False)
+
+
+def test_a_gap_within_a_scored_source_still_refuses(tmp_path):
+    questions = [
+        _q("tc-01", ["fact a"], source="tool_coverage"),
+        _q("tc-02", None, source="tool_coverage"),
+        _q("friendly-001", None, source="friendly"),
+    ]
+    with pytest.raises(ValueError) as exc:
+        preflight_fact_coverage(_db(tmp_path), questions, allow_factless=False)
+    assert "tc-02" in str(exc.value)
+    assert "friendly-001" not in str(exc.value)
