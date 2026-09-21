@@ -40,6 +40,7 @@ from ...llm import get_llm, is_empty_answer
 from ...telemetry import get_tracer
 from ..domains.capabilities import WRITE_MCP_TOOL_NAMES
 from ..domains.tools import create_mcp_tools_from_catalog
+from ..profile import UserProfile
 from ..prompts.system_prompt import build_system_prompt
 from ..state import ToolResult
 from ..tools import search_access_documents
@@ -53,17 +54,24 @@ def _build_prompt_and_tools(
     tool_catalog: dict[str, Any],
     acting_user: str | None,
     resource_context: str | None,
+    profile: dict[str, Any] | None,
 ) -> tuple[str, list[BaseTool]]:
     """Assemble the loop's system prompt and tool list.
 
     Tool list = MCP catalog (read-only-filtered) + ``search_access_documents``.
     Prompt is the loop's system prompt (docs-as-tool framing, announcements +
     JSM choreography appended).
+
+    ``profile`` arrives as a plain dict (state.py stores ``UserProfile.model_dump()``
+    so the channel stays JSON-plain) and is revalidated here, at the read site,
+    rather than carrying a pydantic object through state.
     """
     mcp_tools = _apply_read_only_filter(create_mcp_tools_from_catalog(tool_catalog, acting_user))
+    profile_model = UserProfile.model_validate(profile) if profile is not None else None
     prompt = build_system_prompt(
         acting_user=acting_user,
         resource_context=resource_context,
+        profile=profile_model,
     )
     return prompt, [*mcp_tools, search_access_documents]
 
@@ -478,7 +486,7 @@ def _replace_sentinel_message(messages: list[Any], replacement: str) -> None:
             return
 
 
-async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
+async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:  # noqa: PLR0915
     """Run the tool-calling loop.
 
     Consumes:
@@ -487,6 +495,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
         state.tool_catalog: dict describing MCP tools available to this request
         state.acting_user: optional ACCESS ID for personalized tool calls
         state.resource_context: optional RP slug for resource-scoped queries
+        state.profile: optional UserProfile.model_dump() (allocated resources)
 
     Produces:
         final_answer: LLM's final text response
@@ -510,10 +519,12 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:
             tool_catalog=state.get("tool_catalog") or {},
             acting_user=acting_user,
             resource_context=state.get("resource_context"),
+            profile=state.get("profile"),
         )
 
         span.set_attribute("agent.tool_count", len(tools))
         span.set_attribute("agent.authenticated", bool(acting_user))
+        span.set_attribute("agent.profile_present", state.get("profile") is not None)
 
         llm = get_llm(max_tokens=settings.MAX_TOKENS_LOOP)
         agent = create_agent(

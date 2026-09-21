@@ -11,6 +11,8 @@ from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
+from .profile import UserProfile
+
 # Type aliases for dynamic MCP data structures
 # These are JSON-like structures that vary by tool/server
 ToolArguments = dict[str, str | int | float | bool | list[str] | dict[str, str | list[str]] | None]
@@ -167,6 +169,12 @@ class AgentState(TypedDict):
         str | None, "ACCESS ID of user performing action (e.g., jsmith@access-ci.org)"
     ]
     resource_context: Annotated[str | None, "RP slug for resource-scoped queries (e.g. 'delta')"]
+    profile: Annotated[
+        dict[str, Any] | None,
+        "UserProfile.model_dump(); revalidated at read. Plain dict, not the pydantic "
+        "model, so the channel stays JSON-plain like the other input fields — the "
+        "profile never crosses a checkpoint boundary, each request re-supplies it.",
+    ]
 
     # Read by api/routes.py for response metadata; not written on the current path.
     query_classification: Annotated[QueryClassification | None, "Query type classification"]
@@ -225,6 +233,7 @@ def create_initial_state(
     tool_catalog: ToolCatalog,
     acting_user: str | None = None,
     resource_context: str | None = None,
+    profile: UserProfile | None = None,
 ) -> AgentState:
     """Create the initial state for a new query.
 
@@ -235,6 +244,8 @@ def create_initial_state(
         tool_catalog: The MCP tool catalog.
         acting_user: ACCESS ID of user performing action (e.g., jsmith@access-ci.org).
         resource_context: RP slug for resource-scoped queries (e.g. 'delta').
+        profile: Optional per-request user profile hint (allocated resources).
+            Stored as a plain dict (model_dump()) — see AgentState.profile.
 
     Returns:
         An initialized AgentState ready for the graph.
@@ -250,6 +261,7 @@ def create_initial_state(
         tool_catalog=tool_catalog,
         acting_user=acting_user,
         resource_context=resource_context,
+        profile=profile.model_dump() if profile else None,
         # Read by consumers but not written on the current path — initialize empty/None.
         query_classification=None,
         rag_matches=[],

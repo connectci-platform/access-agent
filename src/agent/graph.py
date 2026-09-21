@@ -20,6 +20,7 @@ from langgraph.graph import END, START, StateGraph
 
 from ..telemetry import get_tracer
 from .nodes.tool_calling_loop import tool_calling_loop_node
+from .profile import UserProfile
 from .state import AgentState
 from .turn_capture import record_trace_id
 
@@ -86,6 +87,7 @@ async def run_agent(
     tool_catalog: "ToolCatalog",
     acting_user: str | None = None,
     resource_context: str | None = None,
+    profile: UserProfile | None = None,
     use_checkpointing: bool = False,
     db_uri: str | None = None,
 ) -> AgentState:
@@ -111,6 +113,7 @@ async def run_agent(
             tool_catalog=tool_catalog,
             acting_user=acting_user,
             resource_context=resource_context,
+            profile=profile,
         )
 
         logger.info(f"Running agent for query: {query[:50]}...")
@@ -156,6 +159,7 @@ async def stream_agent(
     tool_catalog: "ToolCatalog",
     acting_user: str | None = None,
     resource_context: str | None = None,
+    profile: UserProfile | None = None,
     use_checkpointing: bool = False,
     db_uri: str | None = None,
 ) -> AsyncGenerator[tuple[str, Any], None]:
@@ -187,6 +191,7 @@ async def stream_agent(
             tool_catalog=tool_catalog,
             acting_user=acting_user,
             resource_context=resource_context,
+            profile=profile,
         )
 
         stream_mode = ["custom", "messages", "updates"]

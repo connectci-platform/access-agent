@@ -10,9 +10,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.agent.profile import AllocatedResource, UserProfile
 from src.eval.db import EvalDB
 from src.eval.judge import parse_judge_response
 from src.eval.report_data import _per_dimension_means, build_report_data
+from src.eval.runner import run_question
 from src.eval.scorer import run_eval
 
 
@@ -296,3 +298,119 @@ async def test_v2_round_trip(mock_db):
     }
     assert means["correctness"] == 2.0
     assert means["specificity"] == 0.0  # only row is N/A -> no values -> 0.0 fallback
+
+
+@pytest.mark.asyncio
+async def test_run_eval_records_profile_in_run_metadata(mock_db, tiny_question_set):
+    """eval_runs.metadata carries the resolved profile verbatim (or None)."""
+    mock_state = {
+        "final_answer": "ACCESS is a program for HPC resources.",
+        "rag_matches": [],
+        "tool_results": [],
+        "node_trace": [{"node": "classify", "query_type": "static"}],
+        "tools_used": [],
+    }
+    completions = [_completion(MOCK_JUDGE_BEST) for _ in range(3)]
+    profile = UserProfile(
+        allocated_resources=[AllocatedResource(name="Delta GPU", rp_slug="delta")]
+    )
+
+    with (
+        patch("src.eval.runner.run_agent", new_callable=AsyncMock, return_value=mock_state),
+        patch("src.eval.scorer.ToolRegistry") as mock_registry_cls,
+        patch("src.eval.judge.AsyncOpenAI") as mock_openai_cls,
+    ):
+        mock_registry = AsyncMock()
+        mock_registry.tool_count = 10
+        mock_registry.catalog = {"tools": [{"name": "test_tool"}]}
+        mock_registry.tools = {"test_tool": object()}
+        mock_registry_cls.return_value = mock_registry
+
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create.side_effect = completions
+        mock_openai_cls.return_value = mock_client
+
+        summary = await run_eval(
+            question_set_path=tiny_question_set,
+            database_url=mock_db,
+            profile=profile,
+        )
+
+    db = EvalDB(mock_db)
+    run = db.get_run(summary["run_id"])
+    assert run.metadata_["profile"] == profile.model_dump()
+
+    completions_none = [_completion(MOCK_JUDGE_BEST) for _ in range(3)]
+    with (
+        patch("src.eval.runner.run_agent", new_callable=AsyncMock, return_value=mock_state),
+        patch("src.eval.scorer.ToolRegistry") as mock_registry_cls,
+        patch("src.eval.judge.AsyncOpenAI") as mock_openai_cls,
+    ):
+        mock_registry = AsyncMock()
+        mock_registry.tool_count = 10
+        mock_registry.catalog = {"tools": [{"name": "test_tool"}]}
+        mock_registry.tools = {"test_tool": object()}
+        mock_registry_cls.return_value = mock_registry
+
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create.side_effect = completions_none
+        mock_openai_cls.return_value = mock_client
+
+        summary_no_profile = await run_eval(
+            question_set_path=tiny_question_set,
+            database_url=mock_db,
+        )
+
+    run_no_profile = db.get_run(summary_no_profile["run_id"])
+    assert run_no_profile.metadata_["profile"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_question_passes_profile_to_run_agent(mock_db):
+    """run_question forwards profile= to run_agent on the agent_full path."""
+    mock_state = {
+        "final_answer": "ACCESS is a program for HPC resources.",
+        "tools_used": [],
+    }
+    profile = UserProfile(
+        allocated_resources=[AllocatedResource(name="Delta GPU", rp_slug="delta")]
+    )
+
+    with patch(
+        "src.eval.runner.run_agent", new_callable=AsyncMock, return_value=mock_state
+    ) as mock_run_agent:
+        await run_question(
+            "q1",
+            "What is ACCESS?",
+            tool_catalog={"tools": []},
+            profile=profile,
+        )
+
+    assert mock_run_agent.call_args.kwargs["profile"] == profile
+
+
+@pytest.mark.asyncio
+async def test_raw_rag_with_profile_does_not_raise():
+    """run_question with system='raw_rag' + profile succeeds; dispatch omits
+    the argument (current prod does no profile-scoped RAG for the baseline)."""
+    mock_response = MagicMock()
+    mock_response.response = "ACCESS is a program for HPC resources."
+
+    mock_client = AsyncMock()
+    mock_client.ask = AsyncMock(return_value=mock_response)
+
+    profile = UserProfile(
+        allocated_resources=[AllocatedResource(name="Delta GPU", rp_slug="delta")]
+    )
+
+    with patch("src.eval.runner.get_uky_client", return_value=mock_client):
+        result = await run_question(
+            "q1",
+            "What is ACCESS?",
+            tool_catalog={"tools": []},
+            system="raw_rag",
+            profile=profile,
+        )
+
+    assert result.success is True
+    mock_client.ask.assert_called_once()

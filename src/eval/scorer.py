@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from src.agent.profile import UserProfile
 from src.config import settings
 from src.llm.providers import active_model_name
 from src.tools import ToolRegistry, get_catalog_aggregator
@@ -75,6 +76,7 @@ async def run_eval(
     judge_api_key: str | None = None,
     judge_model: str | None = None,
     allow_factless: bool = False,
+    profile: UserProfile | None = None,
 ) -> dict[str, Any]:
     db_url = database_url or settings.DATABASE_URL
     j_base = judge_base_url or settings.EVAL_JUDGE_BASE_URL or None
@@ -122,7 +124,7 @@ async def run_eval(
         judge_model=j_model,
         question_set=question_set_path,
         question_count=len(questions),
-        metadata_={"system": system},
+        metadata_={"system": system, "profile": profile.model_dump() if profile else None},
     )
     logger.info(f"Eval run {run.id} started ({len(questions)} questions, system={system})")
 
@@ -138,6 +140,7 @@ async def run_eval(
             resource_context=q.metadata.get("resource"),
             battery_id=Path(question_set_path).stem,
             battery_run_id=str(run.id),
+            profile=profile,
         )
 
         # Prefer stable-id required facts from reporting.question_facts; fall back to

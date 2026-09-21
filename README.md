@@ -80,6 +80,13 @@ curl -X POST http://localhost:8000/api/v1/query \
   -H "Content-Type: application/json" \
   -d '{"query": "What GPU resources are available on Delta?"}'
 
+# Query with an optional user profile hint (allocated resources; steers
+# retrieval, authorizes nothing)
+curl -X POST http://localhost:8000/api/v1/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "How do I add my SSH key to this cluster?",
+       "profile": {"allocated_resources": [{"name": "Delta GPU", "rp_slug": "delta"}]}}'
+
 # Health check
 curl http://localhost:8000/api/v1/health
 

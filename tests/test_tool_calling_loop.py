@@ -947,3 +947,86 @@ async def test_ordinary_answer_is_not_flagged_unavailable(base_state):
 
     assert result["final_answer"] == "Delta has A100 GPUs."
     assert result["answer_unavailable"] is False
+
+
+@pytest.mark.asyncio
+async def test_prompt_includes_user_profile_from_state_dict(base_state):
+    """state['profile'] is a dict (as checkpointing stores it); the loop
+    revalidates it into UserProfile before building the prompt."""
+    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
+    from src.agent.profile import AllocatedResource, UserProfile
+
+    profile = UserProfile(
+        allocated_resources=[AllocatedResource(name="Delta GPU", rp_slug="delta")]
+    )
+    state = {**base_state, "profile": profile.model_dump()}
+    answer = AIMessage(content="ok")
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke.return_value = {"messages": [*state["messages"], answer]}
+
+    captured = {}
+
+    def capture(**kwargs):  # type: ignore[no-untyped-def]
+        captured["prompt"] = kwargs.get("system_prompt", "")
+        return mock_graph
+
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture):
+        await tool_calling_loop_node(state)
+
+    assert "delta" in captured["prompt"]
+    assert "## User profile" in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_profile_present_span_attribute_set(base_state):
+    """agent.profile_present is set unconditionally (not a branch): True case."""
+    from unittest.mock import MagicMock
+
+    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
+    from src.agent.profile import AllocatedResource, UserProfile
+
+    profile = UserProfile(
+        allocated_resources=[AllocatedResource(name="Delta GPU", rp_slug="delta")]
+    )
+    state = {**base_state, "profile": profile.model_dump()}
+    answer = AIMessage(content="ok")
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke.return_value = {"messages": [*state["messages"], answer]}
+
+    mock_span = MagicMock()
+    mock_tracer = MagicMock()
+    mock_tracer.start_as_current_span.return_value.__enter__.return_value = mock_span
+    mock_tracer.start_as_current_span.return_value.__exit__.return_value = False
+
+    with (
+        patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph),
+        patch("src.agent.nodes.tool_calling_loop.get_tracer", return_value=mock_tracer),
+    ):
+        await tool_calling_loop_node(state)
+
+    mock_span.set_attribute.assert_any_call("agent.profile_present", True)
+
+
+@pytest.mark.asyncio
+async def test_profile_absent_span_attribute_set_false(base_state):
+    """agent.profile_present is set unconditionally (not a branch): False case."""
+    from unittest.mock import MagicMock
+
+    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
+
+    answer = AIMessage(content="ok")
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke.return_value = {"messages": [*base_state["messages"], answer]}
+
+    mock_span = MagicMock()
+    mock_tracer = MagicMock()
+    mock_tracer.start_as_current_span.return_value.__enter__.return_value = mock_span
+    mock_tracer.start_as_current_span.return_value.__exit__.return_value = False
+
+    with (
+        patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph),
+        patch("src.agent.nodes.tool_calling_loop.get_tracer", return_value=mock_tracer),
+    ):
+        await tool_calling_loop_node(base_state)
+
+    mock_span.set_attribute.assert_any_call("agent.profile_present", False)
