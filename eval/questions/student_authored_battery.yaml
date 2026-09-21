@@ -26,8 +26,11 @@
 # an SSH key-propagation claim the support docs directly refute. Three of the
 # twelve are ACCESS pages contradicting each other, not agent errors.
 #
-# sa-general-02 and sa-resource-09 have no facts yet: both failed their eval run
-# on upstream 500s from chat-mcp, so there was no answer to work from.
+# sa-general-02 and sa-resource-09 were authored later (2026-09-21) than the rest:
+# both failed their original eval run on upstream 500s, so there was no answer to work
+# from. Facts are authored from live sources regardless — an answer is not an input to
+# its own rubric — so the delay was unnecessary. Neither carries a DISAGREEMENT note,
+# since there is no answer to disagree with.
 #
 # capability_area and expected_tool are FIRST-PASS GUESSES from the existing
 # battery vocabulary, not verified routing. expected_tool: null means the answer
@@ -899,7 +902,62 @@
   question: What are all the GPU types offered in the ACCESS resources and how much RAM does each have?
   capability_area: compute_resources
   battery: student_authored
-  expected_tool: get_resource_hardware
+  expected_tool: search_docs
+  sources:
+  - 'doc: https://support.access-ci.org/documentation/resources (verified 2026-09-21)'
+  - 'api: https://support.access-ci.org/api/1.0/resources/742 — Delta GPU queue_specs,
+    the structured source behind the docs pages (verified 2026-09-21)'
+  required_facts:
+  - Answer organizes GPU hardware by ACCESS resource rather than presenting one ACCESS-wide
+    GPU configuration, since GPU type differs per resource and several resources host more
+    than one.
+  - Answer names GPUs on at least three distinct ACCESS resources, attributing each GPU
+    model to the resource that actually has it.
+  - Answer distinguishes GPU memory (VRAM per GPU) from node system memory (RAM per node)
+    wherever it gives a memory figure. The question's "RAM" is ambiguous and the sources
+    report both, so resolving which one is meant is part of a correct answer rather than
+    a stylistic nicety.
+  - Answer conveys that ACCESS GPUs are predominantly NVIDIA but not exclusively — ACCESS
+    resources also carry non-NVIDIA accelerators such as AMD Instinct, Intel Data Center
+    GPUs, Cerebras wafer-scale engines, Habana Gaudi or Graphcore IPUs.
+  - Answer treats its list as current-as-retrieved rather than a fixed or complete
+    inventory of ACCESS GPUs.
+  - Answer points to somewhere authoritative for current per-resource detail, such as
+    support.access-ci.org/documentation/resources or the resource provider's own user
+    guide.
+  - 'Answer does not state a GPU memory figure that no retrieved source gives. Naming a
+    GPU model and supplying its memory from general knowledge of that model is a
+    fabrication even when the number happens to be right.'
+  - Answer does not invent GPU models, partitions or node counts absent from the retrieved
+    sources.
+  authoring_notes:
+  - 'AUTHOR: No fact requires a complete GPU inventory or pins a model to a memory figure,
+    and that is deliberate. The structured source is rich — /api/1.0/resources/742 returns
+    twelve Delta GPU partitions with typed gpu_type, gpu_vram, ram, node_count and
+    max_wall_time_hours, including "AMD MI100, AMD MI210" and the H200 at 141 GB. But
+    asking the corpus the question as a researcher would phrase it ("what GPU types do
+    ACCESS resources have and how much memory does each GPU have") returns only
+    allocations.access-ci.org/resources and one RP hardware page, not the per-resource
+    partition tables. The structured detail is retrievable with exact partition terms and
+    not with the natural question, so grading a VRAM table would fail the agent for a
+    retrieval-phrasing gap rather than for anything it did. Facts grade answer shape and
+    fabrication-avoidance instead, matching the call made on sa-resource-01 for resource
+    counts.'
+  - 'AUTHOR: The next-to-last fact is the sharp one and worth a human decision. It fails
+    an answer that says "Anvil has A100 GPUs with 40GB of VRAM" even though 40GB A100s
+    exist and that is a reasonable inference — CiDeR gives Anvil''s A100s with no VRAM at
+    all, and I could not source Anvil A100 VRAM from Purdue documentation (two 404s and a
+    refused connection on 2026-09-20). It is written as "no figure the sources give"
+    rather than naming a wrong value, so it stays true as coverage improves.'
+  - 'AUTHOR: expected_tool changed from get_resource_hardware to search_docs. That tool
+    reads CiDeR, which is verified wrong here — it reports Delta''s AMD node as MI100 only
+    (the docs and NCSA''s user guide both say MI100 plus one MI210) and returns no
+    hardware specifications at all for Stampede3, KyRIC, Voyager or Neocortex. The
+    curated documentation carries the corrected values and is in the retrieval corpus.'
+  - 'CORPUS: No corpus check against an agent answer was possible. Per the battery header
+    this question failed its eval run on upstream 500s from chat-mcp, so there is no
+    retrieved-chunk record and no answer to compare against. Facts are authored from live
+    sources only, which is also why this question carries no DISAGREEMENT note.'
 
 - id: sa-general-01
   question: What is ACCESS?
@@ -1162,6 +1220,53 @@
   capability_area: documentation
   battery: student_authored
   expected_tool: search_docs
+  sources:
+  - 'doc: https://support.access-ci.org/tools/ondemand (verified 2026-09-21)'
+  - 'doc: https://support.access-ci.org/knowledge-base/resources/5222 — Open OnDemand
+    architecture (verified 2026-09-20)'
+  required_facts:
+  - 'Answer describes ACCESS OnDemand as a web portal reached in a browser, letting a
+    researcher compute without installing client software and without the command line.'
+  - 'Answer conveys that ACCESS OnDemand is a standardized instance of the Open OnDemand
+    platform being adopted across ACCESS resource providers, not an ACCESS-built product
+    separate from Open OnDemand.'
+  - Answer conveys that OnDemand is deployed per resource provider rather than as one
+    central ACCESS-wide portal, so the user signs in to a specific resource's instance.
+    Naming participating resources is fine; presenting a single ACCESS OnDemand login as
+    the way in is not.
+  - Answer conveys that using ACCESS OnDemand requires an allocation on the participating
+    resource, and does not imply an ACCESS ID alone is enough.
+  - Answer gives at least one concrete thing the user can do through the portal beyond
+    "access the system" — managing files, opening a shell, submitting or monitoring jobs,
+    or launching an interactive application such as Jupyter.
+  - Answer does not claim ACCESS OnDemand is available on every ACCESS resource; the
+    tools page lists a specific subset.
+  authoring_notes:
+  - 'AUTHOR: No fact requires the participating-resource list or its count. The tools page
+    lists ten or eleven resources depending on how the page is read, describes the rollout
+    as "being deployed on ACCESS resources" — i.e. in progress — and D8-2866 tracks
+    corrections to that list (REPACSS and Nexus missing, FASTER and Ookami retired). The
+    last fact is a negative guard against overclaiming universality instead. A human
+    should decide whether naming two participating resources correctly ought to be
+    required.'
+  - 'AUTHOR: The interactive applications are not enumerated on the ACCESS OnDemand page,
+    which defers to each RP ("Participating RPs have instructions on using their ACCESS
+    OnDemand service"). Jupyter and RStudio appear only on the Open OnDemand architecture
+    page (knowledge-base/resources/5222), which names them while describing how per-user
+    NGINX instances are proxied — an architecture note, not a service catalog. So the
+    concrete-capability fact accepts any one item from an open set and does not require
+    Jupyter specifically.'
+  - 'AUTHOR: No fact grades how a user authenticates to an RP''s OnDemand instance. The
+    page says only "Login to ACCESS OnDemand to utilize resources allocated to you" and
+    each resource carries its own login link. operations.access-ci.org/identity/devguide
+    documents CILogon/OIDC for ACCESS-auth web apps generally but does not state that
+    every RP portal uses ACCESS federated login rather than local RP credentials. An
+    answer claiming "log in with your ACCESS ID via CILogon" is plausible but unverified;
+    a human should adjudicate before it grades.'
+  - 'CORPUS: No corpus check against an agent answer was possible — this question failed
+    its eval run on upstream 500s from chat-mcp, so there is no retrieved-chunk record and
+    no answer to compare against. Facts are authored from live sources only, hence no
+    DISAGREEMENT note.'
 
 - id: sa-onboard-07
   question: What training or onboarding resources does ACCESS provide for first-time users?
