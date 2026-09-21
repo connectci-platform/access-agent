@@ -15,6 +15,7 @@ from starlette.datastructures import Headers
 from starlette.responses import StreamingResponse
 
 from ..agent.graph import stream_agent
+from ..agent.profile import UserProfile
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..auth import get_acting_user_from_cookie
 from ..config import settings
@@ -121,6 +122,11 @@ class QueryRequest(BaseModel):
     turnstile_token: str | None = Field(None, description="Cloudflare Turnstile response token")
     resource_context: str | None = Field(
         None, description="RP slug for resource-scoped queries (e.g. 'delta')"
+    )
+    profile: UserProfile | None = Field(
+        None,
+        description="Optional user profile hint (allocated resources); "
+        "steers retrieval, authorizes nothing",
     )
 
 
@@ -304,6 +310,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
             tool_catalog=registry.catalog,
             acting_user=acting_user,
             resource_context=request.resource_context,
+            profile=request.profile,
             use_checkpointing=USE_CHECKPOINTING,
             db_uri=settings.DATABASE_URL if USE_CHECKPOINTING else None,
         ):

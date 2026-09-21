@@ -11,6 +11,8 @@ import logging
 import sys
 from typing import Any
 
+from ..agent.profile import AllocatedResource, UserProfile
+from ..services.rp_cache import get_rp_cache
 from ..telemetry import init_telemetry, shutdown_telemetry
 
 logging.basicConfig(
@@ -18,10 +20,80 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 
+logger = logging.getLogger(__name__)
+
+
+class ProfileArgError(ValueError):
+    """A --profile-resource value is malformed or names an unknown slug."""
+
+
+async def _validate_slugs(slugs: set[str]) -> None:
+    """Fail fast against the live resource-groups vocabulary.
+
+    An empty cache after ensure_loaded() means Drupal was unreachable
+    (refresh() swallows fetch exceptions and serves stale/empty data), not
+    that every slug is invalid — the two cases need different messages.
+    """
+    cache = get_rp_cache()
+    await cache.ensure_loaded()
+    known = cache.list_slugs()
+    if not known:
+        raise ProfileArgError("resource-group vocabulary unavailable (Drupal unreachable)")
+    unknown = sorted(slugs - set(known))
+    if unknown:
+        raise ProfileArgError(
+            f"unknown resource-group slug {unknown[0]!r}; known: {', '.join(sorted(known))}"
+        )
+
+
+def _profile_from_args(profile_resource: list[str] | None) -> UserProfile | None:
+    """Build a synthetic UserProfile from repeated --profile-resource values.
+
+    Sync: the pydantic model is built first (a bad name raises ValidationError
+    with no network call), and only when at least one slug was supplied does
+    this open a short-lived event loop to validate against the live
+    resource-groups vocabulary. Safe before run_eval's own loop —
+    RPSectionCache._fetch_resources opens its own AsyncClient per call and
+    holds no loop-bound state.
+    """
+    if not profile_resource:
+        return None
+
+    resources = []
+    for entry in profile_resource:
+        name, sep, slug = entry.partition("=")
+        # resource_id is always None: synthetic profiles carry no CiDeR id.
+        resources.append(
+            AllocatedResource(name=name, rp_slug=slug if sep else None, resource_id=None)
+        )
+
+    slugs = {r.rp_slug for r in resources if r.rp_slug}
+    if slugs:
+        asyncio.run(_validate_slugs(slugs))
+
+    return UserProfile(allocated_resources=resources)
+
+
+def _log_resolved_profile(profile: UserProfile) -> None:
+    """One INFO line per supplied resource, so a forgotten '=slug' is visible
+    in the run output rather than only discoverable later in eval_runs.metadata."""
+    resources = profile.allocated_resources or []
+    lines = [
+        f"{r.name}: scoped (rp_name={r.rp_slug})"
+        if r.rp_slug
+        else f"{r.name}: ungrouped (no rp_name)"
+        for r in resources
+    ]
+    logger.info("Resolved --profile-resource: %s", "; ".join(lines))
+
 
 def _handle_run(args: argparse.Namespace) -> None:
     from .report import print_run_summary
     from .scorer import run_eval
+
+    profile = _profile_from_args(args.profile_resource)
+    if profile is not None:
+        _log_resolved_profile(profile)
 
     summary = asyncio.run(
         run_eval(
@@ -29,6 +101,7 @@ def _handle_run(args: argparse.Namespace) -> None:
             system=args.system,
             judge_model=args.judge_model,
             allow_factless=args.allow_factless,
+            profile=profile,
         )
     )
     print_run_summary(summary)
@@ -461,6 +534,18 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915  # all subcomman
         "--judge-model",
         default=None,
         help="Override judge model (default: from config)",
+    )
+    run_parser.add_argument(
+        "--profile-resource",
+        action="append",
+        default=None,
+        help=(
+            "Repeatable. Display name of an allocated resource, optionally "
+            "NAME=slug where slug is a resource-group slug from "
+            "support.access-ci.org/api/1.0/resource-groups; omit the slug "
+            "for an ungrouped resource. Synthetic profiles only — persisted "
+            "verbatim into eval_runs.metadata, which has no retention policy."
+        ),
     )
 
     compare_parser = subparsers.add_parser("compare", help="Compare two eval runs")

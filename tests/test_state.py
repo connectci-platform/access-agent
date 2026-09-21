@@ -1,5 +1,6 @@
 """Tests for agent state schema."""
 
+from src.agent.profile import AllocatedResource, UserProfile
 from src.agent.state import (
     QueryAnalysis,
     ToolCall,
@@ -55,6 +56,34 @@ def test_tool_result_model():
     assert result.success is True
     assert result.data["resources"][0]["name"] == "Delta"
     assert result.error is None
+
+
+def test_create_initial_state_stores_profile_as_dict(sample_catalog):
+    """State channels stay JSON-plain; the model is revalidated at the read site."""
+    profile = UserProfile(
+        allocated_resources=[AllocatedResource(name="Delta GPU", rp_slug="delta")]
+    )
+    state = create_initial_state(
+        query="What GPUs are available?",
+        session_id="test_session",
+        question_id="test_question",
+        tool_catalog=sample_catalog,
+        profile=profile,
+    )
+
+    assert isinstance(state["profile"], dict)
+    assert state["profile"] == profile.model_dump()
+
+
+def test_create_initial_state_defaults_profile_none(sample_catalog):
+    state = create_initial_state(
+        query="What GPUs are available?",
+        session_id="test_session",
+        question_id="test_question",
+        tool_catalog=sample_catalog,
+    )
+
+    assert state["profile"] is None
 
 
 def test_query_analysis_model():

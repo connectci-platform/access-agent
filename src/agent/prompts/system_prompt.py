@@ -18,6 +18,8 @@ capability is re-enabled, restore the per-user routing here.
 
 from __future__ import annotations
 
+from ..profile import UserProfile, render_profile_section
+
 # Opening — describes the job, no implementation history. Default workflow:
 # docs first, then enrich with MCP, then synthesize.
 SYSTEM_IDENTITY = """You are the ACCESS-CI assistant. You help US researchers \
@@ -386,6 +388,7 @@ jumping to ticket creation."""
 def build_system_prompt(
     acting_user: str | None = None,
     resource_context: str | None = None,
+    profile: UserProfile | None = None,
 ) -> str:
     """Assemble the tool-calling loop's system prompt.
 
@@ -397,6 +400,10 @@ def build_system_prompt(
             present, surfaces a hint that resource-scoped questions
             should pass `rp_name=<resource_context>` to
             `search_access_documents` and to MCP tools that accept it.
+        profile: Optional per-request user profile (allocated resources).
+            Rendered as a `## User profile` section when it contributes at
+            least one fact or instruction; holds no per-field knowledge
+            itself — see render_profile_section.
 
     Returns:
         Complete system prompt string for the tool-calling loop.
@@ -430,6 +437,11 @@ def build_system_prompt(
             f"a resource filter. When the user's question is clearly "
             f"cross-resource or general-process, omit the resource scope."
         )
+
+    if profile is not None:
+        profile_section = render_profile_section(profile, resource_context=resource_context)
+        if profile_section:
+            sections.append(profile_section)
 
     sections.append(ANNOUNCEMENTS_WORKFLOWS_SECTION)
     sections.append(JSM_WORKFLOW_SECTION)

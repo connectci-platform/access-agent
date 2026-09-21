@@ -309,6 +309,7 @@ The LLM generates SQL against the eval tables, runs it, and returns a natural la
 | Command | Purpose |
 |---------|---------|
 | `python -m src.eval run` | Pre-production eval (default: friendly battery) |
+| `python -m src.eval run --profile-resource "NAME[=slug]"` | Repeatable; synthesizes a run-wide user profile (allocated resources), recorded in `eval_runs.metadata` |
 | `python -m src.eval run --push-argilla` | Eval + push to Argilla for human review |
 | `python -m src.eval compare --run-a ID --run-b ID` | Compare two eval runs |
 | `python -m src.eval report --format team\|leadership\|resource` | Generate report |
