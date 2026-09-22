@@ -27,12 +27,15 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING, Any
+from weakref import WeakKeyDictionary
 
 from sqlalchemy import inspect
 from sqlalchemy import text as sa_text
 from sqlalchemy.exc import SQLAlchemyError
 
 if TYPE_CHECKING:
+    from sqlalchemy.engine import Engine
+
     from .db import EvalDB
 
 logger = logging.getLogger(__name__)
@@ -77,10 +80,13 @@ _KIND_COL = ", fact_kind"
 
 # Memoized per engine: load_question_facts runs once per battery question (~50 a
 # run), and the schema cannot change mid-run, so one inspect() round trip per
-# engine is enough. Keyed by id() rather than the engine itself because Engine is
-# not hashable in a way we want to rely on; entries are tiny and an eval process
-# builds one or two engines.
-_FACT_COLUMNS_CACHE: dict[int, set[str]] = {}
+# engine is enough. Keyed on the Engine itself in a WeakKeyDictionary, NOT on
+# id(engine): CPython reuses addresses, so a freed engine's entry could be read by
+# a new engine allocated at the same address — returning a column set for a
+# different database, which is the silent-wrong-fact-set failure this function
+# exists to prevent. The weak keying also drops entries with their engine instead
+# of growing forever.
+_FACT_COLUMNS_CACHE: WeakKeyDictionary[Engine, set[str]] = WeakKeyDictionary()
 
 
 def _fact_columns(db: EvalDB) -> set[str]:
@@ -100,7 +106,7 @@ def _fact_columns(db: EvalDB) -> set[str]:
     cheaper mistake.
     """
     engine = db._engine  # noqa: SLF001  # eval-internal DB access
-    cached = _FACT_COLUMNS_CACHE.get(id(engine))
+    cached = _FACT_COLUMNS_CACHE.get(engine)
     if cached is not None:
         return cached
     try:
@@ -112,7 +118,7 @@ def _fact_columns(db: EvalDB) -> set[str]:
         # caller's query falls back either way; do not cache, so a transient error
         # does not disable the retraction filter for the whole run.
         return set()
-    _FACT_COLUMNS_CACHE[id(engine)] = cols
+    _FACT_COLUMNS_CACHE[engine] = cols
     return cols
 
 
