@@ -528,3 +528,57 @@ def test_column_probe_is_cached_per_engine(tmp_path, monkeypatch):
     assert "retracted_at" in first
     assert second is first  # same cached object, not a fresh probe
     assert calls["n"] == 1
+
+
+def test_column_cache_does_not_leak_across_engines(tmp_path):
+    """A freed engine's cached columns must not be read by a later engine.
+
+    The cache was keyed on id(engine). CPython reuses addresses, so an engine
+    allocated where a freed one lived inherited its column set — a column set for
+    a different database. That is the silent-wrong-fact-set failure _fact_columns
+    exists to prevent, and it surfaced as a CI-only test failure because it
+    depends on allocator and GC timing.
+    """
+    import gc
+
+    from src.eval.question_facts import _FACT_COLUMNS_CACHE, _fact_columns
+
+    # An engine whose table HAS fact_kind, cached, then dropped.
+    db_with_kind = _seeded_db(
+        tmp_path / "a",
+        [
+            {
+                "fact_id": 1,
+                "version": 1,
+                "question_id": "q",
+                "display_order": 0,
+                "fact_text": "f",
+                "status": "draft",
+                "fact_kind": "world",
+            }
+        ],
+        kind_columns=True,
+    )
+    assert "fact_kind" in _fact_columns(db_with_kind)
+    del db_with_kind
+    gc.collect()
+
+    # Entries vanish with their engine rather than accumulating.
+    assert len(_FACT_COLUMNS_CACHE) == 0
+
+    # A fresh engine whose table LACKS fact_kind must probe, not inherit.
+    db_without_kind = _seeded_db(
+        tmp_path / "b",
+        [
+            {
+                "fact_id": 1,
+                "version": 1,
+                "question_id": "q",
+                "display_order": 0,
+                "fact_text": "f",
+                "status": "draft",
+            }
+        ],
+        kind_columns=False,
+    )
+    assert "fact_kind" not in _fact_columns(db_without_kind)
