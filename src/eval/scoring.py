@@ -7,6 +7,8 @@ these, so the eval_scores write contract lives in exactly one place.
 import logging
 from typing import TYPE_CHECKING, Any
 
+from src.agent.profile import UserProfile
+
 if TYPE_CHECKING:
     from .db import EvalDB
     from .judge import Judge, JudgeResult
@@ -30,6 +32,7 @@ async def score_and_persist_turn(
     node_trace: str | None = None,
     required_facts: list[Any] | None = None,
     conversation_history: list[tuple[str, str]] | None = None,
+    profile: UserProfile | None = None,
     extra_context: dict[str, Any] | None = None,
     duration_ms: float = 0.0,
 ) -> "JudgeResult | None":
@@ -41,6 +44,7 @@ async def score_and_persist_turn(
         node_trace=node_trace,
         required_facts=required_facts,
         conversation_history=conversation_history,
+        profile=profile,
     )
 
     # A judge_error row carries the SAME context keys as a success row (only

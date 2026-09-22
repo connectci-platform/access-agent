@@ -38,6 +38,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from src.agent.profile import UserProfile
 from src.config import settings
 
 from . import scoring
@@ -59,6 +60,19 @@ def _replay_history(stored: Any) -> list[tuple[str, str]] | None:
         if isinstance(pair, (list, tuple)) and len(pair) == 2:
             history.append((str(pair[0]), str(pair[1])))
     return history or None
+
+
+def _replay_profile(original_meta: dict[str, Any]) -> UserProfile | None:
+    """Reconstruct the UserProfile stored by scorer.py in run metadata (or None).
+
+    profile is stored as profile.model_dump() (None for the no-profile arm), so
+    a rejudge can pass the SAME profile to judge.score — otherwise a rejudge of a
+    profile-arm run silently grades without the "## Request profile" section.
+    """
+    original_profile_dict = original_meta.get("profile")
+    if original_profile_dict is None:
+        return None
+    return UserProfile.model_validate(original_profile_dict)
 
 
 # Row sources that represent a multiturn TURN. Human review rows (and any other
@@ -173,11 +187,14 @@ async def rejudge_run(
 
     # A rejudged multiturn run must stay excluded from the dashboard aggregate, so
     # mode rides along with the run rather than being reconstructed downstream.
+    # profile also rides along (verbatim dict) so a rejudge of a rejudge still
+    # has it to reconstruct via _replay_profile.
     rejudge_meta: dict[str, Any] = {
         "system": original_meta.get("system"),
         "rejudged_from": original_run_id,
         "rejudge_commit": git_info.get("commit"),
         "rejudge_branch": git_info.get("branch"),
+        "profile": original_meta.get("profile"),
     }
     if original_meta.get("mode") is not None:
         rejudge_meta["mode"] = original_meta["mode"]
@@ -266,6 +283,7 @@ async def rejudge_run(
             # without it the judge sees "how does that compare?" with no antecedent
             # and records a phantom quality drop.
             conversation_history=_replay_history(context.get("conversation_history")),
+            profile=_replay_profile(original_meta),
         )
 
         if judge_result is None:

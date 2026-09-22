@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.agent.profile import AllocatedResource, UserProfile
 from src.eval import scoring
 from src.eval.db import EvalDB
 from src.eval.rejudge import rejudge_run
@@ -203,6 +204,74 @@ async def test_rejudge_propagates_mode_metadata(mock_db):
     new_run = db.get_run(str(summary["new_run_id"]))
     assert new_run.metadata_["mode"] == "multiturn"
     assert new_run.metadata_["rejudged_from"] == str(original.id)
+
+
+async def test_rejudge_forwards_profile_from_original_run_metadata(mock_db):
+    """A profile-arm original stores profile.model_dump() in run metadata; rejudge
+    must reconstruct it and pass it to judge.score, or a rejudge of a profile-arm
+    run silently grades without the "## Request profile" section."""
+    db = EvalDB(mock_db)
+    profile = UserProfile(
+        allocated_resources=[AllocatedResource(name="Delta GPU", rp_slug="delta")]
+    )
+    original = db.create_run(
+        run_type="pre_production",
+        llm_model="qwen",
+        question_set="tiny",
+        question_count=1,
+        metadata_={"system": "access-agent", "profile": profile.model_dump()},
+    )
+    db.add_score(
+        run_id=original.id,
+        question_id="q1",
+        source="judge",
+        question_text="What is ACCESS?",
+        answer_text="A program.",
+        context={"rag_context": None, "tool_results": None, "node_trace": None},
+        composite_score=0.5,
+    )
+
+    judge = MagicMock()
+    judge.score = AsyncMock(return_value=None)
+    with patch("src.eval.rejudge.Judge", return_value=judge):
+        summary = await rejudge_run(original_run_id=str(original.id), database_url=mock_db)
+
+    assert judge.score.call_args.kwargs["profile"] == profile
+
+    new_run = db.get_run(str(summary["new_run_id"]))
+    assert new_run.metadata_["profile"] == profile.model_dump()
+
+
+async def test_rejudge_no_profile_original_passes_none(mock_db):
+    """A no-profile original run has no "profile" key in metadata; rejudge must
+    call judge.score with profile=None, not invent one."""
+    db = EvalDB(mock_db)
+    original = db.create_run(
+        run_type="pre_production",
+        llm_model="qwen",
+        question_set="tiny",
+        question_count=1,
+        metadata_={"system": "access-agent"},
+    )
+    db.add_score(
+        run_id=original.id,
+        question_id="q1",
+        source="judge",
+        question_text="What is ACCESS?",
+        answer_text="A program.",
+        context={"rag_context": None, "tool_results": None, "node_trace": None},
+        composite_score=0.5,
+    )
+
+    judge = MagicMock()
+    judge.score = AsyncMock(return_value=None)
+    with patch("src.eval.rejudge.Judge", return_value=judge):
+        summary = await rejudge_run(original_run_id=str(original.id), database_url=mock_db)
+
+    assert judge.score.call_args.kwargs["profile"] is None
+
+    new_run = db.get_run(str(summary["new_run_id"]))
+    assert new_run.metadata_["profile"] is None
 
 
 async def test_rejudge_replays_conversation_history(mock_db):

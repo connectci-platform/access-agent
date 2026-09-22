@@ -8,6 +8,8 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
+from src.agent.profile import UserProfile
+
 from .rubric import (
     DIMENSION_LABELS,
     DIMENSION_NAMES,
@@ -188,6 +190,7 @@ class Judge:
         node_trace: str | None = None,
         required_facts: list[str | dict[str, Any]] | None = None,
         conversation_history: list[tuple[str, str]] | None = None,
+        profile: UserProfile | None = None,
     ) -> JudgeResult | None:
         prompt = build_judge_prompt(
             query=query,
@@ -197,6 +200,7 @@ class Judge:
             node_trace=node_trace,
             required_facts=required_facts,
             conversation_history=conversation_history,
+            profile=profile,
         )
 
         # Base 500 tokens for the 5-dimension scoring (categorical labels now, not 1-5
@@ -206,6 +210,10 @@ class Judge:
 
         n_facts = len(flatten_required_facts(required_facts)) if required_facts else 0
         max_tokens = 500 + 80 * n_facts
+        if profile is not None and profile.allocated_resources:
+            # ~120 tokens for the "## Request profile" section, same accounting
+            # style as required_facts above.
+            max_tokens += 120
         if conversation_history:
             # History lengthens the prompt, not the response, but verbose judges
             # anchor response length to prompt length; cap the bump at 2000.

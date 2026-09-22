@@ -340,6 +340,14 @@ async def test_run_eval_records_profile_in_run_metadata(mock_db, tiny_question_s
     run = db.get_run(summary["run_id"])
     assert run.metadata_["profile"] == profile.model_dump()
 
+    # run_eval forwards profile all the way to the judge prompt sent to the LLM.
+    judge_prompts = [
+        call.kwargs["messages"][0]["content"]
+        for call in mock_client.chat.completions.create.call_args_list
+    ]
+    assert all("## Request profile" in p for p in judge_prompts)
+    assert all("Delta GPU (rp_name='delta')" in p for p in judge_prompts)
+
     completions_none = [_completion(MOCK_JUDGE_BEST) for _ in range(3)]
     with (
         patch("src.eval.runner.run_agent", new_callable=AsyncMock, return_value=mock_state),
@@ -363,6 +371,12 @@ async def test_run_eval_records_profile_in_run_metadata(mock_db, tiny_question_s
 
     run_no_profile = db.get_run(summary_no_profile["run_id"])
     assert run_no_profile.metadata_["profile"] is None
+
+    judge_prompts_no_profile = [
+        call.kwargs["messages"][0]["content"]
+        for call in mock_client.chat.completions.create.call_args_list
+    ]
+    assert all("## Request profile" not in p for p in judge_prompts_no_profile)
 
 
 @pytest.mark.asyncio

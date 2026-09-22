@@ -93,3 +93,42 @@ def test_empty_history_list_also_omits_conversation_support_clauses():
     prompt = build_judge_prompt(**GOLDEN_ARGS, conversation_history=[])
     assert "the prior turns shown in 'Conversation so far'" not in prompt
     assert "A value the agent correctly restates from an earlier turn" not in prompt
+
+
+def test_profile_renders_request_profile_section_before_required_facts():
+    from src.agent.profile import AllocatedResource, UserProfile
+    from src.eval.rubric import build_judge_prompt
+
+    profile = UserProfile(
+        allocated_resources=[
+            AllocatedResource(name="Delta GPU", rp_slug="delta"),
+            AllocatedResource(name="Delta Storage"),
+        ]
+    )
+    prompt = build_judge_prompt(**GOLDEN_ARGS, profile=profile)
+    assert "## Request profile" in prompt
+    assert "Delta GPU (rp_name='delta'), Delta Storage" in prompt
+    assert prompt.index("## Request profile") < prompt.index("## Required Facts")
+    assert (
+        "Facts for questions that are not about any particular resource, such as ACCESS account or\n"
+        "password matters, are also unchanged: answering such a question with resource-specific detail\n"
+        "does not satisfy them." in prompt
+    )
+
+
+def test_no_profile_omits_request_profile_section():
+    from src.eval.rubric import build_judge_prompt
+
+    prompt = build_judge_prompt(**GOLDEN_ARGS)
+    assert "## Request profile" not in prompt
+    # And the golden fixture still matches byte-for-byte with no profile passed.
+    assert prompt == FIXTURE.read_text().removesuffix("\n")
+
+
+def test_profile_with_empty_allocated_resources_renders_no_section():
+    from src.agent.profile import UserProfile
+    from src.eval.rubric import build_judge_prompt
+
+    profile = UserProfile(allocated_resources=[])
+    prompt = build_judge_prompt(**GOLDEN_ARGS, profile=profile)
+    assert "## Request profile" not in prompt
