@@ -121,6 +121,31 @@ async def test_judge_error_row_carries_same_context_as_success(tmp_path):
     assert err_ctx["conversation_history"] == [["q1", "a1"]]
 
 
+@pytest.mark.asyncio
+async def test_score_and_persist_turn_forwards_profile_to_judge(tmp_path):
+    from src.agent.profile import AllocatedResource, UserProfile
+    from src.eval.scoring import score_and_persist_turn
+
+    db = _db(tmp_path)
+    run = db.create_run(run_type="pre_production")
+    judge = _judge_returning(GOOD_RESULT)
+    profile = UserProfile(
+        allocated_resources=[AllocatedResource(name="Delta GPU", rp_slug="delta")]
+    )
+
+    await score_and_persist_turn(
+        db,
+        judge,
+        run_id=str(run.id),
+        question_id="t-01_t1",
+        question_text="q",
+        answer="a",
+        profile=profile,
+    )
+
+    assert judge.score.call_args.kwargs["profile"] == profile
+
+
 def test_skipped_row(tmp_path):
     from src.eval.scoring import persist_skipped_turn
 

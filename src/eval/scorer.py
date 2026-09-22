@@ -169,6 +169,7 @@ async def run_eval(
             tool_results=result.tool_results,
             node_trace=result.node_trace,
             required_facts=required_facts,
+            profile=profile,
             extra_context={"ground_truth_stability": q.metadata.get("ground_truth_stability")},
             duration_ms=result.duration_ms,
         )

@@ -8,6 +8,8 @@ Higher integer = better. See docs/collaboration/2026-07-06-eval-rubric-v2.md.
 from dataclasses import dataclass
 from typing import Any
 
+from src.agent.profile import UserProfile
+
 
 @dataclass(frozen=True)
 class Dimension:
@@ -131,6 +133,36 @@ def flatten_required_facts(
     return out
 
 
+def _render_request_profile_section(profile: UserProfile | None) -> str:
+    """Render the judge-prompt "## Request profile" section, or "" when absent.
+
+    See docs/superpowers/specs/2026-09-21-profile-ab-grading-decisions.md
+    ("The mechanism"): the no-profile arm must render nothing so its prompt
+    stays byte-identical to the pre-profile prompt.
+    """
+    if profile is None or not profile.allocated_resources:
+        return ""
+
+    listing = ", ".join(
+        f"{r.name} (rp_name='{r.rp_slug}')" if r.rp_slug else r.name
+        for r in profile.allocated_resources
+    )
+    return f"""
+
+## Request profile
+
+The request supplied a user profile naming these allocated resources: {listing}.
+Where a required fact asks the answer to ask which resource the user means, or to make explicit
+that the answer is resource-dependent, an answer that answers for one of the supplied resources
+and says so satisfies that fact. Facts about not presenting one resource's specifics as true of
+all ACCESS resources are unchanged: an answer that is scoped to a supplied resource but still
+states that resource's values as ACCESS-wide fails them.
+Facts for questions that are not about any particular resource, such as ACCESS account or
+password matters, are also unchanged: answering such a question with resource-specific detail
+does not satisfy them.
+"""
+
+
 def build_judge_prompt(
     query: str,
     answer: str,
@@ -139,6 +171,7 @@ def build_judge_prompt(
     node_trace: str | None = None,
     required_facts: list[str | dict[str, Any]] | None = None,
     conversation_history: list[tuple[str, str]] | None = None,
+    profile: UserProfile | None = None,
 ) -> str:
     """Build the LLM judge prompt with the rubric and context."""
     rubric_text = "\n".join(
@@ -176,6 +209,8 @@ def build_judge_prompt(
         if has_history
         else ""
     )
+
+    profile_section = _render_request_profile_section(profile)
 
     facts_section = ""
     facts_response_schema = ""
@@ -271,7 +306,7 @@ for concrete named specifics.
 
 ## Context the Agent Had Access To
 
-{context_text}{facts_section}
+{context_text}{profile_section}{facts_section}
 
 ## Your Response
 
