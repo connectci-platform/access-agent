@@ -18,6 +18,10 @@ jobs:
     runs-on: ubuntu-latest
     # A manual dispatch may have no CI run for that ref; the wait would hang.
     if: github.event_name != 'workflow_dispatch'
+    # wait-on-check-action >= 1.9 reads check runs, which the default token
+    # cannot see without this.
+    permissions:
+      checks: read
     steps:
       - name: Wait for CI to pass on this commit
         uses: lewagon/wait-on-check-action@v1.9.1
