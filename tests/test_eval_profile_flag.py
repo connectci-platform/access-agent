@@ -159,6 +159,7 @@ class TestHandleRun:
             questions="eval/questions/friendly_battery.json",
             system="agent_full",
             judge_model=None,
+            allow_factless=False,
             profile_resource=["Delta Storage"],
         )
 
@@ -182,6 +183,7 @@ class TestHandleRun:
             questions="eval/questions/friendly_battery.json",
             system="agent_full",
             judge_model=None,
+            allow_factless=False,
             profile_resource=["Delta\n#x"],
         )
 
@@ -205,6 +207,7 @@ class TestHandleRun:
             questions="eval/questions/friendly_battery.json",
             system="agent_full",
             judge_model=None,
+            allow_factless=False,
             profile_resource=["Delta GPU=delta", "Delta Storage"],
         )
 
