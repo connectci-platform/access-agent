@@ -210,7 +210,8 @@ answer against a rubric derived from it proves nothing. Once loaded into the rep
 dashboard, the database copy is what scoring uses and the YAML is a snapshot; each
 battery file says so at the top.
 
-Full eval reference: `src/eval/html_report/README.md`.
+Full eval reference: [eval/README.md](eval/README.md). Report rendering:
+[src/eval/html_report/README.md](src/eval/html_report/README.md).
 
 ## Citation
 

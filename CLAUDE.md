@@ -38,7 +38,8 @@ docker-compose up --build                 # full local stack
 - **Qwen reasoning trace** is stripped at the LLM client layer (`src/llm/providers.py`), not in a
   node. The stream is `…reasoning…</think>answer` (no opening `<think>`).
 - **Eval CLI** runs inside the agent container (`docker compose exec`), not the host venv; battery
-  files must be copied in. Full eval reference: `src/eval/html_report/README.md`.
+  files must be copied in. Full eval reference: `eval/README.md`; report rendering:
+  `src/eval/html_report/README.md`.
 
 ## Key paths
 
