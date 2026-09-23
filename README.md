@@ -191,3 +191,38 @@ src/
 
 - [access-qa-service](https://github.com/connectci-platform/access-qa-service) - RAG retrieval service
 - [access_mcp](https://github.com/connectci-platform/access-mcp) - MCP servers for ACCESS data
+
+## Evaluation battery
+
+`eval/questions/` holds the question batteries the agent is scored against. The
+paper's results come from `student_authored_battery.yaml` (47 questions written by
+student reviewers, 169 required facts), `capability_review_battery.yaml` and
+`gapfill_battery.yaml`.
+
+Each question carries `required_facts` — prose assertions an answer must convey,
+graded fact by fact by an LLM judge. `authoring_notes` record how each fact was
+sourced: `DISAGREEMENT:` notes name a live source that contradicts what the agent
+said, and `CORPUS:` notes record which claims traced to retrieved chunks and which
+did not, which is how a retrieval gap is told apart from a fabrication.
+
+Facts are authored from documentation, never from the agent's own answer — grading an
+answer against a rubric derived from it proves nothing. Once loaded into the reporting
+dashboard, the database copy is what scoring uses and the YAML is a snapshot; each
+battery file says so at the top.
+
+Full eval reference: `src/eval/html_report/README.md`.
+
+## Citation
+
+This agent and its evaluation are described in:
+
+> Pasquale, A., Gazula, V., and Bacal, J. E. *From Answering to Acting: An AI Agent
+> for Research Computing User Support.* HUST 2026.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
+
+Work supported in part by the U.S. National Science Foundation under Award No.
+2138286, as part of the Advanced Cyberinfrastructure Coordination Ecosystem: Services
+and Support (ACCESS) program.
