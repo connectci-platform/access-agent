@@ -31,22 +31,28 @@ router, no separate plan→execute→synthesize chain.
          │ HTTP
          ▼
 ┌─────────────────┐     ┌─────────────────┐
-│  QA Service     │     │  MCP Servers    │
-│  (FastAPI)      │     │  (TypeScript)   │
-│  pgvector RAG   │     │  10 servers     │
+│  UKY chat-mcp   │     │  MCP Servers    │
+│  retrieve-docs  │     │  (TypeScript)   │
+│  ranked chunks  │     │  11 servers     │
 └─────────────────┘     └─────────────────┘
 ```
 
-- **access-qa-service**: RAG retrieval from verified Q&A pairs
-- **MCP servers**: Real-time ACCESS data (allocations, resources, status, etc.)
+- **UKY chat-mcp**: documentation retrieval, returning ranked chunks the loop's LLM
+  synthesizes and cites itself (`source="general"`). XDMoD questions use the legacy
+  `/ask` synthesis endpoint.
+- **MCP servers**: real-time ACCESS data — allocations, compute resources, system
+  status, events, announcements, software discovery, affinity groups, NSF awards,
+  XDMoD, and JSM.
 
 ## Quick Start
 
 ### Prerequisites
 
 - Python 3.11+
-- Access to MCP servers (or local catalog file)
-- OpenAI API key
+- Access to MCP servers (or a local catalog file via `MCP_CATALOG_PATH`)
+- An LLM provider: an OpenAI API key for local development, or a vLLM endpoint —
+  production sets `LLM_PROVIDER` to the UKY vLLM (Qwen) endpoint, so the OpenAI
+  default is not the production model
 
 ### Installation
 
@@ -189,8 +195,12 @@ src/
 
 ## Related Repos
 
-- [access-qa-service](https://github.com/connectci-platform/access-qa-service) - RAG retrieval service
-- [access_mcp](https://github.com/connectci-platform/access-mcp) - MCP servers for ACCESS data
+- [access-mcp](https://github.com/connectci-platform/access-mcp) — the MCP servers the
+  agent calls for live ACCESS data
+- `access-agent-reporting` — the dashboard where required facts are reviewed and
+  corrected. Private, since it holds reviewer identities and student review data.
+
+Documentation retrieval is UKY's `chat-mcp` service, not a repo here.
 
 ## Evaluation battery
 
