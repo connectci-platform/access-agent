@@ -380,6 +380,50 @@ async def test_run_eval_records_profile_in_run_metadata(mock_db, tiny_question_s
 
 
 @pytest.mark.asyncio
+async def test_run_eval_forwards_and_records_acting_user(mock_db, tiny_question_set):
+    """acting_user threads run_eval -> run_question -> run_agent, and is
+    recorded in eval_runs.metadata alongside profile (a profile implies an
+    authenticated user, so the run's provenance should show who)."""
+    mock_state = {
+        "final_answer": "ACCESS is a program for HPC resources.",
+        "rag_matches": [],
+        "tool_results": [],
+        "node_trace": [{"node": "classify", "query_type": "static"}],
+        "tools_used": [],
+    }
+    completions = [_completion(MOCK_JUDGE_BEST) for _ in range(3)]
+
+    with (
+        patch(
+            "src.eval.runner.run_agent", new_callable=AsyncMock, return_value=mock_state
+        ) as mock_run_agent,
+        patch("src.eval.scorer.ToolRegistry") as mock_registry_cls,
+        patch("src.eval.judge.AsyncOpenAI") as mock_openai_cls,
+    ):
+        mock_registry = AsyncMock()
+        mock_registry.tool_count = 10
+        mock_registry.catalog = {"tools": [{"name": "test_tool"}]}
+        mock_registry.tools = {"test_tool": object()}
+        mock_registry_cls.return_value = mock_registry
+
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create.side_effect = completions
+        mock_openai_cls.return_value = mock_client
+
+        summary = await run_eval(
+            question_set_path=tiny_question_set,
+            database_url=mock_db,
+            acting_user="jdoe",
+        )
+
+    assert all(call.kwargs.get("acting_user") == "jdoe" for call in mock_run_agent.call_args_list)
+
+    db = EvalDB(mock_db)
+    run = db.get_run(summary["run_id"])
+    assert run.metadata_["acting_user"] == "jdoe"
+
+
+@pytest.mark.asyncio
 async def test_run_question_passes_profile_to_run_agent(mock_db):
     """run_question forwards profile= to run_agent on the agent_full path."""
     mock_state = {
@@ -401,6 +445,27 @@ async def test_run_question_passes_profile_to_run_agent(mock_db):
         )
 
     assert mock_run_agent.call_args.kwargs["profile"] == profile
+
+
+@pytest.mark.asyncio
+async def test_run_question_passes_acting_user_to_run_agent(mock_db):
+    """run_question forwards acting_user= to run_agent on the agent_full path."""
+    mock_state = {
+        "final_answer": "ACCESS is a program for HPC resources.",
+        "tools_used": [],
+    }
+
+    with patch(
+        "src.eval.runner.run_agent", new_callable=AsyncMock, return_value=mock_state
+    ) as mock_run_agent:
+        await run_question(
+            "q1",
+            "What is ACCESS?",
+            tool_catalog={"tools": []},
+            acting_user="jdoe",
+        )
+
+    assert mock_run_agent.call_args.kwargs["acting_user"] == "jdoe"
 
 
 @pytest.mark.asyncio

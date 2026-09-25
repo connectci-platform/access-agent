@@ -139,7 +139,7 @@ async def test_post_compaction_turns_get_nonempty_correctly_scoped_deltas(monkey
 
     with (
         patch.object(loop_mod, "get_llm", return_value=model),
-        patch.object(loop_mod, "_build_prompt_and_tools", return_value=("system", [probe])),
+        patch.object(loop_mod, "_build_prompt_and_tools", return_value=("system", [probe], False)),
     ):
         messages: list = []
         for turn in (1, 2, 3, 4):
@@ -209,7 +209,7 @@ async def test_post_compaction_turn_reports_get_the_same_delta(monkeypatch):
 
     with (
         patch.object(loop_mod, "get_llm", return_value=model),
-        patch.object(loop_mod, "_build_prompt_and_tools", return_value=("system", [probe])),
+        patch.object(loop_mod, "_build_prompt_and_tools", return_value=("system", [probe], False)),
     ):
         messages: list = []
         states = []

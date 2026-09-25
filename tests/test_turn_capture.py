@@ -5,6 +5,7 @@ from src.agent.turn_capture import (
     get_turn_capture,
     mark_summarized,
     record_retrieved_chunks,
+    record_scoped_search,
     record_tool_timing,
     record_trace_id,
     reset_turn_capture,
@@ -35,6 +36,37 @@ def test_empty_search_marks_searched_zero_chunks():
     assert cap["chunks"] == []
 
 
+def test_record_scoped_search_first_call_returns_false():
+    reset_turn_capture()
+    assert record_scoped_search("delta") is False
+
+
+def test_record_scoped_search_repeat_same_slug_returns_true():
+    reset_turn_capture()
+    record_scoped_search("delta")
+    assert record_scoped_search("delta") is True
+
+
+def test_record_scoped_search_different_slug_returns_false():
+    reset_turn_capture()
+    record_scoped_search("delta")
+    assert record_scoped_search("bridges2") is False
+
+
+def test_record_scoped_search_forgotten_after_reset():
+    reset_turn_capture()
+    record_scoped_search("delta")
+    reset_turn_capture()
+    assert record_scoped_search("delta") is False
+
+
+def test_record_scoped_search_without_reset_always_false():
+    """Outside an active turn (capture is None), there's no per-turn state to
+    compare against, so every call is treated as a first call."""
+    assert record_scoped_search("delta") is False
+    assert record_scoped_search("delta") is False
+
+
 def test_default_capture_is_safe_without_reset():
     async def _isolated():
         record_retrieved_chunks([_chunk(1, "https://a.org", "x")])
@@ -49,6 +81,7 @@ def test_default_capture_is_safe_without_reset():
         "tool_timings": [],
         "trace_id": None,
         "model_reasoning": [],
+        "scoped_rp_searched": set(),
     }
 
 

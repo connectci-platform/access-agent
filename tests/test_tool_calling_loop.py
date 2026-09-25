@@ -959,7 +959,7 @@ async def test_prompt_includes_user_profile_from_state_dict(base_state):
     profile = UserProfile(
         allocated_resources=[AllocatedResource(name="Delta GPU", rp_slug="delta")]
     )
-    state = {**base_state, "profile": profile.model_dump()}
+    state = {**base_state, "acting_user": "alice", "profile": profile.model_dump()}
     answer = AIMessage(content="ok")
     mock_graph = AsyncMock()
     mock_graph.ainvoke.return_value = {"messages": [*state["messages"], answer]}
@@ -988,7 +988,7 @@ async def test_profile_present_span_attribute_set(base_state):
     profile = UserProfile(
         allocated_resources=[AllocatedResource(name="Delta GPU", rp_slug="delta")]
     )
-    state = {**base_state, "profile": profile.model_dump()}
+    state = {**base_state, "acting_user": "alice", "profile": profile.model_dump()}
     answer = AIMessage(content="ok")
     mock_graph = AsyncMock()
     mock_graph.ainvoke.return_value = {"messages": [*state["messages"], answer]}
@@ -1030,3 +1030,74 @@ async def test_profile_absent_span_attribute_set_false(base_state):
         await tool_calling_loop_node(base_state)
 
     mock_span.set_attribute.assert_any_call("agent.profile_present", False)
+
+
+@pytest.mark.asyncio
+async def test_profile_without_acting_user_is_ignored(base_state, caplog):
+    """INVARIANT: a profile implies an authenticated user. A profile supplied
+    with no acting_user must be dropped before prompt assembly — no
+    '## User profile' section, and profile_present reflects what was
+    actually used (False), not what was supplied."""
+    import logging
+    from unittest.mock import MagicMock
+
+    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
+    from src.agent.profile import AllocatedResource, UserProfile
+
+    profile = UserProfile(
+        allocated_resources=[AllocatedResource(name="Delta GPU", rp_slug="delta")]
+    )
+    state = {**base_state, "acting_user": None, "profile": profile.model_dump()}
+    answer = AIMessage(content="ok")
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke.return_value = {"messages": [*state["messages"], answer]}
+
+    captured = {}
+
+    def capture(**kwargs):  # type: ignore[no-untyped-def]
+        captured["prompt"] = kwargs.get("system_prompt", "")
+        return mock_graph
+
+    mock_span = MagicMock()
+    mock_tracer = MagicMock()
+    mock_tracer.start_as_current_span.return_value.__enter__.return_value = mock_span
+    mock_tracer.start_as_current_span.return_value.__exit__.return_value = False
+
+    with (
+        patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture),
+        patch("src.agent.nodes.tool_calling_loop.get_tracer", return_value=mock_tracer),
+        caplog.at_level(logging.WARNING, logger="src.agent.nodes.tool_calling_loop"),
+    ):
+        await tool_calling_loop_node(state)
+
+    assert "## User profile" not in captured["prompt"]
+    mock_span.set_attribute.assert_any_call("agent.profile_present", False)
+    assert any(
+        "profile supplied without an acting user; ignoring" in r.message for r in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_profile_with_acting_user_is_used(base_state):
+    """Companion case: profile + acting_user present → section renders."""
+    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
+    from src.agent.profile import AllocatedResource, UserProfile
+
+    profile = UserProfile(
+        allocated_resources=[AllocatedResource(name="Delta GPU", rp_slug="delta")]
+    )
+    state = {**base_state, "acting_user": "alice", "profile": profile.model_dump()}
+    answer = AIMessage(content="ok")
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke.return_value = {"messages": [*state["messages"], answer]}
+
+    captured = {}
+
+    def capture(**kwargs):  # type: ignore[no-untyped-def]
+        captured["prompt"] = kwargs.get("system_prompt", "")
+        return mock_graph
+
+    with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture):
+        await tool_calling_loop_node(state)
+
+    assert "## User profile" in captured["prompt"]

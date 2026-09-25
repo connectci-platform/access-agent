@@ -10,7 +10,7 @@ JETSTREAM2_STORAGE = AllocatedResource(name="Jetstream2 Storage")
 
 def test_render_allocated_resources_zero():
     fragment = render_allocated_resources([])
-    assert fragment.fact == "Allocated resources (as supplied): none supplied with this request"
+    assert fragment.fact == "Allocated resources: none"
     assert "ask which resource" in fragment.instruction
     assert fragment.hint is None
 
@@ -21,6 +21,13 @@ def test_render_allocated_resources_one():
     assert "rp_name='delta'" in fragment.fact
     assert "rp_name='delta'" in fragment.instruction
     assert "search_access_documents" in fragment.instruction
+
+
+def test_render_allocated_resources_fact_wording_states_the_user_holds_them():
+    """Now that a profile implies an authenticated user (enforced in the
+    loop), the fact is phrased as a claim about the user, not the request."""
+    fragment = render_allocated_resources([DELTA_GPU, DELTA_STORAGE])
+    assert fragment.fact == "Allocated resources: Delta GPU (rp_name='delta'), Delta Storage"
 
 
 def test_render_allocated_resources_many_distinct_slugs():
@@ -49,12 +56,32 @@ def test_render_resource_without_slug_omits_rp_name():
     assert "(rp_name=" not in fragment.fact
 
 
+def test_render_single_ungrouped_resource_grammar():
+    """Singular ungrouped resource must not read 'Delta Storage have ...'."""
+    fragment = render_allocated_resources([DELTA_STORAGE])
+    assert (
+        "No scoped documentation exists for Delta Storage; answer about it "
+        "from general ACCESS docs." in fragment.instruction
+    )
+    assert " have " not in fragment.instruction
+    assert " has " not in fragment.instruction
+
+
 def test_render_all_resources_ungrouped_says_scoped_docs_unavailable():
     fragment = render_allocated_resources([DELTA_STORAGE, BRIDGES2_OCEAN])
     assert "Delta Storage" in fragment.instruction
     assert "Bridges-2 Ocean" in fragment.instruction
-    assert "no scoped documentation" in fragment.instruction
+    assert "no scoped documentation" in fragment.instruction.lower()
     assert "rp_name=" not in fragment.instruction
+
+
+def test_render_multiple_ungrouped_resources_grammar():
+    """Plural ungrouped resources: 'answer about them', no singular/plural verb."""
+    fragment = render_allocated_resources([DELTA_STORAGE, BRIDGES2_OCEAN])
+    assert (
+        "No scoped documentation exists for Delta Storage, Bridges-2 Ocean; "
+        "answer about them from general ACCESS docs." in fragment.instruction
+    )
 
 
 def test_render_mixed_grouped_and_ungrouped_composes_both_clauses():
@@ -62,6 +89,20 @@ def test_render_mixed_grouped_and_ungrouped_composes_both_clauses():
     assert "rp_name='delta'" in fragment.instruction
     assert "Delta Storage" in fragment.instruction
     assert "Bridges-2 Ocean" in fragment.instruction
+
+
+def test_render_single_slug_includes_unscoped_retry_instruction():
+    """When a scoped search doesn't answer the question, the prompt must
+    tell the model to retry unscoped before answering or giving up — the
+    prompt-side half of the unscoped-fallback fix (tool-side is deterministic
+    in access_documents.py). See
+    docs/superpowers/specs/2026-09-23-profile-ab-results.md mechanism 3."""
+    fragment = render_allocated_resources([DELTA_GPU])
+    assert (
+        "If a scoped search returns documents that do not answer the "
+        "question, search once more without `rp_name` before answering or "
+        "giving up." in fragment.instruction
+    )
 
 
 def test_render_single_slug_includes_answer_framing():
@@ -99,7 +140,7 @@ def test_render_profile_section_facts_precede_instructions():
 
     profile = UserProfile(allocated_resources=[DELTA_GPU])
     rendered = render_profile_section(profile)
-    facts_idx = rendered.index("Supplied with this request:")
+    facts_idx = rendered.index("About this user:")
     instruction_idx = rendered.index("When the user asks about")
     assert facts_idx < instruction_idx
 
@@ -110,9 +151,11 @@ def test_render_profile_section_emits_closing_sentences_exactly_once():
     profile = UserProfile(allocated_resources=[DELTA_GPU, DELTA_STORAGE, BRIDGES2_OCEAN])
     rendered = render_profile_section(profile)
     closing_a = (
-        "When a question is clearly cross-resource or general-process "
-        "(allocations policy, how ACCESS works, choosing a resource), "
-        "omit the resource scope."
+        "Never scope, and answer ACCESS-wide, when the question is about: "
+        "requesting or renewing an allocation, credits and the exchange "
+        "calculator, ACCESS accounts and logging in, program-wide usage or "
+        "statistics views, or tools and policies that apply across ACCESS. "
+        "Scope only when the question is about using a specific system."
     )
     closing_b = (
         "If a resource context is set above, that resource wins for "
@@ -120,6 +163,22 @@ def test_render_profile_section_emits_closing_sentences_exactly_once():
     )
     assert rendered.count(closing_a) == 1
     assert rendered.count(closing_b) == 1
+
+
+def test_render_profile_section_names_never_scoped_classes():
+    """The closing sentence must name the specific never-scoped classes
+    (regressed in the A/B: allocation credits, account/login, program-wide
+    usage — see docs/superpowers/specs/2026-09-23-profile-ab-results.md),
+    not just a generic 'clearly cross-resource or general-process' clause."""
+    from src.agent.profile import UserProfile
+
+    profile = UserProfile(allocated_resources=[DELTA_GPU])
+    rendered = render_profile_section(profile)
+    assert "requesting or renewing an allocation" in rendered
+    assert "credits and the exchange calculator" in rendered
+    assert "ACCESS accounts and logging in" in rendered
+    assert "program-wide usage or statistics views" in rendered
+    assert "tools and policies that apply across ACCESS" in rendered
 
 
 def test_render_profile_section_returns_empty_string_when_no_fragments():
@@ -130,6 +189,11 @@ def test_render_profile_section_returns_empty_string_when_no_fragments():
 
 
 def test_render_profile_section_within_token_budget():
+    """Cap raised from 250 to 325: the explicit never-scoped-classes closing
+    sentence plus the single-slug unscoped-retry instruction (see
+    docs/superpowers/specs/2026-09-23-profile-ab-results.md) measure ~309
+    tokens (len/4) on the mixed worst case, up from ~198 before; 325 keeps a
+    small margin over the measured render."""
     from src.agent.profile import UserProfile
 
     single_slug = UserProfile(allocated_resources=[DELTA_GPU])
@@ -138,7 +202,7 @@ def test_render_profile_section_within_token_budget():
     )
     for profile in (single_slug, mixed_worst_case):
         rendered = render_profile_section(profile)
-        assert len(rendered) / 4 <= 250
+        assert len(rendered) / 4 <= 325
 
 
 def test_render_profile_section_resource_context_overrides_slug_instruction():
@@ -177,7 +241,7 @@ def test_render_profile_section_empty_resources_with_resource_context_has_no_dan
     profile = UserProfile(allocated_resources=[])
     rendered = render_profile_section(profile, resource_context="anvil")
 
-    assert "Allocated resources (as supplied): none supplied with this request" in rendered
+    assert "Allocated resources: none" in rendered
     assert "allocations listed here" not in rendered
     assert "ask which resource" not in rendered
 

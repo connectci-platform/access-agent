@@ -93,6 +93,7 @@ async def run_question(
     battery_id: str | None = None,
     battery_run_id: str | None = None,
     profile: UserProfile | None = None,
+    acting_user: str | None = None,
 ) -> RunResult:
     start = time.monotonic()
     try:
@@ -113,6 +114,7 @@ async def run_question(
                 battery_id=battery_id,
                 battery_run_id=battery_run_id,
                 profile=profile,
+                acting_user=acting_user,
             )
         result.duration_ms = (time.monotonic() - start) * 1000
         return result
@@ -141,9 +143,10 @@ async def _run_raw_rag(
     Intentionally ignores resource_context: current prod does not do
     resource-scoped RAG, so the baseline shouldn't either.
 
-    Intentionally ignores profile: current prod does not do profile-scoped
-    RAG, so the baseline shouldn't either. run_question simply does not pass
-    it on this branch — there is no profile parameter here to ignore.
+    Intentionally ignores profile and acting_user: current prod does not do
+    profile-scoped or identity-scoped RAG, so the baseline shouldn't either.
+    run_question simply does not pass them on this branch — there are no
+    profile/acting_user parameters here to ignore.
 
     Like the agent path, writes a battery turn_reports row when battery_run_id
     is set — raw_rag answers must reach the review UI so humans score BOTH
@@ -202,6 +205,7 @@ async def _run_agent(
     battery_id: str | None = None,
     battery_run_id: str | None = None,
     profile: UserProfile | None = None,
+    acting_user: str | None = None,
 ) -> RunResult:
     """Call run_agent() and capture the final answer + execution context.
 
@@ -223,6 +227,7 @@ async def _run_agent(
             use_checkpointing=False,
             resource_context=resource_context,
             profile=profile,
+            acting_user=acting_user,
         )
     except Exception:
         # Mirror src/api/routes.py's failure write: a failed battery question

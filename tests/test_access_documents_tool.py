@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -81,7 +81,10 @@ class TestSearchAccessDocuments:
 
     @pytest.mark.asyncio
     async def test_passes_rp_name_through(self, mock_client: Any) -> None:
-        mock_client.retrieve.return_value = UKYRetrieval(chunks=[])
+        # Non-empty chunks: no unscoped retry, so the one call is the scoped one.
+        mock_client.retrieve.return_value = UKYRetrieval(
+            chunks=[UKYChunk(rank=1, text="Delta docs", url="https://x")]
+        )
         await _search_access_documents(query="what GPUs", source="general", rp_name="delta")
         kwargs = mock_client.retrieve.await_args.kwargs
         assert kwargs["rp_name"] == "delta"
@@ -89,7 +92,9 @@ class TestSearchAccessDocuments:
     @pytest.mark.asyncio
     async def test_rp_name_normalized_before_call(self, mock_client: Any) -> None:
         # A guessed display-name variant ('Bridges-2') must reach UKY as the slug.
-        mock_client.retrieve.return_value = UKYRetrieval(chunks=[])
+        mock_client.retrieve.return_value = UKYRetrieval(
+            chunks=[UKYChunk(rank=1, text="Bridges-2 docs", url="https://x")]
+        )
         await _search_access_documents(query="what GPUs", source="general", rp_name="Bridges-2")
         kwargs = mock_client.retrieve.await_args.kwargs
         assert kwargs["rp_name"] == "bridges2"
@@ -97,7 +102,9 @@ class TestSearchAccessDocuments:
     @pytest.mark.asyncio
     async def test_normalize_noop_on_valid_slug(self, mock_client: Any) -> None:
         # An already-valid slug must not be corrupted by normalization.
-        mock_client.retrieve.return_value = UKYRetrieval(chunks=[])
+        mock_client.retrieve.return_value = UKYRetrieval(
+            chunks=[UKYChunk(rank=1, text="bridges2 docs", url="https://x")]
+        )
         await _search_access_documents(query="what GPUs", source="general", rp_name="bridges2")
         kwargs = mock_client.retrieve.await_args.kwargs
         assert kwargs["rp_name"] == "bridges2"
@@ -139,6 +146,28 @@ class TestSearchAccessDocuments:
         result = await _search_access_documents(query="anything")
         assert "unavailable" in result.lower()
         mock_client.retrieve.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_xdmod_disabled_by_capability_registry_returns_unavailable(
+        self, mock_client: Any
+    ) -> None:
+        mock_registry = MagicMock()
+        mock_registry.enabled_rag_endpoints.return_value = {"general"}
+        mock_registry.scoped_rag_enabled.return_value = True
+        with patch(
+            "src.agent.tools.access_documents.get_capability_registry",
+            return_value=mock_registry,
+        ):
+            result = await _search_access_documents(query="usage fields", source="xdmod")
+        assert "unavailable" in result.lower()
+        mock_client.ask.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_xdmod_unconfigured_client_returns_unavailable(self, mock_client: Any) -> None:
+        mock_client.is_configured = False
+        result = await _search_access_documents(query="usage fields", source="xdmod")
+        assert "unavailable" in result.lower()
+        mock_client.ask.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_uky_http_status_error_returns_error_dict_with_status_code(
@@ -359,3 +388,198 @@ class TestInvalidRpNameRetry:
         assert "Delta-specific GPU details." in result
         assert "general ACCESS results" not in result
         assert mock_client.retrieve.await_count == 1
+
+
+class TestSecondScopedSearchSameTurnWidens:
+    """Reproduces the production failure: scoped searches return non-empty
+    but off-topic chunks (so the zero-chunk retry doesn't fire), and the
+    model repeats the same scoped search until the recursion limit. A
+    second scoped call to the SAME normalized rp_name within one turn must
+    widen to unscoped instead of repeating. See
+    docs/superpowers/specs/2026-09-23-profile-ab-results.md mechanism 3."""
+
+    @pytest.mark.asyncio
+    async def test_first_scoped_call_passes_rp(self, mock_client: Any) -> None:
+        from src.agent.turn_capture import reset_turn_capture
+
+        reset_turn_capture()
+        mock_client.retrieve.return_value = UKYRetrieval(
+            chunks=[UKYChunk(rank=1, text="Delta partitions.", url="https://x")]
+        )
+        await _search_access_documents(query="what partitions", source="general", rp_name="delta")
+        kwargs = mock_client.retrieve.await_args.kwargs
+        assert kwargs["rp_name"] == "delta"
+
+    @pytest.mark.asyncio
+    async def test_second_scoped_call_same_rp_same_turn_widens_unscoped(
+        self, mock_client: Any
+    ) -> None:
+        from src.agent.turn_capture import reset_turn_capture
+
+        reset_turn_capture()
+        off_topic = UKYRetrieval(
+            chunks=[UKYChunk(rank=1, text="Delta storage purge policy.", url="https://x")]
+        )
+        general_chunks = UKYRetrieval(
+            chunks=[
+                UKYChunk(
+                    rank=1,
+                    text="ACCESS Exchange Calculator overview.",
+                    url="https://access-ci.org/exchange",
+                )
+            ]
+        )
+        mock_client.retrieve.side_effect = [off_topic, general_chunks]
+
+        first = await _search_access_documents(
+            query="how many credits do I have left", source="general", rp_name="delta"
+        )
+        second = await _search_access_documents(
+            query="how many credits do I have left", source="general", rp_name="delta"
+        )
+
+        assert "Delta storage purge policy." in first
+        assert isinstance(second, str)
+        assert "ACCESS Exchange Calculator overview." in second
+        assert (
+            "A second scoped search for `delta` this turn; showing general "
+            "ACCESS results instead." in second
+        )
+
+        assert mock_client.retrieve.await_count == 2
+        first_kwargs = mock_client.retrieve.await_args_list[0].kwargs
+        second_kwargs = mock_client.retrieve.await_args_list[1].kwargs
+        assert first_kwargs["rp_name"] == "delta"
+        assert second_kwargs["rp_name"] is None
+
+    @pytest.mark.asyncio
+    async def test_second_scoped_call_different_rp_same_turn_still_scoped(
+        self, mock_client: Any
+    ) -> None:
+        from src.agent.turn_capture import reset_turn_capture
+
+        reset_turn_capture()
+        mock_client.retrieve.return_value = UKYRetrieval(
+            chunks=[UKYChunk(rank=1, text="docs", url="https://x")]
+        )
+
+        await _search_access_documents(query="q1", source="general", rp_name="delta")
+        await _search_access_documents(query="q2", source="general", rp_name="bridges2")
+
+        assert mock_client.retrieve.await_count == 2
+        first_kwargs = mock_client.retrieve.await_args_list[0].kwargs
+        second_kwargs = mock_client.retrieve.await_args_list[1].kwargs
+        assert first_kwargs["rp_name"] == "delta"
+        assert second_kwargs["rp_name"] == "bridges2"
+
+    @pytest.mark.asyncio
+    async def test_same_rp_scoped_again_after_reset(self, mock_client: Any) -> None:
+        """A new turn (fresh reset_turn_capture()) forgets prior turns' scoped
+        searches — the widening is per-turn, not global."""
+        from src.agent.turn_capture import reset_turn_capture
+
+        mock_client.retrieve.return_value = UKYRetrieval(
+            chunks=[UKYChunk(rank=1, text="docs", url="https://x")]
+        )
+
+        reset_turn_capture()
+        await _search_access_documents(query="q1", source="general", rp_name="delta")
+
+        reset_turn_capture()
+        await _search_access_documents(query="q2", source="general", rp_name="delta")
+
+        assert mock_client.retrieve.await_count == 2
+        first_kwargs = mock_client.retrieve.await_args_list[0].kwargs
+        second_kwargs = mock_client.retrieve.await_args_list[1].kwargs
+        assert first_kwargs["rp_name"] == "delta"
+        assert second_kwargs["rp_name"] == "delta"
+
+    @pytest.mark.asyncio
+    async def test_xdmod_path_unaffected_by_repeat_scoping(self, mock_client: Any) -> None:
+        """The widening only applies to the general/chat-mcp path — xdmod
+        keeps its own independent invalid-rp_name retry behavior."""
+        from src.agent.turn_capture import reset_turn_capture
+
+        reset_turn_capture()
+        mock_client.ask.return_value = UKYResponse(response="XDMoD fields:", endpoint_type="xdmod")
+
+        await _search_access_documents(query="q1", source="xdmod", rp_name="delta")
+        await _search_access_documents(query="q2", source="xdmod", rp_name="delta")
+
+        assert mock_client.ask.await_count == 2
+        first_kwargs = mock_client.ask.await_args_list[0].kwargs
+        second_kwargs = mock_client.ask.await_args_list[1].kwargs
+        assert first_kwargs["rp_name"] == "delta"
+        assert second_kwargs["rp_name"] == "delta"
+
+
+class TestZeroChunkUnscopedRetry:
+    """A scoped call that returns zero chunks retries once unscoped — distinct
+    from the invalid-rp_name 400 retry (that's a backend rejection; this is a
+    backend-accepted-but-empty result). See
+    docs/superpowers/specs/2026-09-23-profile-ab-results.md mechanism 3."""
+
+    @pytest.mark.asyncio
+    async def test_zero_chunks_scoped_retries_unscoped_with_distinct_note(
+        self, mock_client: Any
+    ) -> None:
+        general_chunks = UKYRetrieval(
+            chunks=[
+                UKYChunk(
+                    rank=1,
+                    text="ACCESS Exchange Calculator overview.",
+                    url="https://access-ci.org/exchange",
+                )
+            ]
+        )
+        mock_client.retrieve.side_effect = [UKYRetrieval(chunks=[]), general_chunks]
+
+        result = await _search_access_documents(
+            query="credits estimator", source="general", rp_name="delta"
+        )
+
+        assert isinstance(result, str)
+        assert "ACCESS Exchange Calculator overview." in result
+        assert "No documentation matched within the `<rp>` scope" in result
+        # Distinct wording from the invalid-rp_name retry note (_SCOPE_DROPPED_NOTE
+        # says "could not be scoped") so the two cases are distinguishable.
+        assert "could not be scoped" not in result
+
+        assert mock_client.retrieve.await_count == 2
+        first_kwargs = mock_client.retrieve.await_args_list[0].kwargs
+        second_kwargs = mock_client.retrieve.await_args_list[1].kwargs
+        assert first_kwargs["rp_name"] == "delta"
+        assert second_kwargs["rp_name"] is None
+
+    @pytest.mark.asyncio
+    async def test_non_zero_chunks_scoped_does_not_retry(self, mock_client: Any) -> None:
+        mock_client.retrieve.return_value = UKYRetrieval(
+            chunks=[UKYChunk(rank=1, text="Delta partitions.", url="https://x")]
+        )
+        result = await _search_access_documents(
+            query="what partitions", source="general", rp_name="delta"
+        )
+        assert isinstance(result, str)
+        assert "Delta partitions." in result
+        assert "No documentation matched within the `<rp>` scope" not in result
+        assert mock_client.retrieve.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_zero_chunks_unscoped_does_not_retry(self, mock_client: Any) -> None:
+        """No rp_name means there's no scope to drop — must not loop."""
+        mock_client.retrieve.return_value = UKYRetrieval(chunks=[])
+        result = await _search_access_documents(query="what GPUs", source="general")
+        assert "no excerpts" in result.lower()
+        assert mock_client.retrieve.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_zero_chunks_scoped_retry_also_empty_returns_no_excerpts_note(
+        self, mock_client: Any
+    ) -> None:
+        mock_client.retrieve.side_effect = [UKYRetrieval(chunks=[]), UKYRetrieval(chunks=[])]
+        result = await _search_access_documents(
+            query="what GPUs", source="general", rp_name="delta"
+        )
+        assert isinstance(result, str)
+        assert "No documentation matched within the `<rp>` scope" in result
+        assert mock_client.retrieve.await_count == 2

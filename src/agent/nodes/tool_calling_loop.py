@@ -55,7 +55,7 @@ def _build_prompt_and_tools(
     acting_user: str | None,
     resource_context: str | None,
     profile: dict[str, Any] | None,
-) -> tuple[str, list[BaseTool]]:
+) -> tuple[str, list[BaseTool], bool]:
     """Assemble the loop's system prompt and tool list.
 
     Tool list = MCP catalog (read-only-filtered) + ``search_access_documents``.
@@ -65,15 +65,26 @@ def _build_prompt_and_tools(
     ``profile`` arrives as a plain dict (state.py stores ``UserProfile.model_dump()``
     so the channel stays JSON-plain) and is revalidated here, at the read site,
     rather than carrying a pydantic object through state.
+
+    INVARIANT: a profile implies an authenticated user. A profile supplied
+    without ``acting_user`` is ignored — the caller cannot vouch for an
+    allocation belonging to nobody — and logged once so the drop is visible.
+    Returns whether the profile was actually used, so callers can report a
+    truthful ``agent.profile_present`` span attribute rather than the raw
+    "was a profile supplied" value.
     """
     mcp_tools = _apply_read_only_filter(create_mcp_tools_from_catalog(tool_catalog, acting_user))
+    if profile is not None and acting_user is None:
+        logger.warning("profile supplied without an acting user; ignoring")
+        profile = None
+    profile_used = profile is not None
     profile_model = UserProfile.model_validate(profile) if profile is not None else None
     prompt = build_system_prompt(
         acting_user=acting_user,
         resource_context=resource_context,
         profile=profile_model,
     )
-    return prompt, [*mcp_tools, search_access_documents]
+    return prompt, [*mcp_tools, search_access_documents], profile_used
 
 
 def _apply_read_only_filter(tools: list[BaseTool]) -> list[BaseTool]:
@@ -515,7 +526,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:  # no
     ) as span:
         acting_user = state.get("acting_user")
 
-        system_prompt, tools = _build_prompt_and_tools(
+        system_prompt, tools, profile_used = _build_prompt_and_tools(
             tool_catalog=state.get("tool_catalog") or {},
             acting_user=acting_user,
             resource_context=state.get("resource_context"),
@@ -524,7 +535,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:  # no
 
         span.set_attribute("agent.tool_count", len(tools))
         span.set_attribute("agent.authenticated", bool(acting_user))
-        span.set_attribute("agent.profile_present", state.get("profile") is not None)
+        span.set_attribute("agent.profile_present", profile_used)
 
         llm = get_llm(max_tokens=settings.MAX_TOKENS_LOOP)
         agent = create_agent(
