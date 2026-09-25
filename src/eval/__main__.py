@@ -91,6 +91,11 @@ def _handle_run(args: argparse.Namespace) -> None:
     from .report import print_run_summary
     from .scorer import run_eval
 
+    if args.profile_resource and not args.acting_user:
+        raise ProfileArgError(
+            "--profile-resource requires --acting-user: a profile implies an authenticated user"
+        )
+
     profile = _profile_from_args(args.profile_resource)
     if profile is not None:
         _log_resolved_profile(profile)
@@ -102,6 +107,7 @@ def _handle_run(args: argparse.Namespace) -> None:
             judge_model=args.judge_model,
             allow_factless=args.allow_factless,
             profile=profile,
+            acting_user=args.acting_user,
         )
     )
     print_run_summary(summary)
@@ -544,8 +550,14 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915  # all subcomman
             "NAME=slug where slug is a resource-group slug from "
             "support.access-ci.org/api/1.0/resource-groups; omit the slug "
             "for an ungrouped resource. Synthetic profiles only — persisted "
-            "verbatim into eval_runs.metadata, which has no retention policy."
+            "verbatim into eval_runs.metadata, which has no retention policy. "
+            "Requires --acting-user: a profile implies an authenticated user."
         ),
+    )
+    run_parser.add_argument(
+        "--acting-user",
+        default=None,
+        help="Optional ACCESS ID for authenticated calls during the run",
     )
 
     compare_parser = subparsers.add_parser("compare", help="Compare two eval runs")

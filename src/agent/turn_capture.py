@@ -1,10 +1,13 @@
 """Per-request side-channel for turn observations absent from final_state.
 
-Carries five kinds of data the agent graph doesn't surface in final_state:
+Carries six kinds of data the agent graph doesn't surface in final_state:
 retrieved chunks (search_access_documents flattens them to a string before
 returning), whether SummarizationMiddleware fired, per-tool-call durations,
-the turn's OTEL trace id, and the per-model-call ``<think>`` reasoning the
-LLM wrapper strips from responses.
+the turn's OTEL trace id, the per-model-call ``<think>`` reasoning the LLM
+wrapper strips from responses, and the set of normalized rp_name slugs
+search_access_documents has already searched this turn (so a second scoped
+call to the same slug can widen instead of repeating a search the model
+already saw fail — see record_scoped_search).
 
 We carry them out via a ContextVar holding one mutable dict. The route resets
 it per turn; the doc-search tool, the summarization middleware, the MCP tool
@@ -39,6 +42,7 @@ def _fresh_capture() -> dict[str, Any]:
         "tool_timings": [],
         "trace_id": None,
         "model_reasoning": [],
+        "scoped_rp_searched": set(),
     }
 
 
@@ -91,6 +95,27 @@ def record_model_reasoning(reasoning: str) -> None:
     if cap is None or not reasoning:
         return
     cap["model_reasoning"].append(reasoning)
+
+
+def record_scoped_search(rp_name: str) -> bool:
+    """Record a scoped search_access_documents call for ``rp_name`` this turn.
+
+    Returns True iff this exact normalized slug was already searched earlier
+    in the same turn — the caller uses that to widen the second call to
+    unscoped rather than repeating a scoped search the model already saw
+    return unhelpful results for. Outside an active turn (capture is None,
+    e.g. a direct call in a test with no reset_turn_capture()), always
+    returns False — there's no per-turn state to compare against, so no
+    call is ever treated as a repeat.
+    """
+    cap = _turn_capture.get()
+    if cap is None:
+        return False
+    seen: set[str] = cap["scoped_rp_searched"]
+    if rp_name in seen:
+        return True
+    seen.add(rp_name)
+    return False
 
 
 def get_turn_capture() -> dict[str, Any]:

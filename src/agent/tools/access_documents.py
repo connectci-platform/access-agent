@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 
 from ...services.uky_client import UKYChunk, get_uky_client
 from ..domains.capabilities import get_capability_registry
-from ..turn_capture import record_retrieved_chunks, record_tool_timing
+from ..turn_capture import record_retrieved_chunks, record_scoped_search, record_tool_timing
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +111,30 @@ _SCOPE_DROPPED_NOTE = (
     "showing general ACCESS results.)\n\n"
 )
 
+# Distinct from _SCOPE_DROPPED_NOTE (backend rejected the rp_name outright):
+# this fires when the backend accepted the scoped rp_name but returned zero
+# chunks — a scoped search with nothing that answers the question, not an
+# invalid slug. See docs/superpowers/specs/2026-09-23-profile-ab-results.md
+# mechanism 3 ("no answer at all when the scoped resource lacks the thing
+# asked about").
+_ZERO_CHUNKS_SCOPED_NOTE = (
+    "(No documentation matched within the `<rp>` scope; showing general ACCESS results.)\n\n"
+)
+
+
+def _repeat_scoped_search_note(rp_name: str) -> str:
+    """Distinct note for the repeat-scoped-search widening (see
+    _search_access_documents_inner's general-path repeat check) — a
+    different failure than either _SCOPE_DROPPED_NOTE (backend rejected the
+    slug) or _ZERO_CHUNKS_SCOPED_NOTE (accepted but zero chunks): this is a
+    second scoped call this turn to a slug that already returned something,
+    just not something that answered the question.
+    """
+    return (
+        f"(A second scoped search for `{rp_name}` this turn; showing general "
+        "ACCESS results instead.)\n\n"
+    )
+
 
 def _is_invalid_rp_name(exc: Exception) -> bool:
     """True iff ``exc`` is UKY's 400 for an rp_name it doesn't recognize."""
@@ -187,6 +211,25 @@ async def _retry_general_unscoped(
     return _SCOPE_DROPPED_NOTE + _format_chunks(query, retrieval.chunks)
 
 
+async def _retry_general_unscoped_on_zero_chunks(query: str, rp_name: str) -> str:
+    """Retry a scoped general search unscoped after a zero-chunk result.
+
+    Called only when the backend *accepted* ``rp_name`` and returned zero
+    chunks — distinct from ``_retry_general_unscoped``'s invalid-rp_name 400
+    path. Always returns the final (unscoped) text, since a second empty
+    result is still the best answer available ("no excerpts" guidance).
+    """
+    logger.info(
+        "search_access_documents (general): scoped rp_name=%r returned zero chunks; "
+        "retrying unscoped",
+        rp_name,
+    )
+    client = get_uky_client()
+    retrieval = await client.retrieve(query=query, rp_name=None)
+    record_retrieved_chunks(retrieval.chunks)
+    return _ZERO_CHUNKS_SCOPED_NOTE + _format_chunks(query, retrieval.chunks)
+
+
 async def _search_access_documents_inner(
     query: str,
     source: Literal["general", "xdmod"] = "general",
@@ -219,28 +262,45 @@ async def _search_access_documents_inner(
     if rp_name:
         rp_name = _normalize_rp_name(rp_name)
 
-    # XDMoD: legacy synthesis endpoint.
     if source == "xdmod":
-        if "xdmod" not in enabled_endpoints:
-            logger.info("search_access_documents (xdmod) disabled by capability registry")
-            return _UNAVAILABLE
-        if not client.is_configured:
-            logger.warning("search_access_documents (xdmod) called but UKY RAG is not configured")
-            return _UNAVAILABLE
-        try:
-            result = await client.ask(query=query, endpoint_type="xdmod", rp_name=rp_name)
-        except Exception as exc:
-            retried = await _retry_xdmod_unscoped(query, rp_name, exc)
-            if retried is not None:
-                return retried
-            logger.warning("search_access_documents (xdmod) failed: %s", exc)
-            return _error_payload(exc)
-        return result.response or (
-            "Documentation search returned no content for that query. "
-            "Try rephrasing or call a different tool."
-        )
+        return await _search_xdmod(client, enabled_endpoints, query, rp_name)
+    return await _search_general(client, enabled_endpoints, query, rp_name)
 
-    # General: chunk retrieval via chat-mcp; the agent synthesizes itself.
+
+async def _search_xdmod(
+    client: Any,
+    enabled_endpoints: set[str],
+    query: str,
+    rp_name: str | None,
+) -> str | dict[str, Any]:
+    """XDMoD path: legacy synthesis endpoint."""
+    if "xdmod" not in enabled_endpoints:
+        logger.info("search_access_documents (xdmod) disabled by capability registry")
+        return _UNAVAILABLE
+    if not client.is_configured:
+        logger.warning("search_access_documents (xdmod) called but UKY RAG is not configured")
+        return _UNAVAILABLE
+    try:
+        result = await client.ask(query=query, endpoint_type="xdmod", rp_name=rp_name)
+    except Exception as exc:
+        retried = await _retry_xdmod_unscoped(query, rp_name, exc)
+        if retried is not None:
+            return retried
+        logger.warning("search_access_documents (xdmod) failed: %s", exc)
+        return _error_payload(exc)
+    return result.response or (
+        "Documentation search returned no content for that query. "
+        "Try rephrasing or call a different tool."
+    )
+
+
+async def _search_general(
+    client: Any,
+    enabled_endpoints: set[str],
+    query: str,
+    rp_name: str | None,
+) -> str | dict[str, Any]:
+    """General path: chunk retrieval via chat-mcp; the agent synthesizes itself."""
     if "general" not in enabled_endpoints:
         logger.info("search_access_documents (general) disabled by capability registry")
         return _UNAVAILABLE
@@ -250,6 +310,23 @@ async def _search_access_documents_inner(
             "(UKY_RAG_ENABLED=False or no UKY_CHATMCP_API_KEY)"
         )
         return _UNAVAILABLE
+
+    # A second scoped call to the SAME normalized rp_name this turn means the
+    # first scoped search already returned something that didn't answer the
+    # question (otherwise the model wouldn't be asking again) — widen to
+    # unscoped instead of repeating the scoped search, which is what let the
+    # loop spin until the recursion limit in production. Checked before the
+    # call so the repeat itself is never made scoped.
+    if rp_name and record_scoped_search(rp_name):
+        logger.info(
+            "search_access_documents (general): repeat scoped search for "
+            "rp_name=%r this turn; widening to unscoped",
+            rp_name,
+        )
+        retrieval = await client.retrieve(query=query, rp_name=None)
+        record_retrieved_chunks(retrieval.chunks)
+        return _repeat_scoped_search_note(rp_name) + _format_chunks(query, retrieval.chunks)
+
     try:
         retrieval = await client.retrieve(query=query, rp_name=rp_name)
     except Exception as exc:
@@ -258,6 +335,9 @@ async def _search_access_documents_inner(
             return retried
         logger.warning("search_access_documents (chat-mcp) failed: %s", exc)
         return _error_payload(exc)
+
+    if rp_name and not retrieval.chunks:
+        return await _retry_general_unscoped_on_zero_chunks(query, rp_name)
 
     record_retrieved_chunks(retrieval.chunks)
     return _format_chunks(query, retrieval.chunks)

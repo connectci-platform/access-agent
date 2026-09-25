@@ -23,7 +23,7 @@ def test_profile_section_renders_composed_output():
         allocated_resources=[AllocatedResource(name="Delta GPU", rp_slug="delta")]
     )
     prompt = build_system_prompt(profile=profile)
-    assert "Supplied with this request:" in prompt
+    assert "About this user:" in prompt
     assert "rp_name='delta'" in prompt
 
 
@@ -72,6 +72,6 @@ def test_resource_context_with_empty_resources_has_no_dangling_override():
     profile = UserProfile(allocated_resources=[])
     prompt = build_system_prompt(resource_context="anvil", profile=profile)
 
-    assert "Allocated resources (as supplied): none supplied with this request" in prompt
+    assert "Allocated resources: none" in prompt
     assert "allocations listed here" not in prompt
     assert "ask which resource" not in prompt

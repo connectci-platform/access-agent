@@ -36,6 +36,16 @@ class TestRunParserProfileResource:
         assert not args.profile_resource
 
 
+class TestRunParserActingUser:
+    def test_run_parser_accepts_acting_user(self):
+        args = _parser().parse_args(["run", "--acting-user", "jdoe"])
+        assert args.acting_user == "jdoe"
+
+    def test_default_is_none(self):
+        args = _parser().parse_args(["run"])
+        assert args.acting_user is None
+
+
 class TestProfileFromArgs:
     def test_profile_resource_without_slug_is_ungrouped(self):
         from src.eval.__main__ import _profile_from_args
@@ -161,6 +171,7 @@ class TestHandleRun:
             judge_model=None,
             allow_factless=False,
             profile_resource=["Delta Storage"],
+            acting_user="jdoe",
         )
 
         with (
@@ -185,6 +196,7 @@ class TestHandleRun:
             judge_model=None,
             allow_factless=False,
             profile_resource=["Delta\n#x"],
+            acting_user="jdoe",
         )
 
         with (
@@ -209,6 +221,7 @@ class TestHandleRun:
             judge_model=None,
             allow_factless=False,
             profile_resource=["Delta GPU=delta", "Delta Storage"],
+            acting_user="jdoe",
         )
 
         mock_cache = MagicMock()
@@ -227,3 +240,50 @@ class TestHandleRun:
         messages = [r.message for r in caplog.records]
         assert any("Delta GPU: scoped (rp_name=delta)" in m for m in messages)
         assert any("Delta Storage: ungrouped (no rp_name)" in m for m in messages)
+
+    def test_handle_run_forwards_acting_user_to_run_eval(self):
+        import argparse
+
+        from src.eval.__main__ import _handle_run
+
+        args = argparse.Namespace(
+            questions="eval/questions/friendly_battery.json",
+            system="agent_full",
+            judge_model=None,
+            allow_factless=False,
+            profile_resource=None,
+            acting_user="jdoe",
+        )
+
+        with (
+            patch("src.eval.scorer.run_eval", new_callable=AsyncMock) as mock_run_eval,
+            patch("src.eval.report.print_run_summary"),
+        ):
+            mock_run_eval.return_value = {"run_id": "r1"}
+            _handle_run(args)
+
+        assert mock_run_eval.call_args.kwargs["acting_user"] == "jdoe"
+
+    def test_handle_run_profile_resource_without_acting_user_raises(self):
+        """A profile implies an authenticated user; --profile-resource without
+        --acting-user must be rejected before run_eval is ever called."""
+        import argparse
+
+        from src.eval.__main__ import ProfileArgError, _handle_run
+
+        args = argparse.Namespace(
+            questions="eval/questions/friendly_battery.json",
+            system="agent_full",
+            judge_model=None,
+            allow_factless=False,
+            profile_resource=["Delta Storage"],
+            acting_user=None,
+        )
+
+        with (
+            patch("src.eval.scorer.run_eval", new_callable=AsyncMock) as mock_run_eval,
+            pytest.raises(ProfileArgError, match="requires --acting-user"),
+        ):
+            _handle_run(args)
+
+        mock_run_eval.assert_not_called()

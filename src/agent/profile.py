@@ -4,8 +4,12 @@ Imported by the API layer, the agent, and the eval CLI, so it lives here
 rather than in ``state.py`` (the graph's internal state, and the wrong
 owner of a contract three other layers share).
 
-Facts are phrased as what the *request supplied*, never as assertions about
-the user — this is an ungated body value, so the agent cannot vouch for it.
+Facts are phrased as claims about the user (``About this user: ...``), not
+as "what the request supplied" — the invariant that a profile implies an
+authenticated user is enforced at the loop's read site
+(``tool_calling_loop._build_prompt_and_tools``, which drops any profile
+supplied without an ``acting_user``), so by the time a profile reaches this
+module the user is known to be logged in.
 """
 
 from __future__ import annotations
@@ -52,7 +56,7 @@ class UserProfile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # None means "not supplied" — distinct from an explicitly empty list, which
-    # still renders the "none supplied" fact. See render_allocated_resources.
+    # still renders the "none" fact. See render_allocated_resources.
     allocated_resources: list[AllocatedResource] | None = Field(None, max_length=32)
 
 
@@ -72,7 +76,7 @@ def render_allocated_resources(resources: list[AllocatedResource]) -> ProfileFra
     """
     if not resources:
         return ProfileFragment(
-            fact="Allocated resources (as supplied): none supplied with this request",
+            fact="Allocated resources: none",
             instruction=(
                 'If the user asks about "this system" or their own cluster, '
                 "ask which resource they mean rather than assuming one."
@@ -80,7 +84,7 @@ def render_allocated_resources(resources: list[AllocatedResource]) -> ProfileFra
             hint=None,
         )
 
-    fact = "Allocated resources (as supplied): " + ", ".join(_fact_name(r) for r in resources)
+    fact = "Allocated resources: " + ", ".join(_fact_name(r) for r in resources)
 
     slugs = {r.rp_slug for r in resources if r.rp_slug}
     ungrouped = [r for r in resources if not r.rp_slug]
@@ -93,7 +97,9 @@ def render_allocated_resources(resources: list[AllocatedResource]) -> ProfileFra
             f'or says "here" — they mean `{slug}` unless the question names '
             f"another resource; pass `rp_name='{slug}'` to "
             "`search_access_documents` and to any MCP tool that accepts a "
-            "resource filter."
+            "resource filter. If a scoped search returns documents that do "
+            "not answer the question, search once more without `rp_name` "
+            "before answering or giving up."
         )
         clauses.append(
             f"When you answer for `{slug}`, say so, and attribute "
@@ -108,8 +114,10 @@ def render_allocated_resources(resources: list[AllocatedResource]) -> ProfileFra
 
     if ungrouped:
         names = ", ".join(r.name for r in ungrouped)
+        pronoun = "it" if len(ungrouped) == 1 else "them"
         clauses.append(
-            f"{names} have no scoped documentation; answer about them from general ACCESS docs."
+            f"No scoped documentation exists for {names}; answer about "
+            f"{pronoun} from general ACCESS docs."
         )
 
     instruction = " ".join(clauses)
@@ -124,10 +132,13 @@ def render_allocated_resources(resources: list[AllocatedResource]) -> ProfileFra
 
 
 _CLOSING_SENTENCES = (
-    "When a question is clearly cross-resource or general-process "
-    "(allocations policy, how ACCESS works, choosing a resource), omit the "
-    "resource scope. If a resource context is set above, that resource wins "
-    'for "this system" even if it is not listed here.'
+    "Never scope, and answer ACCESS-wide, when the question is about: "
+    "requesting or renewing an allocation, credits and the exchange "
+    "calculator, ACCESS accounts and logging in, program-wide usage or "
+    "statistics views, or tools and policies that apply across ACCESS. "
+    "Scope only when the question is about using a specific system. If a "
+    'resource context is set above, that resource wins for "this system" '
+    "even if it is not listed here."
 )
 
 _RESOURCE_CONTEXT_OVERRIDE_INSTRUCTION = (
@@ -157,7 +168,7 @@ def render_profile_section(profile: UserProfile, resource_context: str | None = 
 
     An empty ``allocated_resources`` list (``[]``, not ``None``) combined
     with ``resource_context`` is a distinct case: the fact line still states
-    "none supplied", but the override sentence ("The allocations listed here
+    "none", but the override sentence ("The allocations listed here
     are...") would refer to allocations that don't exist, and the ordinary
     "ask which resource" instruction is moot because ``resource_context``
     already answers that question. So this case renders the fact with an
@@ -183,13 +194,13 @@ def render_profile_section(profile: UserProfile, resource_context: str | None = 
     # scoping instruction with the one override sentence instead of letting
     # each fragment repeat (or contradict) the same claim. Gated on there
     # being at least one actual resource, not just a fact line: an empty
-    # allocated_resources list still produces a "none supplied" fact, and the
+    # allocated_resources list still produces a "none" fact, and the
     # override sentence would then dangle ("the allocations listed here")
     # with nothing listed.
     if resource_context and profile.allocated_resources:
         instructions = [_RESOURCE_CONTEXT_OVERRIDE_INSTRUCTION]
 
-    lines = ["## User profile", "", "Supplied with this request:"]
+    lines = ["## User profile", "", "About this user:"]
     lines.extend(f"- {fact}" for fact in facts)
     lines.append("")
     lines.extend(instructions)
