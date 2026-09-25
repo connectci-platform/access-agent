@@ -49,6 +49,32 @@ from ..turn_capture import get_turn_capture, mark_summarized
 logger = logging.getLogger(__name__)
 
 
+# create_agent adds a before_model and/or after_model graph node per
+# middleware based on an identity check against AgentMiddleware's own base
+# methods (e.g. `m.__class__.after_model is not AgentMiddleware.after_model`).
+# OpenLLMetry's LangchainInstrumentor — always on in production via
+# init_telemetry() — patches those base methods in place with wrapt, so the
+# check reads as overridden for every middleware and both nodes get added
+# regardless of what a middleware actually implements. Size per-round cost as
+# that ceiling (2 per middleware, plus model + tools) so it can't undershoot.
+# This counts the per-round hooks only — before_agent/after_agent run once
+# per turn, not per round. #295
+def _steps_per_tool_turn(middleware_count: int) -> int:
+    return 2 * middleware_count + 2
+
+
+# Explicit intent (#295): the loop should have room for this many tool-calling
+# rounds before LangGraph hard-stops with GraphRecursionError.
+MAX_TOOL_TURNS = 10
+
+
+def _recursion_limit_for(middleware_count: int) -> int:
+    """recursion_limit sized for MAX_TOOL_TURNS rounds at the worst-case
+    per-round graph-step cost for a create_agent build with middleware_count
+    middlewares (see _steps_per_tool_turn's comment, #295)."""
+    return MAX_TOOL_TURNS * _steps_per_tool_turn(middleware_count) + 2
+
+
 def _build_prompt_and_tools(
     *,
     tool_catalog: dict[str, Any],
@@ -538,23 +564,25 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:  # no
         span.set_attribute("agent.profile_present", profile_used)
 
         llm = get_llm(max_tokens=settings.MAX_TOKENS_LOOP)
+        # Same list feeds create_agent and the limit (#295).
+        middleware = [
+            # These hook different points — context editing wraps the model
+            # call, summarization runs before it — so list order does not
+            # sequence them. What makes summarization a backstop rather than
+            # a fan-out tripwire is the edit-aware token counter below.
+            _build_context_editing_middleware(),
+            _FlaggingSummarizationMiddleware(
+                model=llm,
+                token_counter=_edit_aware_token_counter(),
+                trigger=("tokens", settings.SUMMARIZATION_TRIGGER_TOKENS),
+                keep=("tokens", settings.SUMMARIZATION_KEEP_TOKENS),
+            ),
+        ]
         agent = create_agent(
             model=llm,
             tools=tools,
             system_prompt=system_prompt,
-            middleware=[
-                # These hook different points — context editing wraps the model
-                # call, summarization runs before it — so list order does not
-                # sequence them. What makes summarization a backstop rather than
-                # a fan-out tripwire is the edit-aware token counter below.
-                _build_context_editing_middleware(),
-                _FlaggingSummarizationMiddleware(
-                    model=llm,
-                    token_counter=_edit_aware_token_counter(),
-                    trigger=("tokens", settings.SUMMARIZATION_TRIGGER_TOKENS),
-                    keep=("tokens", settings.SUMMARIZATION_KEEP_TOKENS),
-                ),
-            ],
+            middleware=middleware,
         )
 
         messages = list(state.get("messages", []))
@@ -569,9 +597,10 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:  # no
         # Set when final_answer is a substituted apology, not a real answer.
         answer_unavailable = False
 
-        # recursion_limit = 2 * max_tool_turns + 1; gives the LLM room for
-        # roughly 10 tool turns before LangGraph hard-stops.
-        recursion_limit = 25
+        # Gives the LLM room for MAX_TOOL_TURNS tool turns before LangGraph
+        # hard-stops (#295) — see _steps_per_tool_turn's comment for why the
+        # per-round cost is derived from len(middleware).
+        recursion_limit = _recursion_limit_for(len(middleware))
         tool_status_emitter = _ToolStatusEmitter(status_writer)
         token_accumulator = _TokenUsageAccumulator()
         try:
