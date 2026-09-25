@@ -266,8 +266,10 @@ class Settings(BaseSettings):
     # Servers that require API key authentication for tool calls
     @property
     def mcp_servers_requiring_api_key(self) -> set[str]:
-        """Servers that perform write operations and require API key auth."""
-        return {"jsm", "announcements", "events"}
+        """Servers requiring the inter-server API key — those with write tools
+        and/or user-scoped reads. allocations is keyed for its user-scoped
+        rp-account reads (get_my_rp_accounts / get_rp_account), not writes."""
+        return {"jsm", "announcements", "events", "allocations"}
 
     # T2 data-residency guard (fail closed). Production user queries must never
     # reach a commercial model API — a formal program mandate, and Table 1 of
