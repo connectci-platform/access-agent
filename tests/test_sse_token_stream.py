@@ -46,6 +46,9 @@ def _stream(chunks: list[tuple[object, dict]]) -> str:
             session_id="s1",
             question_id="q1",
             include_trace=False,
+            raw_request=SimpleNamespace(
+                app=SimpleNamespace(state=SimpleNamespace(checkpointer=None))
+            ),
         )
         try:
             async for line in gen:

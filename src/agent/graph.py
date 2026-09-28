@@ -73,6 +73,17 @@ def create_async_checkpointer(db_uri: str) -> Any:
     return AsyncPostgresSaver.from_conn_string(db_uri)
 
 
+def create_pooled_checkpointer(db_uri: str) -> Any:
+    """Lifespan-scoped async checkpointer. Enter once at startup, exit at shutdown.
+
+    Unlike create_async_checkpointer (per-request), the returned context is held
+    open for the app's lifetime and setup() is run once by the caller.
+    """
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+    return AsyncPostgresSaver.from_conn_string(db_uri)
+
+
 def create_checkpointed_graph(checkpointer: Any) -> Any:
     """Create graph with PostgreSQL checkpointing for durability."""
     builder: StateGraph[AgentState] = StateGraph(AgentState)
@@ -88,6 +99,7 @@ async def run_agent(
     acting_user: str | None = None,
     resource_context: str | None = None,
     profile: UserProfile | None = None,
+    checkpointer: Any | None = None,
     use_checkpointing: bool = False,
     db_uri: str | None = None,
 ) -> AgentState:
@@ -118,12 +130,28 @@ async def run_agent(
 
         logger.info(f"Running agent for query: {query[:50]}...")
 
-        if use_checkpointing and db_uri:
+        if checkpointer is not None:
             from langchain_core.messages import HumanMessage
 
-            async with create_async_checkpointer(db_uri) as checkpointer:
-                await checkpointer.setup()
-                graph = create_checkpointed_graph(checkpointer)
+            graph = create_checkpointed_graph(checkpointer)
+            config = {"configurable": {"thread_id": session_id}}
+
+            previous_state = await graph.aget_state(config)
+
+            if previous_state.values:
+                existing_messages = previous_state.values.get("messages", [])
+                initial_state["messages"] = [*existing_messages, HumanMessage(content=query)]
+                logger.info(
+                    f"Resuming conversation with {len(existing_messages)} previous messages"
+                )
+
+            final_state = await graph.ainvoke(initial_state, config)
+        elif use_checkpointing and db_uri:
+            from langchain_core.messages import HumanMessage
+
+            async with create_async_checkpointer(db_uri) as cp:
+                await cp.setup()
+                graph = create_checkpointed_graph(cp)
                 config = {"configurable": {"thread_id": session_id}}
 
                 previous_state = await graph.aget_state(config)
@@ -160,6 +188,7 @@ async def stream_agent(
     acting_user: str | None = None,
     resource_context: str | None = None,
     profile: UserProfile | None = None,
+    checkpointer: Any | None = None,
     use_checkpointing: bool = False,
     db_uri: str | None = None,
 ) -> AsyncGenerator[tuple[str, Any], None]:
@@ -196,12 +225,30 @@ async def stream_agent(
 
         stream_mode = ["custom", "messages", "updates"]
 
-        if use_checkpointing and db_uri:
+        if checkpointer is not None:
             from langchain_core.messages import HumanMessage
 
-            async with create_async_checkpointer(db_uri) as checkpointer:
-                await checkpointer.setup()
-                graph = create_checkpointed_graph(checkpointer)
+            graph = create_checkpointed_graph(checkpointer)
+            config = {"configurable": {"thread_id": session_id}}
+
+            previous_state = await graph.aget_state(config)
+            if previous_state.values:
+                existing_messages = previous_state.values.get("messages", [])
+                initial_state["messages"] = [*existing_messages, HumanMessage(content=query)]
+                logger.info(
+                    f"Resuming conversation with {len(existing_messages)} previous messages"
+                )
+
+            async for stream_type, chunk in graph.astream(
+                initial_state, config, stream_mode=stream_mode
+            ):
+                yield stream_type, chunk
+        elif use_checkpointing and db_uri:
+            from langchain_core.messages import HumanMessage
+
+            async with create_async_checkpointer(db_uri) as cp:
+                await cp.setup()
+                graph = create_checkpointed_graph(cp)
                 config = {"configurable": {"thread_id": session_id}}
 
                 previous_state = await graph.aget_state(config)

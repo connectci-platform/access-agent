@@ -8,6 +8,7 @@ can't tell them apart from the payload. It distinguishes them by the
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from starlette.datastructures import Headers
@@ -110,6 +111,9 @@ def _drive_stream_events(headers: Headers) -> MagicMock:
                 session_id="s1",
                 question_id="q1",
                 include_trace=False,
+                raw_request=SimpleNamespace(
+                    app=SimpleNamespace(state=SimpleNamespace(checkpointer=None))
+                ),
                 report_context=ctx,
             ):
                 pass
