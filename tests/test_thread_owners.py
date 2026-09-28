@@ -29,3 +29,13 @@ def test_unknown_thread_denied():
     store = get_thread_owner_store()
     assert store.check_access("never-created", "anyone@x") is False
     assert store.resolve_owner("never-created") is None
+
+
+def test_empty_string_claimant_stored_as_anonymous_not_corrupted():
+    store = get_thread_owner_store()
+    store.claim_thread("t-empty", "")
+    owner = store.resolve_owner("t-empty")
+    assert (
+        owner.was_authenticated is False
+    )  # NOT True-with-null-hash (the corrupted state the fix prevents)
+    assert owner.user_hash is None
