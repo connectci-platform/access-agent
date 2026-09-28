@@ -105,7 +105,9 @@ def _jwks_server():
 @pytest.fixture(autouse=True)
 def _sqlite_owner_store(monkeypatch, tmp_path):
     """Point the thread-owner store at a temp sqlite file (mirrors test_thread_owners.py)."""
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 't.db'}")
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "DATABASE_URL", f"sqlite:///{tmp_path / 't.db'}", raising=False)
     import src.thread_owners as m
 
     m._store = None  # reset singleton

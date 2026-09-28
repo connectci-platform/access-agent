@@ -126,10 +126,14 @@ def _sqlite_owner_store(monkeypatch, tmp_path):
     """Point the thread-owner store at a temp sqlite file for this module.
 
     The module-level DATABASE_URL="" above keeps the *turn reporter* off a
-    real DB; thread_owners.py reads DATABASE_URL independently via
-    os.environ, so it needs its own override to exercise claim_thread here.
+    real DB; thread_owners.py reads settings.DATABASE_URL independently, so it
+    needs its own override to exercise claim_thread here.
     """
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'owners.db'}")
+    from src.config import settings
+
+    monkeypatch.setattr(
+        settings, "DATABASE_URL", f"sqlite:///{tmp_path / 'owners.db'}", raising=False
+    )
     import src.thread_owners as m
 
     m._store = None  # reset singleton
