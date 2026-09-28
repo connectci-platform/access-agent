@@ -213,6 +213,9 @@ class Settings(BaseSettings):
     # judge before parsing.
     EVAL_JUDGE_THINKING: bool = False
 
+    # Per-thread run turn bound (src/api/thread_runs.py run_with_timeout)
+    AGENT_TURN_TIMEOUT_S: int = 120
+
     # MCP Server port mappings
     @property
     def mcp_server_urls(self) -> dict[str, str]:
