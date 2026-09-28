@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import secrets
 import time
 import uuid
 from collections.abc import AsyncGenerator
@@ -25,7 +26,7 @@ from ..tools import ToolRegistry, get_catalog_aggregator
 from ..turnstile import get_turnstile_guard, verify_turnstile_token
 from ..usage_logger import get_usage_logger
 from .sse import format_sse_event as _format_sse_event
-from .thread_runs import acquire_thread_run, held_run, run_with_timeout
+from .thread_runs import acquire_thread_run, held_run, release_thread_run, run_with_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -577,8 +578,13 @@ async def query_agent(
             status_code=400,
             detail="session_id is required for anonymous queries",
         )
-    session_id = request.session_id or f"sess_{timestamp}"
-    question_id = request.question_id or f"q_{timestamp}"
+    # A server-minted session_id is the credential for an anon thread (thread
+    # access is granted to whoever presents the id — see thread_owners.check_access).
+    # It MUST be unguessable: a `sess_{timestamp}` fallback let anyone who knew
+    # the approximate request time reconstruct another user's anon thread id and
+    # read/continue their conversation. token_urlsafe(24) is 192 bits of entropy.
+    session_id = request.session_id or f"sess_{secrets.token_urlsafe(24)}"
+    question_id = request.question_id or f"q_{timestamp}"  # not a security id
 
     logger.info(
         f"Processing query: {request.query[:50]}... "
@@ -630,24 +636,35 @@ async def query_agent(
     run_id = str(uuid.uuid4())
     acquire_thread_run(session_id, run_id)
 
-    # Agent queries stream via SSE
-    return StreamingResponse(
-        _stream_events(
-            request,
-            acting_user,
-            session_id,
-            question_id,
-            include_trace,
-            raw_request,
-            report_context,
-            run_id,
-        ),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    # The lock is released by held_run's finally inside _stream_events, but ONLY
+    # once that generator is actually started. An async generator that is never
+    # iterated never runs its finally, so any exception on the synchronous path
+    # between acquire and returning a started response would leak the lock and
+    # 409-wedge the thread until restart. Guard that gap: release on any exception
+    # before hand-off. release_thread_run is idempotent, so held_run's own release
+    # on the normal path is unaffected.
+    try:
+        # Agent queries stream via SSE
+        return StreamingResponse(
+            _stream_events(
+                request,
+                acting_user,
+                session_id,
+                question_id,
+                include_trace,
+                raw_request,
+                report_context,
+                run_id,
+            ),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+    except BaseException:
+        release_thread_run(session_id, run_id)
+        raise
 
 
 @router.get("/health")
