@@ -309,10 +309,13 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
     lock_run_id = run_id or str(uuid.uuid4())
 
     try:
-        registry = await get_registry()
-
         async with held_run(session_id, lock_run_id):
             try:
+                # get_registry() hits MCP servers and can fail on a cold/refreshing
+                # catalog cache. Keep it INSIDE held_run so a failure hits held_run's
+                # finally and releases the lock the handler acquired — otherwise the
+                # session_id is permanently 409-locked until restart.
+                registry = await get_registry()
                 async with run_with_timeout(settings.AGENT_TURN_TIMEOUT_S):
                     async for stream_type, chunk in stream_agent(
                         query=request.query,

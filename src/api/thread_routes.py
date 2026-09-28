@@ -52,9 +52,11 @@ class RunInput(BaseModel):
 
 
 class RunRequest(BaseModel):
-    """SDK run body. Only ``input.messages`` and ``if_not_exists`` are load-bearing
-    here; the rest are accepted for protocol compatibility and ignored (the agent
-    resolves its own tools, and profile/resource context are accepted-loss)."""
+    """SDK run body. Only ``input.messages`` is load-bearing here; the rest are
+    accepted for protocol compatibility and ignored (the agent resolves its own
+    tools, and profile/resource context are accepted-loss). A run always
+    creates-and-owns a non-existent thread, so ``if_not_exists`` is accepted and
+    ignored rather than honored."""
 
     input: RunInput = RunInput()
     assistant_id: str | None = None
