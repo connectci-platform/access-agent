@@ -39,3 +39,23 @@ def test_empty_string_claimant_stored_as_anonymous_not_corrupted():
         owner.was_authenticated is False
     )  # NOT True-with-null-hash (the corrupted state the fix prevents)
     assert owner.user_hash is None
+
+
+def test_anon_owned_thread_grants_access_to_any_caller():
+    """check_access on an anon-owned thread returns True regardless of caller —
+    authed-only endpoints already 401 anonymous callers upstream, so this
+    branch relies on that gate rather than re-checking identity here."""
+    store = get_thread_owner_store()
+    store.claim_thread("t-anon", None)
+    assert store.check_access("t-anon", "anyone@x") is True
+    assert store.check_access("t-anon", None) is True
+
+
+def test_resolve_owner_uninitialized_returns_none(monkeypatch):
+    """No DATABASE_URL at all: _ensure() fails, resolve_owner short-circuits."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    import src.thread_owners as m
+
+    m._store = None
+    store = get_thread_owner_store()
+    assert store.resolve_owner("whatever") is None
