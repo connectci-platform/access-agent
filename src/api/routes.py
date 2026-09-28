@@ -615,7 +615,13 @@ async def query_agent(
     # by its creator from turn one; otherwise a fullscreen runs/stream caller
     # could claim_thread a pre-existing widget conversation and take it over.
     # Ignore the bool — the widget doesn't gate on it; the row just has to exist.
-    get_thread_owner_store().claim_thread(session_id, acting_user)
+    #
+    # Ownership MUST come from cookie-verified identity only, never the
+    # body-fallback `acting_user` above — ALLOW_BODY_ACTING_USER defaults true
+    # in prod, and the body field is caller-supplied with no verification. A
+    # cookieless caller claims an anon-owned thread (was_authenticated=False);
+    # `acting_user` (cookie-or-body) still drives the *answer* below.
+    get_thread_owner_store().claim_thread(session_id, user)
 
     # Share the per-thread run lock with the runs/stream endpoint (they collide on
     # session_id == thread_id and both do the read-modify-write resume). Acquire in

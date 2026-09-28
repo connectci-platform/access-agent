@@ -40,6 +40,7 @@ os.environ.setdefault("TRUSTED_JWKS_URLS", "")  # Configured per-test
 
 from src.auth import configure_trusted_issuers
 from src.main import app
+from src.thread_owners import get_thread_owner_store
 
 # ---------------------------------------------------------------------------
 # Test key pair and JWKS server
@@ -118,6 +119,22 @@ def _jwks_server():
     yield
     server.shutdown()
     configure_trusted_issuers({})
+
+
+@pytest.fixture(autouse=True)
+def _sqlite_owner_store(monkeypatch, tmp_path):
+    """Point the thread-owner store at a temp sqlite file for this module.
+
+    The module-level DATABASE_URL="" above keeps the *turn reporter* off a
+    real DB; thread_owners.py reads DATABASE_URL independently via
+    os.environ, so it needs its own override to exercise claim_thread here.
+    """
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'owners.db'}")
+    import src.thread_owners as m
+
+    m._store = None  # reset singleton
+    yield
+    m._store = None
 
 
 @pytest.fixture(autouse=True)
@@ -353,6 +370,62 @@ async def test_response_format(client, mock_agent, mock_registry):
     assert done_event["response"] == "Test response"
     assert done_event["metadata"]["question_id"] == "test-q"
     assert isinstance(done_event["metadata"]["tools_used"], list)
+
+
+# ---------------------------------------------------------------------------
+# Test: thread ownership claim uses cookie identity only, never body fallback
+# ---------------------------------------------------------------------------
+
+
+async def test_body_fallback_claims_anon_owned_thread_not_spoofed_identity(
+    client, mock_agent, mock_registry
+):
+    """A cookieless widget turn with a body acting_user must NOT claim the
+    thread as that (unverified) identity. ALLOW_BODY_ACTING_USER=true still
+    drives the *answer* via acting_user, but ownership must fall back to
+    anon (was_authenticated=False) — otherwise a spoofable body field could
+    write a was_authenticated=True row and hijack thread ownership.
+    """
+    session_id = "sess-body-only"
+    response = await client.post(
+        "/api/v1/query",
+        json={
+            "query": "What GPU resources are available?",
+            "session_id": session_id,
+            "acting_user": "spoofed-user@access-ci.org",
+        },
+    )
+
+    assert response.status_code == 200
+    # The answer-steering path still gets the body fallback.
+    assert mock_agent.call_args.kwargs.get("acting_user") == "spoofed-user@access-ci.org"
+
+    owner = get_thread_owner_store().resolve_owner(session_id)
+    assert owner is not None
+    assert owner.was_authenticated is False
+    assert owner.user_hash is None
+
+
+async def test_valid_cookie_claims_authenticated_owned_thread(client, mock_agent, mock_registry):
+    """A widget turn WITH a valid cookie claims a was_authenticated=True
+    thread owned by the cookie's sub — the legitimate ownership path.
+    """
+    session_id = "sess-cookie-owned"
+    token = _make_jwt("jsmith@access-ci.org")
+
+    response = await client.post(
+        "/api/v1/query",
+        json={"query": "What GPU resources are available?", "session_id": session_id},
+        headers={"cookie": f"SESSaccess_auth={token}"},
+    )
+
+    assert response.status_code == 200
+    assert mock_agent.call_args.kwargs.get("acting_user") == "jsmith@access-ci.org"
+
+    owner = get_thread_owner_store().resolve_owner(session_id)
+    assert owner is not None
+    assert owner.was_authenticated is True
+    assert owner.user_hash is not None
 
 
 # ---------------------------------------------------------------------------
