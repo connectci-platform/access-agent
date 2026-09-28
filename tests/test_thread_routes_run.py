@@ -11,6 +11,7 @@ import json
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
+from unittest.mock import patch
 
 import jwt
 import pytest
@@ -392,4 +393,139 @@ async def test_widget_registry_failure_does_not_leak_lock(client, valid_cookie, 
     assert "leak-sess" not in tr._active_by_thread  # lock released, not leaked
     # A subsequent acquire on the same session must NOT 409.
     tr.acquire_thread_run("leak-sess", "next-run")  # raises HTTPException(409) if leaked
-    tr.release_thread_run("leak-sess", "next-run")
+
+
+# ---------------------------------------------------------------------------
+# thread_run_stream error branches: cancel / timeout / generic exception,
+# and final_messages built from a real "updates" chunk.
+# ---------------------------------------------------------------------------
+
+
+async def test_run_stream_builds_final_messages_from_updates_chunk(
+    client, valid_cookie, monkeypatch
+):
+    """The 'updates' branch pulls node_output['messages'] into final_messages,
+    which the 'values' event carries even when no messages/partial ever fired."""
+
+    async def _fake(**_kwargs):
+        yield "updates", {"some_node": {"messages": [{"type": "human", "content": "hi"}]}}
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _fake)
+
+    r = await client.post(
+        "/api/v1/threads/t-updates/runs/stream",
+        cookies=valid_cookie,
+        json={"input": {"messages": [{"role": "user", "content": "hi"}]}},
+    )
+    assert r.status_code == 200
+    assert 'event: values\ndata: {"messages": [{"type": "human", "content": "hi"}]}' in r.text
+
+
+async def test_run_stream_cancelled_mid_turn_emits_error_and_propagates(
+    valid_cookie_for, seed_owner
+):
+    """A real cancel (client disconnect / cancel_run) while streaming emits
+    event: error error:cancelled, then propagates so the task truly cancels.
+
+    Drives thread_run_stream directly (not via httpx) and cancels the task
+    consuming its body_iterator — ASGITransport doesn't cleanly support
+    cancelling the serving task out from under a client.post() call, but the
+    endpoint itself is an ordinary async function returning a
+    StreamingResponse, so this exercises the real code path without that
+    transport limitation.
+    """
+    from types import SimpleNamespace
+
+    from src.api.thread_routes import RunRequest, thread_run_stream
+
+    seed_owner("t-cancel-mid", "canceller@x")
+
+    import src.api.thread_runs as tr
+
+    tr._active_by_thread.clear()
+    tr._task_by_run.clear()
+
+    started = asyncio.Event()
+    saw_cancelled = asyncio.Event()
+
+    async def _long_stream(**_kwargs):
+        started.set()
+        try:
+            await asyncio.sleep(10)
+            yield "updates", {}
+        except asyncio.CancelledError:
+            saw_cancelled.set()
+            raise
+
+    cookie_token = valid_cookie_for("canceller@x")["SESSaccess_auth"]
+    raw_request = SimpleNamespace(
+        cookies={"SESSaccess_auth": cookie_token},
+        app=SimpleNamespace(state=SimpleNamespace(checkpointer=None)),
+    )
+    body = RunRequest.model_validate({"input": {"messages": [{"role": "user", "content": "hi"}]}})
+
+    collected: list[str] = []
+
+    async def _consume() -> None:
+        with patch("src.api.thread_routes.stream_agent", _long_stream):
+            response = await thread_run_stream("t-cancel-mid", body, raw_request)
+            async for chunk in response.body_iterator:
+                collected.append(chunk)
+
+    task = asyncio.ensure_future(_consume())
+    await started.wait()
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if "t-cancel-mid" in tr._active_by_thread:
+            break
+
+    run_id = tr._active_by_thread["t-cancel-mid"]
+    assert tr.cancel_run(run_id) is True
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert saw_cancelled.is_set()
+    assert any('event: error\ndata: {"error": "cancelled"}' in c for c in collected)
+    assert "t-cancel-mid" not in tr._active_by_thread
+
+
+async def test_run_stream_timeout_emits_error_and_returns(client, valid_cookie, monkeypatch):
+    """asyncio.timeout expiry (TimeoutError, not CancelledError in 3.11) emits
+    event: error error:timeout and returns without re-raising."""
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "AGENT_TURN_TIMEOUT_S", 0, raising=False)
+
+    async def _slow_stream(**_kwargs):
+        await asyncio.sleep(0.05)
+        yield "updates", {}
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _slow_stream)
+
+    r = await client.post(
+        "/api/v1/threads/t-timeout/runs/stream",
+        cookies=valid_cookie,
+        json={"input": {"messages": [{"role": "user", "content": "hi"}]}},
+    )
+    assert r.status_code == 200
+    assert 'event: error\ndata: {"error": "timeout"}' in r.text
+
+
+async def test_run_stream_generic_exception_emits_agent_error(client, valid_cookie, monkeypatch):
+    """An unexpected exception from stream_agent is caught, logged, and turned
+    into event: error error:agent_error rather than propagating as a 500."""
+
+    async def _boom(**_kwargs):
+        raise RuntimeError("unexpected agent failure")
+        yield  # pragma: no cover - unreachable, makes this an async generator
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _boom)
+
+    r = await client.post(
+        "/api/v1/threads/t-boom/runs/stream",
+        cookies=valid_cookie,
+        json={"input": {"messages": [{"role": "user", "content": "hi"}]}},
+    )
+    assert r.status_code == 200
+    assert 'event: error\ndata: {"error": "agent_error"}' in r.text

@@ -581,6 +581,32 @@ class TestCountTurnsUnknown:
         assert report["turn_index"] is None
 
 
+class TestListThreadsForUserUnknown:
+    def test_uninitialized_returns_empty_list(self):
+        # Same discipline as count_turns_for_session: a failed/uninitialized
+        # store degrades to an empty sidebar, not an error.
+        r = TurnReporter()
+        r._ensure_initialized = lambda: False  # type: ignore[method-assign]
+        assert r.list_threads_for_user("hash123", 10) == []
+
+    def test_query_error_returns_empty_list(self, monkeypatch):
+        r = TurnReporter()
+        r._engine = create_engine("sqlite:///:memory:")
+        TurnReportBase.metadata.create_all(r._engine)
+        r._session_factory = sessionmaker(bind=r._engine)
+        r._initialized = True
+
+        session = r._session_factory()
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("query failed")
+
+        monkeypatch.setattr(session, "execute", _boom)
+        monkeypatch.setattr(r, "_session_factory", lambda: session)
+
+        assert r.list_threads_for_user("hash123", 10) == []
+
+
 class TestBatteryProvenance:
     def setup_method(self):
         self.engine = create_engine("sqlite:///:memory:")
