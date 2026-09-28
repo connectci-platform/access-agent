@@ -8,6 +8,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .agent.graph import create_pooled_checkpointer
 from .api import router
 from .config import settings
 from .telemetry import init_telemetry, shutdown_telemetry
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0915
     """Startup and shutdown lifecycle for the FastAPI app."""
     # --- Startup ---
     init_telemetry(app=app, service_name="access-agent")
@@ -81,6 +82,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         logger.info("UKY RAG disabled (UKY_RAG_ENABLED=false)")
 
+    # Lifespan-scoped checkpointer: built and setup() once here, held open for
+    # the app's lifetime, and injected into request handlers via app.state.
+    # Replaces the old per-request `async with create_async_checkpointer(...)`
+    # path, which opened a fresh connection and ran setup() on every request.
+    app.state.checkpointer = None
+    if settings.DATABASE_URL:
+        cm = create_pooled_checkpointer(settings.DATABASE_URL)
+        checkpointer = await cm.__aenter__()
+        await checkpointer.setup()
+        app.state.checkpointer = checkpointer
+        app.state._checkpointer_cm = cm  # noqa: SLF001  # own state attr, not a third-party private
+        logger.info("Pooled checkpointer initialized")
+
     yield
 
     # --- Shutdown ---
@@ -88,6 +102,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from .tools.mcp_client import close_shared_client
 
     logger.info("Shutting down ACCESS Documentation Agent")
+    if getattr(app.state, "_checkpointer_cm", None) is not None:
+        await app.state._checkpointer_cm.__aexit__(None, None, None)  # noqa: SLF001
     await close_shared_client()
     await get_uky_client().close()
     shutdown_telemetry()

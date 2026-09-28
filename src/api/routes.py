@@ -289,6 +289,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
     session_id: str,
     question_id: str,
     include_trace: bool,
+    raw_request: Request,
     report_context: dict[str, Any] | None = None,
 ) -> AsyncGenerator[str, None]:
     """Translate LangGraph stream chunks into SSE events.
@@ -311,6 +312,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
             acting_user=acting_user,
             resource_context=request.resource_context,
             profile=request.profile,
+            checkpointer=getattr(raw_request.app.state, "checkpointer", None),
             use_checkpointing=USE_CHECKPOINTING,
             db_uri=settings.DATABASE_URL if USE_CHECKPOINTING else None,
         ):
@@ -588,7 +590,13 @@ async def query_agent(
     # Agent queries stream via SSE
     return StreamingResponse(
         _stream_events(
-            request, acting_user, session_id, question_id, include_trace, report_context
+            request,
+            acting_user,
+            session_id,
+            question_id,
+            include_trace,
+            raw_request,
+            report_context,
         ),
         media_type="text/event-stream",
         headers={
