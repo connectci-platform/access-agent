@@ -51,13 +51,21 @@ async def fake_stream_agent(**kwargs: object):
     yield "updates", {"__end__": FAKE_AGENT_RESULT}
 
 
-async def test_setup_runs_once_not_per_request(monkeypatch):
+async def test_setup_runs_once_not_per_request(monkeypatch, tmp_path):
     """setup() runs at startup, not per /api/v1/query request."""
     from src.config import settings
 
-    # Non-empty so the lifespan takes the checkpointer-building branch.
-    monkeypatch.setattr(settings, "DATABASE_URL", "postgresql://fake/db", raising=False)
+    # Non-empty so the lifespan takes the checkpointer-building branch. The
+    # checkpointer itself is mocked below, so this URL is never dialed for it —
+    # but the widget path's thread-owner claim_thread now reads the SAME setting,
+    # so point that at a temp sqlite file (reset its singleton first).
+    monkeypatch.setattr(
+        settings, "DATABASE_URL", f"sqlite:///{tmp_path / 'owners.db'}", raising=False
+    )
     monkeypatch.setattr(settings, "TURNSTILE_SECRET_KEY", "", raising=False)
+    import src.thread_owners as _to
+
+    _to._store = None
 
     spy = SpySaver()
 
@@ -88,12 +96,17 @@ async def test_setup_runs_once_not_per_request(monkeypatch):
             assert spy.setup_calls == 1
 
 
-async def test_query_endpoint_passes_pooled_checkpointer_to_stream_agent(monkeypatch):
+async def test_query_endpoint_passes_pooled_checkpointer_to_stream_agent(monkeypatch, tmp_path):
     """The widget stream call site threads app.state.checkpointer into stream_agent."""
     from src.config import settings
 
-    monkeypatch.setattr(settings, "DATABASE_URL", "postgresql://fake/db", raising=False)
+    monkeypatch.setattr(
+        settings, "DATABASE_URL", f"sqlite:///{tmp_path / 'owners.db'}", raising=False
+    )
     monkeypatch.setattr(settings, "TURNSTILE_SECRET_KEY", "", raising=False)
+    import src.thread_owners as _to
+
+    _to._store = None
 
     spy = SpySaver()
 

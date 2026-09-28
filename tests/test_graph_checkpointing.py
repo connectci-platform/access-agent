@@ -77,18 +77,53 @@ def saver_with_async_setup():
 # ---------------------------------------------------------------------------
 
 
-def test_create_pooled_checkpointer_returns_async_postgres_saver_cm():
-    """Body just forwards to AsyncPostgresSaver.from_conn_string; assert that."""
-    with patch(
-        "langgraph.checkpoint.postgres.aio.AsyncPostgresSaver.from_conn_string"
-    ) as from_conn_string:
-        sentinel = object()
-        from_conn_string.return_value = sentinel
+async def test_create_pooled_checkpointer_builds_pool_backed_saver():
+    """create_pooled_checkpointer backs the saver with an AsyncConnectionPool
+    (Finding I3), NOT a single from_conn_string connection.
 
-        result = g.create_pooled_checkpointer("postgresql://fake/db")
+    from_conn_string held one AsyncConnection for process life — every resume
+    serialized through it and a dropped connection failed all resumes until
+    restart. Assert the saver is constructed FROM a pool that opens/closes
+    cleanly, and that the bare postgresql:// URL becomes a plain psycopg DSN.
+    """
+    # Import the real langgraph postgres modules FIRST so their _ainternal module
+    # subscripts the genuine AsyncConnectionPool at import time; patch fakes after.
+    import langgraph.checkpoint.postgres.aio as lg_aio
+    import psycopg_pool
 
-        from_conn_string.assert_called_once_with("postgresql://fake/db")
-        assert result is sentinel
+    state = {"opened": False, "closed": False}
+    captured: dict[str, object] = {}
+
+    class _FakePool:
+        def __init__(self, conninfo, *, open, kwargs, connection_class=None):
+            captured["conninfo"] = conninfo
+            captured["kwargs"] = kwargs
+
+        async def open(self, wait):
+            state["opened"] = True
+
+        async def close(self):
+            state["closed"] = True
+
+    class _FakeSaver:
+        def __init__(self, conn):
+            captured["saver_conn"] = conn
+
+    with (
+        patch.object(psycopg_pool, "AsyncConnectionPool", _FakePool),
+        patch.object(lg_aio, "AsyncPostgresSaver", _FakeSaver),
+    ):
+        cm = g.create_pooled_checkpointer("postgresql://fake/db")
+        saver = await cm.__aenter__()
+        try:
+            assert state["opened"] is True
+            assert isinstance(captured["saver_conn"], _FakePool)  # built FROM the pool
+            assert saver is not None
+            assert captured["conninfo"] == "postgresql://fake/db"  # plain psycopg DSN
+            assert captured["kwargs"]["autocommit"] is True
+        finally:
+            await cm.__aexit__(None, None, None)
+        assert state["closed"] is True
 
 
 # ---------------------------------------------------------------------------

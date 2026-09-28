@@ -74,14 +74,56 @@ def create_async_checkpointer(db_uri: str) -> Any:
 
 
 def create_pooled_checkpointer(db_uri: str) -> Any:
-    """Lifespan-scoped async checkpointer. Enter once at startup, exit at shutdown.
+    """Lifespan-scoped async checkpointer backed by a connection POOL.
 
-    Unlike create_async_checkpointer (per-request), the returned context is held
-    open for the app's lifetime and setup() is run once by the caller.
+    Enter once at startup, exit at shutdown; setup() is run once by the caller.
+
+    Unlike ``from_conn_string`` (a single AsyncConnection held for process life,
+    through which every resume serialized and which took the whole app down on a
+    dropped connection), this backs the saver with an ``AsyncConnectionPool``.
+    ``AsyncPostgresSaver.__init__`` accepts a pool directly — its internal
+    ``_ainternal.get_connection`` checks it out per operation via
+    ``pool.connection()`` — so a dead connection is retired and replaced by the
+    pool rather than failing all resumes until restart.
+
+    Returns an async context manager that owns the pool: ``__aenter__`` opens the
+    pool and yields the saver; ``__aexit__`` closes the pool.
     """
-    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    from contextlib import asynccontextmanager
 
-    return AsyncPostgresSaver.from_conn_string(db_uri)
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    from psycopg import AsyncConnection
+    from psycopg.rows import DictRow, dict_row
+    from psycopg_pool import AsyncConnectionPool
+
+    # psycopg's pool takes a PLAIN psycopg DSN. The `postgresql://` → psycopg2
+    # driver problem the other writers rewrite around is a SQLAlchemy URL concern;
+    # psycopg itself uses `postgresql://` (or `postgres://`) directly, so no
+    # `+psycopg` rewrite is needed here — a `+psycopg` scheme would in fact be
+    # rejected by libpq. Normalize a SQLAlchemy-style URL back to a plain DSN in
+    # case one is passed in.
+    conninfo = db_uri.replace("postgresql+psycopg://", "postgresql://", 1)
+
+    @asynccontextmanager
+    async def _cm() -> AsyncGenerator[Any, None]:
+        # dict_row typing: the saver requires connections that yield dict rows, so
+        # both the runtime row_factory (via kwargs) and the pool's static row type
+        # (via connection_class) must agree on DictRow.
+        pool: AsyncConnectionPool[AsyncConnection[DictRow]] = AsyncConnectionPool(
+            conninfo,
+            open=False,
+            connection_class=AsyncConnection[DictRow],
+            # AsyncPostgresSaver requires these on every checked-out connection:
+            # autocommit for DDL/setup, prepared-statement caching off, dict rows.
+            kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        )
+        await pool.open(wait=True)
+        try:
+            yield AsyncPostgresSaver(pool)
+        finally:
+            await pool.close()
+
+    return _cm()
 
 
 def create_checkpointed_graph(checkpointer: Any) -> Any:
