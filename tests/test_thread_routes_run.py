@@ -205,6 +205,27 @@ async def test_run_on_another_users_thread_404(client, valid_cookie_for, seed_ow
     assert r.status_code == 404
 
 
+async def test_resource_context_from_config_forwarded(client, valid_cookie, monkeypatch):
+    captured = {}
+
+    async def _fake(**kwargs):
+        captured.update(kwargs)
+        if False:
+            yield  # make it an async generator
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _fake)
+    await client.post(
+        "/api/v1/threads/t/runs/stream",
+        cookies=valid_cookie,
+        json={
+            "input": {"messages": [{"role": "user", "content": "x"}]},
+            "if_not_exists": "create",
+            "config": {"configurable": {"resource_context": "delta"}},
+        },
+    )
+    assert captured.get("resource_context") == "delta"
+
+
 async def test_concurrent_run_rejected(client, valid_cookie, monkeypatch):
     release = asyncio.Event()
 

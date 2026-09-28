@@ -192,6 +192,12 @@ async def thread_run_stream(
 
     query = _last_user_text(body.input.messages)
 
+    # Client-supplied UI hint, not server state: LangGraph SDK convention puts
+    # per-run values under config.configurable; context is the newer top-level
+    # alternative. Absent on both → None (accepted context-loss, per spec).
+    cfg = (body.config or {}).get("configurable", {}) if body.config else {}
+    resource_context = cfg.get("resource_context") or (body.context or {}).get("resource_context")
+
     async def _gen() -> AsyncGenerator[str, None]:
         async with held_run(thread_id, run_id):
             try:
@@ -210,7 +216,7 @@ async def thread_run_stream(
                         question_id=run_id,
                         tool_catalog=registry.catalog,
                         acting_user=caller,
-                        resource_context=None,
+                        resource_context=resource_context,
                         profile=None,
                         checkpointer=getattr(raw_request.app.state, "checkpointer", None),
                     ):
