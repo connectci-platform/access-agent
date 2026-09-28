@@ -93,7 +93,9 @@ def _jwks_server():
 
 @pytest.fixture(autouse=True)
 def _sqlite_owner_store(monkeypatch, tmp_path):
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 't.db'}")
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "DATABASE_URL", f"sqlite:///{tmp_path / 't.db'}", raising=False)
     import src.thread_owners as m
 
     m._store = None  # reset singleton
@@ -206,3 +208,38 @@ async def test_cancel_owner_cancels_in_flight_run(client, valid_cookie_for, seed
         await task
     assert cancelled.is_set()
     assert "t-live" not in tr._active_by_thread  # held_run's finally released the lock
+
+
+async def test_cancel_cannot_cross_threads(client, valid_cookie_for, seed_owner):
+    """Owner of thread A cannot cancel thread B's run even with B's real run_id.
+
+    run_ids are disclosed to clients in the metadata SSE event. A caller who owns
+    thread A and observed B's run_id must get a 404 (not a cancel) and B's task
+    must keep running. Guards the cross-thread cancel (Finding I1).
+    """
+    seed_owner("thread-a", "attacker@x")  # attacker owns thread-a
+
+    import src.api.thread_runs as tr
+
+    started = asyncio.Event()
+
+    async def _run_on_b() -> None:
+        async with tr.held_run("thread-b", "run-b"):
+            started.set()
+            await asyncio.sleep(10)
+
+    tr.acquire_thread_run("thread-b", "run-b")
+    task = asyncio.create_task(_run_on_b())
+    await started.wait()
+
+    # Attacker authenticates as thread-a's owner, presents B's run_id under A.
+    r = await client.post(
+        "/api/v1/threads/thread-a/runs/run-b/cancel",
+        cookies=valid_cookie_for("attacker@x"),
+    )
+    assert r.status_code == 404  # run-b is not active on thread-a
+    assert not task.done()  # B's run is untouched
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task

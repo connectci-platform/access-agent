@@ -47,7 +47,18 @@ async def held_run(thread_id: str, run_id: str) -> AsyncIterator[None]:
         release_thread_run(thread_id, run_id)
 
 
-def cancel_run(run_id: str) -> bool:
+def cancel_run(thread_id: str, run_id: str) -> bool:
+    """Cancel run_id only if it is the run currently active on thread_id.
+
+    The run_id alone is not sufficient authority: run_ids are handed to clients
+    in the `metadata` SSE event, so a caller who owns thread A and observed a
+    run_id on thread B must not be able to cancel B's run by presenting B's
+    run_id against A. Verifying the run belongs to the path thread closes that
+    cross-thread cancel (caller ownership of thread_id is already checked in the
+    handler). Returns False (→ handler 404) when the run isn't active here.
+    """
+    if _active_by_thread.get(thread_id) != run_id:
+        return False
     task = _task_by_run.get(run_id)
     if task is None:
         return False

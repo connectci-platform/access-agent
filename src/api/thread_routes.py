@@ -24,7 +24,13 @@ from ..config import settings
 from ..thread_owners import get_thread_owner_store
 from ..turn_reporter import _hash_user, get_turn_reporter
 from .sse import format_sse_event
-from .thread_runs import acquire_thread_run, cancel_run, held_run, run_with_timeout
+from .thread_runs import (
+    acquire_thread_run,
+    cancel_run,
+    held_run,
+    release_thread_run,
+    run_with_timeout,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +196,14 @@ async def thread_run_stream(
     run_id = str(uuid.uuid4())
     acquire_thread_run(thread_id, run_id)
 
+    # The lock is released by held_run's finally, but ONLY once the generator is
+    # actually started. An async generator that is never iterated never runs its
+    # finally (verified against CPython/Starlette 1.0: GC of an un-started async
+    # gen does not run finally), so any exception on the synchronous path between
+    # acquire and returning a *started* response would leak the lock and 409-wedge
+    # the thread until restart. Guard that whole gap in one try: release on any
+    # exception before hand-off. release_thread_run is idempotent, so held_run's
+    # own release on the normal (generator-started) path is unaffected.
     query = _last_user_text(body.input.messages)
 
     # Client-supplied UI hint, not server state: LangGraph SDK convention puts
@@ -262,17 +276,28 @@ async def thread_run_stream(
                 yield format_sse_event("error", {"error": "agent_error"})
                 return
 
-    return StreamingResponse(
-        _gen(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    # The lock was acquired synchronously above; it is released by held_run's
+    # finally, but ONLY once the generator is actually started. An async
+    # generator that is never iterated never runs its finally (verified against
+    # CPython/Starlette 1.0: GC of an un-started async gen does not run finally),
+    # so any failure on the synchronous path between acquire and returning a
+    # started response would leak the lock and 409-wedge the thread until
+    # restart. Guard that gap: release on any exception before hand-off.
+    try:
+        return StreamingResponse(
+            _gen(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+    except BaseException:
+        release_thread_run(thread_id, run_id)
+        raise
 
 
 @thread_router.post("/threads/{thread_id}/runs/{run_id}/cancel")
 async def cancel_thread_run(thread_id: str, run_id: str, raw_request: Request) -> dict[str, str]:
     caller = _require_user(raw_request)
     _require_access(thread_id, caller)  # 404 if not the owner (never 403)
-    if not cancel_run(run_id):  # no such in-flight run
+    if not cancel_run(thread_id, run_id):  # no such in-flight run ON THIS THREAD
         raise HTTPException(status_code=404, detail="Run not found")
     return {"status": "cancelled"}

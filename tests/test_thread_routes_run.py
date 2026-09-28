@@ -97,7 +97,9 @@ def _jwks_server():
 
 @pytest.fixture(autouse=True)
 def _sqlite_owner_store(monkeypatch, tmp_path):
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 't.db'}")
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "DATABASE_URL", f"sqlite:///{tmp_path / 't.db'}", raising=False)
     import src.thread_owners as m
 
     m._store = None  # reset singleton
@@ -190,6 +192,42 @@ async def test_run_requires_cookie(client):
         json={"input": {"messages": []}},
     )
     assert r.status_code == 401
+
+
+async def test_run_stream_releases_lock_if_generator_never_starts(
+    client, valid_cookie, monkeypatch
+):
+    """If the streaming generator is never started, the per-thread lock must not
+    leak (Finding I4).
+
+    The lock is acquired synchronously in the handler and released in the
+    generator's finally, but an async generator that is never iterated never runs
+    its finally. Force the handler's synchronous post-acquire path to raise
+    (before StreamingResponse is handed back) and assert the thread is not left
+    409-wedged: a subsequent run on the same thread must succeed, not 409.
+    """
+    import src.api.thread_runs as tr
+
+    with (
+        patch("src.api.thread_routes.StreamingResponse", side_effect=RuntimeError("boom")),
+        pytest.raises(RuntimeError, match="boom"),
+    ):
+        await client.post(
+            "/api/v1/threads/t-wedge/runs/stream",
+            cookies=valid_cookie,
+            json={"input": {"messages": [{"role": "user", "content": "x"}]}},
+        )
+
+    assert "t-wedge" not in tr._active_by_thread  # lock released on the failure path
+
+    # And a real run on the same thread now succeeds (not permanently wedged).
+    _mock_stream_agent(monkeypatch)
+    r = await client.post(
+        "/api/v1/threads/t-wedge/runs/stream",
+        cookies=valid_cookie,
+        json={"input": {"messages": [{"role": "user", "content": "x"}]}},
+    )
+    assert r.status_code == 200
 
 
 async def test_run_on_another_users_thread_404(client, valid_cookie_for, seed_owner, monkeypatch):
@@ -480,7 +518,7 @@ async def test_run_stream_cancelled_mid_turn_emits_error_and_propagates(
             break
 
     run_id = tr._active_by_thread["t-cancel-mid"]
-    assert tr.cancel_run(run_id) is True
+    assert tr.cancel_run("t-cancel-mid", run_id) is True
 
     with pytest.raises(asyncio.CancelledError):
         await task
