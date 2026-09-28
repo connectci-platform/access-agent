@@ -1,9 +1,9 @@
 """FastAPI routes for the ACCESS Documentation Agent."""
 
 import asyncio
-import json
 import logging
 import time
+import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -20,9 +20,12 @@ from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..auth import get_acting_user_from_cookie
 from ..config import settings
 from ..llm import is_empty_answer
+from ..thread_owners import get_thread_owner_store
 from ..tools import ToolRegistry, get_catalog_aggregator
 from ..turnstile import get_turnstile_guard, verify_turnstile_token
 from ..usage_logger import get_usage_logger
+from .sse import format_sse_event as _format_sse_event
+from .thread_runs import acquire_thread_run, held_run, run_with_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -251,11 +254,6 @@ async def _check_capability_discovery(
     return None
 
 
-def _format_sse_event(event: str, data: Any) -> str:
-    """Format a Server-Sent Event string."""
-    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
-
-
 def _should_stream_token(msg: Any, metadata: dict[str, Any]) -> bool:
     """Whether a LangGraph message chunk should reach the browser as a token.
 
@@ -291,51 +289,70 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
     include_trace: bool,
     raw_request: Request,
     report_context: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Translate LangGraph stream chunks into SSE events.
 
     Yields SSE-formatted strings for status updates, LLM tokens,
     and a final done event with response metadata.
+
+    The stream-consumption loop runs under the shared per-thread run lock
+    (``held_run``) and turn bound (``run_with_timeout``) so the widget and the
+    fullscreen ``runs/stream`` endpoint can't both resume the same thread at
+    once. ``run_id`` is the lock token acquired in the handler; when absent (a
+    direct unit-test call), ``held_run`` still registers/releases a fresh token
+    harmlessly.
     """
     start_time = time.time()
     final_state: dict[str, Any] = {}
     reset_turn_capture()
+    lock_run_id = run_id or str(uuid.uuid4())
 
     try:
         registry = await get_registry()
 
-        async for stream_type, chunk in stream_agent(
-            query=request.query,
-            session_id=session_id,
-            question_id=question_id,
-            tool_catalog=registry.catalog,
-            acting_user=acting_user,
-            resource_context=request.resource_context,
-            profile=request.profile,
-            checkpointer=getattr(raw_request.app.state, "checkpointer", None),
-            use_checkpointing=USE_CHECKPOINTING,
-            db_uri=settings.DATABASE_URL if USE_CHECKPOINTING else None,
-        ):
-            if stream_type == "custom":
-                # Status messages from nodes via get_stream_writer()
-                if isinstance(chunk, dict) and chunk.get("type") == "status":
-                    yield _format_sse_event("status", {"message": chunk["message"]})
+        async with held_run(session_id, lock_run_id):
+            try:
+                async with run_with_timeout(settings.AGENT_TURN_TIMEOUT_S):
+                    async for stream_type, chunk in stream_agent(
+                        query=request.query,
+                        session_id=session_id,
+                        question_id=question_id,
+                        tool_catalog=registry.catalog,
+                        acting_user=acting_user,
+                        resource_context=request.resource_context,
+                        profile=request.profile,
+                        checkpointer=getattr(raw_request.app.state, "checkpointer", None),
+                        use_checkpointing=USE_CHECKPOINTING,
+                        db_uri=settings.DATABASE_URL if USE_CHECKPOINTING else None,
+                    ):
+                        if stream_type == "custom":
+                            # Status messages from nodes via get_stream_writer()
+                            if isinstance(chunk, dict) and chunk.get("type") == "status":
+                                yield _format_sse_event("status", {"message": chunk["message"]})
 
-            elif stream_type == "messages":
-                # LLM token chunks — tuple of (message, metadata)
-                msg, metadata = chunk
-                # Only stream incremental tokens from the tool_calling_loop node.
-                # LangGraph's messages stream emits both AIMessageChunk (tokens)
-                # and AIMessage (complete messages added to state). We only want
-                # the chunks to avoid duplicating the full response.
-                if _should_stream_token(msg, metadata):
-                    yield _format_sse_event("token", {"content": msg.content})
+                        elif stream_type == "messages":
+                            # LLM token chunks — tuple of (message, metadata)
+                            msg, metadata = chunk
+                            # Only stream incremental tokens from the tool_calling_loop
+                            # node. LangGraph's messages stream emits both AIMessageChunk
+                            # (tokens) and AIMessage (complete messages added to state).
+                            # We only want the chunks to avoid duplicating the response.
+                            if _should_stream_token(msg, metadata):
+                                yield _format_sse_event("token", {"content": msg.content})
 
-            elif stream_type == "updates" and isinstance(chunk, dict):
-                # State updates after each node — collect for final metadata
-                for node_output in chunk.values():
-                    if isinstance(node_output, dict):
-                        final_state.update(node_output)
+                        elif stream_type == "updates" and isinstance(chunk, dict):
+                            # State updates after each node — collect for final metadata
+                            for node_output in chunk.values():
+                                if isinstance(node_output, dict):
+                                    final_state.update(node_output)
+            except TimeoutError:
+                # Turn bound expired (TimeoutError in 3.11, not CancelledError).
+                # Emit the widget's error+done and return; do not synthesize a
+                # CancelledError. held_run's finally releases the lock.
+                yield _format_sse_event("error", {"message": "Query timed out", "code": "timeout"})
+                yield _format_sse_event("done", {"success": False, "error": "timeout"})
+                return
 
         # Build metadata from final state (mirrors non-streaming QueryResponse fields)
         final_answer = final_state.get("final_answer") or "No answer generated"
@@ -466,6 +483,10 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
         if not acting_user:
             get_turnstile_guard().record_query(session_id)
 
+    except asyncio.CancelledError:
+        # Client disconnect / cancel. held_run's finally already released the
+        # per-thread lock; propagate so the task truly cancels (never swallow).
+        raise
     except Exception as e:
         logger.exception(f"Stream failed: {e}")
         # Write a minimal success=False turn report so the dashboard can tell a
@@ -587,6 +608,19 @@ async def query_agent(
     # polluting real-traffic views.
     report_context = redteam_report_context(raw_request.headers)
 
+    # Claim thread ownership on the widget path too. Every thread must be owned
+    # by its creator from turn one; otherwise a fullscreen runs/stream caller
+    # could claim_thread a pre-existing widget conversation and take it over.
+    # Ignore the bool — the widget doesn't gate on it; the row just has to exist.
+    get_thread_owner_store().claim_thread(session_id, acting_user)
+
+    # Share the per-thread run lock with the runs/stream endpoint (they collide on
+    # session_id == thread_id and both do the read-modify-write resume). Acquire in
+    # the handler so a busy thread is a real 409, not an event flushed after 200.
+    # A 409 on the widget is new (rare same-user cross-surface race), acceptable.
+    run_id = str(uuid.uuid4())
+    acquire_thread_run(session_id, run_id)
+
     # Agent queries stream via SSE
     return StreamingResponse(
         _stream_events(
@@ -597,6 +631,7 @@ async def query_agent(
             include_trace,
             raw_request,
             report_context,
+            run_id,
         ),
         media_type="text/event-stream",
         headers={
