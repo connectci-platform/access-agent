@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, NamedTuple
 
 from sqlalchemy import Boolean, Column, DateTime, String, create_engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
+
+from .config import settings
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import Engine
@@ -52,9 +53,14 @@ class ThreadOwnerStore:
     def _ensure(self) -> bool:
         if self._session_factory is not None:
             return True
-        db_url = os.environ.get("DATABASE_URL")
-        if not db_url:
+        if not settings.DATABASE_URL:
             return False
+        # SQLAlchemy maps a bare `postgresql://` URL to the psycopg2 driver, which
+        # is NOT installed (the project ships psycopg v3 only) — connect would
+        # ModuleNotFoundError in prod. Rewrite to the psycopg (v3) driver, the
+        # same idiom src/turn_reporter.py and src/usage_logger.py use. A sqlite
+        # (or already-`+psycopg`) URL passes through untouched.
+        db_url = settings.DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
         self._engine = create_engine(db_url)
         ThreadOwnerBase.metadata.create_all(self._engine)
         self._session_factory = sessionmaker(bind=self._engine)
@@ -100,7 +106,17 @@ class ThreadOwnerStore:
             return False
         if owner.was_authenticated and owner.user_hash:
             return _hash_user(acting_user) == owner.user_hash
-        return True  # anon-owned (authed-only endpoints 401 anon upstream)
+        # Anon-owned thread: access is granted to ANY caller by design, and that
+        # is safe because an anon thread is a capability. It is reachable only by
+        # a caller who already presents its session_id, and that session_id is a
+        # high-entropy, unguessable token (client-supplied qa_bot_session_<uuid>,
+        # or the server's secrets.token_urlsafe fallback — see src/api/routes.py).
+        # The unguessable id IS the credential; access does not derive from being
+        # authenticated. This deliberately preserves the anon→login→keep-resuming
+        # flow (a user who signs in mid-thread keeps their history). Do NOT "fix"
+        # this by adding a caller-identity check — that would break resumption
+        # without adding security, since the id already gates reachability.
+        return True
 
 
 _store: ThreadOwnerStore | None = None

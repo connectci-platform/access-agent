@@ -5,8 +5,11 @@ from src.thread_owners import get_thread_owner_store
 
 @pytest.fixture(autouse=True)
 def _sqlite_db(monkeypatch, tmp_path):
-    # Mirror how turn_reporter tests point DATABASE_URL at a temp sqlite file.
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 't.db'}")
+    # Point the store at a temp sqlite file. The store reads settings.DATABASE_URL
+    # (not os.environ), so patch the setting, not the env var.
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "DATABASE_URL", f"sqlite:///{tmp_path / 't.db'}", raising=False)
     import src.thread_owners as m
 
     m._store = None  # reset singleton
@@ -51,11 +54,57 @@ def test_anon_owned_thread_grants_access_to_any_caller():
     assert store.check_access("t-anon", None) is True
 
 
+def test_postgres_url_rewritten_to_psycopg_v3_driver(monkeypatch):
+    """A bare postgresql:// DATABASE_URL must connect via the psycopg (v3) driver.
+
+    Guards Finding C1: the project ships psycopg v3 only (no psycopg2). SQLAlchemy
+    maps a bare postgresql:// URL to psycopg2 → ModuleNotFoundError at connect in
+    prod. _ensure() must rewrite the scheme to postgresql+psycopg://. CI runs on
+    sqlite so nothing else catches a regression here; assert on the engine URL the
+    store builds without needing a live Postgres.
+    """
+    import src.thread_owners as m
+    from src.config import settings
+
+    m._store = None
+    monkeypatch.setattr(settings, "DATABASE_URL", "postgresql://user:pw@dbhost:5432/langgraph")
+
+    captured = {}
+
+    def _fake_create_engine(url, *a, **k):
+        captured["url"] = url
+        raise RuntimeError("stop before real connect")  # no live DB in CI
+
+    monkeypatch.setattr(m, "create_engine", _fake_create_engine)
+
+    store = get_thread_owner_store()
+    with pytest.raises(RuntimeError):
+        store._ensure()
+
+    # v3 driver, not the bare postgresql:// that SQLAlchemy would map to psycopg2.
+    assert captured["url"].startswith("postgresql+psycopg://")
+
+
 def test_resolve_owner_uninitialized_returns_none(monkeypatch):
     """No DATABASE_URL at all: _ensure() fails, resolve_owner short-circuits."""
-    monkeypatch.delenv("DATABASE_URL", raising=False)
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "DATABASE_URL", "", raising=False)
     import src.thread_owners as m
 
     m._store = None
     store = get_thread_owner_store()
     assert store.resolve_owner("whatever") is None
+
+
+def test_claim_thread_uninitialized_returns_false(monkeypatch):
+    """No DATABASE_URL: _ensure() fails, claim_thread reports not-claimed rather
+    than raising (degrades gracefully; ownership just isn't recorded)."""
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "DATABASE_URL", "", raising=False)
+    import src.thread_owners as m
+
+    m._store = None
+    store = get_thread_owner_store()
+    assert store.claim_thread("whatever", "alice@x") is False
