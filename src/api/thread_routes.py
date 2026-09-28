@@ -23,7 +23,7 @@ from ..auth import get_acting_user_from_cookie
 from ..config import settings
 from ..thread_owners import get_thread_owner_store
 from .sse import format_sse_event
-from .thread_runs import acquire_thread_run, held_run, run_with_timeout
+from .thread_runs import acquire_thread_run, cancel_run, held_run, run_with_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -223,3 +223,12 @@ async def thread_run_stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@thread_router.post("/threads/{thread_id}/runs/{run_id}/cancel")
+async def cancel_thread_run(thread_id: str, run_id: str, raw_request: Request) -> dict[str, str]:
+    caller = _require_user(raw_request)
+    _require_access(thread_id, caller)  # 404 if not the owner (never 403)
+    if not cancel_run(run_id):  # no such in-flight run
+        raise HTTPException(status_code=404, detail="Run not found")
+    return {"status": "cancelled"}
