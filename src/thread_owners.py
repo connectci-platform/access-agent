@@ -61,6 +61,7 @@ class ThreadOwnerStore:
         return True
 
     def claim_thread(self, thread_id: str, acting_user: str | None) -> bool:
+        acting_user = acting_user or None  # empty string is anonymous, not authed-with-null-hash
         if not self._ensure() or self._session_factory is None:
             return False
         session = self._session_factory()
@@ -93,6 +94,7 @@ class ThreadOwnerStore:
             session.close()
 
     def check_access(self, thread_id: str, acting_user: str | None) -> bool:
+        acting_user = acting_user or None  # empty string is anonymous, not authed-with-null-hash
         owner = self.resolve_owner(thread_id)
         if owner is None:
             return False
