@@ -22,6 +22,7 @@ from ..agent.graph import create_checkpointed_graph, stream_agent
 from ..auth import get_acting_user_from_cookie
 from ..config import settings
 from ..thread_owners import get_thread_owner_store
+from ..turn_reporter import _hash_user, get_turn_reporter
 from .sse import format_sse_event
 from .thread_runs import acquire_thread_run, cancel_run, held_run, run_with_timeout
 
@@ -45,6 +46,15 @@ def _require_access(thread_id: str, caller: str) -> None:
 class HistoryRequest(BaseModel):
     limit: int = 10
     before: str | None = None
+
+
+class SearchRequest(BaseModel):
+    """SDK thread-search body. ``metadata`` (e.g. graph_id/assistant_id) is
+    accepted for protocol compatibility and ignored — single-agent deployment,
+    scope is already per-user via the caller's identity."""
+
+    metadata: dict[str, Any] | None = None
+    limit: int = 10
 
 
 class RunInput(BaseModel):
@@ -90,6 +100,34 @@ async def create_thread(raw_request: Request) -> dict[str, Any]:
         "status": "idle",
         "values": {},
     }
+
+
+@thread_router.post("/threads/search")
+async def search_threads(body: SearchRequest, raw_request: Request) -> list[dict[str, Any]]:
+    """The conversation sidebar: the caller's own threads, most recent first.
+
+    Authed-only IN EFFECT, not by a 401 gate: a caller with no verified
+    identity has no user_hash to match, so there is nothing to enumerate and
+    the correct response is an empty list, not a 401 (unlike every other
+    route in this module).
+    """
+    user, _ = get_acting_user_from_cookie(raw_request)
+    user_hash = _hash_user(user)
+    if not user_hash:
+        return []
+    rows = get_turn_reporter().list_threads_for_user(user_hash, body.limit)
+    return [
+        {
+            "thread_id": row["session_id"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "metadata": {},
+            "status": "idle",
+            "interrupts": {},
+            "values": {"messages": [{"type": "human", "content": row["label"]}]},
+        }
+        for row in rows
+    ]
 
 
 @thread_router.post("/threads/{thread_id}/history")
