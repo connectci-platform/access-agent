@@ -116,6 +116,15 @@ class ThreadOwnerStore:
         # flow (a user who signs in mid-thread keeps their history). Do NOT "fix"
         # this by adding a caller-identity check — that would break resumption
         # without adding security, since the id already gates reachability.
+        #
+        # CONSEQUENCE THIS COMMENT CANNOT ENFORCE: because the id is the
+        # credential for an anon thread, a session_id must be handled with the
+        # same care as a password or bearer token everywhere it appears. Do NOT
+        # put a session_id in a URL/query string, a redirect, a log line, a
+        # support ticket, an analytics/error report, or any place it could be
+        # observed — leaking one grants access to that conversation. If you ever
+        # need to weaken that (e.g. a session_id genuinely must travel in a URL),
+        # the anon capability model here must change first; it is load-bearing.
         return True
 
 
