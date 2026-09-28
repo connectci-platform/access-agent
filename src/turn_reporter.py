@@ -25,7 +25,9 @@ from sqlalchemy import (
     String,
     Text,
     create_engine,
+    func,
     inspect,
+    select,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -345,6 +347,73 @@ class TurnReporter:
         except Exception as e:
             logger.error(f"Failed to count turns for session: {e}")
             return None
+        finally:
+            session.close()
+
+    def list_threads_for_user(self, user_hash: str, limit: int) -> list[dict[str, Any]]:
+        """Sidebar read: one row per session_id owned by ``user_hash``.
+
+        Single round trip, no N+1: a window function computes the per-session
+        label (earliest available query_text) in the same query that groups by
+        session_id, rather than a per-session follow-up lookup. NULLS LAST is
+        explicit on turn_index so a failed first turn (NULL turn_index) never
+        sorts ahead of a real turn_index=1 row when picking the label — this
+        must produce identical results on Postgres and SQLite.
+
+        Returns [] (not an error) when uninitialized/on failure — the sidebar
+        degrades to an empty list rather than a 500.
+        """
+        if not self._ensure_initialized() or self._session_factory is None:
+            return []
+        session = self._session_factory()
+        try:
+            label = (
+                func.first_value(TurnReport.query_text)
+                .over(
+                    partition_by=TurnReport.session_id,
+                    order_by=(
+                        TurnReport.turn_index.asc().nulls_last(),
+                        TurnReport.created_at.asc(),
+                    ),
+                )
+                .label("label")
+            )
+            per_row = (
+                select(
+                    TurnReport.session_id.label("session_id"),
+                    TurnReport.created_at.label("created_at"),
+                    label,
+                )
+                .where(TurnReport.user_hash == user_hash)
+                .subquery()
+            )
+            stmt = (
+                select(
+                    per_row.c.session_id,
+                    func.min(per_row.c.created_at).label("min_created_at"),
+                    func.max(per_row.c.created_at).label("max_created_at"),
+                    # label is identical across all rows of a session (the
+                    # window function computed it per-partition), so any()/
+                    # min() over it just picks that one value out of the group.
+                    func.min(per_row.c.label).label("label"),
+                )
+                .group_by(per_row.c.session_id)
+                .order_by(func.max(per_row.c.created_at).desc())
+                .limit(limit)
+            )
+            rows = session.execute(stmt).all()
+            return [
+                {
+                    "session_id": row.session_id,
+                    "created_at": row.min_created_at,
+                    "updated_at": row.max_created_at,
+                    "label": row.label,
+                }
+                for row in rows
+            ]
+        except Exception as e:
+            logger.error(f"Failed to list threads for user: {e}")
+            return []
         finally:
             session.close()
 
