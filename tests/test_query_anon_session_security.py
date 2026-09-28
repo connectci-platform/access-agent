@@ -41,6 +41,23 @@ def _no_turnstile(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _sqlite_db(monkeypatch, tmp_path):
+    # Pin the owner store at a temp sqlite file so this suite never touches a real
+    # Postgres in a dev env that has one up. The widget claim_thread path reads
+    # settings.DATABASE_URL; without this the tests pass only when DATABASE_URL is
+    # unset (CI) and fail against the repo's default localhost DSN. Mirrors the
+    # autouse pin in tests/test_thread_owners.py.
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "DATABASE_URL", f"sqlite:///{tmp_path / 't.db'}", raising=False)
+    import src.thread_owners as owners
+
+    owners._store = None
+    yield
+    owners._store = None
+
+
+@pytest.fixture(autouse=True)
 def _reset_run_registry():
     import src.api.thread_runs as tr
 
