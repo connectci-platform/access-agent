@@ -343,3 +343,32 @@ async def test_widget_thread_owned_by_creator(client, valid_cookie_for, monkeypa
         json={"input": {"messages": [{"role": "user", "content": "x"}]}},
     )
     assert bob.status_code == 404
+
+
+async def test_widget_registry_failure_does_not_leak_lock(client, valid_cookie, monkeypatch):
+    """get_registry() failing inside the widget stream must release the per-thread lock.
+
+    acquire_thread_run runs in the handler; if get_registry() (MCP catalog fetch,
+    can fail on a cold/refreshing cache) raised OUTSIDE held_run, the lock would
+    never be released and the session_id would be permanently 409-locked.
+    """
+
+    async def _boom_registry():
+        raise RuntimeError("catalog cold")
+
+    monkeypatch.setattr("src.api.routes.get_registry", _boom_registry)
+
+    r = await client.post(
+        "/api/v1/query",
+        cookies=valid_cookie,
+        json={"query": "hi", "session_id": "leak-sess"},
+    )
+    assert r.status_code == 200
+    _ = r.text  # drain the stream; the error path runs and held_run's finally fires
+
+    import src.api.thread_runs as tr
+
+    assert "leak-sess" not in tr._active_by_thread  # lock released, not leaked
+    # A subsequent acquire on the same session must NOT 409.
+    tr.acquire_thread_run("leak-sess", "next-run")  # raises HTTPException(409) if leaked
+    tr.release_thread_run("leak-sess", "next-run")
