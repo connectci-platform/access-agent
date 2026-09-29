@@ -227,3 +227,63 @@ async def test_nonowner_denial_body_matches_other_404s(
 
     assert r.status_code == 404
     assert r.json() == {"detail": "Thread not found"}
+
+
+@pytest.fixture(autouse=True)
+def _sqlite_turn_reporter(monkeypatch, tmp_path):
+    # Same DATABASE_URL setting drives both stores; pin turn_reporter's
+    # singleton to the same temp sqlite file the owner-store fixture uses.
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "DATABASE_URL", f"sqlite:///{tmp_path / 't.db'}", raising=False)
+    import src.turn_reporter as reporter_mod
+
+    reporter_mod._turn_reporter = None
+    yield
+    reporter_mod._turn_reporter = None
+
+
+async def test_authed_caller_upgrades_anon_thread_and_appears_in_sidebar(
+    client, valid_cookie_for, seed_owner, mock_agent, mock_registry
+):
+    """An authed caller resuming an anon-owned widget thread flips ownership
+    and backfills turn_reports, so the thread shows up in their sidebar via
+    list_threads_for_user."""
+    from src.thread_owners import get_thread_owner_store
+    from src.turn_reporter import get_turn_reporter
+
+    seed_owner("t-upgrade", None)  # anon-owned
+
+    reporter = get_turn_reporter()
+    reporter.log_turn_report(
+        final_state={"final_answer": "hi", "tools_used": []},
+        session_id="t-upgrade",
+        turn_index=1,
+        question_id="q-anon-1",
+        query_text="anon turn before login",
+        duration_ms=10.0,
+        acting_user=None,
+        success=True,
+        capabilities=[],
+    )
+
+    r = await client.post(
+        "/api/v1/query",
+        headers=valid_cookie_for("me@access-ci.org"),
+        json={"query": "hi again", "session_id": "t-upgrade"},
+    )
+
+    assert r.status_code == 200
+    mock_agent.assert_called_once()
+
+    owner = get_thread_owner_store().resolve_owner("t-upgrade")
+    assert owner is not None
+    assert owner.was_authenticated is True
+
+    import hashlib
+
+    expected_hash = hashlib.sha256(b"me@access-ci.org").hexdigest()[:16]
+    assert owner.user_hash == expected_hash
+
+    threads = reporter.list_threads_for_user(expected_hash, limit=10)
+    assert any(t["session_id"] == "t-upgrade" for t in threads)
