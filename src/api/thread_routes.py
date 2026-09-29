@@ -23,6 +23,11 @@ from ..auth import get_acting_user_from_cookie
 from ..config import settings
 from ..thread_owners import get_thread_owner_store
 from ..turn_reporter import _hash_user, get_turn_reporter
+from .handoff_tokens import (
+    DEFAULT_TTL_SECONDS,
+    exchange_handoff_token,
+    mint_handoff_token,
+)
 from .sse import format_sse_event
 from .thread_runs import (
     acquire_thread_run,
@@ -52,6 +57,10 @@ def _require_access(thread_id: str, caller: str) -> None:
 class HistoryRequest(BaseModel):
     limit: int = 10
     before: str | None = None
+
+
+class ExchangeRequest(BaseModel):
+    token: str
 
 
 class SearchRequest(BaseModel):
@@ -166,6 +175,52 @@ def _serialize_values(values: dict[str, Any] | None) -> dict[str, Any]:
         return {}
     msgs = values.get("messages", [])
     return {"messages": [m.model_dump() if hasattr(m, "model_dump") else m for m in msgs]}
+
+
+@thread_router.post("/threads/{thread_id}/handoff")
+async def mint_handoff(thread_id: str, raw_request: Request) -> dict[str, Any]:
+    """Mint a single-use cross-surface handoff token for an authed-owned thread.
+
+    Authed-owned-threads ONLY: anon-owned threads are rejected with their own
+    404 before any owner-match check. thread_id IS the session_id, and for an
+    anon-owned thread the id itself is the access credential (see
+    src/thread_owners.py) — handing it over via a token that a client then
+    carries into URLs would leak that credential. Restricting mint to
+    authed-owned threads is what keeps "session_id never in a URL" true.
+
+    The `not owner.was_authenticated` clause is fail-closed defense-in-depth, not
+    dead code: today it is redundant with the owner-match below (an anon row has
+    user_hash=None, so the hash compare would also 404), because no write path
+    produces was_authenticated=False with a non-null hash. Keep it — it makes the
+    authed-only intent explicit and stays correct if that invariant ever changes.
+    """
+    caller = _require_user(raw_request)
+    owner = get_thread_owner_store().resolve_owner(thread_id)
+    if owner is None or not owner.was_authenticated:
+        raise HTTPException(status_code=404, detail="Thread not found")  # never 403
+    if _hash_user(caller) != owner.user_hash:
+        raise HTTPException(status_code=404, detail="Thread not found")  # never 403
+    token = mint_handoff_token(thread_id, _hash_user(caller))  # type: ignore[arg-type]
+    return {"token": token, "expires_in": DEFAULT_TTL_SECONDS}
+
+
+@thread_router.post("/handoff/exchange")
+async def exchange_handoff(body: ExchangeRequest, raw_request: Request) -> dict[str, str]:
+    """Redeem a single-use handoff token for a thread_id, identity-bound.
+
+    The token is consumed atomically on exchange regardless of outcome; a
+    mismatching caller burning someone else's token only harms an attacker.
+    Returns ONLY thread_id — never message content (that comes from the
+    separately-gated /history).
+    """
+    caller = _require_user(raw_request)
+    result = exchange_handoff_token(body.token)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Invalid or expired token")
+    thread_id, owner_hash = result
+    if owner_hash != _hash_user(caller):
+        raise HTTPException(status_code=404, detail="Invalid or expired token")
+    return {"thread_id": thread_id}
 
 
 @thread_router.post("/threads/{thread_id}/runs/stream")
