@@ -29,6 +29,7 @@ from sqlalchemy import (
     inspect,
     select,
     text,
+    update,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
@@ -436,6 +437,33 @@ class TurnReporter:
             session.commit()
         except Exception as e:
             logger.error(f"Failed to update turn report rating: {e}")
+        finally:
+            session.close()
+
+    def backfill_user_hash(self, session_id: str, acting_user: str) -> None:
+        """Sweep NULL-hash turn_reports rows for a session onto acting_user's hash.
+
+        Best-effort, mirrors update_rating: this is a read-model repair, not
+        the system of record. The guarded WHERE (user_hash IS NULL) makes
+        repeated calls idempotent and self-terminating — once no NULL rows
+        remain for the session, the UPDATE matches zero and this is a no-op.
+        Never raises.
+        """
+        if not self._ensure_initialized() or self._session_factory is None:
+            return
+        session = self._session_factory()
+        try:
+            session.execute(
+                update(TurnReport)
+                .where(
+                    TurnReport.session_id == session_id,
+                    TurnReport.user_hash.is_(None),
+                )
+                .values(user_hash=_hash_user(acting_user), was_authenticated=True)
+            )
+            session.commit()
+        except Exception as e:
+            logger.error(f"Failed to backfill turn report user_hash: {e}")
         finally:
             session.close()
 

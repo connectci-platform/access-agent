@@ -108,3 +108,45 @@ def test_claim_thread_uninitialized_returns_false(monkeypatch):
     m._store = None
     store = get_thread_owner_store()
     assert store.claim_thread("whatever", "alice@x") is False
+
+
+def test_upgrade_flips_anon_to_authed():
+    import hashlib
+
+    store = get_thread_owner_store()
+    store.claim_thread("t", None)  # anon-owned
+    assert store.upgrade_owner("t", "me@x") is True  # flipped
+    owner = store.resolve_owner("t")
+    assert owner.was_authenticated is True
+    assert owner.user_hash == hashlib.sha256(b"me@x").hexdigest()[:16]
+
+
+def test_upgrade_is_noop_on_authed_thread():
+    import hashlib
+
+    store = get_thread_owner_store()
+    store.claim_thread("t2", "alice@x")  # already authed-owned
+    assert store.upgrade_owner("t2", "bob@x") is False  # no anon row to flip
+    assert store.resolve_owner("t2").user_hash == hashlib.sha256(b"alice@x").hexdigest()[:16]
+
+
+def test_second_concurrent_upgrade_loses_cleanly():
+    store = get_thread_owner_store()
+    store.claim_thread("t3", None)
+    assert store.upgrade_owner("t3", "first@x") is True
+    assert (
+        store.upgrade_owner("t3", "second@x") is False
+    )  # WHERE was_authenticated=False now matches 0 rows
+
+
+def test_upgrade_owner_uninitialized_returns_false(monkeypatch):
+    """No DATABASE_URL: _ensure() fails, upgrade_owner reports no-flip rather
+    than raising."""
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "DATABASE_URL", "", raising=False)
+    import src.thread_owners as m
+
+    m._store = None
+    store = get_thread_owner_store()
+    assert store.upgrade_owner("whatever", "alice@x") is False

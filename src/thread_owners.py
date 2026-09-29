@@ -3,16 +3,16 @@ from __future__ import annotations
 import hashlib
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
-from sqlalchemy import Boolean, Column, DateTime, String, create_engine
+from sqlalchemy import Boolean, Column, DateTime, String, create_engine, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 from .config import settings
 
 if TYPE_CHECKING:
-    from sqlalchemy.engine import Engine
+    from sqlalchemy.engine import CursorResult, Engine
 
 logger = logging.getLogger(__name__)
 ThreadOwnerBase = declarative_base()
@@ -84,6 +84,40 @@ class ThreadOwnerStore:
         except IntegrityError:
             session.rollback()
             return False  # already owned — not the first writer
+        finally:
+            session.close()
+
+    def upgrade_owner(self, thread_id: str, acting_user: str) -> bool:
+        """Flip an anon-owned thread to authed ownership on login.
+
+        A single atomic conditional UPDATE, never resolve-then-write: the
+        WHERE was_authenticated == False guard is what makes two concurrent
+        upgrades resolve cleanly. The first caller's UPDATE flips the row and
+        commits; the second caller's WHERE then matches zero rows (the row is
+        no longer was_authenticated == False) and it gets back False, with no
+        read-modify-write race window between the two.
+        """
+        if not self._ensure() or self._session_factory is None:
+            return False
+        session = self._session_factory()
+        try:
+            # session.execute() of a Core update() is typed as the generic
+            # Result[Any] but is always a CursorResult at runtime (it came
+            # from a DML statement, not an ORM-entity select) — cast to reach
+            # .rowcount, which Result's base type doesn't declare.
+            result = cast(
+                "CursorResult[Any]",
+                session.execute(
+                    update(ThreadOwnerRow)
+                    .where(
+                        ThreadOwnerRow.thread_id == thread_id,
+                        ThreadOwnerRow.was_authenticated == False,  # noqa: E712
+                    )
+                    .values(user_hash=_hash_user(acting_user), was_authenticated=True)
+                ),
+            )
+            session.commit()
+            return bool(result.rowcount > 0)
         finally:
             session.close()
 

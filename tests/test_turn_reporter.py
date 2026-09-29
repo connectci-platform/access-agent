@@ -535,6 +535,79 @@ class TestUpdateRating:
         r.update_rating(question_id="q-1", rating="helpful", feedback=None)
 
 
+class TestBackfillUserHash:
+    def _reporter(self):
+        r = TurnReporter()
+        r._engine = create_engine("sqlite:///:memory:")
+        TurnReportBase.metadata.create_all(r._engine)
+        r._session_factory = sessionmaker(bind=r._engine)
+        r._initialized = True
+        return r
+
+    def test_backfill_sets_null_hash_rows_only(self):
+        import hashlib
+
+        r = self._reporter()
+        session = r._session_factory()
+        session.add(
+            TurnReport(
+                session_id="sess-anon",
+                query_text="hi",
+                user_hash=None,
+                was_authenticated=False,
+            )
+        )
+        session.add(
+            TurnReport(
+                session_id="sess-other",
+                query_text="hey",
+                user_hash="deadbeefcafef00d",
+                was_authenticated=True,
+            )
+        )
+        session.commit()
+        session.close()
+
+        r.backfill_user_hash("sess-anon", "me@x")
+
+        session = r._session_factory()
+        anon_row = session.query(TurnReport).filter_by(session_id="sess-anon").one()
+        other_row = session.query(TurnReport).filter_by(session_id="sess-other").one()
+        session.close()
+
+        assert anon_row.user_hash == hashlib.sha256(b"me@x").hexdigest()[:16]
+        assert anon_row.was_authenticated is True
+        # untouched — different session, already had a hash
+        assert other_row.user_hash == "deadbeefcafef00d"
+
+    def test_backfill_leaves_already_hashed_rows_in_same_session_untouched(self):
+        """The WHERE guards on user_hash IS NULL, not just session_id — a row
+        that already carries a (possibly different) hash must not be clobbered."""
+        r = self._reporter()
+        session = r._session_factory()
+        session.add(
+            TurnReport(
+                session_id="sess-mixed",
+                query_text="hi",
+                user_hash="alreadyhashed123",
+                was_authenticated=True,
+            )
+        )
+        session.commit()
+        session.close()
+
+        r.backfill_user_hash("sess-mixed", "someoneelse@x")
+
+        session = r._session_factory()
+        row = session.query(TurnReport).filter_by(session_id="sess-mixed").one()
+        session.close()
+        assert row.user_hash == "alreadyhashed123"
+
+    def test_backfill_never_raises_when_uninitialized(self):
+        r = TurnReporter()  # no engine, DATABASE_URL likely unset in tests
+        r.backfill_user_hash("sess-anon", "me@x")  # must not raise
+
+
 class TestMigrationIndexes:
     def test_rating_index_created_on_existing_db(self):
         # Simulate an existing DB whose rating column was ALTER-added (no
