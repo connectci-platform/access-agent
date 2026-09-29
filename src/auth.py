@@ -7,10 +7,9 @@ Each issuing site signs with its own EC P-256 private key. This module
 validates tokens by fetching the issuer's public key from its JWKS endpoint
 (``/.well-known/jwks.json``). No shared secret is needed.
 
-The route handler is responsible for body-based fallback (transition period)
-using the already-parsed ``QueryRequest.acting_user`` field — this module
-never reads the request body, avoiding double-consumption of the ASGI
-body stream.
+Identity is cookie-only: there is no body-supplied identity fallback. This
+module never reads the request body, avoiding double-consumption of the
+ASGI body stream.
 
 See: access-qa-planning/08-qa-bot-authentication.md
 """

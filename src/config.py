@@ -76,7 +76,6 @@ class Settings(BaseSettings):
     # Comma-separated list of "issuer=jwks_url" pairs.
     # Example: "https://support.access-ci.org=https://support.access-ci.org/.well-known/jwks.json"
     TRUSTED_JWKS_URLS: str = ""
-    ALLOW_BODY_ACTING_USER: bool = True  # Transition: accept acting_user from body
 
     # Turnstile bot protection (Cloudflare)
     # When TURNSTILE_SECRET_KEY is empty, Turnstile is disabled (current behavior).

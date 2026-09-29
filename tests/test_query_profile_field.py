@@ -6,9 +6,9 @@ no LLM/MCP infrastructure is needed, and exercises the full HTTP request path.
 JWKS/JWT test helpers (key pair, local JWKS server, token minting) are
 imported from test_auth_e2e rather than duplicated a third time (they also
 live in test_auth.py) — importing that module runs its module-level
-``os.environ.setdefault(...)`` calls too, which is exactly the env setup this
-file already needs (ALLOW_BODY_ACTING_USER / DATABASE_URL / TRUSTED_JWKS_URLS),
-so nothing here diverges from it.
+``os.environ["DATABASE_URL"] = ""`` / ``os.environ.setdefault("TRUSTED_JWKS_URLS", ...)``
+calls too, which is exactly the env setup this file already needs, so nothing
+here diverges from it.
 """
 
 from unittest.mock import AsyncMock, patch
@@ -131,11 +131,7 @@ async def test_query_rejects_name_with_newline_with_422(client, mock_agent, mock
     mock_agent.assert_not_called()
 
 
-async def test_profile_does_not_affect_acting_user(client, mock_agent, mock_registry, monkeypatch):
-    from src.config import settings
-
-    monkeypatch.setattr(settings, "ALLOW_BODY_ACTING_USER", False)
-
+async def test_profile_does_not_affect_acting_user(client, mock_agent, mock_registry):
     response = await client.post(
         "/api/v1/query",
         json={

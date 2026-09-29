@@ -5,9 +5,10 @@ Mocks only the LLM agent so no OpenAI/MCP infrastructure is needed.
 
 Uses ES256 (ECDSA P-256) key pairs — no shared secret.
 
-Body fallback is handled in the route (using the already-parsed
-QueryRequest.acting_user), NOT in auth.py — so the ASGI body stream
-is only consumed once by FastAPI.
+Identity is cookie-only: QueryRequest has no acting_user body field, so a
+caller without a valid cookie is always anonymous. Tests below that send an
+`acting_user` key in the JSON body are verifying it is silently ignored
+(unknown field, no `extra="forbid"`), not exercising a real fallback.
 
 Run with: uv run pytest tests/test_auth_e2e.py -v
 """
@@ -31,7 +32,6 @@ from cryptography.hazmat.primitives.serialization import (
 from httpx import ASGITransport, AsyncClient
 from jwt import algorithms as jwt_algorithms
 
-os.environ.setdefault("ALLOW_BODY_ACTING_USER", "true")
 # Force-empty (not setdefault): this suite mocks the agent and must never touch
 # a real DB. With setdefault, an exported DATABASE_URL (normal dev shell) leaks
 # through and the route's turn reporter writes real rows to local Postgres.
@@ -296,32 +296,38 @@ async def test_wrong_key_anonymous(client, mock_agent, mock_registry):
 
 
 # ---------------------------------------------------------------------------
-# Test: Body fallback when no cookie (transition mode)
+# Test: Body acting_user is ignored — identity is cookie-only
 # ---------------------------------------------------------------------------
 
 
-async def test_body_fallback_no_cookie(client, mock_agent, mock_registry):
-    """Without a cookie, acting_user from body is used (ALLOW_BODY_ACTING_USER=true)."""
+async def test_body_acting_user_is_ignored_no_cookie(client, mock_agent, mock_registry):
+    """Without a cookie, a body acting_user is NOT used — it is silently
+    ignored (unknown field on QueryRequest) and the caller is anonymous.
+    """
     response = await client.post(
         "/api/v1/query",
         json={
             "query": "What GPU resources are available?",
+            "session_id": "s-body-ignored",
             "acting_user": "body-user@access-ci.org",
         },
     )
 
     assert response.status_code == 200
     mock_agent.assert_called_once()
-    assert mock_agent.call_args.kwargs.get("acting_user") == "body-user@access-ci.org"
+    assert mock_agent.call_args.kwargs.get("acting_user") is None
 
 
 # ---------------------------------------------------------------------------
-# Test: Cookie takes priority over body
+# Test: Cookie is the only identity source
 # ---------------------------------------------------------------------------
 
 
 async def test_cookie_overrides_body(client, mock_agent, mock_registry):
-    """When both cookie and body acting_user are present, cookie wins."""
+    """A body acting_user alongside a valid cookie has no effect — the
+    cookie identity is used regardless (the body field no longer exists on
+    the model at all).
+    """
     token = _make_jwt("cookie-user@access-ci.org")
 
     response = await client.post(
@@ -336,6 +342,39 @@ async def test_cookie_overrides_body(client, mock_agent, mock_registry):
     assert response.status_code == 200
     mock_agent.assert_called_once()
     assert mock_agent.call_args.kwargs.get("acting_user") == "cookie-user@access-ci.org"
+
+
+# ---------------------------------------------------------------------------
+# Test: A cookieless caller with a spoofed body acting_user does not bypass
+# Turnstile — an unverified body identity must not buy a challenge-free ride.
+# ---------------------------------------------------------------------------
+
+
+async def test_body_acting_user_does_not_bypass_turnstile(
+    client, mock_agent, mock_registry, monkeypatch
+):
+    """Turnstile enabled, no cookie, no turnstile token, but a body
+    acting_user is present. Since identity is cookie-only, this caller is
+    anonymous and must receive the Turnstile challenge, not a bypass.
+    """
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "TURNSTILE_SECRET_KEY", "test-secret", raising=False)
+    monkeypatch.setattr(settings, "TURNSTILE_MODE", "immediate", raising=False)
+
+    response = await client.post(
+        "/api/v1/query",
+        json={
+            "query": "What GPU resources are available?",
+            "session_id": "s-turnstile-no-bypass",
+            "acting_user": "spoofed-user@access-ci.org",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body.get("requires_turnstile") is True
+    mock_agent.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -385,10 +424,10 @@ async def test_body_fallback_claims_anon_owned_thread_not_spoofed_identity(
     client, mock_agent, mock_registry
 ):
     """A cookieless widget turn with a body acting_user must NOT claim the
-    thread as that (unverified) identity. ALLOW_BODY_ACTING_USER=true still
-    drives the *answer* via acting_user, but ownership must fall back to
-    anon (was_authenticated=False) — otherwise a spoofable body field could
-    write a was_authenticated=True row and hijack thread ownership.
+    thread as that (unverified) identity, and must NOT drive the answer
+    either — identity is cookie-only by construction now. Ownership falls
+    back to anon (was_authenticated=False): a spoofable body field can
+    neither write a was_authenticated=True row nor steer the agent's answer.
     """
     session_id = "sess-body-only"
     response = await client.post(
@@ -401,8 +440,8 @@ async def test_body_fallback_claims_anon_owned_thread_not_spoofed_identity(
     )
 
     assert response.status_code == 200
-    # The answer-steering path still gets the body fallback.
-    assert mock_agent.call_args.kwargs.get("acting_user") == "spoofed-user@access-ci.org"
+    # The body value never reaches the agent — the field doesn't exist anymore.
+    assert mock_agent.call_args.kwargs.get("acting_user") is None
 
     owner = get_thread_owner_store().resolve_owner(session_id)
     assert owner is not None
