@@ -48,7 +48,6 @@ services:
       - ENABLED_CAPABILITIES=${ENABLED_CAPABILITIES:-}
       # JWT Authentication (ES256 + JWKS)
       - TRUSTED_JWKS_URLS=${TRUSTED_JWKS_URLS:-}
-      - ALLOW_BODY_ACTING_USER=${ALLOW_BODY_ACTING_USER:-true}
       # Turnstile bot protection (Cloudflare)
       - TURNSTILE_SITE_KEY=${TURNSTILE_SITE_KEY:-}
       - TURNSTILE_SECRET_KEY=${TURNSTILE_SECRET_KEY:-}

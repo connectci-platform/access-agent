@@ -122,7 +122,6 @@ class QueryRequest(BaseModel):
     query: str = Field(..., description="The user's question")
     session_id: str | None = Field(None, description="Session ID for conversation tracking")
     question_id: str | None = Field(None, description="Unique question ID")
-    acting_user: str | None = Field(None, description="Transition fallback: acting user from body")
     turnstile_token: str | None = Field(None, description="Cloudflare Turnstile response token")
     resource_context: str | None = Field(
         None, description="RP slug for resource-scoped queries (e.g. 'delta')"
@@ -542,8 +541,9 @@ async def query_agent(
     """Execute a query against the ACCESS Documentation Agent.
 
     User identity is resolved from the ``SESSaccess_auth`` JWT cookie set by
-    ACCESS sites (Drupal, Django, etc.).  During transition, the ``acting_user`` body field is accepted
-    as a fallback when ``ALLOW_BODY_ACTING_USER`` is enabled.
+    ACCESS sites (Drupal, Django, etc.) — cookie-only, by construction. There
+    is no body-supplied identity fallback: a caller without a valid cookie is
+    always anonymous.
 
     Args:
         request: The query request with question and optional IDs.
@@ -553,20 +553,10 @@ async def query_agent(
         For capability discovery: QueryResponse (JSON) with instant answer.
         For agent queries: StreamingResponse (SSE) with status, token, and done events.
     """
-    # Resolve acting user from JWT cookie (preferred) or body fallback.
-    # Body fallback uses the already-parsed QueryRequest to avoid
-    # double-consuming the ASGI body stream.
-    acting_user: str | None = None
-    user, cookie_present = get_acting_user_from_cookie(raw_request)
-    if user:
-        acting_user = user
-    elif cookie_present:
-        # Cookie was present but invalid/expired — do NOT fall through
-        # to body fallback (prevents downgrade attacks).
-        acting_user = None
-    elif settings.ALLOW_BODY_ACTING_USER and request.acting_user:
-        # No cookie sent; use body fallback during transition period.
-        acting_user = request.acting_user.strip() or None
+    # Resolve acting user from the JWT cookie only — no body-supplied
+    # identity fallback. A missing or invalid/expired cookie is anonymous.
+    user, _cookie_present = get_acting_user_from_cookie(raw_request)
+    acting_user: str | None = user if user else None
 
     # Generate IDs if not provided.
     # Anonymous users MUST provide session_id when Turnstile is enabled —
@@ -592,7 +582,7 @@ async def query_agent(
     )
 
     # Turnstile gate — anonymous users may need to verify they're human.
-    # Authenticated users (JWT cookie or body fallback) skip entirely.
+    # Authenticated users (valid JWT cookie) skip entirely.
     turnstile_response = await _check_turnstile(acting_user, session_id, request.turnstile_token)
     if turnstile_response is not None:
         return turnstile_response
@@ -620,8 +610,8 @@ async def query_agent(
     # Ownership gate: a caller cannot resume/append to a thread they don't own.
     # Resolve the owner once and branch — call check_access for any non-None
     # owner (don't pre-guard on user_hash; check_access itself fails closed on
-    # a NULL-hash authed row). `user` is cookie-verified identity only, never
-    # the body-fallback `acting_user` — see the claim_thread comment below.
+    # a NULL-hash authed row). `user` and `acting_user` are the same
+    # cookie-verified identity — there is no body-supplied identity anymore.
     owner_store = get_thread_owner_store()
     owner = owner_store.resolve_owner(session_id)
     if owner is not None and owner.was_authenticated:
@@ -646,11 +636,8 @@ async def query_agent(
     # could claim_thread a pre-existing widget conversation and take it over.
     # Ignore the bool — the widget doesn't gate on it; the row just has to exist.
     #
-    # Ownership MUST come from cookie-verified identity only, never the
-    # body-fallback `acting_user` above — ALLOW_BODY_ACTING_USER defaults true
-    # in prod, and the body field is caller-supplied with no verification. A
-    # cookieless caller claims an anon-owned thread (was_authenticated=False);
-    # `acting_user` (cookie-or-body) still drives the *answer* below.
+    # Ownership comes from cookie-verified identity only (`user`). A
+    # cookieless caller claims an anon-owned thread (was_authenticated=False).
     owner_store.claim_thread(session_id, user)
 
     # Share the per-thread run lock with the runs/stream endpoint (they collide on
