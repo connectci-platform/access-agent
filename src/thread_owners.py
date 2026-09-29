@@ -138,7 +138,15 @@ class ThreadOwnerStore:
         owner = self.resolve_owner(thread_id)
         if owner is None:
             return False
-        if owner.was_authenticated and owner.user_hash:
+        if owner.was_authenticated:
+            # Fail-closed: an authed row must carry a user_hash to grant access.
+            # Today unreachable (claim_thread/upgrade_owner never set
+            # was_authenticated=True without also hashing a truthy
+            # acting_user) but a NULL-hash authed row must never fall through
+            # to the anon branch's unconditional True — that would be a
+            # fail-OPEN on the tenant-isolation security boundary.
+            if not owner.user_hash:
+                return False
             return _hash_user(acting_user) == owner.user_hash
         # Anon-owned thread: access is granted to ANY caller by design, and that
         # is safe because an anon thread is a capability. It is reachable only by
