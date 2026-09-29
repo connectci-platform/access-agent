@@ -287,3 +287,90 @@ async def test_authed_caller_upgrades_anon_thread_and_appears_in_sidebar(
 
     threads = reporter.list_threads_for_user(expected_hash, limit=10)
     assert any(t["session_id"] == "t-upgrade" for t in threads)
+
+
+async def test_losing_race_caller_does_not_backfill_winners_thread(
+    client, valid_cookie_for, seed_owner, mock_agent, mock_registry
+):
+    """Two authed users race their first post-login turn on the same anon
+    session_id. A wins the upgrade_owner flip first (simulated here by flipping
+    ownership to alice out-of-band, before B's request arrives). B's branch
+    still runs (B read the owner as anon-owned before the flip) but B's own
+    upgrade_owner call must lose (WHERE was_authenticated == False matches
+    zero rows once alice's flip has landed) — and per the fix, a losing
+    upgrade_owner must gate off backfill_user_hash so B never re-tags alice's
+    still-NULL-hashed historical turn_reports row onto bob's hash.
+    """
+    from src.thread_owners import get_thread_owner_store
+    from src.turn_reporter import get_turn_reporter
+
+    seed_owner("t-race", None)  # anon-owned
+
+    reporter = get_turn_reporter()
+    reporter.log_turn_report(
+        final_state={"final_answer": "hi", "tools_used": []},
+        session_id="t-race",
+        turn_index=1,
+        question_id="q-anon-1",
+        query_text="anon turn before login",
+        duration_ms=10.0,
+        acting_user=None,
+        success=True,
+        capabilities=[],
+    )
+
+    owner_store = get_thread_owner_store()
+    # Simulate alice's upgrade_owner call having already won the race and
+    # committed, before bob's backfill (or upgrade_owner) call executes.
+    assert owner_store.upgrade_owner("t-race", "alice@access-ci.org") is True
+
+    # Simulate the race window: bob's request resolved the owner as
+    # anon-owned (a stale read taken before alice's flip committed), so bob's
+    # request still enters the anon-owned+authed-caller elif branch in
+    # src/api/routes.py — exactly as the real concurrent scenario would, since
+    # resolve_owner and the branch's own upgrade_owner call are not in the
+    # same transaction. The real upgrade_owner call below still hits the
+    # live (already-flipped) row and correctly returns False; only the stale
+    # *read* is faked, not the write.
+    from unittest.mock import patch
+
+    from src.thread_owners import ThreadOwner
+
+    stale_anon_owner = ThreadOwner(False, None)
+    with patch.object(owner_store, "resolve_owner", return_value=stale_anon_owner):
+        r = await client.post(
+            "/api/v1/query",
+            headers=valid_cookie_for("bob@access-ci.org"),
+            json={"query": "hi again", "session_id": "t-race"},
+        )
+
+    assert r.status_code == 200
+    mock_agent.assert_called_once()
+
+    # Ownership must remain alice's — bob's upgrade_owner call lost the race.
+    owner = owner_store.resolve_owner("t-race")
+    assert owner is not None
+    assert owner.was_authenticated is True
+
+    import hashlib
+
+    alice_hash = hashlib.sha256(b"alice@access-ci.org").hexdigest()[:16]
+    bob_hash = hashlib.sha256(b"bob@access-ci.org").hexdigest()[:16]
+    assert owner.user_hash == alice_hash
+
+    # The historical pre-login turn (q-anon-1) must NOT be tagged with bob's
+    # hash. Querying list_threads_for_user would be misleading here: bob's
+    # own new turn on t-race ("hi again") legitimately gets logged under
+    # bob's hash by the normal end-of-turn log_turn_report call, which would
+    # make t-race show up in bob's sidebar regardless of whether the bug is
+    # fixed — that's correct, not a leak. The actual invariant is on the
+    # *historical* row specifically: it must never end up carrying bob's
+    # hash, whether it's still NULL or has alice's hash.
+    from src.turn_reporter import TurnReport
+
+    session = reporter._session_factory()
+    try:
+        historical_row = session.query(TurnReport).filter_by(question_id="q-anon-1").one()
+        assert historical_row.user_hash != bob_hash
+    finally:
+        session.close()
