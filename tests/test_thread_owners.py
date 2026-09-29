@@ -150,3 +150,24 @@ def test_upgrade_owner_uninitialized_returns_false(monkeypatch):
     m._store = None
     store = get_thread_owner_store()
     assert store.upgrade_owner("whatever", "alice@x") is False
+
+
+def test_check_access_fails_closed_on_authed_row_with_null_hash():
+    """Defense-in-depth: an authed row with a NULL user_hash (today unreachable
+    via claim_thread/upgrade_owner, since acting_user is truthy whenever
+    was_authenticated is True) must deny access, not fall through to the anon
+    branch's unconditional True."""
+    store = get_thread_owner_store()
+    store._ensure()
+    assert store._session_factory is not None
+    session = store._session_factory()
+    try:
+        from src.thread_owners import ThreadOwnerRow
+
+        session.add(ThreadOwnerRow(thread_id="t-corrupt", user_hash=None, was_authenticated=True))
+        session.commit()
+    finally:
+        session.close()
+
+    assert store.check_access("t-corrupt", "anyone@x") is False
+    assert store.check_access("t-corrupt", None) is False
