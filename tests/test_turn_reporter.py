@@ -607,6 +607,15 @@ class TestBackfillUserHash:
         r = TurnReporter()  # no engine, DATABASE_URL likely unset in tests
         r.backfill_user_hash("sess-anon", "me@x")  # must not raise
 
+    def test_backfill_never_raises_on_db_error(self):
+        # Tables deliberately NOT created — the UPDATE raises — same
+        # discipline as count_turns_for_session's test_db_error_returns_none.
+        r = TurnReporter()
+        r._engine = create_engine("sqlite:///:memory:")
+        r._session_factory = sessionmaker(bind=r._engine)
+        r._initialized = True
+        r.backfill_user_hash("sess-anon", "me@x")  # must not raise
+
 
 class TestMigrationIndexes:
     def test_rating_index_created_on_existing_db(self):
