@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     # Database (checkpointing)
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/langgraph"
 
+    # Redis (cross-surface handoff token store; see src/api/handoff_tokens.py).
+    # Empty = in-memory single-process fallback (dev/test).
+    REDIS_URL: str = ""
+
     # JWT Authentication (ES256 + JWKS)
     # Comma-separated list of "issuer=jwks_url" pairs.
     # Example: "https://support.access-ci.org=https://support.access-ci.org/.well-known/jwks.json"
