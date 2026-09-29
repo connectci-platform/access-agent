@@ -621,13 +621,34 @@ async def query_agent(
         # src/api/thread_routes.py's runs/stream gate).
         if not owner_store.check_access(session_id, user):
             raise HTTPException(status_code=404, detail="Thread not found")
+        # Idempotent backfill sweep: repairs turn_reports rows a prior turn's
+        # flip-then-failed-backfill left NULL-hashed (upgrade_owner and
+        # backfill_user_hash write via separate DB engines with no shared
+        # txn, so the flip can land while the backfill fails). Deliberately
+        # NOT gated on `not owner.was_authenticated` — that would stop firing
+        # the instant the flip succeeds, and any backfill failure on that
+        # same turn would never be retried. This runs on every authed-owner
+        # turn and is a no-op once no NULL rows remain (the guarded
+        # `WHERE user_hash IS NULL` matches zero).
+        # check_access having passed for an authed-owned thread guarantees a
+        # non-empty caller identity (a NULL/empty acting_user can never match
+        # a truthy owner.user_hash), so `user` is narrowed to str here.
+        if user:
+            from ..turn_reporter import get_turn_reporter
+
+            get_turn_reporter().backfill_user_hash(session_id, user)
     elif owner is not None and not owner.was_authenticated and user is not None:
-        # Anon-owned + authed caller → upgrade + backfill (Task 3, not yet
-        # wired). NO-OP here is safe: the thread proceeds as anon-owned
-        # exactly as today — the caller was already permitted by the capability
-        # model (the session_id is the credential), so this is no lock-out and
-        # no cross-tenant read, just not-yet-upgraded ownership.
-        pass
+        # Anon-owned + authed caller → upgrade ownership then backfill the
+        # historical turn_reports rows onto the same hash, so the thread
+        # appears in the caller's sidebar (list_threads_for_user). Flip-first,
+        # backfill-second: upgrade_owner's atomic conditional UPDATE is safe
+        # to call unconditionally (a losing concurrent caller just gets False
+        # back), and the backfill is retried by the authed-owner sweep above
+        # on subsequent turns if it fails here.
+        from ..turn_reporter import get_turn_reporter
+
+        owner_store.upgrade_owner(session_id, user)
+        get_turn_reporter().backfill_user_hash(session_id, user)
     # anon-owned + anon caller, or unknown thread → proceed (claim_thread below
     # lazy-creates).
 
