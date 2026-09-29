@@ -617,6 +617,30 @@ async def query_agent(
     # polluting real-traffic views.
     report_context = redteam_report_context(raw_request.headers)
 
+    # Ownership gate: a caller cannot resume/append to a thread they don't own.
+    # Resolve the owner once and branch — call check_access for any non-None
+    # owner (don't pre-guard on user_hash; check_access itself fails closed on
+    # a NULL-hash authed row). `user` is cookie-verified identity only, never
+    # the body-fallback `acting_user` — see the claim_thread comment below.
+    owner_store = get_thread_owner_store()
+    owner = owner_store.resolve_owner(session_id)
+    if owner is not None and owner.was_authenticated:
+        # Authed-owned: require the cookie caller to match. 404 (not 403) on
+        # mismatch — identical to the unknown-thread case, so thread existence
+        # is not observable to a caller who doesn't own it (mirrors
+        # src/api/thread_routes.py's runs/stream gate).
+        if not owner_store.check_access(session_id, user):
+            raise HTTPException(status_code=404, detail="Thread not found")
+    elif owner is not None and not owner.was_authenticated and user is not None:
+        # Anon-owned + authed caller → upgrade + backfill (Task 3, not yet
+        # wired). NO-OP here is safe: the thread proceeds as anon-owned
+        # exactly as today — the caller was already permitted by the capability
+        # model (the session_id is the credential), so this is no lock-out and
+        # no cross-tenant read, just not-yet-upgraded ownership.
+        pass
+    # anon-owned + anon caller, or unknown thread → proceed (claim_thread below
+    # lazy-creates).
+
     # Claim thread ownership on the widget path too. Every thread must be owned
     # by its creator from turn one; otherwise a fullscreen runs/stream caller
     # could claim_thread a pre-existing widget conversation and take it over.
@@ -627,7 +651,7 @@ async def query_agent(
     # in prod, and the body field is caller-supplied with no verification. A
     # cookieless caller claims an anon-owned thread (was_authenticated=False);
     # `acting_user` (cookie-or-body) still drives the *answer* below.
-    get_thread_owner_store().claim_thread(session_id, user)
+    owner_store.claim_thread(session_id, user)
 
     # Share the per-thread run lock with the runs/stream endpoint (they collide on
     # session_id == thread_id and both do the read-modify-write resume). Acquire in
