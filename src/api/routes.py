@@ -640,15 +640,27 @@ async def query_agent(
     elif owner is not None and not owner.was_authenticated and user is not None:
         # Anon-owned + authed caller → upgrade ownership then backfill the
         # historical turn_reports rows onto the same hash, so the thread
-        # appears in the caller's sidebar (list_threads_for_user). Flip-first,
-        # backfill-second: upgrade_owner's atomic conditional UPDATE is safe
-        # to call unconditionally (a losing concurrent caller just gets False
-        # back), and the backfill is retried by the authed-owner sweep above
-        # on subsequent turns if it fails here.
+        # appears in the caller's sidebar (list_threads_for_user).
+        #
+        # Only the caller who actually wins the flip may backfill. Two
+        # different authed users can both read the owner as anon-owned and
+        # both reach this branch (resolve_owner above and upgrade_owner's
+        # conditional UPDATE are not in the same transaction). upgrade_owner
+        # is safe to call unconditionally — a losing caller just gets False
+        # back with no race window — but backfill_user_hash is NOT: it sweeps
+        # every NULL-hash turn_reports row for the session onto whichever
+        # hash calls it, with no ownership check of its own. If the loser
+        # also called it, and the winner's own backfill for this turn hadn't
+        # landed yet, the loser would tag the winner's still-NULL historical
+        # rows with the loser's hash — a cross-tenant label leak in the
+        # loser's sidebar. Gating on upgrade_owner's return value confines
+        # backfill to the winner; the winner's un-backfilled rows (if this
+        # call fails or races) are retried by the authed-owner sweep above on
+        # their next turn.
         from ..turn_reporter import get_turn_reporter
 
-        owner_store.upgrade_owner(session_id, user)
-        get_turn_reporter().backfill_user_hash(session_id, user)
+        if owner_store.upgrade_owner(session_id, user):
+            get_turn_reporter().backfill_user_hash(session_id, user)
     # anon-owned + anon caller, or unknown thread → proceed (claim_thread below
     # lazy-creates).
 
