@@ -1,9 +1,12 @@
 """LangGraph thread/run protocol endpoints: create + history (resume) + run.
 
-All routes sit behind auth (SESSaccess_auth cookie) and the thread-ownership
-gate from src/thread_owners.py. Non-owner and unknown-thread requests return
-an identical 404 body so thread existence is not observable to a caller who
-doesn't own it.
+The SESSaccess_auth cookie is optional, not required: a caller with no cookie
+is anonymous, not rejected. Every route still passes through the
+thread-ownership gate from src/thread_owners.py, which is where access is
+actually decided — an anon caller can create/resume an anon-owned thread, an
+authed caller resuming an anon-owned thread upgrades it to authed ownership,
+and a non-owner (authed or anon) hitting someone else's authed-owned thread
+gets an identical 404, indistinguishable from an unknown thread.
 """
 
 import asyncio
@@ -52,6 +55,37 @@ def _require_user(raw_request: Request) -> str:
 def _require_access(thread_id: str, caller: str | None) -> None:
     if not get_thread_owner_store().check_access(thread_id, caller):
         raise HTTPException(status_code=404, detail="Thread not found")  # never 403
+
+
+def _resolve_first_ownership_gate(thread_id: str, caller: str | None) -> None:
+    """Resolve-first ownership gate with the anon->authed upgrade flip.
+
+    Mirrors routes.py's /query gate in logic and ORDER — resolve/upgrade,
+    THEN claim. The anon->authed upgrade decision must be made against the
+    pre-claim owner state, which the old claim-then-check gate couldn't see.
+    Raises 404 (never 403) on an authed-owned/wrong-caller mismatch; thread
+    existence stays unobservable.
+    """
+    owner_store = get_thread_owner_store()
+    owner = owner_store.resolve_owner(thread_id)
+    if owner is not None and owner.was_authenticated:
+        # Authed-owned: the cookie caller must match. This is the ONLY
+        # check_access call in the run path.
+        if not owner_store.check_access(thread_id, caller):
+            raise HTTPException(status_code=404, detail="Thread not found")
+        if caller:
+            get_turn_reporter().backfill_user_hash(thread_id, caller)  # idempotent sweep
+    elif owner is not None and not owner.was_authenticated and caller is not None:
+        # Anon-owned + authed caller → flip ownership, then backfill (Task
+        # 3a's turn_reports rows) so the thread surfaces in the caller's
+        # sidebar. Gating backfill on upgrade_owner's return is load-bearing:
+        # two authed callers can both read anon-owned, but only the
+        # flip-winner may backfill, else a cross-tenant label leak (see
+        # routes.py:640-663).
+        if owner_store.upgrade_owner(thread_id, caller):
+            get_turn_reporter().backfill_user_hash(thread_id, caller)
+    # anon-owned + anon caller, or unknown → fall through to claim_thread.
+    owner_store.claim_thread(thread_id, caller)  # lazy-create / no-op for existing
 
 
 class HistoryRequest(BaseModel):
@@ -237,13 +271,9 @@ async def thread_run_stream(
     # 1. Anon-accept: caller may be None; ownership below still fails closed.
     caller, _ = get_acting_user_from_cookie(raw_request)
 
-    # 2. Atomic ownership. claim_thread returns True iff this call created the row.
-    #    "Create means create": new thread → caller owns it; existing thread →
-    #    claim fails → must be the existing owner (else 404, indistinguishable
-    #    from unknown).
-    owned = get_thread_owner_store().claim_thread(thread_id, caller)
-    if owned is False:
-        _require_access(thread_id, caller)
+    # 2. Resolve-first ownership gate (replaces the old claim-then-check):
+    # resolve/upgrade, THEN claim. See _resolve_first_ownership_gate.
+    _resolve_first_ownership_gate(thread_id, caller)
 
     # 3. + 4. Acquire the per-thread run lock in the handler so a busy thread is a
     #    real 409 status, not an event flushed after a 200.
