@@ -55,3 +55,9 @@ def test_local_dev_unaffected():
 def test_docker_dev_unaffected():
     s = _mk(ENVIRONMENT="docker", LLM_PROVIDER="openai", EVAL_JUDGE_BASE_URL="")
     assert s.ENVIRONMENT == "docker"
+
+
+def test_login_url_configured():
+    from src.config import settings
+
+    assert isinstance(settings.LOGIN_URL, str)
