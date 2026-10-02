@@ -11,7 +11,7 @@ import json
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import jwt
 import pytest
@@ -833,3 +833,30 @@ async def test_run_stream_failed_turn_writes_success_false_row(client, monkeypat
 
     assert row.success is False
     assert row.query_text == "will this fail?"
+
+
+async def test_run_stream_reporter_failure_does_not_break_the_stream(client, monkeypatch):
+    """A reporter write that raises must be swallowed by _write_turn_report's
+    except block — the turn-report pipeline is off the response path, so a DB
+    error there must never surface to the client or break the SSE stream.
+    Mirrors tests/test_eval_battery_reports.py's
+    test_reporter_failure_does_not_fail_the_run (log_turn_report.side_effect)."""
+    _mock_stream_agent(monkeypatch, content="still works")
+
+    broken_reporter = MagicMock()
+    broken_reporter.count_turns_for_session.side_effect = RuntimeError("db down")
+    monkeypatch.setattr(
+        "src.turn_reporter.get_turn_reporter", lambda: broken_reporter, raising=False
+    )
+
+    r = await client.post(
+        "/api/v1/threads/t-report-broken/runs/stream",
+        json={"input": {"messages": [{"role": "user", "content": "hi"}]}},
+    )
+
+    assert r.status_code == 200
+    body = r.text
+    assert "event: messages/complete" in body
+    assert "event: values" in body
+    assert "event: error" not in body  # reporter failure must not surface to the client
+    broken_reporter.log_turn_report.assert_not_called()  # raised before this point
