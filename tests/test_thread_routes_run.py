@@ -106,6 +106,24 @@ def _sqlite_owner_store(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _sqlite_turn_reporter(monkeypatch, tmp_path):
+    """Point get_turn_reporter()'s module-level singleton at the SAME temp
+    sqlite file _sqlite_owner_store uses (load-bearing: get_turn_reporter()
+    caches its engine on first touch, and this is the first run-test suite to
+    touch it — without a per-test reset, a stale engine from another test, or
+    "" from CI env, leaks in and the "exactly one row" assertions go
+    order-dependent/flaky)."""
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "DATABASE_URL", f"sqlite:///{tmp_path / 't.db'}", raising=False)
+    import src.turn_reporter as reporter_mod
+
+    reporter_mod._turn_reporter = None
+    yield
+    reporter_mod._turn_reporter = None
+
+
+@pytest.fixture(autouse=True)
 def _reset_run_registry():
     """Clear the in-process per-thread run registry between tests."""
     import src.api.thread_runs as tr
@@ -738,3 +756,80 @@ async def test_run_losing_concurrent_upgrade_caller_does_not_backfill(
     import hashlib
 
     assert owner.user_hash == hashlib.sha256(b"alice@access-ci.org").hexdigest()[:16]
+
+
+# ---------------------------------------------------------------------------
+# Task 3a: turn_reports row written from the thread/run path
+# ---------------------------------------------------------------------------
+
+
+async def test_run_stream_writes_one_turn_report_row(client, monkeypatch):
+    """An anon thread/run turn writes exactly one turn_reports row: session_id
+    is the thread_id, user_hash is NULL (anon caller), query_text is the
+    user's text. This is the real proof the reporter block ran (not just "no
+    exception") — a forgotten get_turn_capture import would NameError, get
+    swallowed by the block's `except Exception`, and silently write zero
+    rows."""
+    from src.turn_reporter import get_turn_reporter
+
+    _mock_stream_agent(monkeypatch, content="the answer")
+
+    r = await client.post(
+        "/api/v1/threads/t-report-row/runs/stream",
+        json={"input": {"messages": [{"role": "user", "content": "what is ACCESS?"}]}},
+    )
+    assert r.status_code == 200
+    _ = r.text  # drain the stream so the post-stream reporter block runs
+
+    reporter = get_turn_reporter()
+    assert reporter.count_turns_for_session("t-report-row") == 1
+
+    session = reporter._session_factory()
+    try:
+        from src.turn_reporter import TurnReport
+
+        row = session.query(TurnReport).filter_by(session_id="t-report-row").one()
+    finally:
+        session.close()
+
+    assert row.session_id == "t-report-row"
+    assert row.user_hash is None
+    assert row.query_text == "what is ACCESS?"
+    assert row.success is True
+
+
+async def test_run_stream_failed_turn_writes_success_false_row(client, monkeypatch):
+    """A thread/run turn whose stream_agent raises mid-stream still writes
+    exactly one turn_reports row, with success=False — failed-turn parity
+    with /query's except-block write (routes.py:500-527)."""
+    from src.turn_reporter import get_turn_reporter
+
+    async def _boom(**_kwargs):
+        yield (
+            "messages",
+            (AIMessageChunk(content="partial", id="m1"), {"langgraph_node": "tool_calling_loop"}),
+        )
+        raise RuntimeError("mid-stream failure")
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _boom)
+
+    r = await client.post(
+        "/api/v1/threads/t-report-fail/runs/stream",
+        json={"input": {"messages": [{"role": "user", "content": "will this fail?"}]}},
+    )
+    assert r.status_code == 200
+    _ = r.text  # drain the stream so the error-path reporter block runs
+
+    reporter = get_turn_reporter()
+    assert reporter.count_turns_for_session("t-report-fail") == 1
+
+    session = reporter._session_factory()
+    try:
+        from src.turn_reporter import TurnReport
+
+        row = session.query(TurnReport).filter_by(session_id="t-report-fail").one()
+    finally:
+        session.close()
+
+    assert row.success is False
+    assert row.query_text == "will this fail?"

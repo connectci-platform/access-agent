@@ -11,6 +11,7 @@ gets an identical 404, indistinguishable from an unknown thread.
 
 import asyncio
 import logging
+import time
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -22,6 +23,7 @@ from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 
 from ..agent.graph import create_checkpointed_graph, stream_agent
+from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..auth import get_acting_user_from_cookie
 from ..config import settings
 from ..thread_owners import get_thread_owner_store
@@ -123,6 +125,114 @@ class RunRequest(BaseModel):
     config: dict[str, Any] | None = None
     context: dict[str, Any] | None = None
     if_not_exists: str | None = None
+
+
+async def _write_turn_report(
+    *,
+    final_state: dict[str, Any],
+    thread_id: str,
+    run_id: str,
+    query: str,
+    start_time: float,
+    caller: str | None,
+    success: bool,
+) -> None:
+    """Turn report (denormalized read model). Off the response path; never
+    raises into the stream. Mirrors routes.py:454-483 (success) /
+    routes.py:500-527 (failure). acting_user == `caller` here; session_id ==
+    thread_id (the thread/run path keys the reporter by thread_id, exactly as
+    stream_agent is called with session_id=thread_id). Called OUTSIDE
+    run_with_timeout/held_run — see thread_run_stream's placement note.
+    """
+    try:
+        from ..agent.domains.capabilities import get_capability_registry as _cap_reg
+        from ..services.resource_matcher import resources_for_turn
+        from ..turn_reporter import get_turn_reporter
+
+        reporter = get_turn_reporter()
+        prior_turns = await asyncio.to_thread(reporter.count_turns_for_session, thread_id)
+        turn_index = prior_turns + 1 if prior_turns is not None else None  # None on DB error → NULL
+        resources = await resources_for_turn(query, str(final_state.get("final_answer") or ""))
+        await asyncio.to_thread(
+            reporter.log_turn_report,
+            final_state=final_state,
+            session_id=thread_id,
+            turn_index=turn_index,
+            question_id=run_id,
+            query_text=query,
+            duration_ms=(time.time() - start_time) * 1000,
+            acting_user=caller,
+            success=success,
+            capabilities=_cap_reg().infer_capability_ids(final_state.get("tool_results", [])),
+            resources=resources,
+            turn_capture=get_turn_capture(),
+            judge=None,
+        )
+    except Exception:
+        logger.exception("Turn report write failed")
+
+
+async def _stream_run_events(
+    *,
+    thread_id: str,
+    run_id: str,
+    query: str,
+    caller: str | None,
+    resource_context: str | None,
+    checkpointer: Any,
+    final_state: dict[str, Any],
+) -> AsyncGenerator[str, None]:
+    """The metadata/partial/complete/values SSE sequence for one run, mutating
+    ``final_state`` in place (mirrors turn_capture's in-place-mutation pattern)
+    so the caller can read it after this generator is exhausted. Extracted
+    from thread_run_stream's ``_gen`` to keep both under ruff's branch/statement
+    caps once the turn-report write was added.
+    """
+    yield format_sse_event("metadata", {"run_id": run_id, "attempt": 1})
+
+    from .routes import get_registry
+
+    registry = await get_registry()
+    accumulated: AIMessageChunk | None = None
+    final_messages: list[dict[str, Any]] = []
+
+    async for stream_type, chunk in stream_agent(
+        query=query,
+        session_id=thread_id,
+        question_id=run_id,
+        tool_catalog=registry.catalog,
+        acting_user=caller,
+        resource_context=resource_context,
+        profile=None,
+        checkpointer=checkpointer,
+    ):
+        if stream_type == "messages":
+            msg, metadata = chunk
+            if (
+                isinstance(msg, AIMessageChunk)
+                and metadata.get("langgraph_node") == "tool_calling_loop"
+            ):
+                accumulated = msg if accumulated is None else accumulated + msg
+                yield format_sse_event("messages/partial", [msg.model_dump()])
+        elif stream_type == "updates" and isinstance(chunk, dict):
+            for node_output in chunk.values():
+                if isinstance(node_output, dict):
+                    final_state.update(node_output)
+                    msgs = node_output.get("messages")
+                    if msgs:
+                        final_messages = [
+                            m.model_dump() if hasattr(m, "model_dump") else m for m in msgs
+                        ]
+
+    if accumulated is not None:
+        # Complete message reuses the stable streamed id.
+        final = AIMessage(content=accumulated.content, id=accumulated.id)
+        dumped = final.model_dump()
+        yield format_sse_event("messages/complete", [dumped])
+        if not final_messages:
+            final_messages = [dumped]
+
+    yield format_sse_event("values", {"messages": final_messages})
 
 
 def _last_user_text(messages: list[dict[str, Any]]) -> str:
@@ -297,68 +407,61 @@ async def thread_run_stream(
     resource_context = cfg.get("resource_context") or (body.context or {}).get("resource_context")
 
     async def _gen() -> AsyncGenerator[str, None]:
+        start_time = time.time()
+        reset_turn_capture()
+        final_state: dict[str, Any] = {}
+        success = False
+
+        async def _report(*, state: dict[str, Any], ok: bool) -> None:
+            await _write_turn_report(
+                final_state=state,
+                thread_id=thread_id,
+                run_id=run_id,
+                query=query,
+                start_time=start_time,
+                caller=caller,
+                success=ok,
+            )
+
         async with held_run(thread_id, run_id):
             try:
                 async with run_with_timeout(settings.AGENT_TURN_TIMEOUT_S):
-                    yield format_sse_event("metadata", {"run_id": run_id, "attempt": 1})
-
-                    from .routes import get_registry
-
-                    registry = await get_registry()
-                    accumulated: AIMessageChunk | None = None
-                    final_messages: list[dict[str, Any]] = []
-
-                    async for stream_type, chunk in stream_agent(
+                    async for event in _stream_run_events(
+                        thread_id=thread_id,
+                        run_id=run_id,
                         query=query,
-                        session_id=thread_id,
-                        question_id=run_id,
-                        tool_catalog=registry.catalog,
-                        acting_user=caller,
+                        caller=caller,
                         resource_context=resource_context,
-                        profile=None,
                         checkpointer=getattr(raw_request.app.state, "checkpointer", None),
+                        final_state=final_state,
                     ):
-                        if stream_type == "messages":
-                            msg, metadata = chunk
-                            if (
-                                isinstance(msg, AIMessageChunk)
-                                and metadata.get("langgraph_node") == "tool_calling_loop"
-                            ):
-                                accumulated = msg if accumulated is None else accumulated + msg
-                                yield format_sse_event("messages/partial", [msg.model_dump()])
-                        elif stream_type == "updates" and isinstance(chunk, dict):
-                            for node_output in chunk.values():
-                                if isinstance(node_output, dict):
-                                    msgs = node_output.get("messages")
-                                    if msgs:
-                                        final_messages = [
-                                            m.model_dump() if hasattr(m, "model_dump") else m
-                                            for m in msgs
-                                        ]
-
-                    if accumulated is not None:
-                        # Complete message reuses the stable streamed id.
-                        final = AIMessage(content=accumulated.content, id=accumulated.id)
-                        dumped = final.model_dump()
-                        yield format_sse_event("messages/complete", [dumped])
-                        if not final_messages:
-                            final_messages = [dumped]
-
-                    yield format_sse_event("values", {"messages": final_messages})
+                        yield event
+                    success = True
             except asyncio.CancelledError:
                 # Real cancel (client disconnect / cancel_run). Emit, then propagate
-                # so the task truly cancels; held_run's finally still releases.
+                # so the task truly cancels; held_run's finally still releases. No
+                # turn-report write here — mirrors /query, which also re-raises on
+                # cancel without writing a failed-turn row.
                 yield format_sse_event("error", {"error": "cancelled"})
                 raise
             except TimeoutError:
                 # asyncio.timeout expiry (a TimeoutError in 3.11, NOT CancelledError).
                 # Emit and return; do not synthesize a CancelledError.
                 yield format_sse_event("error", {"error": "timeout"})
+                await _report(state=final_state, ok=False)
                 return
             except Exception as exc:
                 logger.exception("Run stream failed: %s", exc)
                 yield format_sse_event("error", {"error": "agent_error"})
+                await _report(state=final_state, ok=False)
                 return
+
+        # Turn report write lives OUTSIDE both run_with_timeout and held_run — a
+        # slow reporter write must not trip a spurious TimeoutError into an
+        # already-successful stream. Mirrors routes.py:454 (after its own
+        # `async with held_run` closes).
+        if success:
+            await _report(state=final_state, ok=True)
 
     # The lock was acquired synchronously above; it is released by held_run's
     # finally, but ONLY once the generator is actually started. An async
