@@ -172,9 +172,9 @@ class FakeGraph:
 # ---------------------------------------------------------------------------
 
 
-async def test_create_thread_requires_cookie(client):
+async def test_create_thread_anon_accepts(client):
     r = await client.post("/api/v1/threads")
-    assert r.status_code == 401
+    assert r.status_code == 200
 
 
 async def test_create_thread_returns_fresh_thread(client, cookie_for):
@@ -200,9 +200,30 @@ async def test_create_thread_returns_distinct_ids(client, cookie_for):
 # ---------------------------------------------------------------------------
 
 
-async def test_history_requires_cookie(client):
-    r = await client.post("/api/v1/threads/some-thread/history", json={"limit": 5})
-    assert r.status_code == 401
+async def test_history_anon_caller_on_authed_owned_thread_404(client):
+    """An anon (no-cookie) caller on an AUTHED-owned thread's history is a
+    non-owner: 404 (never 401, never 403, never requires_auth)."""
+    get_thread_owner_store().claim_thread("t-owned-authed", "userA@x")
+
+    r = await client.post(
+        "/api/v1/threads/t-owned-authed/history",
+        json={"limit": 5},
+    )
+    assert r.status_code == 404
+
+
+async def test_history_anon_owner_gets_200(client):
+    """An anon caller (no cookie) who owns an anon thread (same session_id)
+    can read their own history — 200, not 404/401."""
+    get_thread_owner_store().claim_thread("t-anon-owned", None)
+    app.state.checkpointer = None
+
+    r = await client.post(
+        "/api/v1/threads/t-anon-owned/history",
+        json={"limit": 5},
+    )
+    assert r.status_code == 200
+    assert r.json() == []
 
 
 async def test_history_non_owner_gets_404(client, cookie_for):
