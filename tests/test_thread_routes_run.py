@@ -186,12 +186,43 @@ async def test_run_stream_emits_protocol_events(client, valid_cookie, monkeypatc
     assert "event: end" not in body  # protocol has no end terminator
 
 
-async def test_run_requires_cookie(client):
+async def test_run_anon_caller_on_new_thread_200(client, monkeypatch):
+    """Anon caller (no cookie), new thread → 200, not 401. claim_thread lazily
+    creates an anon-owned thread for a None caller."""
+    _mock_stream_agent(monkeypatch)
     r = await client.post(
-        "/api/v1/threads/t/runs/stream",
-        json={"input": {"messages": []}},
+        "/api/v1/threads/t-anon-new/runs/stream",
+        json={"input": {"messages": [{"role": "user", "content": "hi"}]}},
     )
-    assert r.status_code == 401
+    assert r.status_code == 200
+
+
+async def test_run_anon_caller_on_authed_owned_thread_404(client, valid_cookie_for, seed_owner):
+    """Anon (no cookie) caller hitting an existing AUTHED-owned thread is a
+    non-owner: 404, not 401/403."""
+    seed_owner("t-owned-authed", "alice@x")
+    r = await client.post(
+        "/api/v1/threads/t-owned-authed/runs/stream",
+        json={
+            "input": {"messages": [{"role": "user", "content": "x"}]},
+            "if_not_exists": "create",
+        },
+    )
+    assert r.status_code == 404
+
+
+async def test_run_authed_caller_still_requires_nothing_new(client, valid_cookie, monkeypatch):
+    """Regression: an authed caller on a brand-new thread still gets 200."""
+    _mock_stream_agent(monkeypatch)
+    r = await client.post(
+        "/api/v1/threads/t-authed-new/runs/stream",
+        cookies=valid_cookie,
+        json={
+            "input": {"messages": [{"role": "user", "content": "hi"}]},
+            "if_not_exists": "create",
+        },
+    )
+    assert r.status_code == 200
 
 
 async def test_run_stream_releases_lock_if_generator_never_starts(

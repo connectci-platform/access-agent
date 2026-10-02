@@ -49,7 +49,7 @@ def _require_user(raw_request: Request) -> str:
     return user
 
 
-def _require_access(thread_id: str, caller: str) -> None:
+def _require_access(thread_id: str, caller: str | None) -> None:
     if not get_thread_owner_store().check_access(thread_id, caller):
         raise HTTPException(status_code=404, detail="Thread not found")  # never 403
 
@@ -105,8 +105,7 @@ def _last_user_text(messages: list[dict[str, Any]]) -> str:
 
 
 @thread_router.post("/threads")
-async def create_thread(raw_request: Request) -> dict[str, Any]:
-    _require_user(raw_request)
+async def create_thread() -> dict[str, Any]:
     now = datetime.now(UTC).isoformat()
     return {
         "thread_id": str(uuid.uuid4()),
@@ -149,7 +148,7 @@ async def search_threads(body: SearchRequest, raw_request: Request) -> list[dict
 async def thread_history(
     thread_id: str, body: HistoryRequest, raw_request: Request
 ) -> list[dict[str, Any]]:
-    caller = _require_user(raw_request)
+    caller, _ = get_acting_user_from_cookie(raw_request)
     _require_access(thread_id, caller)
     checkpointer = getattr(raw_request.app.state, "checkpointer", None)
     if checkpointer is None:
@@ -235,8 +234,8 @@ async def thread_run_stream(
     checks (401/404/409) run HERE, before StreamingResponse is returned — a status
     raised inside the generator would land after Starlette flushed 200.
     """
-    # 1. Auth → 401.
-    caller = _require_user(raw_request)
+    # 1. Anon-accept: caller may be None; ownership below still fails closed.
+    caller, _ = get_acting_user_from_cookie(raw_request)
 
     # 2. Atomic ownership. claim_thread returns True iff this call created the row.
     #    "Create means create": new thread → caller owns it; existing thread →
@@ -351,7 +350,7 @@ async def thread_run_stream(
 
 @thread_router.post("/threads/{thread_id}/runs/{run_id}/cancel")
 async def cancel_thread_run(thread_id: str, run_id: str, raw_request: Request) -> dict[str, str]:
-    caller = _require_user(raw_request)
+    caller, _ = get_acting_user_from_cookie(raw_request)
     _require_access(thread_id, caller)  # 404 if not the owner (never 403)
     if not cancel_run(thread_id, run_id):  # no such in-flight run ON THIS THREAD
         raise HTTPException(status_code=404, detail="Run not found")

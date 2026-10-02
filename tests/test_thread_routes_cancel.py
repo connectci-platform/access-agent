@@ -147,9 +147,18 @@ def seed_owner():
 # ---------------------------------------------------------------------------
 
 
-async def test_cancel_requires_cookie(client):
+async def test_cancel_anon_caller_unknown_thread_404(client):
+    """Anon (no cookie) caller on a thread with no owner row: 404, not 401."""
     r = await client.post("/api/v1/threads/t/runs/r/cancel")
-    assert r.status_code == 401
+    assert r.status_code == 404
+
+
+async def test_cancel_anon_caller_on_authed_owned_thread_404(client, seed_owner):
+    """Anon (no cookie) caller hitting an existing AUTHED-owned thread's
+    cancel is a non-owner: 404, not 401/403."""
+    seed_owner("t-owned-authed", "alice@x")
+    r = await client.post("/api/v1/threads/t-owned-authed/runs/whatever/cancel")
+    assert r.status_code == 404
 
 
 async def test_cancel_non_owner_404(client, valid_cookie_for, seed_owner):
