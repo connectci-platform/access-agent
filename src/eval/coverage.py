@@ -28,32 +28,33 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from src.agent.domains.capabilities import (
-    AUTH_READ_MCP_TOOL_NAMES,
-    COMPOSITIONAL_MCP_TOOL_NAMES,
-    WRITE_MCP_TOOL_NAMES,
-)
+from src.agent.auth_tools import ToolIdentityClass, tool_identity_class
+from src.agent.domains.capabilities import COMPOSITIONAL_MCP_TOOL_NAMES
 
 # --- structural classification (name/registry-based; the DB carries no auth flag) ---
-
-_AUTH_READ_RE = re.compile(r"^(get_my_|authenticate$|complete_authentication$)")
-_WRITE_PREFIX_RE = re.compile(r"^(create_|update_|delete_|register_|cancel_|report_)")
 
 
 def structural_class(tool: str) -> str:
     """Classify a tool as unauth-read / auth-read / write / composition.
 
-    WRITE_MCP_TOOL_NAMES membership is the primary write signal; the name-prefix
-    is a fallback so a newly-added write tool not yet in the set is still caught.
-    Compositional tools (XDMoD plumbing, authoring helpers) are read-only but
-    never user-facing, so they get their own class: a zero-invocation count for
-    them is not an actionable battery gap, unlike a user-facing read tool.
+    Write and auth-read are the exact predicates from
+    ``src.agent.auth_tools.tool_identity_class`` (single-sourced with the
+    runtime identity-gating middleware). WRITE_MCP_TOOL_NAMES membership is the
+    primary write signal; the name-prefix is a fallback so a newly-added write
+    tool not yet in the set is still caught. Compositional tools (XDMoD
+    plumbing, authoring helpers) are read-only but never user-facing, so they
+    get their own class: a zero-invocation count for them is not an actionable
+    battery gap, unlike a user-facing read tool. Composition is checked before
+    auth-read here (unlike the binary identity helper, which doesn't need the
+    distinction) because a few composition tools would otherwise match the
+    auth-read ``get_my_*``-adjacent heuristics.
     """
-    if tool in WRITE_MCP_TOOL_NAMES or _WRITE_PREFIX_RE.match(tool):
+    identity_class = tool_identity_class(tool)
+    if identity_class is ToolIdentityClass.WRITE:
         return "write"
     if tool in COMPOSITIONAL_MCP_TOOL_NAMES:
         return "composition"
-    if tool in AUTH_READ_MCP_TOOL_NAMES or _AUTH_READ_RE.match(tool):
+    if identity_class is ToolIdentityClass.AUTH_READ:
         return "auth-read"
     return "unauth-read"
 
