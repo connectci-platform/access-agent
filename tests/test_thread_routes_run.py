@@ -860,3 +860,65 @@ async def test_run_stream_reporter_failure_does_not_break_the_stream(client, mon
     assert "event: values" in body
     assert "event: error" not in body  # reporter failure must not surface to the client
     broken_reporter.log_turn_report.assert_not_called()  # raised before this point
+
+
+async def test_run_stream_requires_auth_turn_writes_no_report_row(client, monkeypatch):
+    """A gated (requires_auth) turn must write NO turn_reports row — mirrors
+    /query's requires_auth branch, which also writes nothing for a turn that
+    produced no answer.
+
+    This drives the FULL endpoint (through _gen), unlike
+    test_thread_run_stream_emits_requires_auth_and_stops in
+    tests/test_requires_auth_sse.py, which calls _stream_run_events directly
+    and never reaches _gen's turn-report write. Without the `and not
+    final_state.get("requires_auth")` guard, _gen's `async for` over
+    _stream_run_events exhausts normally (the generator returns after
+    yielding the signal), success stays True, and the `if success:` block
+    would write a success=True row for a turn with no answer.
+    """
+    from src.turn_reporter import get_turn_reporter
+
+    requires_auth_payload = {
+        "login_url": "https://support.access-ci.org/user/login",
+        "reason": "write_action",
+    }
+
+    async def _fake_requires_auth(**_kwargs):
+        yield "updates", {"tool_calling_loop": {"requires_auth": requires_auth_payload}}
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _fake_requires_auth)
+
+    r = await client.post(
+        "/api/v1/threads/t-requires-auth/runs/stream",
+        json={"input": {"messages": [{"role": "user", "content": "register me for the event"}]}},
+    )
+    assert r.status_code == 200
+    body = r.text  # drain the stream so _gen's post-stream block runs
+    assert "event: requires_auth" in body
+
+    reporter = get_turn_reporter()
+    assert reporter.count_turns_for_session("t-requires-auth") == 0
+
+
+async def test_run_stream_normal_turn_still_writes_one_report_row_alongside_gated(
+    client, monkeypatch
+):
+    """Belt-and-suspenders: the requires_auth guard must not suppress writes
+    for a normal (non-gated) anon turn — confirms the fix is a narrow skip,
+    not an accidental blanket one. Same assertion as
+    test_run_stream_writes_one_turn_report_row, repeated here beside the
+    gated test so the contrast (0 rows gated vs. 1 row normal) is visible in
+    one place."""
+    from src.turn_reporter import get_turn_reporter
+
+    _mock_stream_agent(monkeypatch, content="a normal answer")
+
+    r = await client.post(
+        "/api/v1/threads/t-requires-auth-control/runs/stream",
+        json={"input": {"messages": [{"role": "user", "content": "what is ACCESS?"}]}},
+    )
+    assert r.status_code == 200
+    _ = r.text
+
+    reporter = get_turn_reporter()
+    assert reporter.count_turns_for_session("t-requires-auth-control") == 1
