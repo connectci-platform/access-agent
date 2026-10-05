@@ -23,7 +23,7 @@ from ..config import settings
 from ..llm import is_empty_answer
 from ..thread_owners import get_thread_owner_store
 from ..tools import ToolRegistry, get_catalog_aggregator
-from ..turnstile import get_turnstile_guard, verify_turnstile_token
+from ..turnstile import check_turnstile, get_turnstile_guard
 from ..usage_logger import get_usage_logger
 from .sse import format_sse_event as _format_sse_event
 from .thread_runs import acquire_thread_run, held_run, release_thread_run, run_with_timeout
@@ -143,37 +143,6 @@ class QueryResponse(BaseModel):
     tools_used: list[str]
     confidence: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-def _turnstile_challenge_response() -> JSONResponse:
-    """Build the JSON response that tells the frontend to show the Turnstile widget."""
-    return JSONResponse(
-        content={
-            "requires_turnstile": True,
-            "site_key": settings.TURNSTILE_SITE_KEY,
-        }
-    )
-
-
-async def _check_turnstile(
-    acting_user: str | None,
-    session_id: str,
-    token: str | None,
-) -> JSONResponse | None:
-    """Check Turnstile for anonymous sessions. Returns a challenge response or None to proceed."""
-    if acting_user:
-        return None
-
-    guard = get_turnstile_guard()
-    if not guard.requires_challenge(session_id):
-        return None
-
-    # Session needs verification — check if a token was provided
-    if token and await verify_turnstile_token(token):
-        guard.mark_verified(session_id)
-        return None
-
-    return _turnstile_challenge_response()
 
 
 def _domain_is_final(result: Any) -> bool:
@@ -592,7 +561,7 @@ async def query_agent(
 
     # Turnstile gate — anonymous users may need to verify they're human.
     # Authenticated users (valid JWT cookie) skip entirely.
-    turnstile_response = await _check_turnstile(acting_user, session_id, request.turnstile_token)
+    turnstile_response = await check_turnstile(acting_user, session_id, request.turnstile_token)
     if turnstile_response is not None:
         return turnstile_response
 

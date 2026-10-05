@@ -6,7 +6,12 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 from src.config import settings
-from src.turnstile import TurnstileGuard, verify_turnstile_token
+from src.turnstile import (
+    TurnstileGuard,
+    check_turnstile,
+    get_turnstile_guard,
+    verify_turnstile_token,
+)
 
 
 @pytest.fixture
@@ -156,6 +161,81 @@ class TestTurnstileGuard:
         # This should trigger eviction
         guard._get_session("trigger-session")
         assert len(guard._sessions) < 52  # Some should be evicted
+
+
+@pytest.fixture(autouse=True)
+def _reset_global_guard():
+    """check_turnstile goes through the module-level singleton (get_turnstile_guard),
+    unlike TestTurnstileGuard above which constructs its own instance — reset it
+    so state from one test can't bleed into another."""
+    import src.turnstile as ts
+
+    ts._guard = None
+    yield
+    ts._guard = None
+
+
+class TestCheckTurnstile:
+    """Tests for the check_turnstile gate function (moved here from
+    src/api/routes.py so both /query and the thread/run endpoint share it)."""
+
+    @pytest.mark.asyncio
+    async def test_authed_caller_always_skips(self, _enable_turnstile, monkeypatch):
+        """An acting_user short-circuits before the guard is even consulted,
+        even in immediate mode."""
+        monkeypatch.setattr(settings, "TURNSTILE_MODE", "immediate")
+        result = await check_turnstile("someone@access-ci.org", "sess-1", None)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_anon_caller_not_yet_requiring_challenge_proceeds(
+        self, _enable_turnstile, monkeypatch
+    ):
+        """Deferred mode, free queries remain -> proceeds without a token."""
+        monkeypatch.setattr(settings, "TURNSTILE_MODE", "deferred")
+        monkeypatch.setattr(settings, "TURNSTILE_FREE_QUERIES", 3)
+        result = await check_turnstile(None, "sess-2", None)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_anon_caller_requiring_challenge_with_no_token_is_challenged(
+        self, _enable_turnstile, monkeypatch
+    ):
+        monkeypatch.setattr(settings, "TURNSTILE_MODE", "immediate")
+        result = await check_turnstile(None, "sess-3", None)
+        assert result is not None
+        assert result.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_anon_caller_with_valid_token_is_verified_and_proceeds(
+        self, _enable_turnstile, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        """A valid turnstile_token marks the session verified and proceeds —
+        the branch that was previously only exercised at /query's integration
+        level (never directly)."""
+        monkeypatch.setattr(settings, "TURNSTILE_MODE", "immediate")
+        httpx_mock.add_response(
+            url="https://challenges.cloudflare.com/turnstile/v0/siteverify",
+            json={"success": True},
+        )
+
+        result = await check_turnstile(None, "sess-4", "a-valid-token")
+        assert result is None
+        assert get_turnstile_guard().requires_challenge("sess-4") is False
+
+    @pytest.mark.asyncio
+    async def test_anon_caller_with_invalid_token_is_still_challenged(
+        self, _enable_turnstile, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        monkeypatch.setattr(settings, "TURNSTILE_MODE", "immediate")
+        httpx_mock.add_response(
+            url="https://challenges.cloudflare.com/turnstile/v0/siteverify",
+            json={"success": False, "error-codes": ["invalid-input-response"]},
+        )
+
+        result = await check_turnstile(None, "sess-5", "a-bad-token")
+        assert result is not None
+        assert result.status_code == 200
 
 
 class TestVerifyTurnstileToken:

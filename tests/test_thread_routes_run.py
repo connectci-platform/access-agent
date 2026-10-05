@@ -135,6 +135,29 @@ def _reset_run_registry():
     tr._task_by_run.clear()
 
 
+@pytest.fixture(autouse=True)
+def _disable_turnstile(monkeypatch):
+    """Isolate from local .env TURNSTILE_SECRET_KEY leakage (mirrors
+    test_auth_e2e.py's fixture of the same name). Tests that need Turnstile
+    enabled override this explicitly via monkeypatch inside the test body."""
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "TURNSTILE_SECRET_KEY", "", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _reset_turnstile_guard():
+    """The module-level TurnstileGuard singleton leaks session state across
+    tests (same hazard as the turn_reporter singleton elsewhere in this
+    suite) — reset it so one test's free-query count or verified flag can't
+    bleed into another's assertions."""
+    import src.turnstile as ts
+
+    ts._guard = None
+    yield
+    ts._guard = None
+
+
 @pytest.fixture
 async def client():
     transport = ASGITransport(app=app)
@@ -922,3 +945,69 @@ async def test_run_stream_normal_turn_still_writes_one_report_row_alongside_gate
 
     reporter = get_turn_reporter()
     assert reporter.count_turns_for_session("t-requires-auth-control") == 1
+
+
+# ---------------------------------------------------------------------------
+# Turnstile gate ported onto thread_run_stream
+# ---------------------------------------------------------------------------
+
+
+async def test_run_anon_caller_exceeding_free_queries_gets_turnstile_challenge(client, monkeypatch):
+    """Turnstile enabled (immediate mode — challenge on the very first query,
+    same as test_auth_e2e.py's test_body_acting_user_does_not_bypass_turnstile):
+    an anon caller on thread_run_stream gets the requires_turnstile challenge
+    response instead of a stream, and never acquires the run lock."""
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "TURNSTILE_SECRET_KEY", "test-secret", raising=False)
+    monkeypatch.setattr(settings, "TURNSTILE_MODE", "immediate", raising=False)
+
+    import src.api.thread_runs as tr
+
+    r = await client.post(
+        "/api/v1/threads/t-turnstile-anon/runs/stream",
+        json={"input": {"messages": [{"role": "user", "content": "hi"}]}},
+    )
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("requires_turnstile") is True
+    assert "site_key" in body
+    # Never acquired the run lock — a challenged request must not wedge the thread.
+    assert "t-turnstile-anon" not in tr._active_by_thread
+
+
+async def test_run_authed_caller_not_challenged_with_turnstile_enabled(
+    client, valid_cookie, monkeypatch
+):
+    """Authed callers skip Turnstile entirely, even with it enabled in
+    immediate mode — mirrors /query's acting_user-truthy bypass."""
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "TURNSTILE_SECRET_KEY", "test-secret", raising=False)
+    monkeypatch.setattr(settings, "TURNSTILE_MODE", "immediate", raising=False)
+
+    _mock_stream_agent(monkeypatch)
+    r = await client.post(
+        "/api/v1/threads/t-turnstile-authed/runs/stream",
+        cookies=valid_cookie,
+        json={
+            "input": {"messages": [{"role": "user", "content": "hi"}]},
+            "if_not_exists": "create",
+        },
+    )
+    assert r.status_code == 200
+    assert "event: metadata" in r.text  # streamed normally, not challenged
+
+
+async def test_run_anon_caller_not_challenged_when_turnstile_disabled(client, monkeypatch):
+    """Regression guard: with Turnstile disabled (default, empty secret key —
+    the _disable_turnstile autouse fixture's state), an anon caller streams
+    normally. Proves this change is a no-op in the default configuration."""
+    _mock_stream_agent(monkeypatch)
+    r = await client.post(
+        "/api/v1/threads/t-turnstile-off/runs/stream",
+        json={"input": {"messages": [{"role": "user", "content": "hi"}]}},
+    )
+    assert r.status_code == 200
+    assert "event: metadata" in r.text

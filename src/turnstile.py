@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass
 
 import httpx
+from starlette.responses import JSONResponse
 
 from .config import settings
 
@@ -165,3 +166,44 @@ def get_turnstile_guard() -> TurnstileGuard:
     if _guard is None:
         _guard = TurnstileGuard()
     return _guard
+
+
+def turnstile_challenge_response() -> JSONResponse:
+    """Build the JSON response that tells the frontend to show the Turnstile widget.
+
+    Single-sourced here so every caller (the /query widget route and the
+    thread/run protocol route) returns an identical challenge shape.
+    """
+    return JSONResponse(
+        content={
+            "requires_turnstile": True,
+            "site_key": settings.TURNSTILE_SITE_KEY,
+        }
+    )
+
+
+async def check_turnstile(
+    acting_user: str | None,
+    session_id: str,
+    token: str | None,
+) -> JSONResponse | None:
+    """Check Turnstile for an anonymous caller. Returns a challenge response, or
+    None to proceed.
+
+    ``session_id`` is the key the guard tracks free-query counts and
+    verification state under. Authed callers (``acting_user`` truthy) always
+    return None immediately — Turnstile exists to gate anonymous traffic only.
+    """
+    if acting_user:
+        return None
+
+    guard = get_turnstile_guard()
+    if not guard.requires_challenge(session_id):
+        return None
+
+    # Session needs verification — check if a token was provided
+    if token and await verify_turnstile_token(token):
+        guard.mark_verified(session_id)
+        return None
+
+    return turnstile_challenge_response()
