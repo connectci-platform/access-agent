@@ -224,6 +224,16 @@ async def _stream_run_events(
                             m.model_dump() if hasattr(m, "model_dump") else m for m in msgs
                         ]
 
+    requires_auth = final_state.get("requires_auth")
+    if requires_auth:
+        # Anon caller tried a write/private-read tool (RequiresAuthMiddleware
+        # suppressed it; see tool_calling_loop_node). Emit the signal as a
+        # distinct event — sibling of messages/*, error — and end the stream
+        # cleanly rather than continuing into the normal messages/complete +
+        # values sequence (there is no real answer to stream).
+        yield format_sse_event("requires_auth", requires_auth)
+        return
+
     if accumulated is not None:
         # Complete message reuses the stable streamed id.
         final = AIMessage(content=accumulated.content, id=accumulated.id)
