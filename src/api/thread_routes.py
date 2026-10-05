@@ -395,19 +395,6 @@ async def thread_run_stream(
     # resolve/upgrade, THEN claim. See _resolve_first_ownership_gate.
     _resolve_first_ownership_gate(thread_id, caller)
 
-    # 3. + 4. Acquire the per-thread run lock in the handler so a busy thread is a
-    #    real 409 status, not an event flushed after a 200.
-    run_id = str(uuid.uuid4())
-    acquire_thread_run(thread_id, run_id)
-
-    # The lock is released by held_run's finally, but ONLY once the generator is
-    # actually started. An async generator that is never iterated never runs its
-    # finally (verified against CPython/Starlette 1.0: GC of an un-started async
-    # gen does not run finally), so any exception on the synchronous path between
-    # acquire and returning a *started* response would leak the lock and 409-wedge
-    # the thread until restart. Guard that whole gap in one try: release on any
-    # exception before hand-off. release_thread_run is idempotent, so held_run's
-    # own release on the normal (generator-started) path is unaffected.
     query = _last_user_text(body.input.messages)
 
     # Client-supplied UI hint, not server state: LangGraph SDK convention puts
@@ -415,6 +402,11 @@ async def thread_run_stream(
     # alternative. Absent on both → None (accepted context-loss, per spec).
     cfg = (body.config or {}).get("configurable", {}) if body.config else {}
     resource_context = cfg.get("resource_context") or (body.context or {}).get("resource_context")
+
+    # 3. + 4. Acquire the per-thread run lock in the handler so a busy thread is a
+    #    real 409 status, not an event flushed after a 200.
+    run_id = str(uuid.uuid4())
+    acquire_thread_run(thread_id, run_id)
 
     async def _gen() -> AsyncGenerator[str, None]:
         start_time = time.time()
@@ -469,8 +461,11 @@ async def thread_run_stream(
         # Turn report write lives OUTSIDE both run_with_timeout and held_run — a
         # slow reporter write must not trip a spurious TimeoutError into an
         # already-successful stream. Mirrors routes.py:454 (after its own
-        # `async with held_run` closes).
-        if success:
+        # `async with held_run` closes). A gated (requires_auth) turn produced
+        # no answer — `_stream_run_events` returns normally after emitting the
+        # signal, so `success` is still True here; skip the write so this path
+        # matches /query's requires_auth branch, which writes no row either.
+        if success and not final_state.get("requires_auth"):
             await _report(state=final_state, ok=True)
 
     # The lock was acquired synchronously above; it is released by held_run's
