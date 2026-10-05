@@ -40,6 +40,7 @@ from ...llm import get_llm, is_empty_answer
 from ...telemetry import get_tracer
 from ..domains.capabilities import WRITE_MCP_TOOL_NAMES
 from ..domains.tools import create_mcp_tools_from_catalog
+from ..middleware.requires_auth import RequiresAuthMiddleware, find_requires_auth_reason
 from ..profile import UserProfile
 from ..prompts.system_prompt import build_system_prompt
 from ..state import ToolResult
@@ -577,6 +578,10 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:  # no
                 trigger=("tokens", settings.SUMMARIZATION_TRIGGER_TOKENS),
                 keep=("tokens", settings.SUMMARIZATION_KEEP_TOKENS),
             ),
+            # acting_user captured by closure: the inner create_agent state
+            # does not carry it (it lives on the OUTER graph's AgentState),
+            # so it must be threaded in here rather than read from request.state.
+            RequiresAuthMiddleware(acting_user),
         ]
         agent = create_agent(
             model=llm,
@@ -652,6 +657,19 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:  # no
         tool_result_count = sum(1 for m in result_messages if isinstance(m, ToolMessage))
         tool_results, orphan_count = _build_tool_results(result_messages, tools, timings)
 
+        # RequiresAuthMiddleware suppresses a gated call by injecting a sentinel
+        # ToolMessage rather than halting the loop (the react loop continues and
+        # the model may call another tool or answer anyway) — create_agent's
+        # output state carries only {messages, structured_response}, so the
+        # sentinel is detected by scanning result_messages, not a custom state
+        # field (which create_agent would silently drop).
+        requires_auth_reason = find_requires_auth_reason(result_messages)
+        requires_auth = (
+            {"login_url": settings.LOGIN_URL, "reason": requires_auth_reason}
+            if requires_auth_reason is not None
+            else None
+        )
+
         answer_length = len(final_answer) if final_answer else 0
         span.set_attribute("agent.answer_length", answer_length)
         span.set_attribute("agent.tool_calls_made", tool_call_count)
@@ -670,7 +688,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:  # no
             answer_length,
         )
 
-        return {
+        return_dict: dict[str, Any] = {
             "final_answer": final_answer,
             "messages": result_messages,
             "tools_used": tools_used,
@@ -690,6 +708,9 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:  # no
                 }
             ],
         }
+        if requires_auth is not None:
+            return_dict["requires_auth"] = requires_auth
+        return return_dict
 
 
 def _build_call_lookup(

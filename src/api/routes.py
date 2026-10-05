@@ -357,6 +357,15 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                 yield _format_sse_event("done", {"success": False, "error": "timeout"})
                 return
 
+        requires_auth = final_state.get("requires_auth")
+        if requires_auth:
+            # Anon caller tried a write/private-read tool (RequiresAuthMiddleware
+            # suppressed it; see tool_calling_loop_node). Emit the signal as a
+            # distinct event — sibling of token/status/error/done — and end the
+            # stream cleanly; there is no real answer to stream for this turn.
+            yield _format_sse_event("requires_auth", requires_auth)
+            return
+
         # Build metadata from final state (mirrors non-streaming QueryResponse fields)
         final_answer = final_state.get("final_answer") or "No answer generated"
         tools_used = final_state.get("tools_used", [])
