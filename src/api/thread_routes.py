@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 from langchain_core.messages import AIMessage, AIMessageChunk
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
@@ -28,6 +29,7 @@ from ..auth import get_acting_user_from_cookie
 from ..config import settings
 from ..thread_owners import get_thread_owner_store
 from ..turn_reporter import _hash_user, get_turn_reporter
+from ..turnstile import check_turnstile
 from .handoff_tokens import (
     DEFAULT_TTL_SECONDS,
     exchange_handoff_token,
@@ -125,6 +127,7 @@ class RunRequest(BaseModel):
     config: dict[str, Any] | None = None
     context: dict[str, Any] | None = None
     if_not_exists: str | None = None
+    turnstile_token: str | None = None
 
 
 async def _write_turn_report(
@@ -376,10 +379,10 @@ async def exchange_handoff(body: ExchangeRequest, raw_request: Request) -> dict[
     return {"thread_id": thread_id}
 
 
-@thread_router.post("/threads/{thread_id}/runs/stream")
+@thread_router.post("/threads/{thread_id}/runs/stream", response_model=None)
 async def thread_run_stream(
     thread_id: str, body: RunRequest, raw_request: Request
-) -> StreamingResponse:
+) -> StreamingResponse | JSONResponse:
     """Stream one agent turn on a thread as the LangGraph run protocol SSE.
 
     Ownership is atomic on the first run: ``claim_thread`` writes the ownership
@@ -394,6 +397,18 @@ async def thread_run_stream(
     # 2. Resolve-first ownership gate (replaces the old claim-then-check):
     # resolve/upgrade, THEN claim. See _resolve_first_ownership_gate.
     _resolve_first_ownership_gate(thread_id, caller)
+
+    # Turnstile gate — ported from routes.py's /query (see src/turnstile.py).
+    # Authed callers skip immediately inside check_turnstile. The thread_id IS
+    # the anon session credential here (same role session_id plays on /query),
+    # so it is the key the guard tracks free-query/verification state under.
+    # Unlike /query, there is no "session_id required" 400 to mirror: thread_id
+    # always exists (it's in the URL path), so the guard always has a key to
+    # track. Placed AFTER the ownership gate and BEFORE acquire_thread_run so a
+    # challenged request never acquires the run lock.
+    turnstile_response = await check_turnstile(caller, thread_id, body.turnstile_token)
+    if turnstile_response is not None:
+        return turnstile_response
 
     query = _last_user_text(body.input.messages)
 
