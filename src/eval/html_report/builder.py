@@ -28,8 +28,8 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import and_, bindparam, create_engine, text
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import bindparam, create_engine, text
+from sqlalchemy.orm import Query, sessionmaker
 
 from ..models import EvalRun, EvalScore
 from .notes import (
@@ -124,7 +124,7 @@ def pick_run_ids(
     wanted_sets = set(question_sets or BATTERY_ORDER)
 
     with Session() as session:
-        q = session.query(
+        q: Query[Any] = session.query(
             EvalRun.id,
             EvalRun.metadata_,
             EvalRun.question_set,
@@ -133,7 +133,9 @@ def pick_run_ids(
         if on_date is not None:
             start = datetime(on_date.year, on_date.month, on_date.day, tzinfo=UTC)
             end = datetime(on_date.year, on_date.month, on_date.day, 23, 59, 59, tzinfo=UTC)
-            q = q.filter(and_(EvalRun.created_at >= start, EvalRun.created_at <= end))
+            # Column.between() types cleanly under SQLAlchemy 2.1 stubs, where the
+            # bare >= / <= operators on a Mapped[datetime] are mistyped as bool.
+            q = q.filter(EvalRun.created_at.between(start, end))
 
         rows = q.all()
 
