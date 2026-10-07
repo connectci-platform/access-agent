@@ -6,7 +6,11 @@ error, so they were invisible to the generator's own success path.
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime
+
 import pytest
+
+from src.eval.db import EvalDB
 
 
 @pytest.mark.parametrize(
@@ -85,3 +89,38 @@ def test_per_battery_prefers_preset_info_over_fallback() -> None:
 
     assert labels["gapfill"] == "Gap Fill"
     assert info["gapfill"]["what"] == "w"
+
+
+def test_pick_run_ids_on_date_filters_to_that_day(tmp_path) -> None:
+    """on_date restricts pick_run_ids to runs created on that UTC day.
+
+    Seeds two agent_full/friendly_battery runs on different days and asserts
+    the date filter keeps only the matching one, while an unfiltered call
+    considers both (picking the newest, per pick_run_ids' "newest per
+    (system, question_set)" contract).
+    """
+    from src.eval.html_report.builder import pick_run_ids
+
+    url = f"sqlite:///{tmp_path}/e.db"
+    db = EvalDB(url)
+
+    run_a = db.create_run(
+        run_type="pre_production",
+        metadata_={"system": "agent_full"},
+        question_set="friendly_battery",
+        created_at=datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC),
+    )
+    run_b = db.create_run(
+        run_type="pre_production",
+        metadata_={"system": "agent_full"},
+        question_set="friendly_battery",
+        created_at=datetime(2026, 1, 16, 12, 0, 0, tzinfo=UTC),
+    )
+
+    filtered = pick_run_ids(url, on_date=date(2026, 1, 15))
+    assert [ref.id for ref in filtered] == [str(run_a.id)]
+    assert filtered[0].system == "agent_full"
+    assert filtered[0].question_set_key == "friendly_battery"
+
+    unfiltered = pick_run_ids(url)
+    assert [ref.id for ref in unfiltered] == [str(run_b.id)]
