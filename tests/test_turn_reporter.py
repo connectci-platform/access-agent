@@ -465,6 +465,46 @@ class TestWrite:
         assert r.count_turns_for_session("sX") == 2
         assert r.count_turns_for_session("other") == 0
 
+    def test_write_persists_null_turn_index_not_default_one(self):
+        # A failed/first turn whose prior count couldn't be read passes
+        # turn_index=None, intending SQL NULL (list_threads_for_user's
+        # NULLS LAST ordering depends on this). The column must not
+        # substitute a default of 1 for that None at insert.
+        r = self._reporter()
+        r.log_turn_report(
+            final_state={"tools_used": [], "tool_results": []},
+            session_id="s-null",
+            turn_index=None,
+            question_id="q-null",
+            query_text="failed turn",
+            duration_ms=1.0,
+            acting_user=None,
+            success=False,
+            capabilities=[],
+        )
+        s = r._session_factory()
+        row = s.query(TurnReport).filter_by(session_id="s-null").one()
+        assert row.turn_index is None
+        s.close()
+
+    def test_write_persists_normal_turn_index(self):
+        r = self._reporter()
+        r.log_turn_report(
+            final_state={"tools_used": [], "tool_results": []},
+            session_id="s-normal",
+            turn_index=3,
+            question_id="q-normal",
+            query_text="normal turn",
+            duration_ms=1.0,
+            acting_user=None,
+            success=True,
+            capabilities=[],
+        )
+        s = r._session_factory()
+        row = s.query(TurnReport).filter_by(session_id="s-normal").one()
+        assert row.turn_index == 3
+        s.close()
+
     def test_write_never_raises_on_bad_state(self):
         r = self._reporter()
         r.log_turn_report(

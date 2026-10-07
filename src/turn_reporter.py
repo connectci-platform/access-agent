@@ -57,7 +57,7 @@ class TurnReport(TurnReportBase):  # type: ignore[valid-type,misc]
     created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False, index=True)
 
     session_id = Column(String(100), index=True)
-    turn_index = Column(Integer, default=1)
+    turn_index = Column(Integer)
     question_id = Column(String(100), index=True)
     query_text = Column(Text, nullable=False)
 
