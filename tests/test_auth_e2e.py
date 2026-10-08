@@ -487,3 +487,29 @@ async def test_health_no_auth(client):
     response = await client.get("/api/v1/health")
     assert response.status_code == 200
     assert response.json()["status"] in ("healthy", "degraded")
+
+
+# ---------------------------------------------------------------------------
+# Test: /whoami reflects cookie-derived identity
+# ---------------------------------------------------------------------------
+
+
+async def test_whoami_valid_cookie(client):
+    """A valid ES256 JWT cookie reports the acting user as authenticated."""
+    token = _make_jwt("jsmith@access-ci.org")
+
+    response = await client.get(
+        "/api/v1/whoami",
+        headers={"cookie": f"SESSaccess_auth={token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"authenticated": True, "user": "jsmith@access-ci.org"}
+
+
+async def test_whoami_no_cookie(client):
+    """No cookie reports an anonymous caller."""
+    response = await client.get("/api/v1/whoami")
+
+    assert response.status_code == 200
+    assert response.json() == {"authenticated": False, "user": None}
