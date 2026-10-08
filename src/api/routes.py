@@ -757,6 +757,23 @@ async def get_capabilities(
     }
 
 
+@router.get("/whoami")
+async def whoami(raw_request: Request) -> dict[str, Any]:
+    """Reflect the caller's own cookie-derived ACCESS identity.
+
+    Fast, in-memory lookup — no external calls, no side effects. Lets a
+    client detect whether the user is logged in (to show their name vs a
+    Login button) and confirms backend auth works.
+
+    Scope: this reflects ONLY the caller's own identity, as asserted by
+    their own ``SESSaccess_auth`` cookie. There is no parameter to look up
+    another user, and an anonymous caller (no/invalid/expired cookie)
+    simply gets ``authenticated: false``.
+    """
+    user, _ = get_acting_user_from_cookie(raw_request)
+    return {"authenticated": user is not None, "user": user}
+
+
 class RatingRequest(BaseModel):
     """Request model for the rating endpoint."""
 
