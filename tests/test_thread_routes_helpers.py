@@ -15,18 +15,56 @@ class TestLastUserText:
         ]
         assert _last_user_text(messages) == "second"
 
-    def test_non_string_content_stringified(self):
-        """A run body whose latest user message's content is a list/dict
-        (some SDK clients send structured content) must not raise — it's
-        coerced to str rather than returned as-is."""
-        messages = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
-        result = _last_user_text(messages)
-        assert isinstance(result, str)
-        assert result == str([{"type": "text", "text": "hi"}])
+    def test_role_user_string_content(self):
+        """The widget shape: role:"user" + plain string content. Must keep
+        working unchanged."""
+        messages = [{"role": "user", "content": "hello there"}]
+        assert _last_user_text(messages) == "hello there"
+
+    def test_type_human_string_content(self):
+        """LangChain message format with plain string content."""
+        messages = [{"type": "human", "content": "hello there"}]
+        assert _last_user_text(messages) == "hello there"
+
+    def test_type_human_block_array_content(self):
+        """The full-screen client (agent-chat-ui) shape: type:"human" with
+        content as a block array. This is the reproduced bug — the old code
+        matched only role:"user" and str()'d list content into a stringified
+        Python list instead of the actual text."""
+        messages = [{"type": "human", "content": [{"type": "text", "text": "Q"}]}]
+        assert _last_user_text(messages) == "Q"
+
+    def test_multiple_messages_returns_latest_user_turn(self):
+        messages = [
+            {"type": "human", "content": [{"type": "text", "text": "first"}]},
+            {"type": "ai", "content": "reply"},
+            {"role": "user", "content": "second"},
+        ]
+        assert _last_user_text(messages) == "second"
 
     def test_no_user_message_returns_empty_string(self):
         assert _last_user_text([{"role": "assistant", "content": "hi"}]) == ""
         assert _last_user_text([]) == ""
+
+    def test_non_string_non_list_content_returns_empty_string(self):
+        """content that is neither a string nor a block-array (e.g. None, or
+        a bare dict) must not be str()'d into a repr — it's "" instead."""
+        messages = [{"role": "user", "content": None}]
+        assert _last_user_text(messages) == ""
+        messages = [{"type": "human", "content": {"unexpected": "shape"}}]
+        assert _last_user_text(messages) == ""
+
+    def test_block_array_ignores_non_text_blocks(self):
+        messages = [
+            {
+                "type": "human",
+                "content": [
+                    {"type": "image", "source": "data:..."},
+                    {"type": "text", "text": "describe this"},
+                ],
+            }
+        ]
+        assert _last_user_text(messages) == "describe this"
 
 
 class TestSerializeValues:
