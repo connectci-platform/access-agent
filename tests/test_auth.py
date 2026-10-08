@@ -5,9 +5,11 @@ Uses ES256 (ECDSA P-256) key pairs — no shared secret.
 
 import json
 import logging
+import sys
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
+from typing import ClassVar
 from unittest.mock import MagicMock
 
 import jwt
@@ -20,7 +22,12 @@ from cryptography.hazmat.primitives.serialization import (
 )
 from jwt import algorithms as jwt_algorithms
 
-from src.auth import _jwks_clients, configure_trusted_issuers, get_acting_user_from_cookie
+from src.auth import (
+    JWKS_REFRESH_COOLDOWN_S,
+    _jwks_clients,
+    configure_trusted_issuers,
+    get_acting_user_from_cookie,
+)
 
 # Generate a test EC P-256 key pair.
 _ec_private_key = ec.generate_private_key(ec.SECP256R1())
@@ -521,7 +528,12 @@ def test_unexpected_error_logs_as_infrastructure_at_error(caplog, monkeypatch):
         def _boom(*args, **kwargs):
             raise MemoryError("something unrecognized went wrong")
 
-        monkeypatch.setattr(_jwks_clients[ISSUER], "get_signing_key_from_jwt", _boom)
+        # _decode_jwt resolves the signing key via get_signing_keys()/match_kid
+        # (see _get_signing_key's rate-limited lookup), not
+        # get_signing_key_from_jwt directly — patch the method actually on
+        # the call path so this still exercises an unclassified failure
+        # during key resolution.
+        monkeypatch.setattr(_jwks_clients[ISSUER], "get_signing_keys", _boom)
         token = _make_jwt("jsmith@access-ci.org")
         request = _mock_request(cookies={"SESSaccess_auth": token})
 
@@ -552,3 +564,240 @@ def test_no_issuers_configured_logs_as_infrastructure_at_error(caplog):
     infra = [r for r in caplog.records if "AUTH_INFRA" in r.message]
     assert infra
     assert all(r.levelno >= logging.ERROR for r in infra)
+
+
+# --- Unknown-kid amplification DoS (forced JWKS refresh rate limit) ---
+#
+# `kid` is an attacker-controlled JWT header field. PyJWKClient.get_signing_key
+# forces a live outbound fetch to the issuer's JWKS endpoint on ANY cache miss
+# before raising. Without a per-issuer cooldown, an anonymous caller can send a
+# fresh bogus `kid` on every request and force one outbound fetch per request —
+# amplification against the real issuer's JWKS endpoint. These tests count hits
+# against a local JWKS server to prove the refresh is bounded, not per-request,
+# while still allowing a genuinely rotated key to be picked up promptly.
+
+
+class _CountingJWKSHandler(BaseHTTPRequestHandler):
+    """Same JWKS response as `_JWKSHandler`, but records a hit per GET."""
+
+    hits: ClassVar[list[float]] = []
+
+    def do_GET(self):
+        type(self).hits.append(time.time())
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(JWKS_RESPONSE)
+
+    def log_message(self, format, *args):
+        pass
+
+
+def _start_counting_jwks_server() -> tuple[HTTPServer, str, list[float]]:
+    """Start a local JWKS server that records request timestamps.
+
+    Returns (server, url, hits) — `hits` is the handler class's own list, so
+    the caller can inspect fetch counts without instance plumbing.
+    """
+    hits: list[float] = []
+
+    class _Handler(_CountingJWKSHandler):
+        pass
+
+    _Handler.hits = hits
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    port = server.server_address[1]
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, f"http://127.0.0.1:{port}", hits
+
+
+def _make_bogus_kid_jwt(kid: str, issuer: str = ISSUER) -> str:
+    """An unsigned-relative-to-the-real-key JWT with an attacker-chosen kid.
+
+    Only the header `kid`/`iss` need to be attacker-plausible to trigger a
+    cache lookup — the signature never verifies, by construction, since the
+    real private key is never used. That's enough to exercise the fetch path:
+    PyJWKClient's forced refresh happens on the `kid` miss, before signature
+    verification is reached.
+    """
+    now = int(time.time())
+    return jwt.encode(
+        {"iss": issuer, "sub": "attacker@evil.example", "exp": now + 3600},
+        PRIVATE_PEM,  # arbitrary key; signature is never checked (invalid kid)
+        algorithm="ES256",
+        headers={"kid": kid},
+    )
+
+
+def test_unknown_kid_amplification_is_rate_limited(monkeypatch):
+    """N requests with N DIFFERENT bogus kids must force ~1 refresh, not N.
+
+    This is the amplification-DoS proof: before the fix, every unknown kid
+    forces a live outbound JWKS fetch (PyJWKClient.get_signing_key refreshes
+    on any cache miss). An anonymous attacker varying `kid` per request could
+    force one outbound fetch per request indefinitely.
+    """
+    server, jwks_url, hits = _start_counting_jwks_server()
+    try:
+        _setup_issuers(jwks_url)
+        # Prime the cache so the *first* unknown kid in the loop below isn't
+        # conflated with "first ever lookup" bookkeeping.
+        get_acting_user_from_cookie(_mock_request(cookies={"SESSaccess_auth": _make_jwt("x")}))
+        hits.clear()
+
+        now = time.time()
+        monkeypatch.setattr(time, "time", lambda: now)
+
+        for i in range(10):
+            token = _make_bogus_kid_jwt(kid=f"bogus-kid-{i}")
+            request = _mock_request(cookies={"SESSaccess_auth": token})
+            user, cookie_present = get_acting_user_from_cookie(request)
+            assert user is None
+            assert cookie_present is True
+
+        assert len(hits) <= 1, (
+            f"expected at most 1 forced refresh within the cooldown window, got {len(hits)}"
+        )
+    finally:
+        server.shutdown()
+
+
+def test_unknown_kid_refresh_allowed_again_after_cooldown(monkeypatch):
+    """After the cooldown elapses, a new unknown kid is allowed to refresh again.
+
+    Proves the rate limit doesn't permanently wedge refreshes shut — it only
+    bounds how often an unknown kid can force one.
+    """
+    server, jwks_url, hits = _start_counting_jwks_server()
+    try:
+        _setup_issuers(jwks_url)
+        # Prime the cache (an empty cache fetches once even without a forced
+        # refresh) so the counts below isolate forced refreshes only.
+        get_acting_user_from_cookie(_mock_request(cookies={"SESSaccess_auth": _make_jwt("x")}))
+        hits.clear()
+
+        now = time.time()
+        monkeypatch.setattr(time, "time", lambda: now)
+
+        token1 = _make_bogus_kid_jwt(kid="bogus-kid-a")
+        get_acting_user_from_cookie(_mock_request(cookies={"SESSaccess_auth": token1}))
+        assert len(hits) == 1
+
+        # Still within cooldown — a second bogus kid must not refresh again.
+        monkeypatch.setattr(time, "time", lambda: now + JWKS_REFRESH_COOLDOWN_S - 1)
+        token2 = _make_bogus_kid_jwt(kid="bogus-kid-b")
+        get_acting_user_from_cookie(_mock_request(cookies={"SESSaccess_auth": token2}))
+        assert len(hits) == 1
+
+        # Cooldown elapsed — the next unknown kid is allowed to refresh.
+        monkeypatch.setattr(time, "time", lambda: now + JWKS_REFRESH_COOLDOWN_S)
+        token3 = _make_bogus_kid_jwt(kid="bogus-kid-c")
+        get_acting_user_from_cookie(_mock_request(cookies={"SESSaccess_auth": token3}))
+        assert len(hits) == 2
+    finally:
+        server.shutdown()
+
+
+def test_unknown_kid_suppressed_refresh_logs_at_debug_not_warning(caplog, monkeypatch):
+    """The suppressed-refresh decision itself (still within cooldown) must
+    log at DEBUG, not WARNING/ERROR — it's attacker-controlled input and must
+    not become a log-spam or alert oracle. The pre-existing "unknown key id"
+    WARNING from the eventual PyJWKClientError is unchanged (see
+    test_unknown_kid_is_warning_not_error) and still fires; what must never
+    happen is anything reaching ERROR, and the suppression line itself must
+    be DEBUG."""
+    server, jwks_url, hits = _start_counting_jwks_server()
+    try:
+        _setup_issuers(jwks_url)
+        get_acting_user_from_cookie(_mock_request(cookies={"SESSaccess_auth": _make_jwt("x")}))
+        hits.clear()
+
+        now = time.time()
+        monkeypatch.setattr(time, "time", lambda: now)
+
+        token1 = _make_bogus_kid_jwt(kid="bogus-kid-a")
+        get_acting_user_from_cookie(_mock_request(cookies={"SESSaccess_auth": token1}))
+        assert len(hits) == 1
+
+        with caplog.at_level(logging.DEBUG, logger="src.auth"):
+            token2 = _make_bogus_kid_jwt(kid="bogus-kid-b")
+            user, _ = get_acting_user_from_cookie(
+                _mock_request(cookies={"SESSaccess_auth": token2})
+            )
+
+        assert user is None
+        assert len(hits) == 1
+        suppression_records = [r for r in caplog.records if "suppressing forced JWKS" in r.message]
+        assert suppression_records, "expected a suppressed-refresh log line"
+        assert all(r.levelno == logging.DEBUG for r in suppression_records)
+        assert all(r.levelno < logging.ERROR for r in caplog.records), (
+            "an attacker-supplied kid must never generate ERROR alerts"
+        )
+    finally:
+        server.shutdown()
+
+
+def test_legit_key_rotation_still_resolves_after_cooldown(monkeypatch):
+    """A kid missing from the cached set but present after a refresh (real
+    rotation), with cooldown elapsed, must still resolve the user — the rate
+    limit must not break legitimate key rotation.
+    """
+    server, jwks_url, hits = _start_counting_jwks_server()
+    try:
+        _setup_issuers(jwks_url)
+        get_acting_user_from_cookie(_mock_request(cookies={"SESSaccess_auth": _make_jwt("x")}))
+        hits.clear()
+
+        now = time.time()
+        monkeypatch.setattr(time, "time", lambda: now)
+
+        # Burn the cooldown with an initial (bogus) unknown-kid lookup so the
+        # rotated-key lookup below has to wait out a real cooldown window,
+        # same as it would in production.
+        burn_token = _make_bogus_kid_jwt(kid="bogus-kid-burn")
+        get_acting_user_from_cookie(_mock_request(cookies={"SESSaccess_auth": burn_token}))
+        assert len(hits) == 1
+
+        # Rotate: a new key (new kid) appears at the JWKS endpoint.
+        new_key = ec.generate_private_key(ec.SECP256R1())
+        new_public_pem = new_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
+        new_public_key = new_key.public_key()
+        new_json_key = jwt_algorithms.ECAlgorithm(jwt_algorithms.ECAlgorithm.SHA256).to_jwk(
+            new_public_key
+        )
+        new_jwk = json.loads(new_json_key)
+        new_jwk["kid"] = "rotated-kid"
+        new_jwk["use"] = "sig"
+        new_jwk["alg"] = "ES256"
+
+        # Swap the module-level JWKS_RESPONSE the handler serves, mid-test.
+        monkeypatch.setattr(
+            sys.modules[__name__],
+            "JWKS_RESPONSE",
+            json.dumps({"keys": [_jwk_dict, new_jwk]}).encode(),
+        )
+
+        # Cooldown elapsed — the rotated kid should force exactly one more
+        # refresh and resolve successfully.
+        monkeypatch.setattr(time, "time", lambda: now + JWKS_REFRESH_COOLDOWN_S)
+        rotated_token = jwt.encode(
+            {
+                "iss": ISSUER,
+                "sub": "rotated-user@access-ci.org",
+                "iat": int(now) - 60,
+                "exp": int(now) + 3600,
+            },
+            new_public_pem,
+            algorithm="ES256",
+            headers={"kid": "rotated-kid"},
+        )
+        user, cookie_present = get_acting_user_from_cookie(
+            _mock_request(cookies={"SESSaccess_auth": rotated_token})
+        )
+
+        assert user == "rotated-user@access-ci.org"
+        assert cookie_present is True
+        assert len(hits) == 2
+    finally:
+        server.shutdown()

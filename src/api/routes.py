@@ -758,7 +758,7 @@ async def get_capabilities(
 
 
 @router.get("/whoami")
-async def whoami(raw_request: Request) -> dict[str, Any]:
+async def whoami(raw_request: Request) -> JSONResponse:
     """Reflect the caller's own cookie-derived ACCESS identity.
 
     Fast, in-memory lookup — no external calls, no side effects. Lets a
@@ -769,9 +769,18 @@ async def whoami(raw_request: Request) -> dict[str, Any]:
     their own ``SESSaccess_auth`` cookie. There is no parameter to look up
     another user, and an anonymous caller (no/invalid/expired cookie)
     simply gets ``authenticated: false``.
+
+    An identity response must never be cached by any intermediary (a shared
+    cache serving one caller's cached body to another would leak identity
+    across users) — ``Cache-Control: private, no-store`` plus
+    ``Vary: Cookie`` so even a cache that ignores no-store keys on the
+    cookie.
     """
     user, _ = get_acting_user_from_cookie(raw_request)
-    return {"authenticated": user is not None, "user": user}
+    return JSONResponse(
+        content={"authenticated": user is not None, "user": user},
+        headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
+    )
 
 
 class RatingRequest(BaseModel):
