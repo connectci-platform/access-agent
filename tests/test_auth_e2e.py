@@ -513,3 +513,19 @@ async def test_whoami_no_cookie(client):
 
     assert response.status_code == 200
     assert response.json() == {"authenticated": False, "user": None}
+
+
+async def test_whoami_never_cached_by_intermediary(client):
+    """/whoami is an identity response and must never be cached by any
+    intermediary — a shared cache serving one caller's cached body to
+    another would leak identity across users."""
+    token = _make_jwt("jsmith@access-ci.org")
+
+    response = await client.get(
+        "/api/v1/whoami",
+        headers={"cookie": f"SESSaccess_auth={token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers.get("cache-control") == "private, no-store"
+    assert response.headers.get("vary") == "Cookie"

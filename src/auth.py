@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import ssl
+import time
 from typing import TYPE_CHECKING, Any
 
 import jwt
@@ -32,6 +33,22 @@ logger = logging.getLogger(__name__)
 # Module-level cache of PyJWKClient instances, keyed by issuer URL.
 # Built once at startup via configure_trusted_issuers().
 _jwks_clients: dict[str, PyJWKClient] = {}
+
+# A JWT's `kid` header is attacker-controlled, and PyJWKClient.get_signing_key
+# forces a live outbound JWKS fetch on ANY cache miss (not just real
+# rotation) before raising. Without a limit, an anonymous caller varying
+# `kid` per request forces one outbound fetch per request — amplification
+# against the issuer's JWKS endpoint plus exhaustion of our own outbound/
+# timeout budget. This bounds forced refreshes to at most one per issuer per
+# cooldown window; see `_get_signing_key` below. Reuses PyJWKClient's own
+# cache lifespan (`lifespan=300` default) as the cooldown so a suppressed
+# refresh never outlives the cache entry it would have replaced.
+JWKS_REFRESH_COOLDOWN_S = 300
+
+# Per-issuer timestamp of the last forced (refresh=True) JWKS fetch. Reset
+# alongside _jwks_clients in configure_trusted_issuers(). Single-process —
+# same documented pattern as _jwks_clients itself.
+_last_forced_refresh: dict[str, float] = {}
 
 
 def configure_trusted_issuers(
@@ -52,6 +69,7 @@ def configure_trusted_issuers(
             DDEV self-signed certs). JWT signature verification is unaffected.
     """
     _jwks_clients.clear()
+    _last_forced_refresh.clear()
 
     # In local/docker environments, allow self-signed certs for JWKS fetch.
     ssl_context: ssl.SSLContext | None = None
@@ -102,6 +120,58 @@ def get_acting_user_from_cookie(
     return user, True
 
 
+def _get_signing_key(jwks_client: PyJWKClient, issuer: str, token: str) -> jwt.PyJWK:
+    """Resolve the signing key for `token`, rate-limiting forced refreshes.
+
+    Mirrors ``PyJWKClient.get_signing_key``'s match-then-refresh-then-match
+    shape, but only allows the refresh (the live outbound HTTPS fetch) once
+    per issuer per ``JWKS_REFRESH_COOLDOWN_S``. The `kid` driving the lookup
+    is an attacker-controlled JWT header field, so an unknown kid must be
+    cheap when we've already refreshed this issuer recently — otherwise a
+    caller varying `kid` per request forces one outbound fetch per request
+    (see module docstring on `JWKS_REFRESH_COOLDOWN_S`).
+
+    Legitimate key rotation is unaffected: the first unknown kid after the
+    cooldown elapses still forces exactly one refresh and picks up new keys.
+
+    Raises ``PyJWKClientError`` (from the final ``match_kid`` miss, or
+    propagated from the underlying fetch) on anything that isn't a resolved
+    key — identical in shape to what ``get_signing_key`` would raise, so the
+    caller's existing exception handling is unchanged.
+    """
+    unverified_header = jwt.get_unverified_header(token)
+    kid = unverified_header.get("kid")
+    if not kid:
+        # No kid at all can never match anything in the set; same terminal
+        # outcome as an unmatched kid, without spending a lookup on it.
+        raise PyJWKClientError("Unable to find a signing key: JWT header missing 'kid'")
+
+    keys = jwks_client.get_signing_keys()  # cached — never fetches here
+    key = jwks_client.match_kid(keys, kid)
+    if key is not None:
+        return key
+
+    now = time.time()
+    last = _last_forced_refresh.get(issuer, 0.0)
+    if now - last < JWKS_REFRESH_COOLDOWN_S:
+        # Attacker-controlled input (kid); DEBUG only — must not become a
+        # log-spam or alerting oracle for an anonymous caller.
+        logger.debug(
+            "AUTH_INFRA: suppressing forced JWKS refresh for issuer %r "
+            "(kid miss within %ss cooldown)",
+            issuer,
+            JWKS_REFRESH_COOLDOWN_S,
+        )
+        raise PyJWKClientError(f'Unable to find a signing key that matches: "{kid}"')
+
+    keys = jwks_client.get_signing_keys(refresh=True)
+    _last_forced_refresh[issuer] = now
+    key = jwks_client.match_kid(keys, kid)
+    if key is not None:
+        return key
+    raise PyJWKClientError(f'Unable to find a signing key that matches: "{kid}"')
+
+
 def _decode_jwt(token: str) -> str | None:
     """Decode and validate an ES256 JWT, returning the ``sub`` claim.
 
@@ -148,8 +218,11 @@ def _decode_jwt(token: str) -> str | None:
             )
             return None
 
-        # Fetch the signing key using the kid from the JWT header.
-        signing_key = jwks_client.get_signing_key_from_jwt(token)
+        # Fetch the signing key using the kid from the JWT header. Rate-limits
+        # the forced-refresh-on-miss (see _get_signing_key) instead of calling
+        # jwks_client.get_signing_key_from_jwt directly, which would force a
+        # live outbound fetch on every unknown kid.
+        signing_key = _get_signing_key(jwks_client, issuer, token)
 
         # Verify signature, expiration, and issuer.
         payload: dict[str, Any] = jwt.decode(
