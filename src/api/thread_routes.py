@@ -248,16 +248,41 @@ async def _stream_run_events(
     yield format_sse_event("values", {"messages": final_messages})
 
 
+def _extract_text_content(content: Any) -> str:
+    """Render a message's ``content`` field as plain text.
+
+    Callers send content as either a plain string or a LangChain-style list of
+    content blocks (``[{"type": "text", "text": "..."}, ...]``). Join the text
+    of each text block; non-text blocks (images, etc.) are ignored. Anything
+    else (None, a dict, ...) yields "" rather than a stringified repr.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        return " ".join(part for part in parts if part)
+    return ""
+
+
 def _last_user_text(messages: list[dict[str, Any]]) -> str:
     """The query the agent runs is the latest user turn in the run input.
 
     Checkpoint resume rebuilds prior context from the thread; the run body only
     needs to carry the new turn.
+
+    A message is a user turn if it has ``role: "user"`` (the widget's shape)
+    or ``type: "human"`` (the LangChain message shape the full-screen client
+    sends). Its ``content`` may be a plain string or a block-array (the
+    full-screen client sends ``[{"type": "text", "text": "..."}]``); only the
+    text blocks are extracted.
     """
     for msg in reversed(messages):
-        if msg.get("role") == "user":
-            content = msg.get("content", "")
-            return content if isinstance(content, str) else str(content)
+        if msg.get("type") == "human" or msg.get("role") == "user":
+            return _extract_text_content(msg.get("content", ""))
     return ""
 
 
