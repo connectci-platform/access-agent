@@ -22,7 +22,7 @@ def test_production_refuses_external_model_provider():
         _mk(
             ENVIRONMENT="production",
             LLM_PROVIDER="openai",
-            EVAL_JUDGE_BASE_URL="https://jump-external.ccs.uky.edu/v1",
+            EVAL_JUDGE_BASE_URL="https://llm.ccs.uky.edu/v1",
         )
 
 
@@ -32,7 +32,7 @@ def test_production_refuses_judge_openai_fallback():
         _mk(
             ENVIRONMENT="production",
             LLM_PROVIDER="vllm",
-            VLLM_BASE_URL="https://jump-external.ccs.uky.edu/v1",
+            VLLM_BASE_URL="https://llm.ccs.uky.edu/v1",
             EVAL_JUDGE_BASE_URL="",
         )
 
@@ -41,8 +41,8 @@ def test_production_boots_with_on_premise_config():
     s = _mk(
         ENVIRONMENT="production",
         LLM_PROVIDER="vllm",
-        VLLM_BASE_URL="https://jump-external.ccs.uky.edu/v1",
-        EVAL_JUDGE_BASE_URL="https://jump-external.ccs.uky.edu/v1",
+        VLLM_BASE_URL="https://llm.ccs.uky.edu/v1",
+        EVAL_JUDGE_BASE_URL="https://llm.ccs.uky.edu/v1",
     )
     assert s.LLM_PROVIDER == "vllm"
 
