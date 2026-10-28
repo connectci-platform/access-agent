@@ -10,7 +10,7 @@ env:
   # and model the deployed loop runs. No OpenAI key on purpose — a code
   # path that silently falls back to OpenAI should fail loudly here.
   LLM_PROVIDER: vllm
-  VLLM_BASE_URL: https://jump-external.ccs.uky.edu/v1
+  VLLM_BASE_URL: https://llm.ccs.uky.edu/v1
   VLLM_MODEL_NAME: ccs/Qwen/Qwen3.6-35B-A3B-FP8
   # e2e tests + the red-team gate live-aggregate the catalog from the prod MCP
   # servers (CatalogAggregator), so point them at the prod host. Sourced from a

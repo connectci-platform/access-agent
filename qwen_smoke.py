@@ -8,8 +8,8 @@ Verifies three things end-to-end:
 Usage:
     Set the following in `.env` (or your shell):
         LLM_PROVIDER=vllm
-        VLLM_BASE_URL=https://jump-external.ccs.uky.edu/v1
-        VLLM_API_KEY=<UKY-supplied key>
+        VLLM_BASE_URL=https://llm.ccs.uky.edu/v1
+        VLLM_API_KEY=<Locksmith key: locksmith.ccs.uky.edu>
         VLLM_MODEL_NAME=ccs/Qwen/Qwen3.6-35B-A3B-FP8
 
     Then:
