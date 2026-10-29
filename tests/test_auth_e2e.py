@@ -529,3 +529,91 @@ async def test_whoami_never_cached_by_intermediary(client):
     assert response.status_code == 200
     assert response.headers.get("cache-control") == "private, no-store"
     assert response.headers.get("vary") == "Cookie"
+
+
+# ---------------------------------------------------------------------------
+# Test: cross-site simple requests never reach query or rating
+# ---------------------------------------------------------------------------
+
+# A cross-site page can POST these content types without a CORS preflight,
+# and the browser attaches the SESSaccess_auth cookie (SameSite=None). The
+# protection is FastAPI's strict JSON body handling, not our code: these
+# tests catch a route that loosens its body type or a FastAPI change that
+# relaxes it. The application/json counterpart is test_valid_cookie_sets_acting_user.
+_SIMPLE_REQUEST_BODIES = {
+    "text/plain": {"content-type": "text/plain;charset=UTF-8"},
+    "form-urlencoded": {"content-type": "application/x-www-form-urlencoded"},
+    "multipart": {"content-type": "multipart/form-data; boundary=x"},
+    # fetch() with an untyped Blob body sends no Content-Type at all.
+    "no-content-type": {},
+}
+
+
+@pytest.mark.parametrize("headers", _SIMPLE_REQUEST_BODIES.values(), ids=_SIMPLE_REQUEST_BODIES)
+async def test_cross_site_simple_request_cannot_query(client, mock_agent, mock_registry, headers):
+    token = _make_jwt("jsmith@access-ci.org")
+
+    response = await client.post(
+        "/api/v1/query",
+        content=json.dumps({"query": "What GPU resources are available?"}).encode(),
+        headers={
+            **headers,
+            "origin": "https://attacker.example",
+            "cookie": f"SESSaccess_auth={token}",
+        },
+    )
+
+    assert response.status_code == 422
+    mock_agent.assert_not_called()
+
+
+@pytest.mark.parametrize("headers", _SIMPLE_REQUEST_BODIES.values(), ids=_SIMPLE_REQUEST_BODIES)
+async def test_cross_site_simple_request_cannot_rate(client, headers):
+    token = _make_jwt("jsmith@access-ci.org")
+    usage_logger = AsyncMock()
+
+    with patch("src.api.routes.get_usage_logger", return_value=usage_logger):
+        response = await client.post(
+            "/api/v1/rating",
+            content=json.dumps({"query_id": "q-1", "rating": "not_helpful"}).encode(),
+            headers={
+                **headers,
+                "origin": "https://attacker.example",
+                "cookie": f"SESSaccess_auth={token}",
+            },
+        )
+
+    assert response.status_code == 422
+    usage_logger.log_rating.assert_not_called()
+
+
+_THREAD_BODY_ROUTES = {
+    "runs/stream": (
+        "/api/v1/threads/t-1/runs/stream",
+        {"input": {"messages": [{"type": "human", "content": "hi"}]}},
+    ),
+    "history": ("/api/v1/threads/t-1/history", {"limit": 10}),
+    "search": ("/api/v1/threads/search", {"limit": 10}),
+    "handoff/exchange": ("/api/v1/handoff/exchange", {"token": "x"}),
+}
+
+
+@pytest.mark.parametrize("route", _THREAD_BODY_ROUTES.values(), ids=_THREAD_BODY_ROUTES)
+@pytest.mark.parametrize("headers", _SIMPLE_REQUEST_BODIES.values(), ids=_SIMPLE_REQUEST_BODIES)
+async def test_cross_site_simple_request_cannot_reach_thread_routes(client, headers, route):
+    path, body = route
+    token = _make_jwt("jsmith@access-ci.org")
+
+    with patch("src.api.thread_routes.stream_agent") as thread_stream:
+        response = await client.post(
+            path,
+            content=json.dumps(body).encode(),
+            headers={
+                **headers,
+                "origin": "https://attacker.example",
+                "cookie": f"SESSaccess_auth={token}",
+            },
+        )
+
+    assert response.status_code == 422
+    thread_stream.assert_not_called()
