@@ -21,6 +21,7 @@ def create_async_client(
     connect_timeout: float = 5.0,
     max_connections: int = 100,
     max_keepalive_connections: int = 20,
+    verify: bool = True,
 ) -> httpx.AsyncClient:
     """Create an HTTPX AsyncClient with OpenTelemetry instrumentation.
 
@@ -33,6 +34,7 @@ def create_async_client(
         connect_timeout: Connection timeout in seconds.
         max_connections: Maximum number of connections in the pool.
         max_keepalive_connections: Maximum keepalive connections.
+        verify: Whether to verify the server's TLS certificate.
 
     Returns:
         An AsyncClient configured with connection pooling and optional
@@ -48,7 +50,7 @@ def create_async_client(
         try:
             from opentelemetry.instrumentation.httpx import AsyncOpenTelemetryTransport
 
-            transport = AsyncOpenTelemetryTransport(httpx.AsyncHTTPTransport())
+            transport = AsyncOpenTelemetryTransport(httpx.AsyncHTTPTransport(verify=verify))
             logger.debug("Created instrumented AsyncClient with trace context propagation")
             return httpx.AsyncClient(
                 transport=transport,
@@ -62,4 +64,4 @@ def create_async_client(
             )
 
     logger.debug("Created AsyncClient without instrumentation")
-    return httpx.AsyncClient(timeout=timeout_config, limits=limits)
+    return httpx.AsyncClient(timeout=timeout_config, limits=limits, verify=verify)
