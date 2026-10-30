@@ -84,6 +84,27 @@ class Settings(BaseSettings):
     # Example: "https://support.access-ci.org=https://support.access-ci.org/.well-known/jwks.json"
     TRUSTED_JWKS_URLS: str = ""
 
+    # Bearer agent tokens (src/agent_token.py). The JWKS is Drupal's
+    # /.well-known/exchange-jwks.json, never the cookie's jwks.json.
+    AGENT_TOKEN_ISSUER: str = ""
+    AGENT_TOKEN_JWKS_URL: str = ""
+    # Empty means the per-environment default below.
+    AGENT_TOKEN_AUDIENCE: str = ""
+    # Comma-separated browser client ids.
+    AGENT_TOKEN_ALLOWED_AZP: str = "access-qa-bot"
+
+    @property
+    def agent_token_audience(self) -> str:
+        if self.AGENT_TOKEN_AUDIENCE:
+            return self.AGENT_TOKEN_AUDIENCE
+        if self.ENVIRONMENT == "production":
+            return "https://qa.access-ci.org"
+        return "http://localhost:8000"
+
+    @property
+    def agent_token_allowed_azp(self) -> frozenset[str]:
+        return frozenset(c.strip() for c in self.AGENT_TOKEN_ALLOWED_AZP.split(",") if c.strip())
+
     # Turnstile bot protection (Cloudflare)
     # When TURNSTILE_SECRET_KEY is empty, Turnstile is disabled (current behavior).
     TURNSTILE_SITE_KEY: str = ""
@@ -220,6 +241,7 @@ class Settings(BaseSettings):
     EVAL_JUDGE_THINKING: bool = False
 
     # Per-thread run turn bound (src/api/thread_runs.py run_with_timeout)
+    # Bounded by check_agent_token_config (src/agent_token.py).
     AGENT_TURN_TIMEOUT_S: int = 120
 
     # MCP Server port mappings

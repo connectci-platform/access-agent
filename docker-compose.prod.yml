@@ -66,6 +66,12 @@ services:
       - ENABLED_CAPABILITIES=${ENABLED_CAPABILITIES:-}
       # JWT Authentication (ES256 + JWKS)
       - TRUSTED_JWKS_URLS=${TRUSTED_JWKS_URLS:-}
+      # Bearer agent tokens (src/agent_token.py)
+      - AGENT_TOKEN_ISSUER=${AGENT_TOKEN_ISSUER:-}
+      - AGENT_TOKEN_JWKS_URL=${AGENT_TOKEN_JWKS_URL:-}
+      - AGENT_TOKEN_AUDIENCE=${AGENT_TOKEN_AUDIENCE:-}
+      - AGENT_TOKEN_ALLOWED_AZP=${AGENT_TOKEN_ALLOWED_AZP:-access-qa-bot}
+      - AGENT_TURN_TIMEOUT_S=${AGENT_TURN_TIMEOUT_S:-120}
       # OpenTelemetry - Honeycomb
       - OTEL_ENABLED=${OTEL_ENABLED:-true}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-https://api.honeycomb.io}
