@@ -18,13 +18,13 @@ from starlette.responses import StreamingResponse
 from ..agent.graph import stream_agent
 from ..agent.profile import UserProfile
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
-from ..auth import get_acting_user_from_cookie
 from ..config import settings
 from ..llm import is_empty_answer
 from ..thread_owners import get_thread_owner_store
 from ..tools import ToolRegistry, get_catalog_aggregator
 from ..turnstile import check_turnstile, get_turnstile_guard
 from ..usage_logger import get_usage_logger
+from .identity import Identity
 from .sse import format_sse_event as _format_sse_event
 from .thread_runs import acquire_thread_run, held_run, release_thread_run, run_with_timeout
 
@@ -514,27 +514,27 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
 async def query_agent(
     request: QueryRequest,
     raw_request: Request,
+    identity: Identity,
     include_trace: bool = Query(False, description="Include node_trace in response metadata"),
 ) -> QueryResponse | JSONResponse | StreamingResponse:
     """Execute a query against the ACCESS Documentation Agent.
 
-    User identity is resolved from the ``SESSaccess_auth`` JWT cookie set by
-    ACCESS sites (Drupal, Django, etc.) — cookie-only, by construction. There
-    is no body-supplied identity fallback: a caller without a valid cookie is
+    User identity comes only from the Bearer agent token (``request_identity``).
+    There is no body-supplied identity fallback: a caller without a token is
     always anonymous.
 
     Args:
         request: The query request with question and optional IDs.
-        raw_request: The raw FastAPI request (for cookie access).
+        raw_request: The raw FastAPI request (app state and redteam headers).
 
     Returns:
         For capability discovery: QueryResponse (JSON) with instant answer.
         For agent queries: StreamingResponse (SSE) with status, token, and done events.
     """
-    # Resolve acting user from the JWT cookie only — no body-supplied
-    # identity fallback. A missing or invalid/expired cookie is anonymous.
-    user, _cookie_present = get_acting_user_from_cookie(raw_request)
-    acting_user: str | None = user if user else None
+    # No body-supplied identity fallback: without a token, the caller is
+    # anonymous. A bad token was already refused with a 401.
+    user = identity.sub if identity else None
+    acting_user: str | None = user
 
     # Generate IDs if not provided.
     # Anonymous users MUST provide session_id when Turnstile is enabled —
@@ -560,7 +560,7 @@ async def query_agent(
     )
 
     # Turnstile gate — anonymous users may need to verify they're human.
-    # Authenticated users (valid JWT cookie) skip entirely.
+    # Authenticated users (valid agent token) skip entirely.
     turnstile_response = await check_turnstile(acting_user, session_id, request.turnstile_token)
     if turnstile_response is not None:
         return turnstile_response
@@ -589,11 +589,11 @@ async def query_agent(
     # Resolve the owner once and branch — call check_access for any non-None
     # owner (don't pre-guard on user_hash; check_access itself fails closed on
     # a NULL-hash authed row). `user` and `acting_user` are the same
-    # cookie-verified identity — there is no body-supplied identity anymore.
+    # token-verified identity — there is no body-supplied identity anymore.
     owner_store = get_thread_owner_store()
     owner = owner_store.resolve_owner(session_id)
     if owner is not None and owner.was_authenticated:
-        # Authed-owned: require the cookie caller to match. 404 (not 403) on
+        # Authed-owned: require the token's caller to match. 404 (not 403) on
         # mismatch — identical to the unknown-thread case, so thread existence
         # is not observable to a caller who doesn't own it (mirrors
         # src/api/thread_routes.py's runs/stream gate).
@@ -647,8 +647,8 @@ async def query_agent(
     # could claim_thread a pre-existing widget conversation and take it over.
     # Ignore the bool — the widget doesn't gate on it; the row just has to exist.
     #
-    # Ownership comes from cookie-verified identity only (`user`). A
-    # cookieless caller claims an anon-owned thread (was_authenticated=False).
+    # Ownership comes from token-verified identity only (`user`). An
+    # anonymous caller claims an anon-owned thread (was_authenticated=False).
     owner_store.claim_thread(session_id, user)
 
     # Share the per-thread run lock with the runs/stream endpoint (they collide on
@@ -723,7 +723,7 @@ async def health_check() -> dict[str, Any]:
 
 @router.get("/capabilities")
 async def get_capabilities(
-    raw_request: Request,
+    identity: Identity,
     resource_context: str | None = Query(
         None, description="RP slug for resource-scoped capabilities"
     ),
@@ -739,8 +739,7 @@ async def get_capabilities(
     from ..agent.domains.capabilities import get_capability_registry
 
     # Check auth to decide locked vs unlocked
-    user, _ = get_acting_user_from_cookie(raw_request)
-    authenticated = user is not None
+    authenticated = identity is not None
 
     registry = get_capability_registry()
 
@@ -758,28 +757,27 @@ async def get_capabilities(
 
 
 @router.get("/whoami")
-async def whoami(raw_request: Request) -> JSONResponse:
-    """Reflect the caller's own cookie-derived ACCESS identity.
+async def whoami(identity: Identity) -> JSONResponse:
+    """Reflect the caller's own ACCESS identity from their Bearer agent token.
 
-    Fast, in-memory lookup — no external calls, no side effects. Lets a
-    client detect whether the user is logged in (to show their name vs a
-    Login button) and confirms backend auth works.
+    For debugging and the post-deploy check that a minted token is accepted.
+    Clients decide whether the user is signed in from their own mint result,
+    not from this endpoint.
 
-    Scope: this reflects ONLY the caller's own identity, as asserted by
-    their own ``SESSaccess_auth`` cookie. There is no parameter to look up
-    another user, and an anonymous caller (no/invalid/expired cookie)
-    simply gets ``authenticated: false``.
+    Scope: this reflects ONLY the identity in the caller's own token. There
+    is no parameter to look up another user. A caller without a token gets
+    ``authenticated: false``, and a bad token gets a 401.
 
     An identity response must never be cached by any intermediary (a shared
     cache serving one caller's cached body to another would leak identity
     across users) — ``Cache-Control: private, no-store`` plus
-    ``Vary: Cookie`` so even a cache that ignores no-store keys on the
-    cookie.
+    ``Vary: Authorization`` so even a cache that ignores no-store keys on the
+    token.
     """
-    user, _ = get_acting_user_from_cookie(raw_request)
+    user = identity.sub if identity else None
     return JSONResponse(
         content={"authenticated": user is not None, "user": user},
-        headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
+        headers={"Cache-Control": "private, no-store", "Vary": "Authorization"},
     )
 
 
@@ -793,7 +791,7 @@ class RatingRequest(BaseModel):
 
 
 @router.post("/rating")
-async def submit_rating(request: RatingRequest, raw_request: Request) -> dict[str, Any]:
+async def submit_rating(request: RatingRequest, identity: Identity) -> dict[str, Any]:
     """Submit a rating for an agent response.
 
     Anti-spoofing: authenticated users must own the query (user_hash match);
@@ -802,7 +800,7 @@ async def submit_rating(request: RatingRequest, raw_request: Request) -> dict[st
     if request.rating not in ("helpful", "not_helpful"):
         raise HTTPException(status_code=400, detail="rating must be 'helpful' or 'not_helpful'")
 
-    acting_user, _ = get_acting_user_from_cookie(raw_request)
+    acting_user = identity.sub if identity else None
 
     usage_logger = get_usage_logger()
     result = await asyncio.to_thread(

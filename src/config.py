@@ -79,11 +79,6 @@ class Settings(BaseSettings):
     # Empty = in-memory single-process fallback (dev/test).
     REDIS_URL: str = ""
 
-    # JWT Authentication (ES256 + JWKS)
-    # Comma-separated list of "issuer=jwks_url" pairs.
-    # Example: "https://support.access-ci.org=https://support.access-ci.org/.well-known/jwks.json"
-    TRUSTED_JWKS_URLS: str = ""
-
     # Bearer agent tokens (src/agent_token.py). The JWKS is Drupal's
     # /.well-known/exchange-jwks.json, never the cookie's jwks.json.
     AGENT_TOKEN_ISSUER: str = ""

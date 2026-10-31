@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .agent.graph import create_pooled_checkpointer
+from .agent_token import AgentTokenVerifier, check_agent_token_config
 from .api import router
 from .api.thread_routes import thread_router
 from .config import settings
@@ -23,15 +24,20 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0915
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Startup and shutdown lifecycle for the FastAPI app."""
     # --- Startup ---
+    # First, so a production deploy without the agent-token settings fails
+    # here instead of answering every signed-in request with a 503.
+    check_agent_token_config(settings)
     init_telemetry(app=app, service_name="access-agent")
 
     logger.info("Starting ACCESS Documentation Agent")
     logger.info(f"Environment: {settings.ENVIRONMENT}")
     logger.info(f"LLM Provider: {settings.LLM_PROVIDER}")
     logger.info(f"API: http://{settings.API_HOST}:{settings.API_PORT}")
+
+    app.state.agent_token_verifier = AgentTokenVerifier.from_settings(settings)
 
     # Fetch tool catalog from MCP servers
     from .tools import get_catalog_aggregator
@@ -47,35 +53,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0915
     except Exception as e:
         logger.warning(f"Failed to fetch catalog at startup: {e}")
         logger.warning("Will retry on first request")
-
-    # Configure trusted JWKS issuers for JWT cookie authentication.
-    from .auth import configure_trusted_issuers
-
-    trusted_issuers: dict[str, str] = {}
-    if settings.TRUSTED_JWKS_URLS:
-        for raw_entry in settings.TRUSTED_JWKS_URLS.split(","):
-            entry = raw_entry.strip()
-            if not entry:
-                continue
-            if "=" not in entry:
-                logger.warning(
-                    "Ignoring malformed TRUSTED_JWKS_URLS entry (missing '='): %s", entry
-                )
-                continue
-            issuer, jwks_url = entry.split("=", 1)
-            jwks_url = jwks_url.strip()
-            if (
-                settings.ENVIRONMENT == "production"
-                and jwks_url
-                and not jwks_url.startswith("https://")
-            ):
-                logger.warning(
-                    "JWKS URL for issuer %s is not HTTPS — this is unsafe in production: %s",
-                    issuer.strip(),
-                    jwks_url,
-                )
-            trusted_issuers[issuer.strip()] = jwks_url
-    configure_trusted_issuers(trusted_issuers, environment=settings.ENVIRONMENT)
 
     if settings.UKY_RAG_ENABLED:
         logger.info(f"UKY RAG enabled: general={settings.UKY_RAG_GENERAL_URL}")
@@ -105,6 +82,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0915
     logger.info("Shutting down ACCESS Documentation Agent")
     if getattr(app.state, "_checkpointer_cm", None) is not None:
         await app.state._checkpointer_cm.__aexit__(None, None, None)  # noqa: SLF001
+    await app.state.agent_token_verifier.aclose()
     await close_shared_client()
     await get_uky_client().close()
     shutdown_telemetry()
@@ -144,6 +122,7 @@ else:
     allowed_origins = [
         "https://accessmatch.ddev.site",
         "http://accessmatch.ddev.site",
+        "https://chat.accessmatch.ddev.site",
         "http://localhost:5173",
         "http://localhost:3000",
     ]
@@ -152,7 +131,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_origin_regex=allowed_origin_regex,
-    allow_credentials=True,
+    # Identity is the Bearer token, so no caller needs its cookies sent here.
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

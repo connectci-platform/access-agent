@@ -64,8 +64,6 @@ services:
       # once the per-user token flow is in place.
       - DISABLED_CAPABILITIES=${DISABLED_CAPABILITIES:-extract_xdmod_data}
       - ENABLED_CAPABILITIES=${ENABLED_CAPABILITIES:-}
-      # JWT Authentication (ES256 + JWKS)
-      - TRUSTED_JWKS_URLS=${TRUSTED_JWKS_URLS:-}
       # Bearer agent tokens (src/agent_token.py)
       - AGENT_TOKEN_ISSUER=${AGENT_TOKEN_ISSUER:-}
       - AGENT_TOKEN_JWKS_URL=${AGENT_TOKEN_JWKS_URL:-}

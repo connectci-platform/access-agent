@@ -217,6 +217,10 @@ jobs:
         env:
           READ_ONLY: "true"
           ENVIRONMENT: production
+          # The in-process app runs the server lifespan, which refuses to start
+          # in production without these. The gate's requests are anonymous.
+          AGENT_TOKEN_ISSUER: https://support.access-ci.org
+          AGENT_TOKEN_JWKS_URL: https://support.access-ci.org/.well-known/exchange-jwks.json
           LLM_PROVIDER: ${{ env.LLM_PROVIDER }}
           VLLM_BASE_URL: ${{ env.VLLM_BASE_URL }}
           VLLM_MODEL_NAME: ${{ env.VLLM_MODEL_NAME }}

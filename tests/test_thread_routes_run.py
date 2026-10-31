@@ -1,98 +1,25 @@
 """Tests for POST /threads/{id}/runs/stream (the gated, bounded streaming run)
 and the widget-path ownership/lock sharing.
 
-Harness copied from tests/test_thread_routes_history.py (JWKS server + ES256 JWT
-cookie minting). stream_agent is mocked so no LLM/MCP is needed. The thread-owner
-store is pointed at a temp sqlite file.
+Agent tokens come from the shared ``agent_tokens`` fixture. stream_agent is
+mocked so no LLM/MCP is needed. The thread-owner store is pointed at a temp
+sqlite file.
 """
 
 import asyncio
-import json
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from threading import Thread
 from unittest.mock import MagicMock, patch
 
-import jwt
 import pytest
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives.serialization import (
-    Encoding,
-    NoEncryption,
-    PrivateFormat,
-    PublicFormat,
-)
 from httpx import ASGITransport, AsyncClient
-from jwt import algorithms as jwt_algorithms
 from langchain_core.messages import AIMessageChunk
 
-from src.auth import configure_trusted_issuers
 from src.main import app
 from src.thread_owners import get_thread_owner_store
 
 # ---------------------------------------------------------------------------
-# Test key pair and JWKS server (copied from tests/test_thread_routes_history.py)
-# ---------------------------------------------------------------------------
-
-_ec_private_key = ec.generate_private_key(ec.SECP256R1())
-_ec_public_key = _ec_private_key.public_key()
-
-PRIVATE_PEM = _ec_private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
-PUBLIC_PEM = _ec_public_key.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
-
-_ec_json_key = jwt_algorithms.ECAlgorithm(jwt_algorithms.ECAlgorithm.SHA256).to_jwk(_ec_public_key)
-_jwk_dict = json.loads(_ec_json_key)
-_jwk_dict["kid"] = "thread-run-test-kid"
-_jwk_dict["use"] = "sig"
-_jwk_dict["alg"] = "ES256"
-
-JWKS_RESPONSE = json.dumps({"keys": [_jwk_dict]}).encode()
-
-ISSUER = "https://test-issuer.access-ci.org"
-KID = "thread-run-test-kid"
-
-
-class _JWKSHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(JWKS_RESPONSE)
-
-    def log_message(self, format, *args):
-        pass
-
-
-def _start_jwks_server() -> tuple[HTTPServer, str]:
-    server = HTTPServer(("127.0.0.1", 0), _JWKSHandler)
-    port = server.server_address[1]
-    Thread(target=server.serve_forever, daemon=True).start()
-    return server, f"http://127.0.0.1:{port}"
-
-
-def _make_jwt(sub: str, issuer: str = ISSUER) -> str:
-    now = int(time.time())
-    payload = {
-        "iss": issuer,
-        "sub": sub,
-        "iat": now - 3600,
-        "exp": now + 3600,
-    }
-    return jwt.encode(payload, PRIVATE_PEM, algorithm="ES256", headers={"kid": KID})
-
-
-# ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _jwks_server():
-    server, jwks_url = _start_jwks_server()
-    configure_trusted_issuers({ISSUER: jwks_url})
-    yield
-    server.shutdown()
-    configure_trusted_issuers({})
 
 
 @pytest.fixture(autouse=True)
@@ -167,16 +94,13 @@ async def client():
 
 
 @pytest.fixture
-def valid_cookie_for():
-    def _make(sub: str) -> dict[str, str]:
-        return {"SESSaccess_auth": _make_jwt(sub)}
-
-    return _make
+def bearer_for(agent_tokens):
+    return agent_tokens.headers
 
 
 @pytest.fixture
-def valid_cookie(valid_cookie_for):
-    return valid_cookie_for("runner@x")
+def bearer(bearer_for):
+    return bearer_for("runner@x")
 
 
 @pytest.fixture
@@ -208,11 +132,11 @@ def _mock_stream_agent(monkeypatch, *, content: str = "hi", msg_id: str = "m1"):
 # ---------------------------------------------------------------------------
 
 
-async def test_run_stream_emits_protocol_events(client, valid_cookie, monkeypatch):
+async def test_run_stream_emits_protocol_events(client, bearer, monkeypatch):
     _mock_stream_agent(monkeypatch)
     r = await client.post(
         "/api/v1/threads/t-new/runs/stream",
-        cookies=valid_cookie,
+        headers=bearer,
         json={
             "input": {"messages": [{"role": "user", "content": "hi"}]},
             "if_not_exists": "create",
@@ -228,7 +152,7 @@ async def test_run_stream_emits_protocol_events(client, valid_cookie, monkeypatc
 
 
 async def test_run_anon_caller_on_new_thread_200(client, monkeypatch):
-    """Anon caller (no cookie), new thread → 200, not 401. claim_thread lazily
+    """Anon caller (no token), new thread → 200, not 401. claim_thread lazily
     creates an anon-owned thread for a None caller."""
     _mock_stream_agent(monkeypatch)
     r = await client.post(
@@ -238,8 +162,8 @@ async def test_run_anon_caller_on_new_thread_200(client, monkeypatch):
     assert r.status_code == 200
 
 
-async def test_run_anon_caller_on_authed_owned_thread_404(client, valid_cookie_for, seed_owner):
-    """Anon (no cookie) caller hitting an existing AUTHED-owned thread is a
+async def test_run_anon_caller_on_authed_owned_thread_404(client, bearer_for, seed_owner):
+    """Anon (no token) caller hitting an existing AUTHED-owned thread is a
     non-owner: 404, not 401/403."""
     seed_owner("t-owned-authed", "alice@x")
     r = await client.post(
@@ -252,12 +176,12 @@ async def test_run_anon_caller_on_authed_owned_thread_404(client, valid_cookie_f
     assert r.status_code == 404
 
 
-async def test_run_authed_caller_still_requires_nothing_new(client, valid_cookie, monkeypatch):
+async def test_run_authed_caller_still_requires_nothing_new(client, bearer, monkeypatch):
     """Regression: an authed caller on a brand-new thread still gets 200."""
     _mock_stream_agent(monkeypatch)
     r = await client.post(
         "/api/v1/threads/t-authed-new/runs/stream",
-        cookies=valid_cookie,
+        headers=bearer,
         json={
             "input": {"messages": [{"role": "user", "content": "hi"}]},
             "if_not_exists": "create",
@@ -266,9 +190,7 @@ async def test_run_authed_caller_still_requires_nothing_new(client, valid_cookie
     assert r.status_code == 200
 
 
-async def test_run_stream_releases_lock_if_generator_never_starts(
-    client, valid_cookie, monkeypatch
-):
+async def test_run_stream_releases_lock_if_generator_never_starts(client, bearer, monkeypatch):
     """If the streaming generator is never started, the per-thread lock must not
     leak (Finding I4).
 
@@ -286,7 +208,7 @@ async def test_run_stream_releases_lock_if_generator_never_starts(
     ):
         await client.post(
             "/api/v1/threads/t-wedge/runs/stream",
-            cookies=valid_cookie,
+            headers=bearer,
             json={"input": {"messages": [{"role": "user", "content": "x"}]}},
         )
 
@@ -296,18 +218,18 @@ async def test_run_stream_releases_lock_if_generator_never_starts(
     _mock_stream_agent(monkeypatch)
     r = await client.post(
         "/api/v1/threads/t-wedge/runs/stream",
-        cookies=valid_cookie,
+        headers=bearer,
         json={"input": {"messages": [{"role": "user", "content": "x"}]}},
     )
     assert r.status_code == 200
 
 
-async def test_run_on_another_users_thread_404(client, valid_cookie_for, seed_owner, monkeypatch):
+async def test_run_on_another_users_thread_404(client, bearer_for, seed_owner, monkeypatch):
     _mock_stream_agent(monkeypatch)
     seed_owner("t-owned", "alice@x")
     r = await client.post(
         "/api/v1/threads/t-owned/runs/stream",
-        cookies=valid_cookie_for("bob@x"),
+        headers=bearer_for("bob@x"),
         json={
             "input": {"messages": [{"role": "user", "content": "x"}]},
             "if_not_exists": "create",
@@ -316,7 +238,7 @@ async def test_run_on_another_users_thread_404(client, valid_cookie_for, seed_ow
     assert r.status_code == 404
 
 
-async def test_resource_context_from_config_forwarded(client, valid_cookie, monkeypatch):
+async def test_resource_context_from_config_forwarded(client, bearer, monkeypatch):
     captured = {}
 
     async def _fake(**kwargs):
@@ -327,7 +249,7 @@ async def test_resource_context_from_config_forwarded(client, valid_cookie, monk
     monkeypatch.setattr("src.api.thread_routes.stream_agent", _fake)
     await client.post(
         "/api/v1/threads/t/runs/stream",
-        cookies=valid_cookie,
+        headers=bearer,
         json={
             "input": {"messages": [{"role": "user", "content": "x"}]},
             "if_not_exists": "create",
@@ -337,7 +259,7 @@ async def test_resource_context_from_config_forwarded(client, valid_cookie, monk
     assert captured.get("resource_context") == "delta"
 
 
-async def test_concurrent_run_rejected(client, valid_cookie, monkeypatch):
+async def test_concurrent_run_rejected(client, bearer, monkeypatch):
     release = asyncio.Event()
 
     async def _blocking_stream(**_kwargs):
@@ -359,9 +281,7 @@ async def test_concurrent_run_rejected(client, valid_cookie, monkeypatch):
     }
 
     async def _fire():
-        return await client.post(
-            "/api/v1/threads/t-busy/runs/stream", cookies=valid_cookie, json=body
-        )
+        return await client.post("/api/v1/threads/t-busy/runs/stream", headers=bearer, json=body)
 
     first_task = asyncio.create_task(_fire())
     # Give the first run time to acquire the lock before firing the second.
@@ -384,7 +304,7 @@ async def test_concurrent_run_rejected(client, valid_cookie, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-async def test_widget_and_fullscreen_share_lock(client, valid_cookie, monkeypatch):
+async def test_widget_and_fullscreen_share_lock(client, bearer, monkeypatch):
     """A widget /query and a /runs/stream on the same session_id can't run at once."""
     release = asyncio.Event()
 
@@ -412,7 +332,7 @@ async def test_widget_and_fullscreen_share_lock(client, valid_cookie, monkeypatc
     async def _fire_widget():
         return await client.post(
             "/api/v1/query",
-            cookies=valid_cookie,
+            headers=bearer,
             json={"query": "hi", "session_id": "shared-sess"},
         )
 
@@ -426,7 +346,7 @@ async def test_widget_and_fullscreen_share_lock(client, valid_cookie, monkeypatc
 
     fullscreen = await client.post(
         "/api/v1/threads/shared-sess/runs/stream",
-        cookies=valid_cookie,
+        headers=bearer,
         json={"input": {"messages": [{"role": "user", "content": "hi"}]}},
     )
     assert fullscreen.status_code == 409
@@ -435,7 +355,7 @@ async def test_widget_and_fullscreen_share_lock(client, valid_cookie, monkeypatc
     await widget_task
 
 
-async def test_widget_thread_owned_by_creator(client, valid_cookie_for, monkeypatch):
+async def test_widget_thread_owned_by_creator(client, bearer_for, monkeypatch):
     """A widget turn claims ownership; a stranger's runs/stream on it → 404."""
 
     async def _fake_stream(**_kwargs):
@@ -460,7 +380,7 @@ async def test_widget_thread_owned_by_creator(client, valid_cookie_for, monkeypa
     # Alice runs a widget turn on a new session → she owns it.
     widget = await client.post(
         "/api/v1/query",
-        cookies=valid_cookie_for("alice@x"),
+        headers=bearer_for("alice@x"),
         json={"query": "hi", "session_id": "widget-sess"},
     )
     assert widget.status_code == 200
@@ -471,13 +391,13 @@ async def test_widget_thread_owned_by_creator(client, valid_cookie_for, monkeypa
     # Bob can't run Alice's widget-born thread.
     bob = await client.post(
         "/api/v1/threads/widget-sess/runs/stream",
-        cookies=valid_cookie_for("bob@x"),
+        headers=bearer_for("bob@x"),
         json={"input": {"messages": [{"role": "user", "content": "x"}]}},
     )
     assert bob.status_code == 404
 
 
-async def test_widget_registry_failure_does_not_leak_lock(client, valid_cookie, monkeypatch):
+async def test_widget_registry_failure_does_not_leak_lock(client, bearer, monkeypatch):
     """get_registry() failing inside the widget stream must release the per-thread lock.
 
     acquire_thread_run runs in the handler; if get_registry() (MCP catalog fetch,
@@ -492,7 +412,7 @@ async def test_widget_registry_failure_does_not_leak_lock(client, valid_cookie, 
 
     r = await client.post(
         "/api/v1/query",
-        cookies=valid_cookie,
+        headers=bearer,
         json={"query": "hi", "session_id": "leak-sess"},
     )
     assert r.status_code == 200
@@ -511,9 +431,7 @@ async def test_widget_registry_failure_does_not_leak_lock(client, valid_cookie, 
 # ---------------------------------------------------------------------------
 
 
-async def test_run_stream_builds_final_messages_from_updates_chunk(
-    client, valid_cookie, monkeypatch
-):
+async def test_run_stream_builds_final_messages_from_updates_chunk(client, bearer, monkeypatch):
     """The 'updates' branch pulls node_output['messages'] into final_messages,
     which the 'values' event carries even when no messages/partial ever fired."""
 
@@ -524,16 +442,14 @@ async def test_run_stream_builds_final_messages_from_updates_chunk(
 
     r = await client.post(
         "/api/v1/threads/t-updates/runs/stream",
-        cookies=valid_cookie,
+        headers=bearer,
         json={"input": {"messages": [{"role": "user", "content": "hi"}]}},
     )
     assert r.status_code == 200
     assert 'event: values\ndata: {"messages": [{"type": "human", "content": "hi"}]}' in r.text
 
 
-async def test_run_stream_cancelled_mid_turn_emits_error_and_propagates(
-    valid_cookie_for, seed_owner
-):
+async def test_run_stream_cancelled_mid_turn_emits_error_and_propagates(bearer_for, seed_owner):
     """A real cancel (client disconnect / cancel_run) while streaming emits
     event: error error:cancelled, then propagates so the task truly cancels.
 
@@ -546,6 +462,7 @@ async def test_run_stream_cancelled_mid_turn_emits_error_and_propagates(
     """
     from types import SimpleNamespace
 
+    from src.agent_token import AgentIdentity
     from src.api.thread_routes import RunRequest, thread_run_stream
 
     seed_owner("t-cancel-mid", "canceller@x")
@@ -567,18 +484,17 @@ async def test_run_stream_cancelled_mid_turn_emits_error_and_propagates(
             saw_cancelled.set()
             raise
 
-    cookie_token = valid_cookie_for("canceller@x")["SESSaccess_auth"]
-    raw_request = SimpleNamespace(
-        cookies={"SESSaccess_auth": cookie_token},
-        app=SimpleNamespace(state=SimpleNamespace(checkpointer=None)),
+    identity = AgentIdentity(
+        sub="canceller@x", scopes=frozenset({"agent:read"}), exp=int(time.time()) + 900
     )
+    raw_request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(checkpointer=None)))
     body = RunRequest.model_validate({"input": {"messages": [{"role": "user", "content": "hi"}]}})
 
     collected: list[str] = []
 
     async def _consume() -> None:
         with patch("src.api.thread_routes.stream_agent", _long_stream):
-            response = await thread_run_stream("t-cancel-mid", body, raw_request)
+            response = await thread_run_stream("t-cancel-mid", body, raw_request, identity)
             async for chunk in response.body_iterator:
                 collected.append(chunk)
 
@@ -600,7 +516,7 @@ async def test_run_stream_cancelled_mid_turn_emits_error_and_propagates(
     assert "t-cancel-mid" not in tr._active_by_thread
 
 
-async def test_run_stream_timeout_emits_error_and_returns(client, valid_cookie, monkeypatch):
+async def test_run_stream_timeout_emits_error_and_returns(client, bearer, monkeypatch):
     """asyncio.timeout expiry (TimeoutError, not CancelledError in 3.11) emits
     event: error error:timeout and returns without re-raising."""
     from src.config import settings
@@ -615,14 +531,14 @@ async def test_run_stream_timeout_emits_error_and_returns(client, valid_cookie, 
 
     r = await client.post(
         "/api/v1/threads/t-timeout/runs/stream",
-        cookies=valid_cookie,
+        headers=bearer,
         json={"input": {"messages": [{"role": "user", "content": "hi"}]}},
     )
     assert r.status_code == 200
     assert 'event: error\ndata: {"error": "timeout"}' in r.text
 
 
-async def test_run_stream_generic_exception_emits_agent_error(client, valid_cookie, monkeypatch):
+async def test_run_stream_generic_exception_emits_agent_error(client, bearer, monkeypatch):
     """An unexpected exception from stream_agent is caught, logged, and turned
     into event: error error:agent_error rather than propagating as a 500."""
 
@@ -634,7 +550,7 @@ async def test_run_stream_generic_exception_emits_agent_error(client, valid_cook
 
     r = await client.post(
         "/api/v1/threads/t-boom/runs/stream",
-        cookies=valid_cookie,
+        headers=bearer,
         json={"input": {"messages": [{"role": "user", "content": "hi"}]}},
     )
     assert r.status_code == 200
@@ -647,7 +563,7 @@ async def test_run_stream_generic_exception_emits_agent_error(client, valid_cook
 
 
 async def test_run_anon_thread_resumed_by_authed_caller_upgrades_ownership(
-    client, valid_cookie_for, seed_owner, monkeypatch
+    client, bearer_for, seed_owner, monkeypatch
 ):
     """An anon-owned thread resumed by an authed caller flips ownership: the
     anon owner later signs in and resolve_owner reports was_authenticated=True.
@@ -658,7 +574,7 @@ async def test_run_anon_thread_resumed_by_authed_caller_upgrades_ownership(
 
     r = await client.post(
         "/api/v1/threads/t-upgrade/runs/stream",
-        cookies=valid_cookie_for("me@access-ci.org"),
+        headers=bearer_for("me@access-ci.org"),
         json={"input": {"messages": [{"role": "user", "content": "hi again"}]}},
     )
     assert r.status_code == 200
@@ -676,7 +592,7 @@ async def test_run_anon_thread_resumed_by_authed_caller_upgrades_ownership(
 async def test_run_anon_owned_thread_resumed_by_anon_caller_stays_anon(
     client, seed_owner, monkeypatch
 ):
-    """Existing anon-owned thread + the anon owner resuming (no cookie) ->
+    """Existing anon-owned thread + the anon owner resuming (no token) ->
     allowed, ownership stays anon-owned. Neither gate branch fires (owner is
     anon-owned and caller is None), so this falls through to the final
     unconditional claim_thread, which must be a harmless no-op here."""
@@ -696,7 +612,7 @@ async def test_run_anon_owned_thread_resumed_by_anon_caller_stays_anon(
 
 
 async def test_run_authed_owned_thread_wrong_caller_404(
-    client, valid_cookie_for, seed_owner, monkeypatch
+    client, bearer_for, seed_owner, monkeypatch
 ):
     """Authed-owned thread + wrong authed caller -> 404 (never 403), via the
     single check_access call in the resolve-first gate."""
@@ -705,14 +621,14 @@ async def test_run_authed_owned_thread_wrong_caller_404(
 
     r = await client.post(
         "/api/v1/threads/t-owned-wrong-caller/runs/stream",
-        cookies=valid_cookie_for("bob@x"),
+        headers=bearer_for("bob@x"),
         json={"input": {"messages": [{"role": "user", "content": "x"}]}},
     )
     assert r.status_code == 404
 
 
 async def test_run_authed_owned_path_calls_check_access_exactly_once(
-    client, valid_cookie_for, seed_owner, monkeypatch
+    client, bearer_for, seed_owner, monkeypatch
 ):
     """Guard against the double-gate regression: Task 2's claim-then-check
     fallback (`if owned is False: _require_access(...)`) must be gone. The
@@ -727,7 +643,7 @@ async def test_run_authed_owned_path_calls_check_access_exactly_once(
     ) as spy:
         r = await client.post(
             "/api/v1/threads/t-single-check/runs/stream",
-            cookies=valid_cookie_for("alice@x"),
+            headers=bearer_for("alice@x"),
             json={"input": {"messages": [{"role": "user", "content": "x"}]}},
         )
         assert r.status_code == 200
@@ -735,7 +651,7 @@ async def test_run_authed_owned_path_calls_check_access_exactly_once(
 
 
 async def test_run_losing_concurrent_upgrade_caller_does_not_backfill(
-    client, valid_cookie_for, seed_owner, monkeypatch
+    client, bearer_for, seed_owner, monkeypatch
 ):
     """Two authed callers race their first post-login turn on the same
     anon-owned thread. The loser's resolve_owner read is stale (pre-dates the
@@ -766,7 +682,7 @@ async def test_run_losing_concurrent_upgrade_caller_does_not_backfill(
         mock_reporter = mock_get_reporter.return_value
         r = await client.post(
             "/api/v1/threads/t-race/runs/stream",
-            cookies=valid_cookie_for("bob@access-ci.org"),
+            headers=bearer_for("bob@access-ci.org"),
             json={"input": {"messages": [{"role": "user", "content": "hi again"}]}},
         )
         assert r.status_code == 200
@@ -917,7 +833,7 @@ async def test_run_stream_requires_auth_turn_writes_no_report_row(client, monkey
     )
     assert r.status_code == 200
     body = r.text  # drain the stream so _gen's post-stream block runs
-    assert "event: requires_auth" in body
+    assert "event: custom" in body
 
     reporter = get_turn_reporter()
     assert reporter.count_turns_for_session("t-requires-auth") == 0
@@ -977,9 +893,7 @@ async def test_run_anon_caller_exceeding_free_queries_gets_turnstile_challenge(c
     assert "t-turnstile-anon" not in tr._active_by_thread
 
 
-async def test_run_authed_caller_not_challenged_with_turnstile_enabled(
-    client, valid_cookie, monkeypatch
-):
+async def test_run_authed_caller_not_challenged_with_turnstile_enabled(client, bearer, monkeypatch):
     """Authed callers skip Turnstile entirely, even with it enabled in
     immediate mode — mirrors /query's acting_user-truthy bypass."""
     from src.config import settings
@@ -990,7 +904,7 @@ async def test_run_authed_caller_not_challenged_with_turnstile_enabled(
     _mock_stream_agent(monkeypatch)
     r = await client.post(
         "/api/v1/threads/t-turnstile-authed/runs/stream",
-        cookies=valid_cookie,
+        headers=bearer,
         json={
             "input": {"messages": [{"role": "user", "content": "hi"}]},
             "if_not_exists": "create",

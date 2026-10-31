@@ -36,13 +36,17 @@ def test_init_telemetry_runs_cleanly():
 async def test_app_lifespan_starts_and_stops_cleanly():
     """The full FastAPI lifespan context must enter and exit without raising.
 
-    Catches: telemetry init failures, JWKS configuration crashes, shutdown
-    bugs. The MCP catalog fetch is wrapped in try/except inside the lifespan
-    itself, so a missing MCP server in the test env is fine.
+    Catches: telemetry init failures, agent-token configuration crashes,
+    shutdown bugs. The MCP catalog fetch is wrapped in try/except inside the
+    lifespan itself, so a missing MCP server in the test env is fine.
+
+    Request tests install their own verifier because ASGITransport skips the
+    lifespan, so this is what checks that the app creates one.
     """
     os.environ.pop("OTEL_EXPORTER_OTLP_ENDPOINT", None)
 
+    from src.agent_token import AgentTokenVerifier
     from src.main import app, lifespan
 
     async with lifespan(app):
-        pass
+        assert isinstance(app.state.agent_token_verifier, AgentTokenVerifier)
