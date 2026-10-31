@@ -5,17 +5,15 @@ for a registered browser client (``azp``). Its signing keys come from Drupal's
 ``/.well-known/exchange-jwks.json``, which never lists the cookie key, so a
 cookie JWT can't verify here even if it carried the right claims.
 
-The key-set cache is separate from the cookie path's ``PyJWKClient`` in
-``src/auth.py`` because the rules differ: PyJWKClient drops its cache on a
-failed fetch and raises on an empty set, while here an empty set from a
-successful fetch revokes every key, and the last good set survives a failed
-fetch for up to ``KEY_SET_MAX_STALE_S``.
+The key-set cache is its own rather than PyJWKClient because the rules
+differ: PyJWKClient drops its cache on a failed fetch and raises on an empty
+set, while here an empty set from a successful fetch revokes every key, and
+the last good set survives a failed fetch for up to ``KEY_SET_MAX_STALE_S``.
 
 Create one verifier per process in the app lifespan and close it on shutdown.
 Its HTTP client and in-flight fetch belong to the event loop that first uses
 them, so a module-level instance would break under per-test event loops.
-
-Nothing calls this module yet; the request path switches to it in a later PR.
+Requests reach it through ``src/api/identity.py``.
 """
 
 from __future__ import annotations
@@ -45,8 +43,7 @@ KEY_SET_MAX_STALE_S = 2 * 60 * 60
 # waiting out a connect timeout against an issuer that is down.
 FETCH_RETRY_FLOOR_S = 30
 # A `kid` is attacker-controlled, so an unknown one forces at most one fetch
-# per window. Held per verifier, so bogus kids sent at the cookie path can't
-# delay a real rotation here.
+# per window.
 UNKNOWN_KID_COOLDOWN_S = 300
 
 MAX_LIFETIME_S = 900
@@ -91,8 +88,8 @@ class AgentTokenVerifier:
         # clock step can't stall refreshes.
         self._cache_clock = cache_clock
         if not verify_tls:
-            # ddev serves a self-signed certificate; the cookie path makes the
-            # same exception for local and docker. Signatures are still verified.
+            # ddev serves a self-signed certificate in local and docker.
+            # Signatures are still verified.
             logger.warning("Agent-token JWKS TLS verification disabled")
         self._client = create_async_client(timeout=5.0, verify=verify_tls)
 
@@ -272,7 +269,9 @@ def check_agent_token_config(settings: Settings) -> None:
 
     For the app lifespan, alongside creating the verifier, rather than a
     Settings validator: the nightly CLIs also load Settings, some with
-    ENVIRONMENT=production, and never verify a token.
+    ENVIRONMENT=production, and never verify a token. The red-team gate runs
+    the lifespan in-process, so its workflow step sets the agent-token
+    settings.
     """
     # The agent refuses tokens with less than the turn timeout plus 30 seconds
     # left, and that has to stay under the browser's 180-second refresh point.

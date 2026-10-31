@@ -132,11 +132,16 @@ def test_thread_run_stream_emits_requires_auth_and_stops():
 
     events = asyncio.run(_collect_run_events(fake_stream))
 
+    # A LangGraph `custom` event, the only kind useStream hands to
+    # onCustomEvent. The login URL stays out: the client signs in on its own.
     event_names = [name for name, _ in events]
-    assert "requires_auth" in event_names
-    assert dict(events)["requires_auth"] == REQUIRES_AUTH_PAYLOAD
+    assert "requires_auth" not in event_names
+    assert dict(events)["custom"] == {
+        "type": "requires_auth",
+        "reason": REQUIRES_AUTH_PAYLOAD["reason"],
+    }
     # Ends cleanly: no messages/complete or values after the signal.
-    assert event_names[-1] == "requires_auth"
+    assert event_names[-1] == "custom"
     assert "values" not in event_names
 
 
@@ -147,5 +152,5 @@ def test_thread_run_stream_without_requires_auth_runs_normal_values_path():
     events = asyncio.run(_collect_run_events(fake_stream))
 
     event_names = [name for name, _ in events]
-    assert "requires_auth" not in event_names
+    assert "custom" not in event_names
     assert "values" in event_names

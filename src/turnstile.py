@@ -1,7 +1,7 @@
 """Cloudflare Turnstile bot protection for anonymous users.
 
 Tracks per-session query counts and verification status. Authenticated
-users (JWT cookie) bypass Turnstile entirely. When Turnstile is not
+users (Bearer agent token) bypass Turnstile entirely. When Turnstile is not
 configured (TURNSTILE_SECRET_KEY empty), all checks are skipped.
 
 See: access-qa-planning/turnstile-bot-protection-spec.md

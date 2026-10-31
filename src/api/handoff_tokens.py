@@ -95,7 +95,7 @@ def mint_handoff_token(
 ) -> str:
     """Mint a single-use, short-TTL token binding thread_id to owner_hash.
 
-    owner_hash is always the minting caller's _hash_user(cookie_user) — never
+    owner_hash is always the minting caller's _hash_user(caller) — never
     None, since mint is authed-only (the endpoint rejects anon threads before
     calling this).
     """

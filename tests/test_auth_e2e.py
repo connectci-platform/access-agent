@@ -1,102 +1,32 @@
-"""End-to-end tests for JWT cookie authentication through the FastAPI app.
+"""End-to-end tests for Bearer agent-token identity through the FastAPI app.
 
-Tests the full HTTP request path: cookies → auth → route handler.
-Mocks only the LLM agent so no OpenAI/MCP infrastructure is needed.
+Tests the full HTTP request path: Authorization header → request_identity →
+route handler. Mocks only the LLM agent so no OpenAI/MCP infrastructure is
+needed. Tokens come from the shared ``agent_tokens`` fixture.
 
-Uses ES256 (ECDSA P-256) key pairs — no shared secret.
-
-Identity is cookie-only: QueryRequest has no acting_user body field, so a
-caller without a valid cookie is always anonymous. Tests below that send an
-`acting_user` key in the JSON body are verifying it is silently ignored
-(unknown field, no `extra="forbid"`), not exercising a real fallback.
+Identity is token-only: QueryRequest has no acting_user body field, and the
+SESSaccess_auth cookie is never read, so a caller without a token is always
+anonymous. Tests below that send an `acting_user` key in the JSON body are
+verifying it is silently ignored (unknown field, no `extra="forbid"`), not
+exercising a real fallback.
 
 Run with: uv run pytest tests/test_auth_e2e.py -v
 """
 
 import json
 import os
-import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from threading import Thread
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
-import jwt
 import pytest
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives.serialization import (
-    Encoding,
-    NoEncryption,
-    PrivateFormat,
-    PublicFormat,
-)
 from httpx import ASGITransport, AsyncClient
-from jwt import algorithms as jwt_algorithms
 
 # Force-empty (not setdefault): this suite mocks the agent and must never touch
 # a real DB. With setdefault, an exported DATABASE_URL (normal dev shell) leaks
 # through and the route's turn reporter writes real rows to local Postgres.
 os.environ["DATABASE_URL"] = ""  # Disable checkpointing + turn reporting
-os.environ.setdefault("TRUSTED_JWKS_URLS", "")  # Configured per-test
 
-from src.auth import configure_trusted_issuers
 from src.main import app
 from src.thread_owners import get_thread_owner_store
-
-# ---------------------------------------------------------------------------
-# Test key pair and JWKS server
-# ---------------------------------------------------------------------------
-
-_ec_private_key = ec.generate_private_key(ec.SECP256R1())
-_ec_public_key = _ec_private_key.public_key()
-
-PRIVATE_PEM = _ec_private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
-PUBLIC_PEM = _ec_public_key.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
-
-_ec_json_key = jwt_algorithms.ECAlgorithm(jwt_algorithms.ECAlgorithm.SHA256).to_jwk(_ec_public_key)
-_jwk_dict = json.loads(_ec_json_key)
-_jwk_dict["kid"] = "e2e-test-kid"
-_jwk_dict["use"] = "sig"
-_jwk_dict["alg"] = "ES256"
-
-JWKS_RESPONSE = json.dumps({"keys": [_jwk_dict]}).encode()
-
-ISSUER = "https://test-issuer.access-ci.org"
-KID = "e2e-test-kid"
-
-
-class _JWKSHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(JWKS_RESPONSE)
-
-    def log_message(self, format, *args):
-        pass
-
-
-def _start_jwks_server() -> tuple[HTTPServer, str]:
-    server = HTTPServer(("127.0.0.1", 0), _JWKSHandler)
-    port = server.server_address[1]
-    Thread(target=server.serve_forever, daemon=True).start()
-    return server, f"http://127.0.0.1:{port}"
-
-
-def _make_jwt(sub: str, expired: bool = False, issuer: str = ISSUER) -> str:
-    now = int(time.time())
-    payload = {
-        "iss": issuer,
-        "sub": sub,
-        "iat": now - 3600,
-        "exp": (now - 10) if expired else (now + 3600),
-    }
-    return jwt.encode(
-        payload,
-        PRIVATE_PEM,
-        algorithm="ES256",
-        headers={"kid": KID},
-    )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -109,16 +39,6 @@ FAKE_AGENT_RESULT = {
     "query_analysis": None,
     "query_classification": None,
 }
-
-
-@pytest.fixture(autouse=True)
-def _jwks_server():
-    """Start a local JWKS server and configure trusted issuers for all tests."""
-    server, jwks_url = _start_jwks_server()
-    configure_trusted_issuers({ISSUER: jwks_url})
-    yield
-    server.shutdown()
-    configure_trusted_issuers({})
 
 
 @pytest.fixture(autouse=True)
@@ -189,13 +109,36 @@ async def client():
 
 
 # ---------------------------------------------------------------------------
-# Test: Valid JWT cookie → acting_user extracted
+# Who the caller is
 # ---------------------------------------------------------------------------
 
 
-async def test_valid_cookie_sets_acting_user(client, mock_agent, mock_registry):
-    """A valid ES256 JWT cookie should result in acting_user being passed to the agent."""
-    token = _make_jwt("jsmith@access-ci.org")
+async def test_valid_token_sets_acting_user(client, mock_agent, mock_registry, agent_tokens):
+    response = await client.post(
+        "/api/v1/query",
+        json={"query": "What GPU resources are available?"},
+        headers=agent_tokens.headers("jsmith@access-ci.org"),
+    )
+
+    assert response.status_code == 200
+    mock_agent.assert_called_once()
+    assert mock_agent.call_args.kwargs.get("acting_user") == "jsmith@access-ci.org"
+
+
+async def test_no_token_anonymous(client, mock_agent, mock_registry):
+    response = await client.post(
+        "/api/v1/query",
+        json={"query": "What GPU resources are available?"},
+    )
+
+    assert response.status_code == 200
+    mock_agent.assert_called_once()
+    assert mock_agent.call_args.kwargs.get("acting_user") is None
+
+
+async def test_cookie_only_request_is_anonymous(client, mock_agent, mock_registry, agent_tokens):
+    """The cookie is never read, even when it holds a token that would verify."""
+    token = agent_tokens.token("jsmith@access-ci.org")
 
     response = await client.post(
         "/api/v1/query",
@@ -204,105 +147,12 @@ async def test_valid_cookie_sets_acting_user(client, mock_agent, mock_registry):
     )
 
     assert response.status_code == 200
-    mock_agent.assert_called_once()
-    call_kwargs = mock_agent.call_args
-    assert call_kwargs.kwargs.get("acting_user") == "jsmith@access-ci.org"
-
-
-# ---------------------------------------------------------------------------
-# Test: No cookie, no body → anonymous
-# ---------------------------------------------------------------------------
-
-
-async def test_no_cookie_anonymous(client, mock_agent, mock_registry):
-    """No cookie and no acting_user body field → anonymous user."""
-    response = await client.post(
-        "/api/v1/query",
-        json={"query": "What GPU resources are available?"},
-    )
-
-    assert response.status_code == 200
-    mock_agent.assert_called_once()
     assert mock_agent.call_args.kwargs.get("acting_user") is None
 
 
-# ---------------------------------------------------------------------------
-# Test: Expired cookie → anonymous (no body fallback)
-# ---------------------------------------------------------------------------
-
-
-async def test_expired_cookie_anonymous(client, mock_agent, mock_registry):
-    """Expired JWT cookie → anonymous, even if body acting_user is present."""
-    token = _make_jwt("jsmith@access-ci.org", expired=True)
-
-    response = await client.post(
-        "/api/v1/query",
-        json={
-            "query": "What GPU resources are available?",
-            "acting_user": "body-user@access-ci.org",
-        },
-        headers={"cookie": f"SESSaccess_auth={token}"},
-    )
-
-    assert response.status_code == 200
-    mock_agent.assert_called_once()
-    assert mock_agent.call_args.kwargs.get("acting_user") is None
-
-
-# ---------------------------------------------------------------------------
-# Test: Invalid/tampered cookie → anonymous
-# ---------------------------------------------------------------------------
-
-
-async def test_invalid_cookie_anonymous(client, mock_agent, mock_registry):
-    """Tampered cookie → anonymous."""
-    response = await client.post(
-        "/api/v1/query",
-        json={"query": "What GPU resources are available?"},
-        headers={"cookie": "SESSaccess_auth=this-is-not-a-jwt"},
-    )
-
-    assert response.status_code == 200
-    mock_agent.assert_called_once()
-    assert mock_agent.call_args.kwargs.get("acting_user") is None
-
-
-# ---------------------------------------------------------------------------
-# Test: Wrong signing key → anonymous
-# ---------------------------------------------------------------------------
-
-
-async def test_wrong_key_anonymous(client, mock_agent, mock_registry):
-    """JWT signed with an unknown key → anonymous."""
-    other_key = ec.generate_private_key(ec.SECP256R1())
-    other_pem = other_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
-    now = int(time.time())
-    token = jwt.encode(
-        {"iss": ISSUER, "sub": "jsmith@access-ci.org", "exp": now + 3600},
-        other_pem,
-        algorithm="ES256",
-        headers={"kid": "unknown-kid"},
-    )
-
-    response = await client.post(
-        "/api/v1/query",
-        json={"query": "What GPU resources are available?"},
-        headers={"cookie": f"SESSaccess_auth={token}"},
-    )
-
-    assert response.status_code == 200
-    mock_agent.assert_called_once()
-    assert mock_agent.call_args.kwargs.get("acting_user") is None
-
-
-# ---------------------------------------------------------------------------
-# Test: Body acting_user is ignored — identity is cookie-only
-# ---------------------------------------------------------------------------
-
-
-async def test_body_acting_user_is_ignored_no_cookie(client, mock_agent, mock_registry):
-    """Without a cookie, a body acting_user is NOT used — it is silently
-    ignored (unknown field on QueryRequest) and the caller is anonymous.
+async def test_body_acting_user_is_ignored_without_token(client, mock_agent, mock_registry):
+    """A body acting_user is NOT used — it is silently ignored (unknown field
+    on QueryRequest) and the caller is anonymous.
     """
     response = await client.post(
         "/api/v1/query",
@@ -318,44 +168,25 @@ async def test_body_acting_user_is_ignored_no_cookie(client, mock_agent, mock_re
     assert mock_agent.call_args.kwargs.get("acting_user") is None
 
 
-# ---------------------------------------------------------------------------
-# Test: Cookie is the only identity source
-# ---------------------------------------------------------------------------
-
-
-async def test_cookie_overrides_body(client, mock_agent, mock_registry):
-    """A body acting_user alongside a valid cookie has no effect — the
-    cookie identity is used regardless (the body field no longer exists on
-    the model at all).
-    """
-    token = _make_jwt("cookie-user@access-ci.org")
-
+async def test_token_overrides_body(client, mock_agent, mock_registry, agent_tokens):
     response = await client.post(
         "/api/v1/query",
         json={
             "query": "What GPU resources are available?",
             "acting_user": "body-user@access-ci.org",
         },
-        headers={"cookie": f"SESSaccess_auth={token}"},
+        headers=agent_tokens.headers("token-user@access-ci.org"),
     )
 
     assert response.status_code == 200
-    mock_agent.assert_called_once()
-    assert mock_agent.call_args.kwargs.get("acting_user") == "cookie-user@access-ci.org"
-
-
-# ---------------------------------------------------------------------------
-# Test: A cookieless caller with a spoofed body acting_user does not bypass
-# Turnstile — an unverified body identity must not buy a challenge-free ride.
-# ---------------------------------------------------------------------------
+    assert mock_agent.call_args.kwargs.get("acting_user") == "token-user@access-ci.org"
 
 
 async def test_body_acting_user_does_not_bypass_turnstile(
     client, mock_agent, mock_registry, monkeypatch
 ):
-    """Turnstile enabled, no cookie, no turnstile token, but a body
-    acting_user is present. Since identity is cookie-only, this caller is
-    anonymous and must receive the Turnstile challenge, not a bypass.
+    """Turnstile enabled, no token, no turnstile token, but a body acting_user
+    is present. This caller is anonymous and must be challenged.
     """
     from src.config import settings
 
@@ -372,34 +203,21 @@ async def test_body_acting_user_does_not_bypass_turnstile(
     )
 
     assert response.status_code == 200
-    body = response.json()
-    assert body.get("requires_turnstile") is True
+    assert response.json().get("requires_turnstile") is True
     mock_agent.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# Test: Response format is correct
-# ---------------------------------------------------------------------------
-
-
-async def test_response_format(client, mock_agent, mock_registry):
-    """Verify the SSE stream contains a done event with expected fields."""
-    token = _make_jwt("jsmith@access-ci.org")
-
+async def test_response_format(client, mock_agent, mock_registry, agent_tokens):
+    """The SSE stream contains a done event with the expected fields."""
     response = await client.post(
         "/api/v1/query",
-        json={
-            "query": "Test question",
-            "session_id": "test-sess",
-            "question_id": "test-q",
-        },
-        headers={"cookie": f"SESSaccess_auth={token}"},
+        json={"query": "Test question", "session_id": "test-sess", "question_id": "test-q"},
+        headers=agent_tokens.headers("jsmith@access-ci.org"),
     )
 
     assert response.status_code == 200
     assert "text/event-stream" in response.headers.get("content-type", "")
 
-    # Parse SSE events from response text
     done_event = None
     for block in response.text.split("\n\n"):
         if block.startswith("event: done"):
@@ -416,18 +234,13 @@ async def test_response_format(client, mock_agent, mock_registry):
 
 
 # ---------------------------------------------------------------------------
-# Test: thread ownership claim uses cookie identity only, never body fallback
+# Thread ownership on the widget path
 # ---------------------------------------------------------------------------
 
 
-async def test_body_fallback_claims_anon_owned_thread_not_spoofed_identity(
-    client, mock_agent, mock_registry
-):
-    """A cookieless widget turn with a body acting_user must NOT claim the
-    thread as that (unverified) identity, and must NOT drive the answer
-    either — identity is cookie-only by construction now. Ownership falls
-    back to anon (was_authenticated=False): a spoofable body field can
-    neither write a was_authenticated=True row nor steer the agent's answer.
+async def test_body_acting_user_claims_anon_owned_thread(client, mock_agent, mock_registry):
+    """A widget turn without a token claims an anon-owned thread, whatever the
+    body says: a spoofable body field can't write a was_authenticated=True row.
     """
     session_id = "sess-body-only"
     response = await client.post(
@@ -440,31 +253,25 @@ async def test_body_fallback_claims_anon_owned_thread_not_spoofed_identity(
     )
 
     assert response.status_code == 200
-    # The body value never reaches the agent — the field doesn't exist anymore.
     assert mock_agent.call_args.kwargs.get("acting_user") is None
-
     owner = get_thread_owner_store().resolve_owner(session_id)
     assert owner is not None
     assert owner.was_authenticated is False
     assert owner.user_hash is None
 
 
-async def test_valid_cookie_claims_authenticated_owned_thread(client, mock_agent, mock_registry):
-    """A widget turn WITH a valid cookie claims a was_authenticated=True
-    thread owned by the cookie's sub — the legitimate ownership path.
-    """
-    session_id = "sess-cookie-owned"
-    token = _make_jwt("jsmith@access-ci.org")
-
+async def test_valid_token_claims_authenticated_owned_thread(
+    client, mock_agent, mock_registry, agent_tokens
+):
+    session_id = "sess-token-owned"
     response = await client.post(
         "/api/v1/query",
         json={"query": "What GPU resources are available?", "session_id": session_id},
-        headers={"cookie": f"SESSaccess_auth={token}"},
+        headers=agent_tokens.headers("jsmith@access-ci.org"),
     )
 
     assert response.status_code == 200
     assert mock_agent.call_args.kwargs.get("acting_user") == "jsmith@access-ci.org"
-
     owner = get_thread_owner_store().resolve_owner(session_id)
     assert owner is not None
     assert owner.was_authenticated is True
@@ -472,148 +279,75 @@ async def test_valid_cookie_claims_authenticated_owned_thread(client, mock_agent
 
 
 # ---------------------------------------------------------------------------
-# Test: Health endpoint still works (no auth needed)
+# Unauthenticated endpoints and /whoami
 # ---------------------------------------------------------------------------
 
 
 async def test_health_no_auth(client):
-    """Health endpoint should work without any auth.
-
-    Status may be "healthy" or "degraded" depending on catalog state from
-    other tests/processes that share the module-level aggregator singleton;
-    both mean the endpoint is reachable without auth, which is the actual
-    contract under test here.
+    """Health works without auth. Status may be "healthy" or "degraded"
+    depending on the shared catalog aggregator's state; both mean reachable.
     """
     response = await client.get("/api/v1/health")
     assert response.status_code == 200
     assert response.json()["status"] in ("healthy", "degraded")
 
 
-# ---------------------------------------------------------------------------
-# Test: /whoami reflects cookie-derived identity
-# ---------------------------------------------------------------------------
-
-
-async def test_whoami_valid_cookie(client):
-    """A valid ES256 JWT cookie reports the acting user as authenticated."""
-    token = _make_jwt("jsmith@access-ci.org")
-
+async def test_whoami_valid_token(client, agent_tokens):
     response = await client.get(
-        "/api/v1/whoami",
-        headers={"cookie": f"SESSaccess_auth={token}"},
+        "/api/v1/whoami", headers=agent_tokens.headers("jsmith@access-ci.org")
     )
 
     assert response.status_code == 200
     assert response.json() == {"authenticated": True, "user": "jsmith@access-ci.org"}
 
 
-async def test_whoami_no_cookie(client):
-    """No cookie reports an anonymous caller."""
+async def test_whoami_no_token(client):
     response = await client.get("/api/v1/whoami")
 
     assert response.status_code == 200
     assert response.json() == {"authenticated": False, "user": None}
 
 
-async def test_whoami_never_cached_by_intermediary(client):
+async def test_whoami_never_cached_by_intermediary(client, agent_tokens):
     """/whoami is an identity response and must never be cached by any
     intermediary — a shared cache serving one caller's cached body to
     another would leak identity across users."""
-    token = _make_jwt("jsmith@access-ci.org")
-
     response = await client.get(
-        "/api/v1/whoami",
-        headers={"cookie": f"SESSaccess_auth={token}"},
+        "/api/v1/whoami", headers=agent_tokens.headers("jsmith@access-ci.org")
     )
 
     assert response.status_code == 200
     assert response.headers.get("cache-control") == "private, no-store"
-    assert response.headers.get("vary") == "Cookie"
+    assert response.headers.get("vary") == "Authorization"
 
 
-# ---------------------------------------------------------------------------
-# Test: cross-site simple requests never reach query or rating
-# ---------------------------------------------------------------------------
-
-# A cross-site page can POST these content types without a CORS preflight,
-# and the browser attaches the SESSaccess_auth cookie (SameSite=None). The
-# protection is FastAPI's strict JSON body handling, not our code: these
-# tests catch a route that loosens its body type or a FastAPI change that
-# relaxes it. The application/json counterpart is test_valid_cookie_sets_acting_user.
-_SIMPLE_REQUEST_BODIES = {
-    "text/plain": {"content-type": "text/plain;charset=UTF-8"},
-    "form-urlencoded": {"content-type": "application/x-www-form-urlencoded"},
-    "multipart": {"content-type": "multipart/form-data; boundary=x"},
-    # fetch() with an untyped Blob body sends no Content-Type at all.
-    "no-content-type": {},
-}
-
-
-@pytest.mark.parametrize("headers", _SIMPLE_REQUEST_BODIES.values(), ids=_SIMPLE_REQUEST_BODIES)
-async def test_cross_site_simple_request_cannot_query(client, mock_agent, mock_registry, headers):
-    token = _make_jwt("jsmith@access-ci.org")
-
-    response = await client.post(
-        "/api/v1/query",
-        content=json.dumps({"query": "What GPU resources are available?"}).encode(),
-        headers={
-            **headers,
-            "origin": "https://attacker.example",
-            "cookie": f"SESSaccess_auth={token}",
-        },
+async def test_capabilities_unlock_for_a_token(client, agent_tokens):
+    anonymous = await client.get("/api/v1/capabilities")
+    signed_in = await client.get(
+        "/api/v1/capabilities", headers=agent_tokens.headers("jsmith@access-ci.org")
     )
 
-    assert response.status_code == 422
-    mock_agent.assert_not_called()
+    assert anonymous.json()["is_authenticated"] is False
+    assert signed_in.json()["is_authenticated"] is True
 
 
-@pytest.mark.parametrize("headers", _SIMPLE_REQUEST_BODIES.values(), ids=_SIMPLE_REQUEST_BODIES)
-async def test_cross_site_simple_request_cannot_rate(client, headers):
-    token = _make_jwt("jsmith@access-ci.org")
-    usage_logger = AsyncMock()
+@pytest.mark.parametrize("signed_in", [True, False], ids=["token", "anonymous"])
+async def test_rating_is_bound_to_the_token_identity(client, agent_tokens, signed_in):
+    usage_logger = MagicMock()
+    usage_logger.log_rating.return_value = "ok"
+    headers = agent_tokens.headers("jsmith@access-ci.org") if signed_in else {}
 
-    with patch("src.api.routes.get_usage_logger", return_value=usage_logger):
+    with (
+        patch("src.api.routes.get_usage_logger", return_value=usage_logger),
+        patch("src.turn_reporter.get_turn_reporter"),
+    ):
         response = await client.post(
             "/api/v1/rating",
-            content=json.dumps({"query_id": "q-1", "rating": "not_helpful"}).encode(),
-            headers={
-                **headers,
-                "origin": "https://attacker.example",
-                "cookie": f"SESSaccess_auth={token}",
-            },
+            json={"query_id": "q-1", "rating": "helpful", "session_id": "s-1"},
+            headers=headers,
         )
 
-    assert response.status_code == 422
-    usage_logger.log_rating.assert_not_called()
-
-
-_THREAD_BODY_ROUTES = {
-    "runs/stream": (
-        "/api/v1/threads/t-1/runs/stream",
-        {"input": {"messages": [{"type": "human", "content": "hi"}]}},
-    ),
-    "history": ("/api/v1/threads/t-1/history", {"limit": 10}),
-    "search": ("/api/v1/threads/search", {"limit": 10}),
-    "handoff/exchange": ("/api/v1/handoff/exchange", {"token": "x"}),
-}
-
-
-@pytest.mark.parametrize("route", _THREAD_BODY_ROUTES.values(), ids=_THREAD_BODY_ROUTES)
-@pytest.mark.parametrize("headers", _SIMPLE_REQUEST_BODIES.values(), ids=_SIMPLE_REQUEST_BODIES)
-async def test_cross_site_simple_request_cannot_reach_thread_routes(client, headers, route):
-    path, body = route
-    token = _make_jwt("jsmith@access-ci.org")
-
-    with patch("src.api.thread_routes.stream_agent") as thread_stream:
-        response = await client.post(
-            path,
-            content=json.dumps(body).encode(),
-            headers={
-                **headers,
-                "origin": "https://attacker.example",
-                "cookie": f"SESSaccess_auth={token}",
-            },
-        )
-
-    assert response.status_code == 422
-    thread_stream.assert_not_called()
+    assert response.status_code == 200
+    assert usage_logger.log_rating.call_args.kwargs["acting_user"] == (
+        "jsmith@access-ci.org" if signed_in else None
+    )

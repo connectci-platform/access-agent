@@ -1,105 +1,25 @@
 """Tests for POST /threads and POST /threads/{id}/history.
 
-Harness copied from tests/test_auth_e2e.py (JWKS server + ES256 JWT cookie
-minting) — do not invent a new signing harness. Ownership is seeded directly
+Agent tokens come from the shared ``agent_tokens`` fixture in conftest.py —
+do not invent a new signing harness. Ownership is seeded directly
 via get_thread_owner_store().claim_thread(...) (Task 2's store), and the
 checkpointer is a fake set directly on app.state.checkpointer (mirrors
 tests/test_pooled_checkpointer.py's FakeCheckpointerCM pattern) so these
 tests need no live Postgres.
 """
 
-import json
-import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from threading import Thread
 from typing import Any
 
-import jwt
 import pytest
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives.serialization import (
-    Encoding,
-    NoEncryption,
-    PrivateFormat,
-    PublicFormat,
-)
 from httpx import ASGITransport, AsyncClient
-from jwt import algorithms as jwt_algorithms
 from langchain_core.messages import HumanMessage
 
-from src.auth import configure_trusted_issuers
 from src.main import app
 from src.thread_owners import get_thread_owner_store
 
 # ---------------------------------------------------------------------------
-# Test key pair and JWKS server (copied from tests/test_auth_e2e.py:44-97)
-# ---------------------------------------------------------------------------
-
-_ec_private_key = ec.generate_private_key(ec.SECP256R1())
-_ec_public_key = _ec_private_key.public_key()
-
-PRIVATE_PEM = _ec_private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
-PUBLIC_PEM = _ec_public_key.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
-
-_ec_json_key = jwt_algorithms.ECAlgorithm(jwt_algorithms.ECAlgorithm.SHA256).to_jwk(_ec_public_key)
-_jwk_dict = json.loads(_ec_json_key)
-_jwk_dict["kid"] = "thread-routes-test-kid"
-_jwk_dict["use"] = "sig"
-_jwk_dict["alg"] = "ES256"
-
-JWKS_RESPONSE = json.dumps({"keys": [_jwk_dict]}).encode()
-
-ISSUER = "https://test-issuer.access-ci.org"
-KID = "thread-routes-test-kid"
-
-
-class _JWKSHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(JWKS_RESPONSE)
-
-    def log_message(self, format, *args):
-        pass
-
-
-def _start_jwks_server() -> tuple[HTTPServer, str]:
-    server = HTTPServer(("127.0.0.1", 0), _JWKSHandler)
-    port = server.server_address[1]
-    Thread(target=server.serve_forever, daemon=True).start()
-    return server, f"http://127.0.0.1:{port}"
-
-
-def _make_jwt(sub: str, expired: bool = False, issuer: str = ISSUER) -> str:
-    now = int(time.time())
-    payload = {
-        "iss": issuer,
-        "sub": sub,
-        "iat": now - 3600,
-        "exp": (now - 10) if expired else (now + 3600),
-    }
-    return jwt.encode(
-        payload,
-        PRIVATE_PEM,
-        algorithm="ES256",
-        headers={"kid": KID},
-    )
-
-
-# ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _jwks_server():
-    """Start a local JWKS server and configure trusted issuers for all tests."""
-    server, jwks_url = _start_jwks_server()
-    configure_trusted_issuers({ISSUER: jwks_url})
-    yield
-    server.shutdown()
-    configure_trusted_issuers({})
 
 
 @pytest.fixture(autouse=True)
@@ -121,13 +41,8 @@ async def client():
 
 
 @pytest.fixture
-def cookie_for():
-    """Returns a dict cookie mapping for the given user sub."""
-
-    def _make(sub: str) -> dict[str, str]:
-        return {"SESSaccess_auth": _make_jwt(sub)}
-
-    return _make
+def bearer_for(agent_tokens):
+    return agent_tokens.headers
 
 
 class FakeStateSnapshot:
@@ -177,8 +92,8 @@ async def test_create_thread_anon_accepts(client):
     assert r.status_code == 200
 
 
-async def test_create_thread_returns_fresh_thread(client, cookie_for):
-    r = await client.post("/api/v1/threads", cookies=cookie_for("userA@x"))
+async def test_create_thread_returns_fresh_thread(client, bearer_for):
+    r = await client.post("/api/v1/threads", headers=bearer_for("userA@x"))
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "idle"
@@ -188,10 +103,10 @@ async def test_create_thread_returns_fresh_thread(client, cookie_for):
     assert "created_at" in body
 
 
-async def test_create_thread_returns_distinct_ids(client, cookie_for):
-    cookies = cookie_for("userA@x")
-    r1 = await client.post("/api/v1/threads", cookies=cookies)
-    r2 = await client.post("/api/v1/threads", cookies=cookies)
+async def test_create_thread_returns_distinct_ids(client, bearer_for):
+    headers = bearer_for("userA@x")
+    r1 = await client.post("/api/v1/threads", headers=headers)
+    r2 = await client.post("/api/v1/threads", headers=headers)
     assert r1.json()["thread_id"] != r2.json()["thread_id"]
 
 
@@ -201,7 +116,7 @@ async def test_create_thread_returns_distinct_ids(client, cookie_for):
 
 
 async def test_history_anon_caller_on_authed_owned_thread_404(client):
-    """An anon (no-cookie) caller on an AUTHED-owned thread's history is a
+    """An anon (no-token) caller on an AUTHED-owned thread's history is a
     non-owner: 404 (never 401, never 403, never requires_auth)."""
     get_thread_owner_store().claim_thread("t-owned-authed", "userA@x")
 
@@ -213,7 +128,7 @@ async def test_history_anon_caller_on_authed_owned_thread_404(client):
 
 
 async def test_history_anon_owner_gets_200(client):
-    """An anon caller (no cookie) who owns an anon thread (same session_id)
+    """An anon caller (no token) who owns an anon thread (same session_id)
     can read their own history — 200, not 404/401."""
     get_thread_owner_store().claim_thread("t-anon-owned", None)
     app.state.checkpointer = None
@@ -226,35 +141,35 @@ async def test_history_anon_owner_gets_200(client):
     assert r.json() == []
 
 
-async def test_history_non_owner_gets_404(client, cookie_for):
+async def test_history_non_owner_gets_404(client, bearer_for):
     get_thread_owner_store().claim_thread("t-owned", "userA@x")
 
     r = await client.post(
         "/api/v1/threads/t-owned/history",
         json={"limit": 5},
-        cookies=cookie_for("userB@x"),
+        headers=bearer_for("userB@x"),
     )
     assert r.status_code == 404
 
 
-async def test_history_unknown_thread_gets_404_identical_body(client, cookie_for):
+async def test_history_unknown_thread_gets_404_identical_body(client, bearer_for):
     get_thread_owner_store().claim_thread("t-owned", "userA@x")
 
     non_owner = await client.post(
         "/api/v1/threads/t-owned/history",
         json={"limit": 5},
-        cookies=cookie_for("userB@x"),
+        headers=bearer_for("userB@x"),
     )
     unknown = await client.post(
         "/api/v1/threads/does-not-exist/history",
         json={"limit": 5},
-        cookies=cookie_for("userB@x"),
+        headers=bearer_for("userB@x"),
     )
     assert non_owner.status_code == unknown.status_code == 404
     assert non_owner.json() == unknown.json()
 
 
-async def test_history_owner_gets_state_history(client, cookie_for, monkeypatch):
+async def test_history_owner_gets_state_history(client, bearer_for, monkeypatch):
     get_thread_owner_store().claim_thread("t-owned", "userA@x")
 
     snapshots = [
@@ -284,7 +199,7 @@ async def test_history_owner_gets_state_history(client, cookie_for, monkeypatch)
         r = await client.post(
             "/api/v1/threads/t-owned/history",
             json={"limit": 10},
-            cookies=cookie_for("userA@x"),
+            headers=bearer_for("userA@x"),
         )
     finally:
         app.state.checkpointer = None
@@ -299,14 +214,14 @@ async def test_history_owner_gets_state_history(client, cookie_for, monkeypatch)
     assert body[1]["parent_checkpoint"] == {}
 
 
-async def test_history_no_checkpointer_returns_empty_list(client, cookie_for):
+async def test_history_no_checkpointer_returns_empty_list(client, bearer_for):
     get_thread_owner_store().claim_thread("t-owned", "userA@x")
     app.state.checkpointer = None
 
     r = await client.post(
         "/api/v1/threads/t-owned/history",
         json={"limit": 10},
-        cookies=cookie_for("userA@x"),
+        headers=bearer_for("userA@x"),
     )
     assert r.status_code == 200
     assert r.json() == []

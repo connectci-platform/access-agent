@@ -1,7 +1,7 @@
 """LangGraph thread/run protocol endpoints: create + history (resume) + run.
 
-The SESSaccess_auth cookie is optional, not required: a caller with no cookie
-is anonymous, not rejected. Every route still passes through the
+The Bearer agent token is optional, not required: a caller without one is
+anonymous, not rejected. Every route still passes through the
 thread-ownership gate from src/thread_owners.py, which is where access is
 actually decided — an anon caller can create/resume an anon-owned thread, an
 authed caller resuming an anon-owned thread upgrades it to authed ownership,
@@ -25,7 +25,6 @@ from starlette.responses import StreamingResponse
 
 from ..agent.graph import create_checkpointed_graph, stream_agent
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
-from ..auth import get_acting_user_from_cookie
 from ..config import settings
 from ..thread_owners import get_thread_owner_store
 from ..turn_reporter import _hash_user, get_turn_reporter
@@ -35,6 +34,7 @@ from .handoff_tokens import (
     exchange_handoff_token,
     mint_handoff_token,
 )
+from .identity import Identity, require_identity
 from .sse import format_sse_event
 from .thread_runs import (
     acquire_thread_run,
@@ -47,13 +47,6 @@ from .thread_runs import (
 logger = logging.getLogger(__name__)
 
 thread_router = APIRouter()
-
-
-def _require_user(raw_request: Request) -> str:
-    user, _ = get_acting_user_from_cookie(raw_request)
-    if not user:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return user
 
 
 def _require_access(thread_id: str, caller: str | None) -> None:
@@ -73,7 +66,7 @@ def _resolve_first_ownership_gate(thread_id: str, caller: str | None) -> None:
     owner_store = get_thread_owner_store()
     owner = owner_store.resolve_owner(thread_id)
     if owner is not None and owner.was_authenticated:
-        # Authed-owned: the cookie caller must match. This is the ONLY
+        # Authed-owned: the token's caller must match. This is the ONLY
         # check_access call in the run path.
         if not owner_store.check_access(thread_id, caller):
             raise HTTPException(status_code=404, detail="Thread not found")
@@ -230,11 +223,13 @@ async def _stream_run_events(
     requires_auth = final_state.get("requires_auth")
     if requires_auth:
         # Anon caller tried a write/private-read tool (RequiresAuthMiddleware
-        # suppressed it; see tool_calling_loop_node). Emit the signal as a
-        # distinct event — sibling of messages/*, error — and end the stream
-        # cleanly rather than continuing into the normal messages/complete +
-        # values sequence (there is no real answer to stream).
-        yield format_sse_event("requires_auth", requires_auth)
+        # suppressed it; see tool_calling_loop_node). Sent as a LangGraph
+        # `custom` event because useStream drops event names it doesn't know;
+        # `type` keeps it apart from the ui events on the same channel. The
+        # stream then ends cleanly, since there is no real answer to stream.
+        yield format_sse_event(
+            "custom", {"type": "requires_auth", "reason": requires_auth["reason"]}
+        )
         return
 
     if accumulated is not None:
@@ -299,7 +294,7 @@ async def create_thread() -> dict[str, Any]:
 
 
 @thread_router.post("/threads/search")
-async def search_threads(body: SearchRequest, raw_request: Request) -> list[dict[str, Any]]:
+async def search_threads(body: SearchRequest, identity: Identity) -> list[dict[str, Any]]:
     """The conversation sidebar: the caller's own threads, most recent first.
 
     Authed-only IN EFFECT, not by a 401 gate: a caller with no verified
@@ -307,8 +302,7 @@ async def search_threads(body: SearchRequest, raw_request: Request) -> list[dict
     the correct response is an empty list, not a 401 (unlike every other
     route in this module).
     """
-    user, _ = get_acting_user_from_cookie(raw_request)
-    user_hash = _hash_user(user)
+    user_hash = _hash_user(identity.sub if identity else None)
     if not user_hash:
         return []
     rows = get_turn_reporter().list_threads_for_user(user_hash, body.limit)
@@ -328,10 +322,12 @@ async def search_threads(body: SearchRequest, raw_request: Request) -> list[dict
 
 @thread_router.post("/threads/{thread_id}/history")
 async def thread_history(
-    thread_id: str, body: HistoryRequest, raw_request: Request
+    thread_id: str,
+    body: HistoryRequest,
+    raw_request: Request,
+    identity: Identity,
 ) -> list[dict[str, Any]]:
-    caller, _ = get_acting_user_from_cookie(raw_request)
-    _require_access(thread_id, caller)
+    _require_access(thread_id, identity.sub if identity else None)
     checkpointer = getattr(raw_request.app.state, "checkpointer", None)
     if checkpointer is None:
         return []
@@ -359,7 +355,7 @@ def _serialize_values(values: dict[str, Any] | None) -> dict[str, Any]:
 
 
 @thread_router.post("/threads/{thread_id}/handoff")
-async def mint_handoff(thread_id: str, raw_request: Request) -> dict[str, Any]:
+async def mint_handoff(thread_id: str, identity: Identity) -> dict[str, Any]:
     """Mint a single-use cross-surface handoff token for an authed-owned thread.
 
     Authed-owned-threads ONLY: anon-owned threads are rejected with their own
@@ -375,7 +371,7 @@ async def mint_handoff(thread_id: str, raw_request: Request) -> dict[str, Any]:
     produces was_authenticated=False with a non-null hash. Keep it — it makes the
     authed-only intent explicit and stays correct if that invariant ever changes.
     """
-    caller = _require_user(raw_request)
+    caller = require_identity(identity)
     owner = get_thread_owner_store().resolve_owner(thread_id)
     if owner is None or not owner.was_authenticated:
         raise HTTPException(status_code=404, detail="Thread not found")  # never 403
@@ -386,7 +382,7 @@ async def mint_handoff(thread_id: str, raw_request: Request) -> dict[str, Any]:
 
 
 @thread_router.post("/handoff/exchange")
-async def exchange_handoff(body: ExchangeRequest, raw_request: Request) -> dict[str, str]:
+async def exchange_handoff(body: ExchangeRequest, identity: Identity) -> dict[str, str]:
     """Redeem a single-use handoff token for a thread_id, identity-bound.
 
     The token is consumed atomically on exchange regardless of outcome; a
@@ -394,7 +390,7 @@ async def exchange_handoff(body: ExchangeRequest, raw_request: Request) -> dict[
     Returns ONLY thread_id — never message content (that comes from the
     separately-gated /history).
     """
-    caller = _require_user(raw_request)
+    caller = require_identity(identity)
     result = exchange_handoff_token(body.token)
     if result is None:
         raise HTTPException(status_code=404, detail="Invalid or expired token")
@@ -406,18 +402,22 @@ async def exchange_handoff(body: ExchangeRequest, raw_request: Request) -> dict[
 
 @thread_router.post("/threads/{thread_id}/runs/stream", response_model=None)
 async def thread_run_stream(
-    thread_id: str, body: RunRequest, raw_request: Request
+    thread_id: str,
+    body: RunRequest,
+    raw_request: Request,
+    identity: Identity,
 ) -> StreamingResponse | JSONResponse:
     """Stream one agent turn on a thread as the LangGraph run protocol SSE.
 
     Ownership is atomic on the first run: ``claim_thread`` writes the ownership
     row transactionally (UNIQUE(thread_id)); a genuinely new thread's caller wins
     it, an existing thread must pass the ownership check. All status-code-bearing
-    checks (401/404/409) run HERE, before StreamingResponse is returned — a status
-    raised inside the generator would land after Starlette flushed 200.
+    checks run before StreamingResponse is returned: the token's 401/503 in
+    ``request_identity``, and 404/409 HERE. A status raised inside the generator
+    would land after Starlette flushed 200.
     """
     # 1. Anon-accept: caller may be None; ownership below still fails closed.
-    caller, _ = get_acting_user_from_cookie(raw_request)
+    caller = identity.sub if identity else None
 
     # 2. Resolve-first ownership gate (replaces the old claim-then-check):
     # resolve/upgrade, THEN claim. See _resolve_first_ownership_gate.
@@ -527,9 +527,10 @@ async def thread_run_stream(
 
 
 @thread_router.post("/threads/{thread_id}/runs/{run_id}/cancel")
-async def cancel_thread_run(thread_id: str, run_id: str, raw_request: Request) -> dict[str, str]:
-    caller, _ = get_acting_user_from_cookie(raw_request)
-    _require_access(thread_id, caller)  # 404 if not the owner (never 403)
+async def cancel_thread_run(thread_id: str, run_id: str, identity: Identity) -> dict[str, str]:
+    _require_access(
+        thread_id, identity.sub if identity else None
+    )  # 404 if not the owner (never 403)
     if not cancel_run(thread_id, run_id):  # no such in-flight run ON THIS THREAD
         raise HTTPException(status_code=404, detail="Run not found")
     return {"status": "cancelled"}

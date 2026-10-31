@@ -3,12 +3,8 @@
 Pattern of tests/test_auth_e2e.py: mocks stream_agent + the tool registry so
 no LLM/MCP infrastructure is needed, and exercises the full HTTP request path.
 
-JWKS/JWT test helpers (key pair, local JWKS server, token minting) are
-imported from test_auth_e2e rather than duplicated a third time (they also
-live in test_auth.py) — importing that module runs its module-level
-``os.environ["DATABASE_URL"] = ""`` / ``os.environ.setdefault("TRUSTED_JWKS_URLS", ...)``
-calls too, which is exactly the env setup this file already needs, so nothing
-here diverges from it.
+Importing test_auth_e2e runs its module-level ``os.environ["DATABASE_URL"] = ""``,
+which is exactly the env setup this file needs too.
 """
 
 from unittest.mock import AsyncMock, patch
@@ -16,10 +12,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+import tests.test_auth_e2e  # noqa: F401  (module-level env setup)
 from src.agent.profile import UserProfile
-from src.auth import configure_trusted_issuers
 from src.main import app
-from tests.test_auth_e2e import ISSUER, _make_jwt, _start_jwks_server
 
 FAKE_AGENT_RESULT = {
     "final_answer": "Test response",
@@ -145,24 +140,18 @@ async def test_profile_does_not_affect_acting_user(client, mock_agent, mock_regi
     assert mock_agent.call_args.kwargs.get("acting_user") is None
 
 
-async def test_profile_does_not_override_cookie_identity(client, mock_agent, mock_registry):
-    server, jwks_url = _start_jwks_server()
-    configure_trusted_issuers({ISSUER: jwks_url})
-    try:
-        token = _make_jwt("A@access-ci.org")
+async def test_profile_does_not_override_token_identity(
+    client, mock_agent, mock_registry, agent_tokens
+):
+    response = await client.post(
+        "/api/v1/query",
+        json={
+            "query": "test",
+            "profile": {"allocated_resources": [{"name": "Delta GPU", "rp_slug": "delta"}]},
+        },
+        headers=agent_tokens.headers("A@access-ci.org"),
+    )
 
-        response = await client.post(
-            "/api/v1/query",
-            json={
-                "query": "test",
-                "profile": {"allocated_resources": [{"name": "Delta GPU", "rp_slug": "delta"}]},
-            },
-            headers={"cookie": f"SESSaccess_auth={token}"},
-        )
-
-        assert response.status_code == 200
-        mock_agent.assert_called_once()
-        assert mock_agent.call_args.kwargs.get("acting_user") == "A@access-ci.org"
-    finally:
-        server.shutdown()
-        configure_trusted_issuers({})
+    assert response.status_code == 200
+    mock_agent.assert_called_once()
+    assert mock_agent.call_args.kwargs.get("acting_user") == "A@access-ci.org"
