@@ -2,7 +2,9 @@ import asyncio
 from types import SimpleNamespace
 
 from src.agent.turn_capture import (
+    docs_search_exhausted,
     get_turn_capture,
+    mark_docs_search_exhausted,
     mark_summarized,
     record_retrieved_chunks,
     record_scoped_search,
@@ -82,6 +84,7 @@ def test_default_capture_is_safe_without_reset():
         "trace_id": None,
         "model_reasoning": [],
         "scoped_rp_searched": set(),
+        "docs_search_exhausted": False,
     }
 
 
@@ -167,3 +170,20 @@ def test_model_reasoning_safe_without_reset():
 
     cap = asyncio.run(_isolated())
     assert cap["model_reasoning"] == []
+
+
+def test_docs_search_exhausted_is_per_turn():
+    reset_turn_capture()
+    assert docs_search_exhausted() is False
+    mark_docs_search_exhausted()
+    assert docs_search_exhausted() is True
+    reset_turn_capture()
+    assert docs_search_exhausted() is False
+
+
+def test_docs_search_exhausted_is_false_without_a_turn():
+    async def _isolated():
+        mark_docs_search_exhausted()
+        return docs_search_exhausted()
+
+    assert asyncio.run(_isolated()) is False

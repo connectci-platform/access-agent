@@ -632,13 +632,15 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:  # no
             )
             span.set_attribute("agent.recursion_limit_hit", True)
             answer_unavailable = True
-            result_messages = list(messages)
             final_answer = (
                 "I wasn't able to complete an answer for this query within "
                 "the allotted tool-turn budget. You can try rephrasing, or "
                 "open a support ticket at "
                 "https://support.access-ci.org/open-a-ticket."
             )
+            # Clients render the thread's messages, not final_answer, so the
+            # apology has to be a message or the user sees no reply at all.
+            result_messages = [*messages, AIMessage(content=final_answer)]
 
         if not recursion_limit_hit:
             for msg in reversed(result_messages):

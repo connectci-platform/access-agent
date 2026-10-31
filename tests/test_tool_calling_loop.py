@@ -313,8 +313,14 @@ async def test_recursion_limit_error_produces_graceful_response(base_state):
     lowered = answer.lower()
     assert "support" in lowered or "try rephrasing" in lowered
 
-    # Input messages are preserved
-    assert result["messages"] == base_state["messages"]
+    # Input messages are preserved, followed by the apology as an AIMessage:
+    # clients render the thread's messages, not final_answer, so without it
+    # the user sees their question and no reply at all (D8-2943).
+    messages = result["messages"]
+    assert messages[: len(base_state["messages"])] == base_state["messages"]
+    assert isinstance(messages[-1], AIMessage)
+    assert messages[-1].content == answer
+    assert len(messages) == len(base_state["messages"]) + 1
 
 
 @pytest.mark.asyncio
