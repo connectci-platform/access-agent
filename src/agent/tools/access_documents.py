@@ -30,7 +30,13 @@ from pydantic import BaseModel, Field
 
 from ...services.uky_client import UKYChunk, get_uky_client
 from ..domains.capabilities import get_capability_registry
-from ..turn_capture import record_retrieved_chunks, record_scoped_search, record_tool_timing
+from ..turn_capture import (
+    docs_search_exhausted,
+    mark_docs_search_exhausted,
+    record_retrieved_chunks,
+    record_scoped_search,
+    record_tool_timing,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,13 +86,26 @@ _UNAVAILABLE = (
 )
 
 
+# An empty or failed general search is final for the turn. Inviting a
+# rephrase let the model re-run the search until the recursion limit when UKY
+# was degraded (D8-2943); with a healthy backend an empty result is rare.
+_DONT_SEARCH_AGAIN = (
+    "Do not search the documentation again this turn. Answer from your other "
+    "tools if they cover the question; otherwise tell the user you couldn't "
+    "find this in the ACCESS documentation and suggest opening a ticket at "
+    "https://support.access-ci.org/open-a-ticket."
+)
+
+_ALREADY_EXHAUSTED = (
+    "Documentation search already came back empty or failed this turn, so it "
+    "was not run again. " + _DONT_SEARCH_AGAIN
+)
+
+
 def _format_chunks(query: str, chunks: list[UKYChunk]) -> str:
     """Render retrieval chunks into text the loop's LLM can synthesize from."""
     if not chunks:
-        return (
-            "Documentation search returned no excerpts for that query. "
-            "Try rephrasing or call a different tool."
-        )
+        return "Documentation search returned no excerpts for that query. " + _DONT_SEARCH_AGAIN
     parts = [
         f'Retrieved {len(chunks)} documentation excerpt(s) for "{query}". '
         "Synthesize an answer from these excerpts and cite the source URLs. "
@@ -158,6 +177,21 @@ def _error_payload(exc: Exception) -> dict[str, Any]:
     return {"error": f"Documentation search failed: {exc}", "status_code": status_code}
 
 
+def _record_general_retrieval(chunks: list[UKYChunk]) -> None:
+    """Record a general-corpus retrieval; an empty one ends doc search for the turn."""
+    record_retrieved_chunks(chunks)
+    if not chunks:
+        mark_docs_search_exhausted()
+
+
+def _general_failure(exc: Exception) -> dict[str, Any]:
+    """Error payload for a failed general search, which also ends doc search for the turn."""
+    mark_docs_search_exhausted()
+    payload = _error_payload(exc)
+    payload["error"] = f"{payload['error']}. {_DONT_SEARCH_AGAIN}"
+    return payload
+
+
 async def _retry_xdmod_unscoped(
     query: str, rp_name: str | None, exc: Exception
 ) -> dict[str, Any] | str | None:
@@ -206,12 +240,12 @@ async def _retry_general_unscoped(
         retrieval = await client.retrieve(query=query, rp_name=None)
     except Exception as exc2:
         logger.warning("search_access_documents unscoped retry failed: %s", exc2)
-        return _error_payload(exc2)
-    record_retrieved_chunks(retrieval.chunks)
+        return _general_failure(exc2)
+    _record_general_retrieval(retrieval.chunks)
     return _SCOPE_DROPPED_NOTE + _format_chunks(query, retrieval.chunks)
 
 
-async def _retry_general_unscoped_on_zero_chunks(query: str, rp_name: str) -> str:
+async def _retry_general_unscoped_on_zero_chunks(query: str, rp_name: str) -> str | dict[str, Any]:
     """Retry a scoped general search unscoped after a zero-chunk result.
 
     Called only when the backend *accepted* ``rp_name`` and returned zero
@@ -225,8 +259,12 @@ async def _retry_general_unscoped_on_zero_chunks(query: str, rp_name: str) -> st
         rp_name,
     )
     client = get_uky_client()
-    retrieval = await client.retrieve(query=query, rp_name=None)
-    record_retrieved_chunks(retrieval.chunks)
+    try:
+        retrieval = await client.retrieve(query=query, rp_name=None)
+    except Exception as exc:
+        logger.warning("search_access_documents zero-chunk unscoped retry failed: %s", exc)
+        return _general_failure(exc)
+    _record_general_retrieval(retrieval.chunks)
     return _ZERO_CHUNKS_SCOPED_NOTE + _format_chunks(query, retrieval.chunks)
 
 
@@ -311,6 +349,10 @@ async def _search_general(
         )
         return _UNAVAILABLE
 
+    if docs_search_exhausted():
+        logger.info("search_access_documents (general): skipped, already empty or failed this turn")
+        return _ALREADY_EXHAUSTED
+
     # A second scoped call to the SAME normalized rp_name this turn means the
     # first scoped search already returned something that didn't answer the
     # question (otherwise the model wouldn't be asking again) — widen to
@@ -323,8 +365,12 @@ async def _search_general(
             "rp_name=%r this turn; widening to unscoped",
             rp_name,
         )
-        retrieval = await client.retrieve(query=query, rp_name=None)
-        record_retrieved_chunks(retrieval.chunks)
+        try:
+            retrieval = await client.retrieve(query=query, rp_name=None)
+        except Exception as exc:
+            logger.warning("search_access_documents widened retry failed: %s", exc)
+            return _general_failure(exc)
+        _record_general_retrieval(retrieval.chunks)
         return _repeat_scoped_search_note(rp_name) + _format_chunks(query, retrieval.chunks)
 
     try:
@@ -334,12 +380,12 @@ async def _search_general(
         if retried is not None:
             return retried
         logger.warning("search_access_documents (chat-mcp) failed: %s", exc)
-        return _error_payload(exc)
+        return _general_failure(exc)
 
     if rp_name and not retrieval.chunks:
         return await _retry_general_unscoped_on_zero_chunks(query, rp_name)
 
-    record_retrieved_chunks(retrieval.chunks)
+    _record_general_retrieval(retrieval.chunks)
     return _format_chunks(query, retrieval.chunks)
 
 
