@@ -583,3 +583,92 @@ class TestZeroChunkUnscopedRetry:
         assert isinstance(result, str)
         assert "No documentation matched within the `<rp>` scope" in result
         assert mock_client.retrieve.await_count == 2
+
+
+class TestEmptyOrFailedSearchIsFinalForTheTurn:
+    """When documentation search comes back empty or fails, the model must not
+    keep re-running it. On 2026-10-31 UKY retrieve-docs returned zero chunks in
+    ~12s per call and the loop repeated the search 16 times until the
+    recursion limit, leaving the user with ~2 minutes of nothing (D8-2943)."""
+
+    @pytest.mark.asyncio
+    async def test_empty_result_tells_the_model_not_to_search_again(self, mock_client: Any) -> None:
+        from src.agent.turn_capture import reset_turn_capture
+
+        reset_turn_capture()
+        mock_client.retrieve.return_value = UKYRetrieval(chunks=[])
+        result = await _search_access_documents(query="how do I get started")
+        assert isinstance(result, str)
+        assert "no excerpts" in result.lower()
+        assert "do not search the documentation again" in result.lower()
+        assert "try rephrasing" not in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_search_after_an_empty_result_skips_the_backend(self, mock_client: Any) -> None:
+        from src.agent.turn_capture import reset_turn_capture
+
+        reset_turn_capture()
+        mock_client.retrieve.return_value = UKYRetrieval(chunks=[])
+        await _search_access_documents(query="how do I get started")
+        again = await _search_access_documents(query="getting started with ACCESS")
+        scoped = await _search_access_documents(query="getting started on Delta", rp_name="delta")
+
+        assert mock_client.retrieve.await_count == 1
+        for result in (again, scoped):
+            assert isinstance(result, str)
+            assert "already" in result.lower()
+            assert "do not search the documentation again" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_search_after_a_failure_skips_the_backend(self, mock_client: Any) -> None:
+        from src.agent.turn_capture import reset_turn_capture
+
+        reset_turn_capture()
+        mock_client.retrieve.side_effect = httpx.ReadTimeout("timed out")
+        first = await _search_access_documents(query="how do I get started")
+        again = await _search_access_documents(query="getting started with ACCESS")
+
+        assert isinstance(first, dict)
+        assert "error" in first
+        assert mock_client.retrieve.await_count == 1
+        assert isinstance(again, str)
+        assert "do not search the documentation again" in again.lower()
+
+    @pytest.mark.asyncio
+    async def test_scoped_empty_then_unscoped_empty_is_final(self, mock_client: Any) -> None:
+        from src.agent.turn_capture import reset_turn_capture
+
+        reset_turn_capture()
+        mock_client.retrieve.return_value = UKYRetrieval(chunks=[])
+        await _search_access_documents(query="Delta GPUs", rp_name="delta")
+        await _search_access_documents(query="Delta GPU nodes")
+
+        # Scoped call plus its unscoped retry; the follow-up never reaches UKY.
+        assert mock_client.retrieve.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_search_with_results_does_not_block_the_next(self, mock_client: Any) -> None:
+        from src.agent.turn_capture import reset_turn_capture
+
+        reset_turn_capture()
+        mock_client.retrieve.return_value = UKYRetrieval(
+            chunks=[UKYChunk(rank=1, text="Globus how-to.", url="https://x")]
+        )
+        await _search_access_documents(query="globus")
+        second = await _search_access_documents(query="MFA setup")
+
+        assert mock_client.retrieve.await_count == 2
+        assert "Globus how-to." in second
+
+    @pytest.mark.asyncio
+    async def test_a_new_turn_searches_again(self, mock_client: Any) -> None:
+        from src.agent.turn_capture import reset_turn_capture
+
+        reset_turn_capture()
+        mock_client.retrieve.return_value = UKYRetrieval(chunks=[])
+        await _search_access_documents(query="how do I get started")
+
+        reset_turn_capture()
+        await _search_access_documents(query="how do I get started")
+
+        assert mock_client.retrieve.await_count == 2

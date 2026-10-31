@@ -1,13 +1,15 @@
 """Per-request side-channel for turn observations absent from final_state.
 
-Carries six kinds of data the agent graph doesn't surface in final_state:
+Carries seven kinds of data the agent graph doesn't surface in final_state:
 retrieved chunks (search_access_documents flattens them to a string before
 returning), whether SummarizationMiddleware fired, per-tool-call durations,
 the turn's OTEL trace id, the per-model-call ``<think>`` reasoning the LLM
 wrapper strips from responses, and the set of normalized rp_name slugs
 search_access_documents has already searched this turn (so a second scoped
 call to the same slug can widen instead of repeating a search the model
-already saw fail — see record_scoped_search).
+already saw fail — see record_scoped_search), and whether a general
+documentation search already came back empty or failed this turn (so later
+calls skip the backend — see mark_docs_search_exhausted).
 
 We carry them out via a ContextVar holding one mutable dict. The route resets
 it per turn; the doc-search tool, the summarization middleware, the MCP tool
@@ -43,6 +45,7 @@ def _fresh_capture() -> dict[str, Any]:
         "trace_id": None,
         "model_reasoning": [],
         "scoped_rp_searched": set(),
+        "docs_search_exhausted": False,
     }
 
 
@@ -116,6 +119,26 @@ def record_scoped_search(rp_name: str) -> bool:
         return True
     seen.add(rp_name)
     return False
+
+
+def mark_docs_search_exhausted() -> None:
+    """Record that a general documentation search came back empty or failed.
+
+    search_access_documents checks docs_search_exhausted() before calling the
+    backend, so the model can't re-run a search that already returned nothing
+    this turn. When UKY is degraded each call can take ~12s, and repeating it
+    until the recursion limit left users waiting minutes for no answer.
+    """
+    cap = _turn_capture.get()
+    if cap is not None:
+        cap["docs_search_exhausted"] = True
+
+
+def docs_search_exhausted() -> bool:
+    """True iff a general documentation search already came back empty or
+    failed this turn. Outside an active turn, always False."""
+    cap = _turn_capture.get()
+    return bool(cap and cap["docs_search_exhausted"])
 
 
 def get_turn_capture() -> dict[str, Any]:
