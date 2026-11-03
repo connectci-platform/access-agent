@@ -28,7 +28,7 @@ import httpx
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from ...services.uky_client import UKYChunk, get_uky_client
+from ...services.uky_client import UKYChunk, get_uky_client, is_invalid_rp_name
 from ..domains.capabilities import get_capability_registry
 from ..turn_capture import record_retrieved_chunks, record_scoped_search, record_tool_timing
 
@@ -136,15 +136,6 @@ def _repeat_scoped_search_note(rp_name: str) -> str:
     )
 
 
-def _is_invalid_rp_name(exc: Exception) -> bool:
-    """True iff ``exc`` is UKY's 400 for an rp_name it doesn't recognize."""
-    if not isinstance(exc, httpx.HTTPStatusError):
-        return False
-    if exc.response.status_code != 400:
-        return False
-    return "invalid rp_name" in exc.response.text.lower()
-
-
 def _error_payload(exc: Exception) -> dict[str, Any]:
     """Build the structured error dict returned on a backend failure.
 
@@ -167,7 +158,7 @@ async def _retry_xdmod_unscoped(
     fall through to its own ``_error_payload(exc)``); otherwise returns the
     final str/dict result of the retry attempt.
     """
-    if not rp_name or not _is_invalid_rp_name(exc):
+    if not rp_name or not is_invalid_rp_name(exc):
         return None
     logger.warning(
         "search_access_documents (xdmod): UKY rejected rp_name=%r; retrying unscoped", rp_name
@@ -196,7 +187,7 @@ async def _retry_general_unscoped(
     fall through to its own ``_error_payload(exc)``); otherwise returns the
     final str/dict result of the retry attempt.
     """
-    if not rp_name or not _is_invalid_rp_name(exc):
+    if not rp_name or not is_invalid_rp_name(exc):
         return None
     logger.warning(
         "search_access_documents (general): UKY rejected rp_name=%r; retrying unscoped", rp_name

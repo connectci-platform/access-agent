@@ -6,7 +6,6 @@ Initializes the OpenTelemetry SDK with OTLP export to Honeycomb.
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from ..config import settings
 
@@ -19,7 +18,6 @@ if _env_file.exists():
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
@@ -28,9 +26,6 @@ try:
     from opentelemetry.instrumentation.langchain import LangchainInstrumentor
 except ImportError:
     LangchainInstrumentor = None  # type: ignore[misc, assignment]
-
-if TYPE_CHECKING:
-    from fastapi import FastAPI
 
 logger = logging.getLogger(__name__)
 
@@ -50,17 +45,12 @@ def _build_resource_attributes(service_name: str) -> dict[str, str]:
     }
 
 
-def init_telemetry(
-    app: "FastAPI | None" = None,
-    service_name: str = "access-agent",
-) -> None:
+def init_telemetry(service_name: str = "access-agent") -> None:
     """Initialize OpenTelemetry with OTLP export to Honeycomb.
 
     Configures tracing to export to Honeycomb (or console for local dev).
-    Auto-instruments FastAPI and HTTPX if app is provided.
 
     Args:
-        app: FastAPI application to instrument (optional).
         service_name: Name of this service in traces.
 
     Environment Variables:
@@ -110,10 +100,14 @@ def init_telemetry(
     # Set as global tracer provider
     trace.set_tracer_provider(_tracer_provider)
 
-    # Auto-instrument FastAPI
-    if app is not None:
-        FastAPIInstrumentor.instrument_app(app)
-        logger.info("FastAPI auto-instrumentation enabled")
+    # set_tracer_provider only warns when a provider is already installed, and
+    # the spans then carry the other provider's resource instead of ours.
+    installed = trace.get_tracer_provider()
+    if installed is not _tracer_provider:
+        logger.error(
+            "Tracer provider was already set (%s); our resource attributes will not be exported",
+            type(installed).__name__,
+        )
 
     # Note: HTTPX instrumentation is handled via explicit AsyncOpenTelemetryTransport
     # in telemetry/http.py, which is more reliable than HTTPXClientInstrumentor().instrument()

@@ -49,6 +49,15 @@ class UKYRetrieval(BaseModel):
     duration_ms: int = 0
 
 
+def is_invalid_rp_name(exc: Exception) -> bool:
+    """True iff ``exc`` is UKY's 400 for an rp_name it doesn't recognize."""
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return False
+    if exc.response.status_code != 400:
+        return False
+    return "invalid rp_name" in exc.response.text.lower()
+
+
 class UKYClient:
     """HTTP client for UKY RAG endpoints."""
 
@@ -281,6 +290,9 @@ class UKYClient:
                     for i, doc in enumerate(raw_docs)
                 ]
                 span.set_attribute("uky_rag.chunk_count", len(chunks))
+                # Alerting keys on this: an empty result is a success to the
+                # caller but a silent failure for users.
+                span.set_attribute("uky_rag.outcome", "ok" if chunks else "empty")
 
                 rp_suffix = f" (rp={rp_name})" if rp_name else ""
                 logger.info(f"UKY chat-mcp: got {len(chunks)} chunks in {duration_ms}ms{rp_suffix}")
@@ -292,6 +304,10 @@ class UKYClient:
                 span.set_attribute("uky_rag.duration_ms", duration_ms)
                 span.set_attribute("http.status_code", e.response.status_code)
                 span.set_attribute("uky_rag.error", f"HTTP {e.response.status_code}")
+                # The agent retries this unscoped and answers, so alerting on
+                # outcome=error must not count it.
+                rejected = rp_name and is_invalid_rp_name(e)
+                span.set_attribute("uky_rag.outcome", "rejected_scope" if rejected else "error")
                 logger.error(
                     f"UKY chat-mcp error: {e.response.status_code} - {e.response.text[:200]}"
                 )
@@ -300,7 +316,17 @@ class UKYClient:
                 duration_ms = int((time.time() - start_time) * 1000)
                 span.set_attribute("uky_rag.duration_ms", duration_ms)
                 span.set_attribute("uky_rag.error", str(e)[:200])
+                span.set_attribute("uky_rag.outcome", "error")
                 logger.error(f"UKY chat-mcp request failed: {e}")
+                raise
+            except Exception:
+                # Malformed bodies (bad JSON, unexpected shape) raise from
+                # parsing, outside the httpx handlers above. No exception text
+                # or response body is recorded: it could carry upstream content.
+                # CancelledError is a BaseException, so this handler doesn't run
+                # for it and the span keeps no outcome: a cancelled request is
+                # not alerted on.
+                span.set_attribute("uky_rag.outcome", "error")
                 raise
 
     async def close(self) -> None:
