@@ -354,7 +354,7 @@ class TestInvalidRpNameRetry:
     async def test_400_with_other_status_body_is_not_treated_as_invalid_rp_name(
         self, mock_client: Any
     ) -> None:
-        # A non-400 status must short-circuit _is_invalid_rp_name before the body
+        # A non-400 status must short-circuit is_invalid_rp_name before the body
         # is even inspected (covers the status_code != 400 branch explicitly).
         request = httpx.Request("POST", "https://uky.example/api/retrieve-docs")
         response = httpx.Response(500, request=request, text="invalid rp_name: 'bogus'")

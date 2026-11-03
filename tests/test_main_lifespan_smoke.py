@@ -28,7 +28,7 @@ def test_init_telemetry_runs_cleanly():
 
     from src.telemetry import init_telemetry, shutdown_telemetry
 
-    init_telemetry(app=None, service_name="test-smoke")
+    init_telemetry(service_name="test-smoke")
     shutdown_telemetry()
 
 

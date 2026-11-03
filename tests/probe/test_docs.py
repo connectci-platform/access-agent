@@ -1,14 +1,15 @@
 """Tests for src.probe.docs: the docs-tool (UKY chat-mcp) health case, run
 alongside the MCP-server probe table. No live calls — a fake UKY client is
-injected. A raised backend error is a FAIL; a clean response (even with empty
-chunks) is a PASS, matching the MCP probe's empty-result-is-a-pass rule."""
+injected. A raised backend error is a FAIL, and so is a clean response with zero
+chunks: unlike the MCP probes, an empty docs result means retrieval is not
+serving documents, which is the outage this probe exists to catch."""
 
 from __future__ import annotations
 
 import httpx
 
 from src.probe.docs import probe_docs_tool
-from src.services.uky_client import UKYRetrieval
+from src.services.uky_client import UKYChunk, UKYRetrieval
 
 
 class FakeUKYClient:
@@ -23,8 +24,21 @@ class FakeUKYClient:
         return self._retrieval
 
 
-async def test_probe_docs_tool_empty_chunks_is_success() -> None:
+async def test_probe_docs_tool_empty_chunks_is_failure() -> None:
     client = FakeUKYClient(retrieval=UKYRetrieval(chunks=[]))
+
+    result = await probe_docs_tool(client=client)
+
+    assert result.tool_name == "search_access_documents"
+    assert result.success is False
+    assert result.error is not None
+    assert "zero chunks" in result.error
+    # Distinct from the exception path so the two outages are not conflated.
+    assert not result.error.startswith("probe call raised:")
+
+
+async def test_probe_docs_tool_non_empty_chunks_is_success() -> None:
+    client = FakeUKYClient(retrieval=UKYRetrieval(chunks=[UKYChunk(rank=1, text="t", url="u")]))
 
     result = await probe_docs_tool(client=client)
 
@@ -57,10 +71,13 @@ async def test_probe_docs_tool_generic_exception_is_isolated_as_failure() -> Non
     assert result.success is False
     assert result.error is not None
     assert "otel export failed" in result.error
+    assert "zero chunks" not in result.error
 
 
 async def test_probe_docs_tool_defaults_to_get_uky_client(monkeypatch) -> None:
-    fake_client = FakeUKYClient(retrieval=UKYRetrieval(chunks=[]))
+    fake_client = FakeUKYClient(
+        retrieval=UKYRetrieval(chunks=[UKYChunk(rank=1, text="t", url="u")])
+    )
     monkeypatch.setattr(
         "src.services.uky_client.get_uky_client",
         lambda: fake_client,

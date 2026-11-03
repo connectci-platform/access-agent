@@ -14,6 +14,7 @@ from .api import router
 from .api.thread_routes import thread_router
 from .config import settings
 from .telemetry import init_telemetry, shutdown_telemetry
+from .telemetry.exceptions import RecordExceptionMiddleware
 
 # Configure logging
 logging.basicConfig(
@@ -30,7 +31,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # First, so a production deploy without the agent-token settings fails
     # here instead of answering every signed-in request with a 503.
     check_agent_token_config(settings)
-    init_telemetry(app=app, service_name="access-agent")
+    init_telemetry(service_name="access-agent")
 
     logger.info("Starting ACCESS Documentation Agent")
     logger.info(f"Environment: {settings.ENVIRONMENT}")
@@ -94,6 +95,11 @@ app = FastAPI(
     description="LangGraph-powered documentation agent for ACCESS-CI",
     version="0.1.0",
     lifespan=lifespan,
+    # FastAPI >= 0.142 auto-configures OTel providers at startup when an OTLP
+    # endpoint is configured, before our lifespan runs init_telemetry, so its
+    # provider wins set-once and our resource attributes (dataset,
+    # service.component) are lost.
+    telemetry={"auto_configure": False},
 )
 
 # Add CORS middleware.
@@ -127,6 +133,7 @@ else:
         "http://localhost:3000",
     ]
 
+app.add_middleware(RecordExceptionMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
