@@ -59,6 +59,13 @@ def _reset_async_singletons():
 
 
 @pytest.fixture(autouse=True)
+def _restore_trace_content_flag(monkeypatch):
+    """init_telemetry() writes TRACELOOP_TRACE_CONTENT straight into os.environ;
+    registering it with monkeypatch first makes teardown restore it."""
+    monkeypatch.delenv("TRACELOOP_TRACE_CONTENT", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _restore_tracer_provider():
     """Undo a global tracer provider installed by a test.
 

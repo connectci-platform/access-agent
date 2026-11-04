@@ -61,3 +61,22 @@ def test_login_url_configured():
     from src.config import settings
 
     assert isinstance(settings.LOGIN_URL, str)
+
+
+def test_production_refuses_content_capture():
+    with pytest.raises(ValueError, match="OTEL_CAPTURE_CONTENT"):
+        _mk(
+            ENVIRONMENT="production",
+            LLM_PROVIDER="vllm",
+            VLLM_BASE_URL="https://llm.ccs.uky.edu/v1",
+            EVAL_JUDGE_BASE_URL="https://llm.ccs.uky.edu/v1",
+            OTEL_CAPTURE_CONTENT=True,
+        )
+
+
+def test_content_capture_is_off_by_default():
+    assert _mk(ENVIRONMENT="local").OTEL_CAPTURE_CONTENT is False
+
+
+def test_local_dev_may_capture_content():
+    assert _mk(ENVIRONMENT="local", OTEL_CAPTURE_CONTENT=True).OTEL_CAPTURE_CONTENT is True

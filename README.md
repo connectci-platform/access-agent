@@ -155,7 +155,7 @@ OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic xxx
 ### What's Traced
 
 - **Agent flow**: the `tool_calling_loop` span captures one execution
-- **LLM calls**: Model, tokens (input/output/cached), latency (via `opentelemetry-instrumentation-langchain`)
+- **LLM calls**: Model, tokens (input/output/cached), latency (via `opentelemetry-instrumentation-langchain`). Prompt, response, system-prompt and tool-result text is not exported: `TRACELOOP_TRACE_CONTENT` is forced off and `src/telemetry/content_filter.py` drops content attributes at export. The conversation is stored on-prem in `turn_reports`, joined by `trace_id`. `OTEL_CAPTURE_CONTENT=true` turns content capture on for local debugging, and production refuses to boot with it set
 - **MCP tool calls**: Server, tool name, arguments, results
 - **Doc retrieval**: `search_access_documents` calls, as a `uky_rag.retrieve` span per UKY request. Attributes are metadata only, never query or answer text: `uky_rag.outcome` (`ok`, `empty`, `error`, or `rejected_scope` for an unknown resource provider slug that the tool retries unscoped), `uky_rag.chunk_count`, `uky_rag.rp_name` (when the search is scoped to a resource provider) and `uky_rag.duration_ms`. Only general-corpus retrieval carries an outcome; XDMoD doc searches use `uky_rag.ask`, which has none
 

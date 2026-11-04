@@ -63,6 +63,7 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-https://api.honeycomb.io}
       - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
       - HONEYCOMB_DATASET=${HONEYCOMB_DATASET:-access-ci}
+      - OTEL_CAPTURE_CONTENT=${OTEL_CAPTURE_CONTENT:-false}
       # Eval judge — empty defaults = OpenAI gpt-4o-mini; prod .env points these
       # at the UKY Qwen endpoint with thinking on (see config.py EVAL_JUDGE_*)
       - EVAL_JUDGE_BASE_URL=${EVAL_JUDGE_BASE_URL:-}
