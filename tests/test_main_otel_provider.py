@@ -161,5 +161,7 @@ def test_unhandled_exception_is_recorded_on_server_span(otel_globals, monkeypatc
     events = [e for e in server_span.events if e.name == "exception"]
     assert len(events) == 1
     assert events[0].attributes["exception.type"] == "ValueError"
-    assert events[0].attributes["exception.message"] == "kaboom"
-    assert "Traceback" in events[0].attributes["exception.stacktrace"]
+    # The message and traceback can carry request content, so the export
+    # filter keeps only the type; the full traceback is in the server log.
+    assert "exception.message" not in events[0].attributes
+    assert "exception.stacktrace" not in events[0].attributes

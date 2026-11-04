@@ -138,7 +138,9 @@ def trace_mcp_call(
     Args:
         server: MCP server name.
         tool_name: Name of the tool being called.
-        arguments: Tool arguments (sensitive values should be redacted).
+        arguments: Tool arguments. Only their key names are recorded: values
+            are model-generated from the user's question and stay out of
+            exported telemetry.
 
     Example:
         with trace_mcp_call("system-status", "get_infrastructure_news", {"time": "current"}) as span:
@@ -147,18 +149,19 @@ def trace_mcp_call(
     """
     tracer = get_tracer("access-agent.mcp")
 
-    # Redact potentially sensitive arguments
-    safe_args = _redact_sensitive(arguments) if arguments else {}
-
     attributes = {
         "mcp.server": server,
         "mcp.tool": tool_name,
-        "mcp.arguments": json.dumps(safe_args, default=str),
+        "mcp.argument_keys": ",".join(sorted(arguments or {})),
     }
 
+    # The SDK's own exception recording would export str(e), which can echo
+    # tool arguments; record the type only.
     with tracer.start_as_current_span(
         f"mcp.call_tool.{tool_name}",
         attributes=attributes,
+        record_exception=False,
+        set_status_on_exception=False,
     ) as span:
         try:
             # No OK status on clean exit: UNSET is OTel's success default, and
@@ -166,44 +169,9 @@ def trace_mcp_call(
             # failures it converted to result objects instead of raising.
             yield span
         except Exception as e:
-            span.set_status(Status(StatusCode.ERROR, str(e)))
-            span.record_exception(e)
+            span.set_status(Status(StatusCode.ERROR, type(e).__name__))
+            span.add_event("exception", {"exception.type": type(e).__name__})
             raise
-
-
-def _redact_sensitive(data: dict[str, Any]) -> dict[str, Any]:
-    """Redact potentially sensitive values from arguments.
-
-    Redacts values for keys that might contain PII or secrets.
-
-    Args:
-        data: Dictionary to redact.
-
-    Returns:
-        Dictionary with sensitive values replaced.
-    """
-    sensitive_keys = {
-        "password",
-        "token",
-        "secret",
-        "key",
-        "auth",
-        "credential",
-        "user_id",
-        "email",
-    }
-    redacted: dict[str, Any] = {}
-
-    for key, value in data.items():
-        key_lower = key.lower()
-        if any(s in key_lower for s in sensitive_keys):
-            redacted[key] = "[REDACTED]"
-        elif isinstance(value, dict):
-            redacted[key] = _redact_sensitive(value)
-        else:
-            redacted[key] = value
-
-    return redacted
 
 
 def add_span_event(name: str, attributes: dict[str, Any] | None = None) -> None:

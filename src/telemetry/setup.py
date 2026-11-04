@@ -20,12 +20,14 @@ from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter, SpanExporter
 
 try:
     from opentelemetry.instrumentation.langchain import LangchainInstrumentor
 except ImportError:
     LangchainInstrumentor = None  # type: ignore[misc, assignment]
+
+from .content_filter import ContentFilteringSpanExporter
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,12 @@ def _build_resource_attributes(service_name: str) -> dict[str, str]:
     }
 
 
+def _filtered(exporter: SpanExporter) -> SpanExporter:
+    if settings.OTEL_CAPTURE_CONTENT:
+        return exporter
+    return ContentFilteringSpanExporter(exporter)
+
+
 def init_telemetry(service_name: str = "access-agent") -> None:
     """Initialize OpenTelemetry with OTLP export to Honeycomb.
 
@@ -59,6 +67,8 @@ def init_telemetry(service_name: str = "access-agent") -> None:
         OTEL_SERVICE_NAME: Override service name (optional)
         OTEL_ENABLED: Set to "false" to disable telemetry
         HONEYCOMB_DATASET: Dataset name (default: "access-ci")
+        OTEL_CAPTURE_CONTENT: Export prompt/response text on LangChain spans
+            (default false; refused in production)
     """
     global _tracer_provider
 
@@ -90,11 +100,11 @@ def init_telemetry(service_name: str = "access-agent") -> None:
             endpoint=f"{otlp_endpoint}/v1/traces",
             headers=headers,
         )
-        _tracer_provider.add_span_processor(BatchSpanProcessor(exporter))
+        _tracer_provider.add_span_processor(BatchSpanProcessor(_filtered(exporter)))
         logger.info(f"OpenTelemetry initialized: exporting to {otlp_endpoint} (dataset: {dataset})")
     else:
         # Local dev: export to console
-        _tracer_provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
+        _tracer_provider.add_span_processor(BatchSpanProcessor(_filtered(ConsoleSpanExporter())))
         logger.info("OpenTelemetry initialized: exporting to console (no OTLP endpoint configured)")
 
     # Set as global tracer provider
@@ -111,6 +121,11 @@ def init_telemetry(service_name: str = "access-agent") -> None:
 
     # Note: HTTPX instrumentation is handled via explicit AsyncOpenTelemetryTransport
     # in telemetry/http.py, which is more reliable than HTTPXClientInstrumentor().instrument()
+
+    # openllmetry captures prompt and response text unless this is "false",
+    # and it reads the variable on every span. Overwrite rather than setdefault
+    # so a stray value in .env can't turn capture back on.
+    os.environ["TRACELOOP_TRACE_CONTENT"] = "true" if settings.OTEL_CAPTURE_CONTENT else "false"
 
     # Auto-instrument LangChain (for LLM calls with token usage)
     if LangchainInstrumentor is not None:

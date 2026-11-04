@@ -11,7 +11,8 @@ class RecordExceptionMiddleware:
     sends exception detail to the OTel logs signal, which we don't export.
     Sitting inside the span and outside the exception handlers, this sees only
     exceptions no handler turned into a response, so each is recorded once and
-    the HTTP response is unchanged.
+    the HTTP response is unchanged. Only exception.type reaches Honeycomb: the
+    export filter drops the message and traceback (telemetry/content_filter.py).
     """
 
     def __init__(self, app: ASGIApp) -> None:
