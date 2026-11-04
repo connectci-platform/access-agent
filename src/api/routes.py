@@ -250,6 +250,55 @@ def _should_stream_token(msg: Any, metadata: dict[str, Any]) -> bool:
     )
 
 
+async def _write_query_turn_report(
+    *,
+    final_state: dict[str, Any],
+    request: QueryRequest,
+    session_id: str,
+    question_id: str,
+    duration_ms: float,
+    acting_user: str | None,
+    success: bool,
+    report_context: dict[str, Any] | None,
+) -> None:
+    """Turn report (denormalized read model for the reporting dashboard).
+
+    Off the response path and never raises into the stream. ``final_state`` may
+    be partial when the turn failed or timed out; ``_assemble_turn_report``
+    tolerates missing keys, and the judge is skipped.
+    """
+    try:
+        from ..agent.domains.capabilities import get_capability_registry as _cap_reg
+        from ..services.resource_matcher import resources_for_turn
+        from ..turn_reporter import get_turn_reporter
+
+        reporter = get_turn_reporter()
+        prior_turns = await asyncio.to_thread(reporter.count_turns_for_session, session_id)
+        # None = count unknown (DB error): write NULL, not a wrong "1".
+        turn_index = prior_turns + 1 if prior_turns is not None else None
+        resources = await resources_for_turn(
+            request.query, str(final_state.get("final_answer") or "")
+        )
+        await asyncio.to_thread(
+            reporter.log_turn_report,
+            final_state=final_state,
+            session_id=session_id,
+            turn_index=turn_index,
+            question_id=question_id,
+            query_text=request.query,
+            duration_ms=duration_ms,
+            acting_user=acting_user,
+            success=success,
+            capabilities=_cap_reg().infer_capability_ids(final_state.get("tool_results", [])),
+            resources=resources,
+            turn_capture=get_turn_capture(),
+            judge=None,
+            **(report_context or {}),
+        )
+    except Exception:
+        logger.exception("Turn report write failed")
+
+
 async def _stream_events(  # noqa: PLR0912, PLR0915
     request: QueryRequest,
     acting_user: str | None,
@@ -276,6 +325,21 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
     final_state: dict[str, Any] = {}
     reset_turn_capture()
     lock_run_id = run_id or str(uuid.uuid4())
+    timed_out = False
+
+    async def _report(*, success: bool, duration_ms: float | None = None) -> None:
+        await _write_query_turn_report(
+            final_state=final_state,
+            request=request,
+            session_id=session_id,
+            question_id=question_id,
+            duration_ms=duration_ms
+            if duration_ms is not None
+            else (time.time() - start_time) * 1000,
+            acting_user=acting_user,
+            success=success,
+            report_context=report_context,
+        )
 
     try:
         async with held_run(session_id, lock_run_id):
@@ -324,7 +388,13 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                 # CancelledError. held_run's finally releases the lock.
                 yield _format_sse_event("error", {"message": "Query timed out", "code": "timeout"})
                 yield _format_sse_event("done", {"success": False, "error": "timeout"})
-                return
+                timed_out = True
+
+        # Reported after held_run, like the success path, so a slow report
+        # write doesn't keep the thread locked.
+        if timed_out:
+            await _report(success=False)
+            return
 
         requires_auth = final_state.get("requires_auth")
         if requires_auth:
@@ -407,9 +477,11 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
         }
         yield _format_sse_event("done", done_data)
 
-        # Log usage asynchronously (same as non-streaming path)
-        usage_logger = get_usage_logger()
+        # The answer is delivered. Nothing below may fail the turn: a failure
+        # here would otherwise reach the handler below, which reports the turn
+        # as failed and sends a second done.
         try:
+            usage_logger = get_usage_logger()
             await asyncio.to_thread(
                 usage_logger.log_query,
                 query_text=request.query,
@@ -429,40 +501,14 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
         except Exception:
             logger.exception("Usage logging failed")
 
-        # Turn report (denormalized read model for the reporting dashboard).
-        # Off the response path, swallow failures — never affects the answer.
-        from ..agent.domains.capabilities import get_capability_registry as _cap_reg
-        from ..services.resource_matcher import resources_for_turn
-        from ..turn_reporter import get_turn_reporter
-
-        try:
-            reporter = get_turn_reporter()
-            prior_turns = await asyncio.to_thread(reporter.count_turns_for_session, session_id)
-            # None = count unknown (DB error): write NULL, not a wrong "1".
-            turn_index = prior_turns + 1 if prior_turns is not None else None
-            resources = await resources_for_turn(request.query, final_answer or "")
-            await asyncio.to_thread(
-                reporter.log_turn_report,
-                final_state=final_state,
-                session_id=session_id,
-                turn_index=turn_index,
-                question_id=question_id,
-                query_text=request.query,
-                duration_ms=duration_ms,
-                acting_user=acting_user,
-                success=True,
-                capabilities=_cap_reg().infer_capability_ids(final_state.get("tool_results", [])),
-                resources=resources,
-                turn_capture=get_turn_capture(),
-                judge=None,
-                **(report_context or {}),
-            )
-        except Exception:
-            logger.exception("Turn report write failed")
+        await _report(success=True, duration_ms=duration_ms)
 
         # Track query for Turnstile free-query counting
         if not acting_user:
-            get_turnstile_guard().record_query(session_id)
+            try:
+                get_turnstile_guard().record_query(session_id)
+            except Exception:
+                logger.exception("Turnstile query count failed")
 
     except asyncio.CancelledError:
         # Client disconnect / cancel. held_run's finally already released the
@@ -470,39 +516,9 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
         raise
     except Exception as e:
         logger.exception(f"Stream failed: {e}")
-        # Write a minimal success=False turn report so the dashboard can tell a
-        # failed query apart from one that never happened. Off the response path,
-        # swallow failures — never affects the error the user sees. final_state
-        # may be partial (the failure can land mid-stream); _assemble_turn_report
-        # tolerates missing keys, and the judge is skipped (there's no answer).
-        try:
-            from ..agent.domains.capabilities import get_capability_registry as _cap_reg
-            from ..services.resource_matcher import resources_for_turn
-            from ..turn_reporter import get_turn_reporter
-
-            reporter = get_turn_reporter()
-            prior_turns = await asyncio.to_thread(reporter.count_turns_for_session, session_id)
-            resources = await resources_for_turn(
-                request.query, str(final_state.get("final_answer") or "")
-            )
-            await asyncio.to_thread(
-                reporter.log_turn_report,
-                final_state=final_state,
-                session_id=session_id,
-                turn_index=turn_index,
-                question_id=question_id,
-                query_text=request.query,
-                duration_ms=(time.time() - start_time) * 1000,
-                acting_user=acting_user,
-                success=False,
-                capabilities=_cap_reg().infer_capability_ids(final_state.get("tool_results", [])),
-                resources=resources,
-                turn_capture=get_turn_capture(),
-                judge=None,
-                **(report_context or {}),
-            )
-        except Exception:
-            logger.exception("Failed-turn report write failed")
+        # A success=False row lets the dashboard tell a failed query apart from
+        # one that never happened.
+        await _report(success=False)
         yield _format_sse_event(
             "error", {"message": "Failed to process query", "code": "agent_error"}
         )
