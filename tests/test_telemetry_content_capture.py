@@ -17,6 +17,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
+from src.agent.context import AgentContext
 from src.config import settings
 from src.telemetry.content_filter import (
     CONTENT_ATTRIBUTES,
@@ -169,10 +170,10 @@ def _root_span_attributes(monkeypatch, stream: bool) -> dict:
     import src.agent.graph as graph_mod
 
     class _Graph:
-        async def ainvoke(self, state, config):
+        async def ainvoke(self, state, config, context=None):
             return {}
 
-        async def astream(self, state, config=None, stream_mode=None):
+        async def astream(self, state, config=None, stream_mode=None, context=None):
             return
             yield  # makes this an (empty) async generator
 
@@ -186,7 +187,7 @@ def _root_span_attributes(monkeypatch, stream: bool) -> dict:
         "session_id": "s",
         "question_id": "qid",
         "tool_catalog": {},
-        "acting_user": "jdoe@access-ci.org",
+        "context": AgentContext.for_eval("jdoe@access-ci.org", allow_writes=False),
     }
 
     async def _run():

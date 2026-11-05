@@ -137,7 +137,7 @@ async def test_profile_does_not_affect_acting_user(client, mock_agent, mock_regi
 
     assert response.status_code == 200
     mock_agent.assert_called_once()
-    assert mock_agent.call_args.kwargs.get("acting_user") is None
+    assert mock_agent.call_args.kwargs["context"].acting_user is None
 
 
 async def test_profile_does_not_override_token_identity(
@@ -154,4 +154,4 @@ async def test_profile_does_not_override_token_identity(
 
     assert response.status_code == 200
     mock_agent.assert_called_once()
-    assert mock_agent.call_args.kwargs.get("acting_user") == "A@access-ci.org"
+    assert mock_agent.call_args.kwargs["context"].acting_user == "A@access-ci.org"

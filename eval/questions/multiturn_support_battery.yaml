@@ -3,7 +3,8 @@
 # Facts are STUDENT-CHECK first pass; AUTHOR: markers need live values filled at
 # authoring time (same convention as gapfill_battery.yaml). Facts on dependent turns
 # MUST be checkable from prior ANSWER TEXT alone (judge never sees prior tool results).
-# Threads tagged acting_user_required need --acting-user with the eval test account.
+# Threads tagged acting_user_required need --acting-user with the eval test account,
+# plus --allow-writes for the action threads or --no-allow-writes otherwise.
 #
 # Every fact carries an explicit fact_id (<thread_id>-<turn_id>-<slug>) — identity is
 # the id, never the position, so facts can be reordered, deleted, or inserted here

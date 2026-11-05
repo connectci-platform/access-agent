@@ -28,6 +28,7 @@ from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, Tool
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_stream_writer
 from langgraph.errors import GraphRecursionError
+from langgraph.runtime import Runtime  # noqa: TC002 - LangGraph reads node annotations at runtime
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
 from ...config import settings
 from ...llm import get_llm, is_empty_answer
 from ...telemetry import get_tracer
+from ..context import AgentContext, require_context
 from ..domains.capabilities import WRITE_MCP_TOOL_NAMES
 from ..domains.tools import create_mcp_tools_from_catalog
 from ..middleware.requires_auth import RequiresAuthMiddleware
@@ -80,6 +82,7 @@ def _build_prompt_and_tools(
     *,
     tool_catalog: dict[str, Any],
     acting_user: str | None,
+    can_write: bool,
     resource_context: str | None,
     profile: dict[str, Any] | None,
 ) -> tuple[str, list[BaseTool], bool]:
@@ -100,7 +103,9 @@ def _build_prompt_and_tools(
     truthful ``agent.profile_present`` span attribute rather than the raw
     "was a profile supplied" value.
     """
-    mcp_tools = _apply_read_only_filter(create_mcp_tools_from_catalog(tool_catalog, acting_user))
+    mcp_tools = _apply_read_only_filter(
+        create_mcp_tools_from_catalog(tool_catalog, acting_user, can_write=can_write)
+    )
     if profile is not None and acting_user is None:
         logger.warning("profile supplied without an acting user; ignoring")
         profile = None
@@ -108,6 +113,7 @@ def _build_prompt_and_tools(
     profile_model = UserProfile.model_validate(profile) if profile is not None else None
     prompt = build_system_prompt(
         acting_user=acting_user,
+        can_write=can_write,
         resource_context=resource_context,
         profile=profile_model,
     )
@@ -532,16 +538,19 @@ def _replace_sentinel_message(messages: list[Any], replacement: str) -> None:
             return
 
 
-async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:  # noqa: PLR0915
+async def tool_calling_loop_node(  # noqa: PLR0915
+    state: dict[str, Any], runtime: Runtime[AgentContext]
+) -> dict[str, Any]:
     """Run the tool-calling loop.
 
     Consumes:
         state.messages: conversation history (HumanMessage / AIMessage / ToolMessage)
         state.query: current user query (already present in messages[-1])
         state.tool_catalog: dict describing MCP tools available to this request
-        state.acting_user: optional ACCESS ID for personalized tool calls
         state.resource_context: optional RP slug for resource-scoped queries
         state.profile: optional UserProfile.model_dump() (allocated resources)
+        runtime.context: the AgentContext — who the run acts for and whether
+            they may make changes. Required; a run without one raises.
 
     Produces:
         final_answer: LLM's final text response
@@ -559,11 +568,13 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:  # no
         "agent.tool_calling_loop",
         attributes={"agent.node": "tool_calling_loop"},
     ) as span:
-        acting_user = state.get("acting_user")
+        context = require_context(runtime.context)
+        acting_user = context.acting_user
 
         system_prompt, tools, profile_used = _build_prompt_and_tools(
             tool_catalog=state.get("tool_catalog") or {},
             acting_user=acting_user,
+            can_write=context.can_write,
             resource_context=state.get("resource_context"),
             profile=state.get("profile"),
         )
@@ -573,10 +584,10 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:  # no
         span.set_attribute("agent.profile_present", profile_used)
 
         llm = get_llm(max_tokens=settings.MAX_TOKENS_LOOP)
-        # acting_user captured by closure: the inner create_agent state does
-        # not carry it (it lives on the OUTER graph's AgentState). One gate per
-        # turn, so its refusals are this turn's record.
-        gate = RequiresAuthMiddleware(acting_user)
+        # The gate reads the caller from the runtime context, which the inner
+        # create_agent inherits. One gate per turn, so its refusals are this
+        # turn's record.
+        gate = RequiresAuthMiddleware()
         # Same list feeds create_agent and the limit (#295).
         middleware = [
             # These hook different points — context editing wraps the model

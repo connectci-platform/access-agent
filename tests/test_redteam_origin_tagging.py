@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from starlette.datastructures import Headers
 
+from src.agent.context import AgentContext
 from src.api.routes import redteam_report_context
 
 
@@ -107,7 +108,7 @@ def _drive_stream_events(headers: Headers) -> MagicMock:
             ctx = redteam_report_context(headers)
             async for _ in routes._stream_events(
                 request,
-                acting_user=None,
+                context=AgentContext.anonymous(),
                 session_id="s1",
                 question_id="q1",
                 include_trace=False,

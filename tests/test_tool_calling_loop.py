@@ -19,6 +19,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from tests.agent_runtime import run_loop
+
 
 @pytest.fixture
 def base_state():
@@ -43,7 +45,6 @@ def base_state():
                 }
             ]
         },
-        "acting_user": None,
         "rag_matches": [],
         "query_classification": None,
     }
@@ -60,8 +61,6 @@ async def test_node_exists_and_is_importable():
 @pytest.mark.asyncio
 async def test_direct_answer_no_tools_called(base_state):
     """LLM that returns a final answer immediately produces final_answer in state."""
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
     final_message = AIMessage(content="ACCESS has several GPU resources: Delta, FASTER, ...")
 
     # Mock create_agent to return a compiled-graph-like object whose
@@ -75,7 +74,7 @@ async def test_direct_answer_no_tools_called(base_state):
     }
 
     with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
-        result = await tool_calling_loop_node(base_state)
+        result = await run_loop(base_state)
 
     assert result["final_answer"] == final_message.content
     assert any(isinstance(m, AIMessage) for m in result["messages"])
@@ -85,8 +84,6 @@ async def test_direct_answer_no_tools_called(base_state):
 @pytest.mark.asyncio
 async def test_single_tool_call_then_answer(base_state):
     """LLM calls one tool, sees result, produces answer — tools_used tracks the call."""
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
     tool_call_msg = AIMessage(
         content="",
         tool_calls=[{"id": "call_1", "name": "search_resources", "args": {"has_gpu": True}}],
@@ -103,7 +100,7 @@ async def test_single_tool_call_then_answer(base_state):
     }
 
     with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
-        result = await tool_calling_loop_node(base_state)
+        result = await run_loop(base_state)
 
     assert result["final_answer"] == final_msg.content
     assert "search_resources" in result["tools_used"]
@@ -112,8 +109,6 @@ async def test_single_tool_call_then_answer(base_state):
 @pytest.mark.asyncio
 async def test_tool_failure_is_recovered_or_reported(base_state):
     """A failed tool result should not crash the node; LLM's response is returned."""
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
     tool_call = AIMessage(
         content="",
         tool_calls=[{"id": "c1", "name": "search_resources", "args": {}}],
@@ -133,7 +128,7 @@ async def test_tool_failure_is_recovered_or_reported(base_state):
     }
 
     with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
-        result = await tool_calling_loop_node(base_state)
+        result = await run_loop(base_state)
 
     assert result["final_answer"] == recovery_answer.content
     # tools_used still lists the attempted call so traces are honest
@@ -143,8 +138,6 @@ async def test_tool_failure_is_recovered_or_reported(base_state):
 @pytest.mark.asyncio
 async def test_empty_tool_catalog_still_produces_answer(base_state):
     """Node must not crash when no tools are available."""
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
     state = {**base_state, "tool_catalog": {"servers": []}}
     answer = AIMessage(content="I don't have live tools available right now, but ...")
 
@@ -152,7 +145,7 @@ async def test_empty_tool_catalog_still_produces_answer(base_state):
     mock_graph.ainvoke.return_value = {"messages": [*state["messages"], answer]}
 
     with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
-        result = await tool_calling_loop_node(state)
+        result = await run_loop(state)
 
     assert result["final_answer"] == answer.content
     assert result.get("tools_used") == []
@@ -161,14 +154,12 @@ async def test_empty_tool_catalog_still_produces_answer(base_state):
 @pytest.mark.asyncio
 async def test_messages_are_accumulated_not_replaced(base_state):
     """The node must return the full message history (caller-supplied + loop-generated)."""
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
     final = AIMessage(content="ok")
     mock_graph = AsyncMock()
     mock_graph.ainvoke.return_value = {"messages": [*base_state["messages"], final]}
 
     with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
-        result = await tool_calling_loop_node(base_state)
+        result = await run_loop(base_state)
 
     # The original HumanMessage must still be present
     assert any(
@@ -180,9 +171,9 @@ async def test_messages_are_accumulated_not_replaced(base_state):
 @pytest.mark.asyncio
 async def test_system_prompt_includes_acting_user_when_authenticated(base_state):
     """When acting_user is set, the system prompt should mention it."""
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
-    state = {**base_state, "acting_user": "jsmith@access-ci.org"}
+    state = {
+        **base_state,
+    }
     answer = AIMessage(content="ok")
     mock_graph = AsyncMock()
     mock_graph.ainvoke.return_value = {"messages": [*state["messages"], answer]}
@@ -194,7 +185,7 @@ async def test_system_prompt_includes_acting_user_when_authenticated(base_state)
         return mock_graph
 
     with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture_prompt):
-        await tool_calling_loop_node(state)
+        await run_loop(state, "jsmith@access-ci.org")
 
     assert "jsmith@access-ci.org" in captured_prompt["prompt"]
 
@@ -202,8 +193,6 @@ async def test_system_prompt_includes_acting_user_when_authenticated(base_state)
 @pytest.mark.asyncio
 async def test_tool_results_backfilled_from_messages(base_state):
     """Loop must populate state.tool_results from ToolMessage content for eval-scorer parity."""
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
     tool_call_msg = AIMessage(
         content="",
         tool_calls=[{"id": "call_1", "name": "search_resources", "args": {"has_gpu": True}}],
@@ -235,7 +224,7 @@ async def test_tool_results_backfilled_from_messages(base_state):
     }
 
     with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
-        result = await tool_calling_loop_node(base_state)
+        result = await run_loop(base_state)
 
     tool_results = result["tool_results"]
     assert len(tool_results) == 2
@@ -265,8 +254,6 @@ async def test_final_answer_is_none_when_no_ai_message_content(base_state):
     """When the loop emits only tool calls + tool results (no AIMessage text),
     final_answer should be None — not "" — so downstream can distinguish
     "loop produced nothing" from "LLM emitted an empty string"."""
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
     tool_call = AIMessage(
         content="",
         tool_calls=[{"id": "call_1", "name": "search_resources", "args": {}}],
@@ -282,7 +269,7 @@ async def test_final_answer_is_none_when_no_ai_message_content(base_state):
     }
 
     with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
-        result = await tool_calling_loop_node(base_state)
+        result = await run_loop(base_state)
 
     assert result["final_answer"] is None
     # node_trace should reflect 0 answer_length, not crash on len(None)
@@ -296,14 +283,12 @@ async def test_recursion_limit_error_produces_graceful_response(base_state):
     input messages are preserved so the caller sees at minimum their query."""
     from langgraph.errors import GraphRecursionError
 
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
     mock_graph = AsyncMock()
     mock_graph.ainvoke.side_effect = GraphRecursionError("test recursion limit")
 
     with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
         # Must NOT re-raise
-        result = await tool_calling_loop_node(base_state)
+        result = await run_loop(base_state)
 
     answer = result["final_answer"]
     assert answer is not None
@@ -330,7 +315,6 @@ async def test_orphan_tool_messages_are_counted(base_state):
     telemetry surfaces the rare edge case."""
     from src.agent.nodes.tool_calling_loop import (
         _build_tool_results,
-        tool_calling_loop_node,
     )
 
     # One paired call+result, plus one orphan ToolMessage (no AIMessage anchors it).
@@ -360,7 +344,7 @@ async def test_orphan_tool_messages_are_counted(base_state):
     mock_graph.ainvoke.return_value = {"messages": messages}
 
     with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
-        result = await tool_calling_loop_node(base_state)
+        result = await run_loop(base_state)
 
     # Orphan excluded from tool_results — consistent with existing behavior
     tool_message_count = sum(1 for m in messages if isinstance(m, ToolMessage))
@@ -419,8 +403,6 @@ async def test_graph_loop_ends():
 @pytest.mark.asyncio
 async def test_loop_appends_search_access_documents(base_state):
     """The loop's tool list includes search_access_documents alongside the MCP catalog."""
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
     answer = AIMessage(content="ok")
     mock_graph = AsyncMock()
     mock_graph.ainvoke.return_value = {"messages": [*base_state["messages"], answer]}
@@ -432,7 +414,7 @@ async def test_loop_appends_search_access_documents(base_state):
         return mock_graph
 
     with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture):
-        await tool_calling_loop_node(base_state)
+        await run_loop(base_state)
 
     tool_names = [t.name for t in captured["tools"]]
     assert "search_access_documents" in tool_names
@@ -441,8 +423,6 @@ async def test_loop_appends_search_access_documents(base_state):
 @pytest.mark.asyncio
 async def test_loop_uses_system_prompt(base_state):
     """Prompt frames docs as a tool, includes announcements + JSM choreographies."""
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
     answer = AIMessage(content="ok")
     mock_graph = AsyncMock()
     mock_graph.ainvoke.return_value = {"messages": [*base_state["messages"], answer]}
@@ -454,7 +434,7 @@ async def test_loop_uses_system_prompt(base_state):
         return mock_graph
 
     with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture):
-        await tool_calling_loop_node(base_state)
+        await run_loop(base_state)
 
     prompt = captured["prompt"]
     assert "search_access_documents" in prompt
@@ -465,8 +445,6 @@ async def test_loop_uses_system_prompt(base_state):
 @pytest.mark.asyncio
 async def test_prompt_includes_resource_context(base_state):
     """When the request has a resource_context, the prompt mentions the slug."""
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
     state = {**base_state, "resource_context": "delta"}
     answer = AIMessage(content="ok")
     mock_graph = AsyncMock()
@@ -479,7 +457,7 @@ async def test_prompt_includes_resource_context(base_state):
         return mock_graph
 
     with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture):
-        await tool_calling_loop_node(state)
+        await run_loop(state)
 
     assert "delta" in captured["prompt"]
     assert "rp_name" in captured["prompt"]
@@ -595,7 +573,6 @@ def _capture_tools_kwarg(mock_graph):
 async def test_read_only_strips_write_tools_from_loop_registry(monkeypatch, mixed_catalog_state):
     """With READ_ONLY=true, no MCP tool name in WRITE_MCP_TOOL_NAMES reaches create_agent."""
     from src.agent.domains.capabilities import WRITE_MCP_TOOL_NAMES
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
 
     monkeypatch.setattr("src.config.settings.READ_ONLY", True, raising=False)
 
@@ -606,7 +583,7 @@ async def test_read_only_strips_write_tools_from_loop_registry(monkeypatch, mixe
     capture, captured = _capture_tools_kwarg(mock_graph)
 
     with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture):
-        await tool_calling_loop_node(mixed_catalog_state)
+        await run_loop(mixed_catalog_state)
 
     tool_names = {t.name for t in captured["tools"]}
     leaked = tool_names & WRITE_MCP_TOOL_NAMES
@@ -644,8 +621,6 @@ async def test_read_only_strips_events_organizer_write_tools_from_loop(
     being added to WRITE_MCP_TOOL_NAMES, so the loop left them callable under
     READ_ONLY. This asserts the tool_calling_loop strip covers all nine by name.
     """
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
     monkeypatch.setattr("src.config.settings.READ_ONLY", True, raising=False)
 
     mock_graph = AsyncMock()
@@ -655,7 +630,7 @@ async def test_read_only_strips_events_organizer_write_tools_from_loop(
     capture, captured = _capture_tools_kwarg(mock_graph)
 
     with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture):
-        await tool_calling_loop_node(mixed_catalog_state)
+        await run_loop(mixed_catalog_state)
 
     tool_names = {t.name for t in captured["tools"]}
     leaked = tool_names & set(_EVENTS_ORGANIZER_WRITE_TOOLS)
@@ -670,8 +645,6 @@ async def test_read_only_strips_events_organizer_write_tools_from_loop(
 @pytest.mark.asyncio
 async def test_read_only_off_keeps_write_tools_in_loop_registry(monkeypatch, mixed_catalog_state):
     """Baseline: with READ_ONLY=false, write tools remain available to the loop."""
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
     monkeypatch.setattr("src.config.settings.READ_ONLY", False, raising=False)
 
     mock_graph = AsyncMock()
@@ -681,7 +654,7 @@ async def test_read_only_off_keeps_write_tools_in_loop_registry(monkeypatch, mix
     capture, captured = _capture_tools_kwarg(mock_graph)
 
     with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture):
-        await tool_calling_loop_node(mixed_catalog_state)
+        await run_loop(mixed_catalog_state)
 
     tool_names = {t.name for t in captured["tools"]}
     # All 6 write tools survive when the guard is off.
@@ -884,7 +857,6 @@ async def test_node_passes_status_emitter_via_callbacks(base_state):
     react loop fires our on_tool_start callback for every tool it runs."""
     from src.agent.nodes.tool_calling_loop import (
         _ToolStatusEmitter,
-        tool_calling_loop_node,
     )
 
     final = AIMessage(content="ok")
@@ -900,7 +872,7 @@ async def test_node_passes_status_emitter_via_callbacks(base_state):
     mock_graph.ainvoke.side_effect = capture_ainvoke
 
     with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
-        await tool_calling_loop_node(base_state)
+        await run_loop(base_state)
 
     callbacks = captured["config"].get("callbacks", [])
     assert any(isinstance(cb, _ToolStatusEmitter) for cb in callbacks), (
@@ -919,7 +891,6 @@ async def test_sentinel_answer_becomes_prose_and_flags_the_turn(base_state):
     answer_unavailable so the eval records a failed turn instead of judging the
     apology as a bad answer.
     """
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
     from src.llm.providers import EMPTY_ANSWER_SENTINEL
 
     # Trailing whitespace is the shape an equality guard misses: the streaming
@@ -929,7 +900,7 @@ async def test_sentinel_answer_becomes_prose_and_flags_the_turn(base_state):
     mock_graph.ainvoke.return_value = {"messages": [*base_state["messages"], sentinel_message]}
 
     with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
-        result = await tool_calling_loop_node(base_state)
+        result = await run_loop(base_state)
 
     assert EMPTY_ANSWER_SENTINEL not in result["final_answer"]
     assert "support.access-ci.org" in result["final_answer"]
@@ -941,15 +912,13 @@ async def test_sentinel_answer_becomes_prose_and_flags_the_turn(base_state):
 @pytest.mark.asyncio
 async def test_ordinary_answer_is_not_flagged_unavailable(base_state):
     """Positive control: a real answer must not be treated as unavailable."""
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
     mock_graph = AsyncMock()
     mock_graph.ainvoke.return_value = {
         "messages": [*base_state["messages"], AIMessage(content="Delta has A100 GPUs.")]
     }
 
     with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
-        result = await tool_calling_loop_node(base_state)
+        result = await run_loop(base_state)
 
     assert result["final_answer"] == "Delta has A100 GPUs."
     assert result["answer_unavailable"] is False
@@ -959,13 +928,12 @@ async def test_ordinary_answer_is_not_flagged_unavailable(base_state):
 async def test_prompt_includes_user_profile_from_state_dict(base_state):
     """state['profile'] is a dict (as checkpointing stores it); the loop
     revalidates it into UserProfile before building the prompt."""
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
     from src.agent.profile import AllocatedResource, UserProfile
 
     profile = UserProfile(
         allocated_resources=[AllocatedResource(name="Delta GPU", rp_slug="delta")]
     )
-    state = {**base_state, "acting_user": "alice", "profile": profile.model_dump()}
+    state = {**base_state, "profile": profile.model_dump()}
     answer = AIMessage(content="ok")
     mock_graph = AsyncMock()
     mock_graph.ainvoke.return_value = {"messages": [*state["messages"], answer]}
@@ -977,7 +945,7 @@ async def test_prompt_includes_user_profile_from_state_dict(base_state):
         return mock_graph
 
     with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture):
-        await tool_calling_loop_node(state)
+        await run_loop(state, "alice")
 
     assert "delta" in captured["prompt"]
     assert "## User profile" in captured["prompt"]
@@ -988,13 +956,12 @@ async def test_profile_present_span_attribute_set(base_state):
     """agent.profile_present is set unconditionally (not a branch): True case."""
     from unittest.mock import MagicMock
 
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
     from src.agent.profile import AllocatedResource, UserProfile
 
     profile = UserProfile(
         allocated_resources=[AllocatedResource(name="Delta GPU", rp_slug="delta")]
     )
-    state = {**base_state, "acting_user": "alice", "profile": profile.model_dump()}
+    state = {**base_state, "profile": profile.model_dump()}
     answer = AIMessage(content="ok")
     mock_graph = AsyncMock()
     mock_graph.ainvoke.return_value = {"messages": [*state["messages"], answer]}
@@ -1008,7 +975,7 @@ async def test_profile_present_span_attribute_set(base_state):
         patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph),
         patch("src.agent.nodes.tool_calling_loop.get_tracer", return_value=mock_tracer),
     ):
-        await tool_calling_loop_node(state)
+        await run_loop(state, "alice")
 
     mock_span.set_attribute.assert_any_call("agent.profile_present", True)
 
@@ -1017,8 +984,6 @@ async def test_profile_present_span_attribute_set(base_state):
 async def test_profile_absent_span_attribute_set_false(base_state):
     """agent.profile_present is set unconditionally (not a branch): False case."""
     from unittest.mock import MagicMock
-
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
 
     answer = AIMessage(content="ok")
     mock_graph = AsyncMock()
@@ -1033,7 +998,7 @@ async def test_profile_absent_span_attribute_set_false(base_state):
         patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph),
         patch("src.agent.nodes.tool_calling_loop.get_tracer", return_value=mock_tracer),
     ):
-        await tool_calling_loop_node(base_state)
+        await run_loop(base_state)
 
     mock_span.set_attribute.assert_any_call("agent.profile_present", False)
 
@@ -1047,13 +1012,12 @@ async def test_profile_without_acting_user_is_ignored(base_state, caplog):
     import logging
     from unittest.mock import MagicMock
 
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
     from src.agent.profile import AllocatedResource, UserProfile
 
     profile = UserProfile(
         allocated_resources=[AllocatedResource(name="Delta GPU", rp_slug="delta")]
     )
-    state = {**base_state, "acting_user": None, "profile": profile.model_dump()}
+    state = {**base_state, "profile": profile.model_dump()}
     answer = AIMessage(content="ok")
     mock_graph = AsyncMock()
     mock_graph.ainvoke.return_value = {"messages": [*state["messages"], answer]}
@@ -1074,7 +1038,7 @@ async def test_profile_without_acting_user_is_ignored(base_state, caplog):
         patch("src.agent.nodes.tool_calling_loop.get_tracer", return_value=mock_tracer),
         caplog.at_level(logging.WARNING, logger="src.agent.nodes.tool_calling_loop"),
     ):
-        await tool_calling_loop_node(state)
+        await run_loop(state)
 
     assert "## User profile" not in captured["prompt"]
     mock_span.set_attribute.assert_any_call("agent.profile_present", False)
@@ -1086,13 +1050,12 @@ async def test_profile_without_acting_user_is_ignored(base_state, caplog):
 @pytest.mark.asyncio
 async def test_profile_with_acting_user_is_used(base_state):
     """Companion case: profile + acting_user present → section renders."""
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
     from src.agent.profile import AllocatedResource, UserProfile
 
     profile = UserProfile(
         allocated_resources=[AllocatedResource(name="Delta GPU", rp_slug="delta")]
     )
-    state = {**base_state, "acting_user": "alice", "profile": profile.model_dump()}
+    state = {**base_state, "profile": profile.model_dump()}
     answer = AIMessage(content="ok")
     mock_graph = AsyncMock()
     mock_graph.ainvoke.return_value = {"messages": [*state["messages"], answer]}
@@ -1104,6 +1067,6 @@ async def test_profile_with_acting_user_is_used(base_state):
         return mock_graph
 
     with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=capture):
-        await tool_calling_loop_node(state)
+        await run_loop(state, "alice")
 
     assert "## User profile" in captured["prompt"]

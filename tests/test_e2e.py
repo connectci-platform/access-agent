@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from src.agent.context import AgentContext
+
 # Mark all tests in this module as e2e and skip if the configured LLM
 # provider has no credentials. The nightly runs the production provider
 # (LLM_PROVIDER=vllm); local runs default to openai.
@@ -122,6 +124,7 @@ def run_query(tool_catalog):
             session_id="e2e_test",
             question_id="e2e_test",
             tool_catalog=tool_catalog,
+            context=AgentContext.anonymous(),
             use_checkpointing=False,
         )
 

@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
+from src.agent.context import AgentContext
 from src.api import routes
 
 
@@ -36,7 +37,7 @@ async def _collect_events(fake_stream) -> list[tuple[str, dict]]:
     ):
         gen = routes._stream_events(
             routes.QueryRequest(query="q", session_id="s1"),
-            acting_user=None,
+            context=AgentContext.anonymous(),
             session_id="s1",
             question_id="q1",
             include_trace=False,

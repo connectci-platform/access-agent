@@ -26,6 +26,7 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
 import src.agent.graph as g
+from src.agent.context import AgentContext
 
 TOOL_CATALOG: dict[str, Any] = {"tools": [], "quick_lookup": {}}
 
@@ -141,6 +142,7 @@ async def test_run_agent_injected_checkpointer_fresh_thread():
         session_id="thread-fresh",
         question_id="q1",
         tool_catalog=TOOL_CATALOG,
+        context=AgentContext.anonymous(),
         checkpointer=saver,
     )
 
@@ -158,6 +160,7 @@ async def test_run_agent_injected_checkpointer_resumes_prior_state():
         session_id="thread-resume",
         question_id="q1",
         tool_catalog=TOOL_CATALOG,
+        context=AgentContext.anonymous(),
         checkpointer=saver,
     )
 
@@ -172,6 +175,7 @@ async def test_run_agent_injected_checkpointer_resumes_prior_state():
         session_id="thread-resume",
         question_id="q2",
         tool_catalog=TOOL_CATALOG,
+        context=AgentContext.anonymous(),
         checkpointer=saver,
     )
 
@@ -200,6 +204,7 @@ async def test_run_agent_per_request_checkpointer_branch(saver_with_async_setup)
             session_id="thread-per-request",
             question_id="q1",
             tool_catalog=TOOL_CATALOG,
+            context=AgentContext.anonymous(),
             use_checkpointing=True,
             db_uri="sqlite:///fake",
         )
@@ -233,6 +238,7 @@ async def test_stream_agent_injected_checkpointer_fresh_thread():
             session_id="stream-thread-fresh",
             question_id="q1",
             tool_catalog=TOOL_CATALOG,
+            context=AgentContext.anonymous(),
             checkpointer=saver,
         )
     )
@@ -252,6 +258,7 @@ async def test_stream_agent_injected_checkpointer_resumes_prior_state():
             session_id="stream-thread-resume",
             question_id="q1",
             tool_catalog=TOOL_CATALOG,
+            context=AgentContext.anonymous(),
             checkpointer=saver,
         )
     )
@@ -268,6 +275,7 @@ async def test_stream_agent_injected_checkpointer_resumes_prior_state():
             session_id="stream-thread-resume",
             question_id="q2",
             tool_catalog=TOOL_CATALOG,
+            context=AgentContext.anonymous(),
             checkpointer=saver,
         )
     )
@@ -294,6 +302,7 @@ async def test_stream_agent_per_request_checkpointer_branch(saver_with_async_set
                 session_id="stream-thread-per-request",
                 question_id="q1",
                 tool_catalog=TOOL_CATALOG,
+                context=AgentContext.anonymous(),
                 use_checkpointing=True,
                 db_uri="sqlite:///fake",
             )

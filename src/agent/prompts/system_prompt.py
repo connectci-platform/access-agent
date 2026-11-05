@@ -388,6 +388,8 @@ jumping to ticket creation."""
 
 def build_system_prompt(
     acting_user: str | None = None,
+    *,
+    can_write: bool = False,
     resource_context: str | None = None,
     profile: UserProfile | None = None,
 ) -> str:
@@ -397,6 +399,11 @@ def build_system_prompt(
         acting_user: ACCESS ID of the authenticated requester. Surfaced
             so the LLM can pass it through tools that personalize on
             identity (allocations, ticket-creation, personal usage).
+        can_write: Whether this run may make changes. When a signed-in caller
+            can't, the announcement and ticket workflows are left out, since
+            they walk the model through tools it will be refused. The gate
+            enforces the limit either way; this only keeps the prompt from
+            inviting calls that fail.
         resource_context: RP slug from the request (e.g. 'delta'). When
             present, surfaces a hint that resource-scoped questions
             should pass `rp_name=<resource_context>` to
@@ -411,7 +418,15 @@ def build_system_prompt(
     """
     sections: list[str] = [SYSTEM_IDENTITY]
 
-    if acting_user:
+    read_only_session = acting_user is not None and not can_write
+    if read_only_session:
+        sections.append(
+            f"## Acting user\n\nCurrent user: `{acting_user}`. "
+            f"Use this when calling tools that accept an acting-user "
+            f"identity (allocations, personal usage queries). This chat can read "
+            f"information for the user but can't make changes on their behalf."
+        )
+    elif acting_user:
         sections.append(
             f"## Acting user\n\nCurrent user: `{acting_user}`. "
             f"Use this when calling tools that accept an acting-user "
@@ -443,7 +458,8 @@ def build_system_prompt(
         if profile_section:
             sections.append(profile_section)
 
-    sections.append(ANNOUNCEMENTS_WORKFLOWS_SECTION)
-    sections.append(JSM_WORKFLOW_SECTION)
+    if not read_only_session:
+        sections.append(ANNOUNCEMENTS_WORKFLOWS_SECTION)
+        sections.append(JSM_WORKFLOW_SECTION)
 
     return "\n\n".join(sections)

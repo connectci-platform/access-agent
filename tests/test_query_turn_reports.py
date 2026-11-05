@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.agent.context import AgentContext
 from src.api import routes
 
 
@@ -43,7 +44,7 @@ async def _drain(fake_stream, run_id: str | None = None) -> list[str]:
     ):
         gen = routes._stream_events(
             routes.QueryRequest(query="q", session_id="s1"),
-            acting_user=None,
+            context=AgentContext.anonymous(),
             session_id="s1",
             question_id="q1",
             include_trace=False,

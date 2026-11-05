@@ -172,6 +172,7 @@ class TestHandleRun:
             allow_factless=False,
             profile_resource=["Delta Storage"],
             acting_user="jdoe",
+            allow_writes=False,
         )
 
         with (
@@ -197,6 +198,7 @@ class TestHandleRun:
             allow_factless=False,
             profile_resource=["Delta\n#x"],
             acting_user="jdoe",
+            allow_writes=False,
         )
 
         with (
@@ -222,6 +224,7 @@ class TestHandleRun:
             allow_factless=False,
             profile_resource=["Delta GPU=delta", "Delta Storage"],
             acting_user="jdoe",
+            allow_writes=False,
         )
 
         mock_cache = MagicMock()
@@ -253,6 +256,7 @@ class TestHandleRun:
             allow_factless=False,
             profile_resource=None,
             acting_user="jdoe",
+            allow_writes=False,
         )
 
         with (
@@ -263,6 +267,7 @@ class TestHandleRun:
             _handle_run(args)
 
         assert mock_run_eval.call_args.kwargs["acting_user"] == "jdoe"
+        assert mock_run_eval.call_args.kwargs["allow_writes"] is False
 
     def test_handle_run_profile_resource_without_acting_user_raises(self):
         """A profile implies an authenticated user; --profile-resource without
@@ -278,6 +283,7 @@ class TestHandleRun:
             allow_factless=False,
             profile_resource=["Delta Storage"],
             acting_user=None,
+            allow_writes=None,
         )
 
         with (

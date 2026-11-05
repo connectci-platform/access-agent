@@ -122,7 +122,7 @@ async def test_valid_token_sets_acting_user(client, mock_agent, mock_registry, a
 
     assert response.status_code == 200
     mock_agent.assert_called_once()
-    assert mock_agent.call_args.kwargs.get("acting_user") == "jsmith@access-ci.org"
+    assert mock_agent.call_args.kwargs["context"].acting_user == "jsmith@access-ci.org"
 
 
 async def test_no_token_anonymous(client, mock_agent, mock_registry):
@@ -133,7 +133,7 @@ async def test_no_token_anonymous(client, mock_agent, mock_registry):
 
     assert response.status_code == 200
     mock_agent.assert_called_once()
-    assert mock_agent.call_args.kwargs.get("acting_user") is None
+    assert mock_agent.call_args.kwargs["context"].acting_user is None
 
 
 async def test_cookie_only_request_is_anonymous(client, mock_agent, mock_registry, agent_tokens):
@@ -147,7 +147,7 @@ async def test_cookie_only_request_is_anonymous(client, mock_agent, mock_registr
     )
 
     assert response.status_code == 200
-    assert mock_agent.call_args.kwargs.get("acting_user") is None
+    assert mock_agent.call_args.kwargs["context"].acting_user is None
 
 
 async def test_body_acting_user_is_ignored_without_token(client, mock_agent, mock_registry):
@@ -165,7 +165,7 @@ async def test_body_acting_user_is_ignored_without_token(client, mock_agent, moc
 
     assert response.status_code == 200
     mock_agent.assert_called_once()
-    assert mock_agent.call_args.kwargs.get("acting_user") is None
+    assert mock_agent.call_args.kwargs["context"].acting_user is None
 
 
 async def test_token_overrides_body(client, mock_agent, mock_registry, agent_tokens):
@@ -179,7 +179,7 @@ async def test_token_overrides_body(client, mock_agent, mock_registry, agent_tok
     )
 
     assert response.status_code == 200
-    assert mock_agent.call_args.kwargs.get("acting_user") == "token-user@access-ci.org"
+    assert mock_agent.call_args.kwargs["context"].acting_user == "token-user@access-ci.org"
 
 
 async def test_body_acting_user_does_not_bypass_turnstile(
@@ -253,7 +253,7 @@ async def test_body_acting_user_claims_anon_owned_thread(client, mock_agent, moc
     )
 
     assert response.status_code == 200
-    assert mock_agent.call_args.kwargs.get("acting_user") is None
+    assert mock_agent.call_args.kwargs["context"].acting_user is None
     owner = get_thread_owner_store().resolve_owner(session_id)
     assert owner is not None
     assert owner.was_authenticated is False
@@ -271,7 +271,7 @@ async def test_valid_token_claims_authenticated_owned_thread(
     )
 
     assert response.status_code == 200
-    assert mock_agent.call_args.kwargs.get("acting_user") == "jsmith@access-ci.org"
+    assert mock_agent.call_args.kwargs["context"].acting_user == "jsmith@access-ci.org"
     owner = get_thread_owner_store().resolve_owner(session_id)
     assert owner is not None
     assert owner.was_authenticated is True

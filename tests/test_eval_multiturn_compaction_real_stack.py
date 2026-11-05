@@ -31,6 +31,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langgraph.checkpoint.memory import InMemorySaver
 
+from src.agent.context import AgentContext
 from src.agent.graph import create_checkpointed_graph
 from src.eval.multiturn import _turn_delta_state
 
@@ -156,6 +157,7 @@ async def test_post_compaction_turns_get_nonempty_correctly_scoped_deltas(monkey
                     "tool_catalog": {"servers": []},
                 },
                 config,
+                context=AgentContext.anonymous(),
             )
             # Carry the merged thread forward the way run_agent does when resuming.
             messages = list(state["messages"])
@@ -226,6 +228,7 @@ async def test_post_compaction_turn_reports_get_the_same_delta(monkeypatch):
                     "tool_catalog": {"servers": []},
                 },
                 config,
+                context=AgentContext.anonymous(),
             )
             messages = list(state["messages"])
             states.append(state)

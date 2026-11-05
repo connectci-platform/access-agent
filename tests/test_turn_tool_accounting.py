@@ -25,6 +25,7 @@ from src.agent.nodes import tool_calling_loop as loop_mod
 from src.agent.nodes.tool_calling_loop import _this_turn_messages
 from src.agent.turn_capture import get_turn_capture, record_tool_timing, reset_turn_capture
 from src.turn_reporter import _assemble_turn_report
+from tests.agent_runtime import context_for, run_loop
 
 REUSED_ID = "chatcmpl-tool-0"
 
@@ -111,10 +112,10 @@ async def _run_thread(
                     "session_id": "s",
                     "question_id": f"q{turn}",
                     "tool_catalog": {"servers": []},
-                    # Signed in, so the gate lets write tools run.
-                    "acting_user": "user@access-ci.org",
                 },
                 config,
+                # Signed in with write access, so the gate lets write tools run.
+                context=context_for("user@access-ci.org"),
             )
             messages = list(state["messages"])
             states.append(state)
@@ -358,9 +359,7 @@ async def _run_node(earlier: list, this_turn: list) -> tuple[dict[str, Any], dic
         patch.object(loop_mod, "_build_prompt_and_tools", return_value=("system", [], False)),
     ):
         reset_turn_capture()
-        result = await loop_mod.tool_calling_loop_node(
-            {"messages": earlier, "tool_catalog": {}, "acting_user": None}
-        )
+        result = await run_loop({"messages": earlier, "tool_catalog": {}})
     attributes = {c.args[0]: c.args[1] for c in span.set_attribute.call_args_list}
     return result, attributes
 

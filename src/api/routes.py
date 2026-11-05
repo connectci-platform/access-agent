@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from starlette.datastructures import Headers
 from starlette.responses import StreamingResponse
 
+from ..agent.context import AgentContext
 from ..agent.graph import stream_agent
 from ..agent.profile import UserProfile
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
@@ -301,7 +302,7 @@ async def _write_query_turn_report(
 
 async def _stream_events(  # noqa: PLR0912, PLR0915
     request: QueryRequest,
-    acting_user: str | None,
+    context: AgentContext,
     session_id: str,
     question_id: str,
     include_trace: bool,
@@ -320,7 +321,10 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
     once. ``run_id`` is the lock token acquired in the handler; when absent (a
     direct unit-test call), ``held_run`` still registers/releases a fresh token
     harmlessly.
+
+    ``context`` is the run's identity, built from the verified token only.
     """
+    acting_user = context.acting_user
     start_time = time.time()
     final_state: dict[str, Any] = {}
     reset_turn_capture()
@@ -355,7 +359,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                         session_id=session_id,
                         question_id=question_id,
                         tool_catalog=registry.catalog,
-                        acting_user=acting_user,
+                        context=context,
                         resource_context=request.resource_context,
                         profile=request.profile,
                         checkpointer=getattr(raw_request.app.state, "checkpointer", None),
@@ -468,9 +472,13 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
         }
         refusals = final_state.get("tool_refusals") or []
         if refusals:
-            # An anonymous caller asked for something that needs sign-in. The
-            # turn still completes with the model's reply; this annotates it.
-            refusal = {"login_url": settings.LOGIN_URL, "reason": refusals[0]["reason"]}
+            # The caller asked for something they may not do here. The turn
+            # still completes with the model's reply; this annotates it. A
+            # write_scope caller is already signed in, so no sign-in is offered.
+            reason = refusals[0]["reason"]
+            refusal = {"reason": reason}
+            if reason != "write_scope":
+                refusal["login_url"] = settings.LOGIN_URL
             yield _format_sse_event("requires_auth", refusal)
             done_data["metadata"]["refusal"] = refusal
         yield _format_sse_event("done", done_data)
@@ -684,7 +692,7 @@ async def query_agent(
         return StreamingResponse(
             _stream_events(
                 request,
-                acting_user,
+                AgentContext.from_identity(identity),
                 session_id,
                 question_id,
                 include_trace,

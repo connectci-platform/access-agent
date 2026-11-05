@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 from langchain_core.messages import AIMessage, AIMessageChunk
 
+from src.agent.context import AgentContext
 from src.api import routes
 from src.llm.providers import EMPTY_ANSWER_SENTINEL
 
@@ -42,7 +43,7 @@ def _stream(chunks: list[tuple[object, dict]]) -> str:
     async def _consume() -> None:
         gen = routes._stream_events(
             routes.QueryRequest(query="q", session_id="s1"),
-            acting_user=None,
+            context=AgentContext.anonymous(),
             session_id="s1",
             question_id="q1",
             include_trace=False,

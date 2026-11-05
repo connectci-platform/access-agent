@@ -99,6 +99,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 import yaml
 
+from src.agent.context import AgentContext
 from src.agent.graph import run_agent
 from src.agent.turn_capture import reset_turn_capture
 from src.config import settings
@@ -406,6 +407,7 @@ async def run_thread(
     *,
     session_namespace: str,
     acting_user: str | None = None,
+    allow_writes: bool = False,
     resource_context: str | None = None,
     scoring: ScoringContext | None = None,
     resolved_facts: dict[str, list[Any] | None] | None = None,
@@ -422,6 +424,7 @@ async def run_thread(
         tool_catalog: MCP tool catalog (passed to run_agent each turn).
         session_namespace: Namespace for this battery run, ensuring disjoint sessions across runs.
         acting_user: Optional ACCESS ID for personalized tool calls.
+        allow_writes: Whether the thread may make changes as ``acting_user``.
         resource_context: Optional RP slug; constant across the thread.
         scoring: When provided, each successful turn is judged and persisted
             (with prior turns as conversation history) and a battery turn
@@ -466,7 +469,7 @@ async def run_thread(
                 session_id=session_id,
                 question_id=question_id,
                 tool_catalog=tool_catalog,
-                acting_user=acting_user,
+                context=AgentContext.for_eval(acting_user, allow_writes=allow_writes),
                 resource_context=resource_context,
                 use_checkpointing=True,
                 db_uri=settings.DATABASE_URL,
@@ -694,6 +697,7 @@ async def run_battery(
     acting_user: str | None = None,
     resource_context: str | None = None,
     *,
+    allow_writes: bool = False,
     score: bool = False,
     judge_model: str | None = None,
     database_url: str | None = None,
@@ -752,7 +756,12 @@ async def run_battery(
             judge_model=judge_model or settings.EVAL_JUDGE_MODEL,
             question_set=battery_path,
             question_count=sum(len(t["questions"]) for t in threads),
-            metadata_={"system": "agent_full", "mode": "multiturn"},
+            metadata_={
+                "system": "agent_full",
+                "mode": "multiturn",
+                "acting_user": acting_user,
+                "allow_writes": allow_writes,
+            },
         )
         scoring = ScoringContext(
             db=db,
@@ -771,6 +780,7 @@ async def run_battery(
                 thread_spec,
                 tool_catalog=tool_catalog,
                 acting_user=acting_user,
+                allow_writes=allow_writes,
                 resource_context=resource_context,
                 session_namespace=session_namespace,
                 scoring=scoring,

@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 from langgraph.graph import END, START, StateGraph
 
 from ..telemetry import get_tracer
+from .context import AgentContext
 from .nodes.tool_calling_loop import tool_calling_loop_node
 from .profile import UserProfile
 from .state import AgentState
@@ -39,16 +40,22 @@ def _record_current_trace_id(span: Any) -> None:
         record_trace_id(format(trace_id, "032x"))
 
 
-def _build_graph_structure(
-    builder: "StateGraph[AgentState]",
-) -> "StateGraph[AgentState]":
+_Builder = StateGraph[AgentState, AgentContext, AgentState, AgentState]
+
+
+def _new_builder() -> _Builder:
+    """A builder whose runs carry an ``AgentContext`` as runtime context."""
+    return StateGraph(AgentState, context_schema=AgentContext)
+
+
+def _build_graph_structure(builder: _Builder) -> _Builder:
     """Wire the single-node loop graph: START → tool_calling_loop → END.
 
-    The node signature is ``dict[str, Any] -> dict[str, Any]`` (accepts the
-    react-agent messages dict shape); mypy can't narrow that to AgentState
-    at the StateGraph generic, so we suppress the type-var mismatch.
+    The node signature is ``(dict[str, Any], Runtime) -> dict[str, Any]``
+    (accepts the react-agent messages dict shape); mypy can't match that to
+    the StateGraph overloads, so we suppress the mismatch.
     """
-    builder.add_node("tool_calling_loop", tool_calling_loop_node)  # type: ignore[type-var]
+    builder.add_node("tool_calling_loop", tool_calling_loop_node)  # type: ignore[call-overload]
     builder.add_edge(START, "tool_calling_loop")
     builder.add_edge("tool_calling_loop", END)
     return builder
@@ -56,7 +63,7 @@ def _build_graph_structure(
 
 def create_agent_graph() -> Any:
     """Create the ACCESS Documentation Agent graph."""
-    builder: StateGraph[AgentState] = StateGraph(AgentState)
+    builder = _new_builder()
     _build_graph_structure(builder)
     return builder.compile()
 
@@ -128,7 +135,7 @@ def create_pooled_checkpointer(db_uri: str) -> Any:
 
 def create_checkpointed_graph(checkpointer: Any) -> Any:
     """Create graph with PostgreSQL checkpointing for durability."""
-    builder: StateGraph[AgentState] = StateGraph(AgentState)
+    builder = _new_builder()
     _build_graph_structure(builder)
     return builder.compile(checkpointer=checkpointer)
 
@@ -138,14 +145,19 @@ async def run_agent(
     session_id: str,
     question_id: str,
     tool_catalog: "ToolCatalog",
-    acting_user: str | None = None,
+    *,
+    context: AgentContext,
     resource_context: str | None = None,
     profile: UserProfile | None = None,
     checkpointer: Any | None = None,
     use_checkpointing: bool = False,
     db_uri: str | None = None,
 ) -> AgentState:
-    """Run the agent on a query."""
+    """Run the agent on a query.
+
+    ``context`` says who the run acts for. It is required, so no caller can
+    end up anonymous, or signed in, by omission.
+    """
     from .state import create_initial_state
 
     tracer = get_tracer("access-agent")
@@ -164,7 +176,6 @@ async def run_agent(
             session_id=session_id,
             question_id=question_id,
             tool_catalog=tool_catalog,
-            acting_user=acting_user,
             resource_context=resource_context,
             profile=profile,
         )
@@ -186,7 +197,7 @@ async def run_agent(
                     f"Resuming conversation with {len(existing_messages)} previous messages"
                 )
 
-            final_state = await graph.ainvoke(initial_state, config)
+            final_state = await graph.ainvoke(initial_state, config, context=context)
         elif use_checkpointing and db_uri:
             from langchain_core.messages import HumanMessage
 
@@ -204,10 +215,10 @@ async def run_agent(
                         f"Resuming conversation with {len(existing_messages)} previous messages"
                     )
 
-                final_state = await graph.ainvoke(initial_state, config)
+                final_state = await graph.ainvoke(initial_state, config, context=context)
         else:
             graph = create_agent_graph()
-            final_state = await graph.ainvoke(initial_state, {})
+            final_state = await graph.ainvoke(initial_state, {}, context=context)
 
         tools_used = final_state.get("tools_used", [])
         final_answer = final_state.get("final_answer", "") or ""
@@ -226,7 +237,8 @@ async def stream_agent(
     session_id: str,
     question_id: str,
     tool_catalog: "ToolCatalog",
-    acting_user: str | None = None,
+    *,
+    context: AgentContext,
     resource_context: str | None = None,
     profile: UserProfile | None = None,
     checkpointer: Any | None = None,
@@ -258,7 +270,6 @@ async def stream_agent(
             session_id=session_id,
             question_id=question_id,
             tool_catalog=tool_catalog,
-            acting_user=acting_user,
             resource_context=resource_context,
             profile=profile,
         )
@@ -280,7 +291,7 @@ async def stream_agent(
                 )
 
             async for stream_type, chunk in graph.astream(
-                initial_state, config, stream_mode=stream_mode
+                initial_state, config, stream_mode=stream_mode, context=context
             ):
                 yield stream_type, chunk
         elif use_checkpointing and db_uri:
@@ -300,12 +311,12 @@ async def stream_agent(
                     )
 
                 async for stream_type, chunk in graph.astream(
-                    initial_state, config, stream_mode=stream_mode
+                    initial_state, config, stream_mode=stream_mode, context=context
                 ):
                     yield stream_type, chunk
         else:
             graph = create_agent_graph()
             async for stream_type, chunk in graph.astream(
-                initial_state, {}, stream_mode=stream_mode
+                initial_state, {}, stream_mode=stream_mode, context=context
             ):
                 yield stream_type, chunk

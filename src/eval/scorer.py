@@ -78,6 +78,7 @@ async def run_eval(
     allow_factless: bool = False,
     profile: UserProfile | None = None,
     acting_user: str | None = None,
+    allow_writes: bool = False,
 ) -> dict[str, Any]:
     db_url = database_url or settings.DATABASE_URL
     j_base = judge_base_url or settings.EVAL_JUDGE_BASE_URL or None
@@ -129,6 +130,7 @@ async def run_eval(
             "system": system,
             "profile": profile.model_dump() if profile else None,
             "acting_user": acting_user,
+            "allow_writes": allow_writes,
         },
     )
     logger.info(f"Eval run {run.id} started ({len(questions)} questions, system={system})")
@@ -147,6 +149,7 @@ async def run_eval(
             battery_run_id=str(run.id),
             profile=profile,
             acting_user=acting_user,
+            allow_writes=allow_writes,
         )
 
         # Prefer stable-id required facts from reporting.question_facts; fall back to

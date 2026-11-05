@@ -178,9 +178,8 @@ class AgentState(TypedDict):
     session_id: str
     question_id: str
     tool_catalog: Annotated[ToolCatalog, "Full MCP tool catalog"]
-    acting_user: Annotated[
-        str | None, "ACCESS ID of user performing action (e.g., jsmith@access-ci.org)"
-    ]
+    # Who the run acts for is not state: it is runtime context (AgentContext),
+    # passed on every run and never checkpointed.
     resource_context: Annotated[str | None, "RP slug for resource-scoped queries (e.g. 'delta')"]
     profile: Annotated[
         dict[str, Any] | None,
@@ -248,7 +247,6 @@ def create_initial_state(
     session_id: str,
     question_id: str,
     tool_catalog: ToolCatalog,
-    acting_user: str | None = None,
     resource_context: str | None = None,
     profile: UserProfile | None = None,
 ) -> AgentState:
@@ -259,7 +257,6 @@ def create_initial_state(
         session_id: Session identifier for conversation tracking.
         question_id: Unique identifier for this question.
         tool_catalog: The MCP tool catalog.
-        acting_user: ACCESS ID of user performing action (e.g., jsmith@access-ci.org).
         resource_context: RP slug for resource-scoped queries (e.g. 'delta').
         profile: Optional per-request user profile hint (allocated resources).
             Stored as a plain dict (model_dump()) — see AgentState.profile.
@@ -276,7 +273,6 @@ def create_initial_state(
         session_id=session_id,
         question_id=question_id,
         tool_catalog=tool_catalog,
-        acting_user=acting_user,
         resource_context=resource_context,
         profile=profile.model_dump() if profile else None,
         # Read by consumers but not written on the current path — initialize empty/None.
