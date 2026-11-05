@@ -18,7 +18,7 @@ from src.agent.domains.capabilities import WRITE_MCP_TOOL_NAMES
 from src.tools import get_catalog_aggregator
 
 from . import HEURISTIC_EXCEPTIONS, SERVERS_OWNING_WRITE_TOOLS
-from .check import check_drift
+from .check import HintReport, check_drift, check_hints
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -44,6 +44,32 @@ def _tool_names(catalog: dict[str, Any]) -> set[str]:
         for tool in server.get("tools", [])
         if tool.get("name")
     }
+
+
+def _tool_hints(catalog: dict[str, Any]) -> dict[str, bool | None]:
+    """Every tool's published readOnlyHint, as the aggregator parsed it."""
+    return {
+        tool["name"]: tool.get("read_only")
+        for server in catalog.get("servers", [])
+        for tool in server.get("tools", [])
+        if tool.get("name")
+    }
+
+
+def _print_hint_findings(hints: HintReport) -> None:
+    """One line per hint finding, then how to fix them; nothing when clean."""
+    for name in hints.unhinted:
+        print(f"UNHINTED: {name} has no readOnlyHint; the agent falls back to its name")
+    for name in hints.contradicted:
+        print(f"CONTRADICTED: {name} is published read-only but its name marks it a write")
+    for name in hints.unlisted:
+        print(f"UNLISTED: {name} is published as making changes but is not in WRITE_MCP_TOOL_NAMES")
+    if not hints.ok:
+        print(
+            "Fix the tool's marker on its MCP server (mutates in access-mcp's TS "
+            "servers, annotations in xdmod-mcp-data), or add an UNLISTED write to "
+            "WRITE_MCP_TOOL_NAMES in src/agent/domains/capabilities.py."
+        )
 
 
 def _unavailable_servers(catalog: dict[str, Any]) -> tuple[str, ...]:
@@ -117,16 +143,20 @@ def main_argv(
         raise SystemExit(1)
 
     report = check_drift(tool_names, WRITE_MCP_TOOL_NAMES)
+    hints = check_hints(_tool_hints(catalog), WRITE_MCP_TOOL_NAMES)
 
     print(f"checked {len(tool_names)} live tools against {len(WRITE_MCP_TOOL_NAMES)} deny-listed")
+    _print_hint_findings(hints)
     for name in report.waived:
         print(f"WAIVED: {name} — {HEURISTIC_EXCEPTIONS[name]}")
     for name in report.stale:
         print(f"STALE: {name} is deny-listed but not in the live catalog (renamed or retired?)")
 
-    if report.ok:
-        print("OK: every write-looking tool is stripped under READ_ONLY")
+    if report.ok and hints.ok:
+        print("OK: every write-looking tool is stripped under READ_ONLY, and every hint agrees")
         raise SystemExit(0)
+    if report.ok:
+        raise SystemExit(1)
 
     for name in report.unguarded:
         print(f"UNGUARDED: {name} looks like a write but is not in WRITE_MCP_TOOL_NAMES")

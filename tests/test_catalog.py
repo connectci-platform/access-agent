@@ -71,6 +71,29 @@ class TestCatalogAggregator:
         assert catalog["quick_lookup"]["get_status"]["server"] == "allocations"
 
     @pytest.mark.asyncio
+    async def test_the_hint_survives_from_fetch_to_the_wrappers(self, httpx_mock: HTTPXMock):
+        """Fetched JSON → aggregator → capability filter → the loop's wrappers."""
+        from src.agent.domains.tools import create_mcp_tools_from_catalog
+
+        def tool(name, hint):
+            return {"name": name, "inputSchema": {}, "annotations": {"readOnlyHint": hint}}
+
+        httpx_mock.add_response(
+            method="GET",
+            url="http://events:3000/tools",
+            json={"tools": [tool("toggle_alerts", False), tool("search_events", True)]},
+        )
+        httpx_mock.add_response(
+            method="GET", url="http://allocations:3000/tools", json={"tools": []}
+        )
+
+        catalog = await CatalogAggregator(server_urls=TEST_SERVER_URLS).fetch_catalog()
+        wrappers = {w.name: w for w in create_mcp_tools_from_catalog(catalog, "u@x")}
+
+        assert wrappers["toggle_alerts"].read_only is False
+        assert wrappers["search_events"].read_only is True
+
+    @pytest.mark.asyncio
     async def test_fetch_catalog_partial_failure(self, httpx_mock: HTTPXMock):
         """Test catalog fetch with some servers failing."""
         httpx_mock.add_response(

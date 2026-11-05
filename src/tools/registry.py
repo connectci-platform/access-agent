@@ -467,10 +467,15 @@ class CatalogAggregator:
                 }
             )
 
+        # The server's own readOnlyHint, when it publishes one. None for a
+        # server that hasn't, or a tool sent with "annotations": null.
+        annotations = tool.get("annotations")
+        hint = annotations.get("readOnlyHint") if isinstance(annotations, dict) else None
         return {
             "name": tool.get("name", ""),
             "description": tool.get("description", ""),
             "parameters": parameters,
+            "read_only": hint if isinstance(hint, bool) else None,
         }
 
     @property

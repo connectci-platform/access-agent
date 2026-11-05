@@ -6,10 +6,14 @@ so it silently falls out of sync whenever a new write tool ships in access_mcp
 — and a missing name means the tool is NOT stripped. The failure mode is
 fail-open, and nothing today notices (issue #200).
 
-The MCP catalog carries no machine-readable write/read annotation (tools expose
-only name/description/parameters), so write-ness cannot be derived. This guard
-therefore uses tool NAMES as a suspicion signal — deliberately as an alarm, not
-as enforcement:
+access-mcp servers now publish each tool's write-ness as MCP's
+``annotations.readOnlyHint``, and the agent treats ``readOnlyHint: false`` as a
+write whatever the name (``src/agent/auth_tools.py``). This guard checks both
+signals. ``check_hints`` reports a tool with no hint, a tool published as
+read-only whose name marks it a write, and a hinted write missing from the
+deny-list. The name check below remains, for servers that publish no hint, and
+uses tool NAMES as a suspicion signal — deliberately as an alarm, not as
+enforcement:
 
 * Enforcement stays with the explicit deny-list. A name heuristic used to strip
   tools would over-block silently (a read tool called ``add_bookmark`` would
@@ -32,11 +36,10 @@ buy: the 2026-08-15 events incident (nine write tools shipped at once, all
 matching the convention) would have been caught the next morning instead of by
 hand.
 
-The durable fix is upstream: MCP servers should declare their own write-ness
-(an annotation in access_mcp), at which point this heuristic is replaced by
-the declaration and the hole closes. A complementary check belongs in
-access_mcp's own CI, where a new write tool can be caught at the moment it is
-introduced rather than a night later in a different repo.
+The upstream half is in place: access-mcp requires a ``mutates`` marker on
+every tool, publishes it as the hint, and checks every server in its own CI.
+What remains name-based is READ_ONLY's explicit deny-list and the fallback for
+a tool with no hint.
 """
 
 from __future__ import annotations

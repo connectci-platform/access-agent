@@ -79,6 +79,9 @@ class MCPToolWrapper(BaseTool):
     can_write: bool = False
     """Whether this run may make changes. Off unless the caller's context says so."""
 
+    read_only: bool | None = None
+    """The server's readOnlyHint for this tool, or None when it published none."""
+
     # The artifact carries a refusal's reason, as the identity gate's does.
     response_format: Literal["content", "content_and_artifact"] = "content_and_artifact"
 
@@ -97,7 +100,8 @@ class MCPToolWrapper(BaseTool):
         plumbing mistake can't let a write through. It returns a refusal rather
         than raising, because a tool that raises aborts the whole turn.
         """
-        if tool_identity_class(self.name) is ToolIdentityClass.WRITE and not self.can_write:
+        is_write = tool_identity_class(self.name, self.read_only) is ToolIdentityClass.WRITE
+        if is_write and not self.can_write:
             logger.error(
                 "write tool %s reached the MCP wrapper without write permission; refused",
                 self.name,
@@ -178,6 +182,7 @@ def create_mcp_tools_from_catalog(
                 mcp_client=client,
                 acting_user=acting_user,
                 can_write=can_write,
+                read_only=tool_def.get("read_only"),
             )
             tools.append(wrapper)
 

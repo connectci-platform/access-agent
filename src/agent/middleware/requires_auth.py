@@ -45,14 +45,18 @@ if TYPE_CHECKING:
 CoarseReason = Literal["write_action", "private_data", "write_scope"]
 
 
-def refusal_reason(context: AgentContext, name: str | None) -> CoarseReason | None:
+def refusal_reason(
+    context: AgentContext, name: str | None, read_only: bool | None = None
+) -> CoarseReason | None:
     """Why this caller may not call tool ``name``, or None when they may.
 
     The one rule behind both refusing a call and hiding tools after a refusal.
+    ``read_only`` is the tool server's readOnlyHint, when there is one; see
+    ``tool_identity_class`` for how it is used.
     """
     if not name:
         return None
-    identity_class = tool_identity_class(name)
+    identity_class = tool_identity_class(name, read_only)
     if identity_class is ToolIdentityClass.NONE:
         return None
     if context.acting_user is None:
@@ -107,6 +111,12 @@ def _tool_name(tool: Any) -> str | None:
     return tool.get("name") if isinstance(tool, dict) else getattr(tool, "name", None)
 
 
+def _read_only(tool: Any) -> bool | None:
+    """The tool's readOnlyHint as the catalog carried it; None when unknown."""
+    hint = tool.get("read_only") if isinstance(tool, dict) else getattr(tool, "read_only", None)
+    return hint if isinstance(hint, bool) else None
+
+
 class RequiresAuthMiddleware(AgentMiddleware):
     """Refuse tool calls the caller may not make (see ``refusal_reason``).
 
@@ -130,7 +140,11 @@ class RequiresAuthMiddleware(AgentMiddleware):
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
     ) -> ToolMessage | Command[Any]:
         name = request.tool_call["name"]
-        reason = refusal_reason(require_context(request.runtime.context), name)
+        # request.tool is the registered tool, or None for a name the agent
+        # doesn't have; then only the name rules apply.
+        reason = refusal_reason(
+            require_context(request.runtime.context), name, _read_only(request.tool)
+        )
         if reason is None:
             return await handler(request)
         self.refusals.append({"tool_name": name, "reason": reason})
@@ -149,6 +163,10 @@ class RequiresAuthMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         if self.refusals:
             context = require_context(request.runtime.context)
-            allowed = [t for t in request.tools if refusal_reason(context, _tool_name(t)) is None]
+            allowed = [
+                t
+                for t in request.tools
+                if refusal_reason(context, _tool_name(t), _read_only(t)) is None
+            ]
             request = request.override(tools=allowed)
         return await handler(request)

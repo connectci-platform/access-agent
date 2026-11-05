@@ -154,6 +154,23 @@ def _count_citations(answer: str | None) -> int:
     return len(urls)
 
 
+def _hinted_write_names(tool_catalog: Any) -> set[str]:
+    """Tools whose server publishes readOnlyHint: false in this run's catalog.
+
+    invoked_write sees only tool names, so the server's own declaration has to
+    come from the catalog the run used.
+    """
+    if not isinstance(tool_catalog, dict):
+        return set()
+    return {
+        t["name"]
+        for server in tool_catalog.get("servers") or []
+        if isinstance(server, dict)
+        for t in server.get("tools") or []
+        if isinstance(t, dict) and t.get("read_only") is False
+    }
+
+
 def _assemble_turn_report(
     *,
     final_state: dict[str, Any],
@@ -191,7 +208,11 @@ def _assemble_turn_report(
     rag_searched = bool(capture.get("searched"))
 
     failures = sum(1 for r in results if not r.get("success", True))
-    invoked_write = any(r.get("tool_name") in WRITE_MCP_TOOL_NAMES for r in results)
+    hinted_writes = _hinted_write_names(final_state.get("tool_catalog"))
+    invoked_write = any(
+        r.get("tool_name") in WRITE_MCP_TOOL_NAMES or r.get("tool_name") in hinted_writes
+        for r in results
+    )
 
     report: dict[str, Any] = {
         "session_id": session_id,
