@@ -1,50 +1,36 @@
-"""Tests for RequiresAuthMiddleware: anon write/private-read tool-call gate.
+"""Tests for RequiresAuthMiddleware: the anonymous write/private-read gate.
 
-Three mechanisms under test, each verified against the real installed API
-(no mocks of langgraph/langchain internals):
-
-1. awrap_tool_call suppression — anon + write/auth-read tool returns a
-   sentinel ToolMessage WITHOUT calling handler; anon + unauth-read and
-   authed + write both call handler normally.
-2. find_requires_auth_reason — the post-invoke message-scan helper the loop
-   node uses, detects the sentinel and extracts its coarse reason.
-3. tool_calling_loop_node threading — with create_agent mocked (same pattern
-   as test_tool_calling_loop.py), a result_messages list containing the
-   sentinel surfaces `requires_auth` in the node's return dict; a clean
-   result does not.
-
-A real ToolCallRequest is constructed directly (not mocked) per the brief's
-preference for real instances over mocks where feasible; `tool=None` matches
-the unregistered-tool case the brief specifically flagged as a risk for a
-naive `request.tool.name` implementation.
+Real ToolCallRequest and ModelRequest instances are built directly rather
+than mocked. ``tool=None`` on the tool request matches the unregistered-tool
+case, which a naive ``request.tool.name`` implementation would break on.
+End-to-end behavior through both routes is in tests/test_gated_turns.py.
 """
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.tools import StructuredTool
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
-from src.agent.middleware.requires_auth import (
-    REQUIRES_AUTH_SENTINEL,
-    RequiresAuthMiddleware,
-    find_requires_auth_reason,
-)
+from src.agent.middleware.requires_auth import RequiresAuthMiddleware, refusal_text
+from src.config import settings
 
 
 def _request(name: str, call_id: str = "call_1") -> ToolCallRequest:
     return ToolCallRequest(
         tool_call={"name": name, "args": {}, "id": call_id, "type": "tool_call"},
-        tool=None,  # unregistered-tool case; must not touch request.tool.name
+        tool=None,
         state={},
         runtime=None,
     )
 
 
 async def _handler_must_not_be_called(request: ToolCallRequest) -> ToolMessage:
-    raise AssertionError("handler should not be called when the call is suppressed")
+    raise AssertionError("handler should not be called when the call is refused")
 
 
 async def _handler_passthrough(request: ToolCallRequest) -> ToolMessage:
@@ -53,108 +39,85 @@ async def _handler_passthrough(request: ToolCallRequest) -> ToolMessage:
 
 class TestAwrapToolCall:
     @pytest.mark.asyncio
-    async def test_anon_write_tool_is_suppressed_with_sentinel(self):
-        middleware = RequiresAuthMiddleware(acting_user=None)
-        result = await middleware.awrap_tool_call(
-            _request("register_for_event"), _handler_must_not_be_called
-        )
+    @pytest.mark.parametrize(
+        ("tool", "reason"),
+        [("register_for_event", "write_action"), ("get_my_rp_accounts", "private_data")],
+    )
+    async def test_anon_gated_tool_is_refused_with_prose_and_artifact(self, tool, reason):
+        gate = RequiresAuthMiddleware(acting_user=None)
+
+        result = await gate.awrap_tool_call(_request(tool), _handler_must_not_be_called)
+
         assert isinstance(result, ToolMessage)
-        assert result.content.startswith(REQUIRES_AUTH_SENTINEL)
         assert result.status == "error"
         assert result.tool_call_id == "call_1"
+        assert result.content == refusal_text(reason)
+        assert result.artifact == {"refusal": {"reason": reason}}
+        assert gate.refusals == [{"tool_name": tool, "reason": reason}]
 
     @pytest.mark.asyncio
-    async def test_anon_auth_read_tool_is_suppressed_with_sentinel(self):
-        middleware = RequiresAuthMiddleware(acting_user=None)
-        result = await middleware.awrap_tool_call(
-            _request("get_my_rp_accounts"), _handler_must_not_be_called
-        )
-        assert isinstance(result, ToolMessage)
-        assert result.content.startswith(REQUIRES_AUTH_SENTINEL)
+    async def test_anon_public_tool_calls_handler(self):
+        gate = RequiresAuthMiddleware(acting_user=None)
 
-    @pytest.mark.asyncio
-    async def test_anon_write_tool_reason_is_write_action(self):
-        middleware = RequiresAuthMiddleware(acting_user=None)
-        result = await middleware.awrap_tool_call(
-            _request("register_for_event"), _handler_must_not_be_called
-        )
-        assert find_requires_auth_reason([result]) == "write_action"
+        result = await gate.awrap_tool_call(_request("search_resources"), _handler_passthrough)
 
-    @pytest.mark.asyncio
-    async def test_anon_auth_read_tool_reason_is_private_data(self):
-        middleware = RequiresAuthMiddleware(acting_user=None)
-        result = await middleware.awrap_tool_call(
-            _request("get_rp_account"), _handler_must_not_be_called
-        )
-        assert find_requires_auth_reason([result]) == "private_data"
-
-    @pytest.mark.asyncio
-    async def test_anon_unauth_read_tool_calls_handler(self):
-        """An anon turn using only read tools is unaffected."""
-        middleware = RequiresAuthMiddleware(acting_user=None)
-        result = await middleware.awrap_tool_call(
-            _request("search_resources"), _handler_passthrough
-        )
         assert result.content == "ok"
+        assert gate.refusals == []
 
     @pytest.mark.asyncio
-    async def test_authed_write_tool_calls_handler(self):
-        """With acting_user set, the same write call executes normally."""
-        middleware = RequiresAuthMiddleware(acting_user="user123")
-        result = await middleware.awrap_tool_call(
-            _request("register_for_event"), _handler_passthrough
-        )
+    @pytest.mark.parametrize("tool", ["register_for_event", "get_my_rp_accounts"])
+    async def test_signed_in_gated_tool_calls_handler(self, tool):
+        gate = RequiresAuthMiddleware(acting_user="user123")
+
+        result = await gate.awrap_tool_call(_request(tool), _handler_passthrough)
+
         assert result.content == "ok"
+        assert gate.refusals == []
+
+
+class TestRefusalText:
+    @pytest.mark.parametrize("reason", ["write_action", "private_data"])
+    def test_prose_points_to_sign_in_and_holds_only_until_sign_in(self, reason):
+        text = refusal_text(reason)
+
+        assert text.startswith("Not done.")
+        assert settings.LOGIN_URL in text
+        assert "Until they sign in" in text
+
+
+def _tool(name: str) -> StructuredTool:
+    return StructuredTool.from_function(func=lambda: "ok", name=name, description=name)
+
+
+class TestAwrapModelCall:
+    async def _bound_after(self, gate: RequiresAuthMiddleware) -> list[str]:
+        tools = [_tool("register_for_event"), _tool("get_my_rp_accounts"), _tool("search_events")]
+        request = ModelRequest(model=MagicMock(), messages=[HumanMessage("hi")], tools=tools)
+        seen: list[str] = []
+
+        async def handler(req):
+            seen.extend(t.name for t in req.tools)
+            return AIMessage("ok")
+
+        await gate.awrap_model_call(request, handler)
+        return seen
 
     @pytest.mark.asyncio
-    async def test_authed_auth_read_tool_calls_handler(self):
-        middleware = RequiresAuthMiddleware(acting_user="user123")
-        result = await middleware.awrap_tool_call(
-            _request("get_my_rp_accounts"), _handler_passthrough
-        )
-        assert result.content == "ok"
+    async def test_all_tools_are_offered_before_any_refusal(self):
+        gate = RequiresAuthMiddleware(acting_user=None)
 
-
-class TestFindRequiresAuthReason:
-    def test_no_sentinel_returns_none(self):
-        messages = [
-            HumanMessage(content="hi"),
-            AIMessage(content="hello"),
-            ToolMessage(content="42", tool_call_id="c1"),
+        assert await self._bound_after(gate) == [
+            "register_for_event",
+            "get_my_rp_accounts",
+            "search_events",
         ]
-        assert find_requires_auth_reason(messages) is None
 
-    def test_sentinel_found_returns_reason(self):
-        messages = [
-            HumanMessage(content="register me"),
-            ToolMessage(
-                content=f"{REQUIRES_AUTH_SENTINEL}:write_action",
-                tool_call_id="c1",
-                status="error",
-            ),
-        ]
-        assert find_requires_auth_reason(messages) == "write_action"
+    @pytest.mark.asyncio
+    async def test_after_a_refusal_every_gated_tool_is_hidden(self):
+        gate = RequiresAuthMiddleware(acting_user=None)
+        await gate.awrap_tool_call(_request("register_for_event"), _handler_must_not_be_called)
 
-    def test_first_sentinel_wins_on_multiple(self):
-        messages = [
-            ToolMessage(
-                content=f"{REQUIRES_AUTH_SENTINEL}:write_action",
-                tool_call_id="c1",
-                status="error",
-            ),
-            ToolMessage(
-                content=f"{REQUIRES_AUTH_SENTINEL}:private_data",
-                tool_call_id="c2",
-                status="error",
-            ),
-        ]
-        assert find_requires_auth_reason(messages) == "write_action"
-
-    def test_non_tool_message_with_similar_content_ignored(self):
-        """Only a real ToolMessage can carry the signal — an AIMessage that
-        happens to mention the sentinel text must not trigger a false positive."""
-        messages = [AIMessage(content=f"{REQUIRES_AUTH_SENTINEL}:write_action")]
-        assert find_requires_auth_reason(messages) is None
+        assert await self._bound_after(gate) == ["search_events"]
 
 
 @pytest.fixture
@@ -162,155 +125,65 @@ def base_state():
     return {
         "messages": [HumanMessage(content="register me for the workshop")],
         "query": "register me for the workshop",
-        "tool_catalog": {
-            "servers": [
-                {
-                    "server": "events",
-                    "tools": [
-                        {
-                            "name": "register_for_event",
-                            "description": "Register for an event",
-                            "inputSchema": {"properties": {}, "required": []},
-                        }
-                    ],
-                }
-            ]
-        },
+        "tool_catalog": {"servers": []},
         "acting_user": None,
         "rag_matches": [],
         "query_classification": None,
     }
 
 
-class TestLoopNodeThreading:
-    """tool_calling_loop_node surfaces requires_auth in its return dict when
-    the sentinel appears in the post-invoke message scan. create_agent is
-    mocked (same boundary test_tool_calling_loop.py mocks) so this exercises
-    the node's own scan/threading logic, not the real react loop.
-    """
+class TestLoopNode:
+    """The node builds one gate per turn and returns its refusals."""
 
     @pytest.mark.asyncio
-    async def test_sentinel_in_result_messages_surfaces_requires_auth(self, base_state):
+    @pytest.mark.parametrize("acting_user", [None, "user123"])
+    async def test_gate_is_built_with_the_nodes_acting_user(self, base_state, acting_user):
         from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
-        tool_call_msg = AIMessage(
-            content="",
-            tool_calls=[{"id": "call_1", "name": "register_for_event", "args": {}}],
-        )
-        sentinel_msg = ToolMessage(
-            content=f"{REQUIRES_AUTH_SENTINEL}:write_action",
-            tool_call_id="call_1",
-            status="error",
-        )
-        final_msg = AIMessage(content="You'll need to sign in to register for this event.")
 
         mock_graph = AsyncMock()
         mock_graph.ainvoke.return_value = {
-            "messages": [*base_state["messages"], tool_call_msg, sentinel_msg, final_msg]
+            "messages": [*base_state["messages"], AIMessage(content="hello")]
+        }
+        captured: dict = {}
+
+        def fake_create_agent(**kwargs):
+            captured.update(kwargs)
+            return mock_graph
+
+        with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=fake_create_agent):
+            result = await tool_calling_loop_node({**base_state, "acting_user": acting_user})
+
+        gates = [m for m in captured["middleware"] if isinstance(m, RequiresAuthMiddleware)]
+        assert len(gates) == 1
+        assert gates[0]._acting_user == acting_user
+        assert result["tool_refusals"] == []
+
+    @pytest.mark.asyncio
+    async def test_refused_result_is_marked_and_not_counted(self, base_state):
+        from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
+
+        call = AIMessage(
+            content="", tool_calls=[{"id": "c1", "name": "register_for_event", "args": {}}]
+        )
+        refused = ToolMessage(
+            content=refusal_text("write_action"),
+            tool_call_id="c1",
+            status="error",
+            artifact={"refusal": {"reason": "write_action"}},
+        )
+        mock_graph = AsyncMock()
+        mock_graph.ainvoke.return_value = {
+            "messages": [*base_state["messages"], call, refused, AIMessage("Sign in.")]
         }
 
         with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
             result = await tool_calling_loop_node(base_state)
 
-        assert result["requires_auth"] == {
-            "login_url": _expected_login_url(),
-            "reason": "write_action",
-        }
-
-    @pytest.mark.asyncio
-    async def test_authed_turn_has_no_requires_auth_key(self, base_state):
-        """With acting_user set, the same turn executes normally — no sentinel,
-        no requires_auth key in the return dict."""
-        from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
-        state = {**base_state, "acting_user": "user123"}
-        tool_call_msg = AIMessage(
-            content="",
-            tool_calls=[{"id": "call_1", "name": "register_for_event", "args": {}}],
-        )
-        tool_result_msg = ToolMessage(content='{"status": "registered"}', tool_call_id="call_1")
-        final_msg = AIMessage(content="You're registered for the workshop.")
-
-        mock_graph = AsyncMock()
-        mock_graph.ainvoke.return_value = {
-            "messages": [*state["messages"], tool_call_msg, tool_result_msg, final_msg]
-        }
-
-        with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
-            result = await tool_calling_loop_node(state)
-
-        assert "requires_auth" not in result
-
-    @pytest.mark.asyncio
-    async def test_anon_read_only_turn_has_no_requires_auth_key(self, base_state):
-        """An anon turn using only read tools is unaffected."""
-        from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
-        state = {
-            **base_state,
-            "messages": [HumanMessage(content="what resources have GPUs?")],
-            "tool_catalog": {
-                "servers": [
-                    {
-                        "server": "compute-resources",
-                        "tools": [
-                            {
-                                "name": "search_resources",
-                                "description": "Search for compute resources",
-                                "inputSchema": {"properties": {}, "required": []},
-                            }
-                        ],
-                    }
-                ]
-            },
-        }
-        tool_call_msg = AIMessage(
-            content="",
-            tool_calls=[{"id": "call_1", "name": "search_resources", "args": {}}],
-        )
-        tool_result_msg = ToolMessage(content='{"resources": []}', tool_call_id="call_1")
-        final_msg = AIMessage(content="No GPU resources matched.")
-
-        mock_graph = AsyncMock()
-        mock_graph.ainvoke.return_value = {
-            "messages": [*state["messages"], tool_call_msg, tool_result_msg, final_msg]
-        }
-
-        with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
-            result = await tool_calling_loop_node(state)
-
-        assert "requires_auth" not in result
-
-    @pytest.mark.asyncio
-    async def test_requires_auth_middleware_is_constructed_with_acting_user_closure(
-        self, base_state
-    ):
-        """The middleware list passed to create_agent must include a
-        RequiresAuthMiddleware built with the node's acting_user (closure
-        capture), not read from inner agent state."""
-        from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
-        final_msg = AIMessage(content="hello")
-        mock_graph = AsyncMock()
-        mock_graph.ainvoke.return_value = {"messages": [*base_state["messages"], final_msg]}
-
-        captured_kwargs: dict = {}
-
-        def fake_create_agent(**kwargs):
-            captured_kwargs.update(kwargs)
-            return mock_graph
-
-        with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=fake_create_agent):
-            await tool_calling_loop_node({**base_state, "acting_user": "user123"})
-
-        gate_middlewares = [
-            m for m in captured_kwargs["middleware"] if isinstance(m, RequiresAuthMiddleware)
-        ]
-        assert len(gate_middlewares) == 1
-        assert gate_middlewares[0]._acting_user == "user123"
-
-
-def _expected_login_url() -> str:
-    from src.config import settings
-
-    return settings.LOGIN_URL
+        (entry,) = result["tool_results"]
+        assert entry.refused is True
+        assert entry.success is False
+        assert entry.error == "refused:write_action"
+        # No timing was recorded, so the message scan counts calls; the refused
+        # one is left out.
+        assert result["tools_used"] == []
+        assert result["tool_call_count"] == 0

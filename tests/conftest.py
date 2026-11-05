@@ -58,6 +58,36 @@ def _reset_async_singletons():
         pass
 
 
+@pytest.fixture(autouse=True)
+def _restore_trace_content_flag(monkeypatch):
+    """init_telemetry() writes TRACELOOP_TRACE_CONTENT straight into os.environ;
+    registering it with monkeypatch first makes teardown restore it."""
+    monkeypatch.delenv("TRACELOOP_TRACE_CONTENT", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _restore_tracer_provider():
+    """Undo a global tracer provider installed by a test.
+
+    Tests that enter the real lifespan call init_telemetry(), which sets a
+    process-wide provider that is then shut down. FastAPI's native tracing
+    follows the global provider, so a leftover one makes every later request
+    in the session emit server spans and breaks tests that stub
+    ``trace.get_tracer``. The global and its set-once flag are private OTel
+    attributes with no public reset.
+    """
+    from opentelemetry import trace
+    from opentelemetry.util._once import Once
+
+    saved = (trace._TRACER_PROVIDER, trace._TRACER_PROVIDER_SET_ONCE)
+    yield
+    trace._TRACER_PROVIDER, trace._TRACER_PROVIDER_SET_ONCE = saved
+    if saved[0] is None:
+        # Restoring the saved Once would leave it spent (set_tracer_provider
+        # consumes it in place), so install a fresh one.
+        trace._TRACER_PROVIDER_SET_ONCE = Once()
+
+
 @pytest.fixture
 def sample_catalog():
     """Sample MCP tool catalog for testing."""

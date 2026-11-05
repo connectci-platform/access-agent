@@ -165,36 +165,9 @@ def test_record_current_trace_id_noop_for_non_recording_span():
     assert get_turn_capture()["trace_id"] is None
 
 
-def test_build_tool_results_skips_prior_turn_messages():
-    from langchain_core.messages import HumanMessage
-
-    prior_ai = AIMessage(
-        content="",
-        tool_calls=[{"name": "list_things", "args": {"a": 0}, "id": "t1"}],
-    )
-    current_ai = AIMessage(
-        content="",
-        tool_calls=[{"name": "list_things", "args": {"a": 1}, "id": "t2"}],
-    )
-    thread = [
-        HumanMessage(content="first question"),
-        prior_ai,
-        ToolMessage(content="{}", tool_call_id="t1"),
-        AIMessage(content="first answer"),
-        HumanMessage(content="second question"),
-        current_ai,
-        ToolMessage(content="{}", tool_call_id="t2"),
-    ]
-    timings = [{"tool_name": "list_things", "duration_ms": 900}]
-    results, orphans = _build_tool_results(thread, [], timings)
-    assert orphans == 0
-    by_id = {r.step_id: r.duration_ms for r in results}
-    assert by_id == {"t1": 0, "t2": 900}
-
-
 def test_build_tool_results_annotates_source_message_id():
     """Each entry carries its ToolMessage's LangChain id, so multi-turn consumers can
-    slice the cumulative rebuild by membership in the current turn's id set."""
+    slice by membership in the current turn's id set."""
     from langchain_core.messages import HumanMessage
 
     thread = [

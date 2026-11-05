@@ -309,3 +309,116 @@ def test_call_tool_generic_exception_returns_error(monkeypatch):
     result = asyncio.run(MCPClient().call_tool(server="srv", tool_name="t", arguments={}))
     assert not result.success
     assert result.error.startswith("ValueError: kaboom")
+
+
+def _mcp_span_for(monkeypatch, post, arguments):
+    """Run one call_tool through a stubbed HTTP client; return (result, span)."""
+    import asyncio
+
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from src.tools.mcp_client import MCPClient
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(
+        "src.telemetry.spans.get_tracer",
+        lambda name="test": provider.get_tracer(name),
+    )
+
+    class _Client:
+        async def post(self, url, json=None, headers=None):
+            return await post()
+
+    monkeypatch.setattr("src.tools.mcp_client.get_shared_client", lambda timeout: _Client())
+    monkeypatch.setattr(MCPClient, "get_server_url", lambda self, s: "http://x")
+    result = asyncio.run(
+        MCPClient().call_tool(server="srv", tool_name="create_ticket", arguments=arguments)
+    )
+    (span,) = exporter.get_finished_spans()
+    return result, span
+
+
+def _exported(span) -> str:
+    values = [str(v) for v in span.attributes.values()]
+    values += [str(v) for e in span.events for v in (e.attributes or {}).values()]
+    return " ".join([*values, span.status.description or ""])
+
+
+SECRET = "my allocation on anvil ran out, I am Jane Doe"
+
+
+def test_mcp_span_records_argument_keys_not_values(monkeypatch):
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"content": [{"type": "text", "text": '{"ok": true}'}]}
+
+    async def post():
+        return _Resp()
+
+    _, span = _mcp_span_for(monkeypatch, post, {"title": "help", "description": SECRET})
+    assert span.attributes["mcp.argument_keys"] == "description,title"
+    assert SECRET not in _exported(span)
+    assert "help" not in _exported(span)
+
+
+def test_mcp_span_error_omits_response_body(monkeypatch):
+    import httpx
+
+    request = httpx.Request("POST", "http://x")
+    response = httpx.Response(422, text=f"invalid description: {SECRET}", request=request)
+
+    async def post():
+        raise httpx.HTTPStatusError("bad", request=request, response=response)
+
+    result, span = _mcp_span_for(monkeypatch, post, {"description": SECRET})
+    assert SECRET in result.error  # the agent still gets the detail
+    assert span.attributes["mcp.error"] == "HTTP 422"
+    assert span.status.description == "HTTP 422"
+    assert SECRET not in _exported(span)
+
+
+def test_mcp_span_error_omits_exception_text(monkeypatch):
+    async def post():
+        raise ValueError(f"could not parse {SECRET}")
+
+    result, span = _mcp_span_for(monkeypatch, post, {})
+    assert SECRET in result.error
+    assert span.attributes["mcp.error"] == "ValueError"
+    assert SECRET not in _exported(span)
+
+
+def test_trace_mcp_call_records_only_the_exception_type(monkeypatch):
+    import pytest
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+    from opentelemetry.trace import StatusCode
+
+    from src.telemetry.spans import trace_mcp_call
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(
+        "src.telemetry.spans.get_tracer",
+        lambda name="test": provider.get_tracer(name),
+    )
+
+    with pytest.raises(ValueError), trace_mcp_call("srv", "create_ticket", {"d": SECRET}):
+        raise ValueError(SECRET)
+
+    (span,) = exporter.get_finished_spans()
+    assert span.status.status_code is StatusCode.ERROR
+    assert span.events[0].attributes["exception.type"] == "ValueError"
+    assert SECRET not in _exported(span)

@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     OTEL_EXPORTER_OTLP_ENDPOINT: str = ""  # e.g., https://api.honeycomb.io
     OTEL_EXPORTER_OTLP_HEADERS: str = ""  # e.g., x-honeycomb-team=xxx
     HONEYCOMB_DATASET: str = "access-ci"
+    # Prompt/response text on LangChain spans. Off by default because the
+    # conversation is already stored on-prem in turn_reports; Honeycomb gets
+    # operational telemetry only. Refused in production by the residency guard.
+    OTEL_CAPTURE_CONTENT: bool = False
 
     # API
     API_HOST: str = "0.0.0.0"
@@ -312,6 +316,12 @@ class Settings(BaseSettings):
                     "Data-residency guard: ENVIRONMENT=production requires "
                     f"LLM_PROVIDER=vllm (on-premise), got {self.LLM_PROVIDER!r}. "
                     "User queries must not reach a commercial model API."
+                )
+            if self.OTEL_CAPTURE_CONTENT:
+                raise ValueError(
+                    "Data-residency guard: production requires "
+                    "OTEL_CAPTURE_CONTENT=false. Conversation content must not "
+                    "be exported to Honeycomb."
                 )
             if not self.EVAL_JUDGE_BASE_URL:
                 raise ValueError(

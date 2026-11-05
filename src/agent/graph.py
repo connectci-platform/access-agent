@@ -153,10 +153,9 @@ async def run_agent(
     with tracer.start_as_current_span(
         "agent.run",
         attributes={
-            "agent.query": query[:200],
+            "agent.query_length": len(query),
             "agent.session_id": session_id,
             "agent.question_id": question_id,
-            "agent.user": acting_user or "anonymous",
         },
     ) as root_span:
         _record_current_trace_id(root_span)
@@ -248,10 +247,9 @@ async def stream_agent(
     with tracer.start_as_current_span(
         "agent.stream",
         attributes={
-            "agent.query": query[:200],
+            "agent.query_length": len(query),
             "agent.session_id": session_id,
             "agent.question_id": question_id,
-            "agent.user": acting_user or "anonymous",
         },
     ) as root_span:
         _record_current_trace_id(root_span)

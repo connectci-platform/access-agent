@@ -47,11 +47,20 @@ async def probe_docs_tool(client: DocsRetriever | None = None) -> ProbeResult:
     # would make retrieve() fail here, which is the CORRECT signal — a docs tool the
     # nightly cannot reach IS a real tool-health failure, not something to skip green.
     try:
-        await retriever.retrieve(query=_DOCS_PROBE_QUERY)
+        retrieval = await retriever.retrieve(query=_DOCS_PROBE_QUERY)
     except Exception as exc:  # a broken docs tool must not abort the whole probe
         return ProbeResult(
             tool_name=DOCS_TOOL_NAME,
             success=False,
             error=f"probe call raised: {exc}",
+        )
+    # A 200 with no chunks is still an outage for users (the agent has nothing to
+    # answer from), and it is the failure mode a raise-only check reports green.
+    # Deliberately unlike the MCP probes, where an empty result is a legitimate pass.
+    if not retrieval.chunks:
+        return ProbeResult(
+            tool_name=DOCS_TOOL_NAME,
+            success=False,
+            error="UKy retrieve-docs returned zero chunks",
         )
     return ProbeResult(tool_name=DOCS_TOOL_NAME, success=True, error=None)

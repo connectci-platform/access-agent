@@ -40,6 +40,13 @@ class ToolCall(BaseModel):
     )
 
 
+class ToolRefusal(TypedDict):
+    """One tool call the identity gate refused this turn."""
+
+    tool_name: str
+    reason: str  # a CoarseReason: "write_action" or "private_data"
+
+
 class ToolResult(BaseModel):
     """Result from executing a tool.
 
@@ -57,15 +64,21 @@ class ToolResult(BaseModel):
     arguments: ToolArguments = Field(
         default_factory=dict, description="Arguments the tool was called with"
     )
+    refused: bool = Field(
+        default=False,
+        description=(
+            "True when the identity gate refused the call, so it never ran. "
+            "Refused results are excluded from tool counts, write and failure "
+            "flags, capabilities and report_tool_calls rows."
+        ),
+    )
     message_id: str = Field(
         default="",
         description=(
-            "LangChain message id of the source ToolMessage. Lets multi-turn "
-            "consumers slice the cumulative, rebuilt tool_results down to one turn "
-            "by testing membership in the set of ids appearing after the last "
-            "HumanMessage of the OUTER merged thread. An id survives the "
-            "add_messages merge; a positional index does not, because the list the "
-            "loop stamps against is the inner, possibly compaction-rewritten one. "
+            "LangChain message id of the source ToolMessage. tool_results holds "
+            "only the current turn's calls; multi-turn consumers also test this "
+            "id against the ids after the last HumanMessage of the OUTER merged "
+            "thread, which an id survives and a positional index does not. "
             "Additive metadata; empty means 'unpositioned'."
         ),
     )
@@ -194,6 +207,10 @@ class AgentState(TypedDict):
         list[str],
         "DISTINCT names of tools the loop attempted (success or failure); inspect tool_results[].success for outcome. See tool_call_count for how many invocations those names cover",
     ]
+    tool_refusals: Annotated[
+        list[ToolRefusal],
+        "Calls the identity gate refused THIS turn, in order; reset every turn so a thread never replays an earlier refusal",
+    ]
     tool_call_count: Annotated[
         int,
         "Total tool INVOCATIONS this turn, counted at the tool wrapper; a 14-call fan-out over one tool is 14 here and one entry in tools_used",
@@ -270,6 +287,7 @@ def create_initial_state(
         # Written by the loop as it runs.
         tool_results=[],
         tools_used=[],
+        tool_refusals=[],
         tool_call_count=0,
         answer_unavailable=False,
         node_trace=[],

@@ -135,6 +135,11 @@ class MCPClient:
             headers["X-Api-Key"] = settings.MCP_API_KEY
 
         with trace_mcp_call(server, tool_name, arguments) as span:
+            # span_error is what Honeycomb sees: response bodies and exception
+            # text can echo tool arguments or record data, so it carries only
+            # the status code or exception type. result.error keeps the detail
+            # for the agent and local logs.
+            span_error: str | None = None
             try:
                 response = await client.post(
                     url,
@@ -160,18 +165,21 @@ class MCPClient:
                 )
 
             except httpx.HTTPStatusError as e:
+                span_error = f"HTTP {e.response.status_code}"
                 result = MCPToolResult(
                     success=False,
                     error=f"HTTP {e.response.status_code}: {e.response.text[:500]}",
                     duration_ms=int(time.time() * 1000) - start_ms,
                 )
             except httpx.TimeoutException:
+                span_error = f"Timeout calling {server}/{tool_name}"
                 result = MCPToolResult(
                     success=False,
-                    error=f"Timeout calling {server}/{tool_name}",
+                    error=span_error,
                     duration_ms=int(time.time() * 1000) - start_ms,
                 )
             except Exception as e:
+                span_error = type(e).__name__
                 result = MCPToolResult(
                     success=False,
                     error=f"{type(e).__name__}: {e}",
@@ -180,13 +188,13 @@ class MCPClient:
 
             span.set_attribute("mcp.duration_ms", result.duration_ms)
             span.set_attribute("mcp.success", result.success)
-            if result.error:
-                span.set_attribute("mcp.error", result.error[:300])
+            if span_error:
+                span.set_attribute("mcp.error", span_error)
             if not result.success:
                 # call_tool converts exceptions to error results, so the context
                 # manager's own ERROR handling never fires — set status here so
                 # span-status error queries (e.g. the Honeycomb board) see failures.
-                span.set_status(Status(StatusCode.ERROR, result.error or "tool call failed"))
+                span.set_status(Status(StatusCode.ERROR, span_error or "tool call failed"))
             return result
 
     def _parse_mcp_response(self, data: Any) -> Any:

@@ -232,6 +232,5 @@ async def test_post_compaction_turn_reports_get_the_same_delta(monkeypatch):
 
     last = _turn_delta_state(states[-1])
     assert [r.data["turn"] for r in last["tool_results"]] == [4]
-    # The cumulative state genuinely held more than one turn's results, so the
-    # slice did real work rather than trivially matching a one-entry list.
-    assert len(states[-1]["tool_results"]) > 1
+    # The loop's own state is already per turn, so the slice and the state agree.
+    assert [r.data["turn"] for r in states[-1]["tool_results"]] == [4]

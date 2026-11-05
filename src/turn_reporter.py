@@ -98,6 +98,9 @@ class TurnReport(TurnReportBase):  # type: ignore[valid-type,misc]
     # path). The agent never writes these today; they stay NULL.
     query_intent = Column(String(16), index=True)
     refused = Column(Boolean, index=True)
+    # First reason the identity gate refused a tool call this turn; the full
+    # list is payload["refusals"]. Distinct from `refused`, the judge's verdict.
+    permission_refusal = Column(String(32))
     is_deflection = Column(Boolean, index=True)
 
     # Rating (late UPDATE via POST /api/v1/rating, after the usage_logs write)
@@ -174,7 +177,13 @@ def _assemble_turn_report(
     Pure: no DB, no I/O. ToolResult objects may be pydantic models or dicts.
     """
     raw_results = final_state.get("tool_results", []) or []
-    results = [r if isinstance(r, dict) else r.model_dump() for r in raw_results]
+    # A refused call never ran: it isn't a tool call, a failure or a write.
+    results = [
+        d
+        for d in (r if isinstance(r, dict) else r.model_dump() for r in raw_results)
+        if not d.get("refused")
+    ]
+    refusals = list(final_state.get("tool_refusals") or [])
     tools_used = final_state.get("tools_used", []) or []
     capture = turn_capture or {}
     judged = judge or {}
@@ -217,6 +226,7 @@ def _assemble_turn_report(
         "query_intent": judged.get("query_intent"),
         "refused": judged.get("refused"),
         "is_deflection": judged.get("is_deflection"),
+        "permission_refusal": refusals[0]["reason"] if refusals else None,
         "payload": {
             "answer": final_state.get("final_answer"),
             "tool_results": results,
@@ -225,6 +235,7 @@ def _assemble_turn_report(
             "reasoning": capture.get("model_reasoning") or [],
             "params": {},
             "retrieved_chunks": rag_chunks,
+            "refusals": refusals,
         },
     }
     tool_calls = [
@@ -290,6 +301,7 @@ class TurnReporter:
             "resources": "JSONB",
             "battery_run_id": "VARCHAR(64)",
             "trace_id": "VARCHAR(32)",
+            "permission_refusal": "VARCHAR(32)",
         }
         # Each ALTER runs in its own transaction with its own guard: a failure
         # (insufficient DB privileges, transient error) degrades that one column

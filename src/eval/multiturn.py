@@ -37,10 +37,11 @@ With ``--score``, the harness runs a per-turn judge with access to the prior
 turns' visible transcript via ScoringContext. Each successful turn is scored and
 persisted to eval_runs/eval_scores.
 
-Judge context is per-turn, not cumulative. Under checkpointing the agent state
-grows across the thread (``tool_results`` is rebuilt each turn from the full
-ordered message thread; ``node_trace`` appends via its reducer), so the runner
-formats only this turn's new entries. The delta is boundary-based and
+Judge context is per-turn, not cumulative. The loop now rebuilds
+``tool_results``, ``tools_used`` and ``tool_call_count`` from the current turn's
+messages only, but ``node_trace`` still appends via its reducer, and direct
+callers may pass thread-wide state, so the runner formats only this turn's new
+entries. The delta is boundary-based and
 stateless: every turn starts with the user's HumanMessage, so this turn's tool
 results are those whose source ``message_id`` appears past the LAST HumanMessage
 in the outer merged thread, its trace is the final ``node_trace`` entry, and its
@@ -58,8 +59,8 @@ The full projection deep-copies every tool payload, so it is built ONLY on the
 scored path, where its two consumers (judge context, turn report) live. The
 per-turn ``tools_used`` reported for EVERY turn — scored or not — comes from the
 same boundary slice (``_turn_tool_entries``, computed once per turn) read for
-names only, which is why a no-tool turn mid-thread correctly reports zero tools
-rather than inheriting the thread-cumulative ``state["tools_used"]`` rescan.
+names only, so a no-tool turn mid-thread reports zero tools whichever shape of
+state it is given.
 
 A turn that ran but produced no answer is persisted as ``skipped`` with its
 formatted delta transcript (``tool_results``, ``node_trace``) in context, so the
@@ -112,7 +113,7 @@ from .runner import report_battery_turn
 from .scoring import persist_skipped_turn, score_and_persist_turn
 
 if TYPE_CHECKING:
-    from src.agent.state import AgentState
+    from src.agent.state import AgentState, ToolRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -182,9 +183,10 @@ def _turn_tool_entries(state: Any) -> list[Any]:
 
     Computed once per turn and threaded through both consumers: the names
     (``_tool_names``, needed on EVERY turn) and the full projection
-    (``_turn_delta_state``, scored path only). ``state["tool_results"]`` is a
-    full-thread rebuild under checkpointing, so a turn that called nothing would
-    otherwise inherit every earlier turn's entries.
+    (``_turn_delta_state``, scored path only). The loop's ``tool_results`` is
+    already per turn, so on the loop's state this slice changes nothing; it stays
+    for direct callers that pass thread-wide state, where a turn that called
+    nothing would otherwise inherit earlier entries.
 
     An entry belongs to this turn when its ``message_id`` (its source
     ToolMessage's LangChain id, written by ``_build_tool_results``) is among the
@@ -225,10 +227,13 @@ def _tool_names(entries: list[Any]) -> list[str]:
     """Tool names off delta entries, in call order, deduped.
 
     Reads only ``tool_name``, so the UNSCORED path gets correct per-turn tools
-    without paying for the deepcopy of every tool payload.
+    without paying for the deepcopy of every tool payload. A call the identity
+    gate refused never ran, so it is left out.
     """
     names: list[str] = []
     for entry in entries:
+        if _entry_field(entry, "refused", False):
+            continue
         name = _entry_field(entry, "tool_name", None)
         if name and str(name) not in names:
             names.append(str(name))
@@ -238,9 +243,10 @@ def _tool_names(entries: list[Any]) -> list[str]:
 def _turn_delta_state(state: Any, turn_tool_entries: list[Any] | None = None) -> dict[str, Any]:
     """Project the cumulative agent state down to THIS turn's new activity (D1).
 
-    Under checkpointing the state the agent returns is thread-cumulative:
-    ``tool_results`` is *rebuilt* each turn from the full ordered message thread
-    and ``node_trace`` appends via its ``operator.add`` reducer.
+    Under checkpointing ``node_trace`` accumulates across the thread via its
+    ``operator.add`` reducer. ``tool_results`` and ``tools_used`` are per turn
+    in the loop's own output, but slicing them again is harmless and keeps
+    direct callers with thread-wide state correct.
 
     The slice is **boundary-based and stateless** — derived wholly from the
     state at hand, with no cross-turn bookkeeping that could go stale:
@@ -254,8 +260,7 @@ def _turn_delta_state(state: Any, turn_tool_entries: list[Any] | None = None) ->
       literal in tool_calling_loop's return, and the loop is the only graph
       node), so this turn's trace is the final entry.
     - ``tools_used``: derived from the delta tool_results in call order, deduped.
-      The state's own ``tools_used`` is a full-thread rescan and must not reach
-      the judge or the turn reports.
+      Deriving it here keeps it consistent with the sliced ``tool_results``.
 
     The projection is **explicit**, not a shallow copy, and it aliases nothing a
     consumer could reach: the ``tool_results`` and ``node_trace`` slices are
@@ -291,6 +296,7 @@ def _turn_delta_state(state: Any, turn_tool_entries: list[Any] | None = None) ->
         "model_calls": list(state.get("model_calls", []) or []),
         "resource_context": state.get("resource_context"),
         "total_tokens": state.get("total_tokens"),
+        "tool_refusals": list(state.get("tool_refusals", []) or []),
     }
 
 
@@ -322,6 +328,8 @@ class TurnResult:
     answerable: bool | None = None
     # Per-dimension raw scores from the JudgeResult, for the run's per_dimension means.
     scores: dict[str, int | None] | None = None
+    # Calls the identity gate refused this turn ({tool_name, reason}).
+    tool_refusals: list[ToolRefusal] = field(default_factory=list)
 
 
 @dataclass
@@ -466,9 +474,8 @@ async def run_thread(
             returned_state = True
             duration_ms = (time.monotonic() - start) * 1000
             messages = state.get("messages", [])
-            # THIS turn's tools, not state["tools_used"] — that is a full-thread
-            # rescan under checkpointing, so a turn that called nothing would report
-            # every earlier turn's tools. Names only: no payload copying needed.
+            # THIS turn's tools, from the same slice the judge and the report see.
+            # Names only: no payload copying needed.
             turn_tool_entries = _turn_tool_entries(state)
             tools_used = _tool_names(turn_tool_entries)
             answer = state.get("final_answer", "") or ""
@@ -485,6 +492,7 @@ async def run_thread(
                 message_count=len(messages),
                 duration_ms=duration_ms,
                 success=bool(answer) and not answer_unavailable,
+                tool_refusals=list(state.get("tool_refusals", []) or []),
             )
             logger.info(
                 f"  -> answer_len={len(answer)} tools={tools_used} "
