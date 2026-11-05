@@ -26,6 +26,7 @@ if os.path.exists(env_path):
                 key, value = line.split("=", 1)
                 os.environ.setdefault(key.strip(), value.strip())
 
+from src.agent.context import AgentContext
 from src.agent.graph import run_agent
 from src.config import settings
 from src.telemetry import init_telemetry, shutdown_telemetry
@@ -63,6 +64,7 @@ async def main():
         session_id="test_session",
         question_id="test_question",
         tool_catalog=registry.catalog,
+        context=AgentContext.anonymous(),
         use_checkpointing=use_checkpoint,
         db_uri=settings.DATABASE_URL if use_checkpoint else None,
     )

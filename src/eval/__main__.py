@@ -23,6 +23,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class WriteFlagError(ValueError):
+    """--acting-user was given without --allow-writes or --no-allow-writes."""
+
+
 class ProfileArgError(ValueError):
     """A --profile-resource value is malformed or names an unknown slug."""
 
@@ -87,10 +91,38 @@ def _log_resolved_profile(profile: UserProfile) -> None:
     logger.info("Resolved --profile-resource: %s", "; ".join(lines))
 
 
+def _require_write_flag(args: argparse.Namespace) -> None:
+    """An eval acting for a user must say whether it may make changes as them."""
+    if args.acting_user and args.allow_writes is None:
+        raise WriteFlagError(
+            "--acting-user requires --allow-writes or --no-allow-writes: say whether "
+            "the run may make changes as that user"
+        )
+
+
+def _effective_allow_writes(args: argparse.Namespace) -> bool:
+    """Writes need a user to act for; without --acting-user the run is anonymous,
+    so the flag is recorded as False rather than claiming a permission unused."""
+    return bool(args.acting_user and args.allow_writes)
+
+
+def _add_write_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--allow-writes",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "With --acting-user: whether the run may make changes as that user. "
+            "One of the two forms is required, so a run can't make changes by omission."
+        ),
+    )
+
+
 def _handle_run(args: argparse.Namespace) -> None:
     from .report import print_run_summary
     from .scorer import run_eval
 
+    _require_write_flag(args)
     if args.profile_resource and not args.acting_user:
         raise ProfileArgError(
             "--profile-resource requires --acting-user: a profile implies an authenticated user"
@@ -108,6 +140,7 @@ def _handle_run(args: argparse.Namespace) -> None:
             allow_factless=args.allow_factless,
             profile=profile,
             acting_user=args.acting_user,
+            allow_writes=_effective_allow_writes(args),
         )
     )
     print_run_summary(summary)
@@ -116,10 +149,12 @@ def _handle_run(args: argparse.Namespace) -> None:
 def _handle_multiturn(args: argparse.Namespace) -> None:
     from . import multiturn
 
+    _require_write_flag(args)
     results, summary = asyncio.run(
         multiturn.run_battery(
             battery_path=args.threads,
             acting_user=args.acting_user,
+            allow_writes=_effective_allow_writes(args),
             resource_context=args.resource,
             score=args.score,
             judge_model=args.judge_model,
@@ -557,8 +592,12 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915  # all subcomman
     run_parser.add_argument(
         "--acting-user",
         default=None,
-        help="Optional ACCESS ID for authenticated calls during the run",
+        help=(
+            "Optional ACCESS ID for authenticated calls during the run. "
+            "Requires --allow-writes or --no-allow-writes."
+        ),
     )
+    _add_write_flag(run_parser)
 
     compare_parser = subparsers.add_parser("compare", help="Compare two eval runs")
     compare_parser.add_argument("--run-a", required=True, help="First run ID")
@@ -760,8 +799,12 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915  # all subcomman
     multiturn_parser.add_argument(
         "--acting-user",
         default=None,
-        help="Optional ACCESS ID for authenticated calls during the thread",
+        help=(
+            "Optional ACCESS ID for authenticated calls during the thread. "
+            "Requires --allow-writes or --no-allow-writes."
+        ),
     )
+    _add_write_flag(multiturn_parser)
     multiturn_parser.add_argument(
         "--resource",
         default=None,

@@ -1,13 +1,16 @@
-"""Tests for RequiresAuthMiddleware: the anonymous write/private-read gate.
+"""Tests for RequiresAuthMiddleware: the gate on tools the caller may not use.
 
 Real ToolCallRequest and ModelRequest instances are built directly rather
-than mocked. ``tool=None`` on the tool request matches the unregistered-tool
-case, which a naive ``request.tool.name`` implementation would break on.
-End-to-end behavior through both routes is in tests/test_gated_turns.py.
+than mocked, each carrying the run's AgentContext on its runtime as
+create_agent passes it. ``tool=None`` on the tool request matches the
+unregistered-tool case, which a naive ``request.tool.name`` implementation
+would break on. End-to-end behavior through both routes is in
+tests/test_gated_turns.py.
 """
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,17 +18,26 @@ from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.prebuilt.tool_node import ToolCallRequest
+from langgraph.runtime import Runtime
 
 from src.agent.middleware.requires_auth import RequiresAuthMiddleware, refusal_text
 from src.config import settings
+from tests.agent_runtime import context_for, run_loop
+
+if TYPE_CHECKING:
+    from src.agent.context import AgentContext
+
+ANON = context_for(None)
+READ_ONLY_TOKEN = context_for("user123", can_write=False)
+WRITE_TOKEN = context_for("user123", can_write=True)
 
 
-def _request(name: str, call_id: str = "call_1") -> ToolCallRequest:
+def _request(name: str, context: object = ANON, call_id: str = "call_1") -> ToolCallRequest:
     return ToolCallRequest(
         tool_call={"name": name, "args": {}, "id": call_id, "type": "tool_call"},
         tool=None,
         state={},
-        runtime=None,
+        runtime=Runtime(context=context),
     )
 
 
@@ -40,13 +52,18 @@ async def _handler_passthrough(request: ToolCallRequest) -> ToolMessage:
 class TestAwrapToolCall:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("tool", "reason"),
-        [("register_for_event", "write_action"), ("get_my_rp_accounts", "private_data")],
+        ("context", "tool", "reason"),
+        [
+            (ANON, "register_for_event", "write_action"),
+            (ANON, "get_my_rp_accounts", "private_data"),
+            (READ_ONLY_TOKEN, "register_for_event", "write_scope"),
+        ],
+        ids=["anon-write", "anon-private-read", "read-only-token-write"],
     )
-    async def test_anon_gated_tool_is_refused_with_prose_and_artifact(self, tool, reason):
-        gate = RequiresAuthMiddleware(acting_user=None)
+    async def test_disallowed_call_is_refused_with_prose_and_artifact(self, context, tool, reason):
+        gate = RequiresAuthMiddleware()
 
-        result = await gate.awrap_tool_call(_request(tool), _handler_must_not_be_called)
+        result = await gate.awrap_tool_call(_request(tool, context), _handler_must_not_be_called)
 
         assert isinstance(result, ToolMessage)
         assert result.status == "error"
@@ -56,23 +73,58 @@ class TestAwrapToolCall:
         assert gate.refusals == [{"tool_name": tool, "reason": reason}]
 
     @pytest.mark.asyncio
-    async def test_anon_public_tool_calls_handler(self):
-        gate = RequiresAuthMiddleware(acting_user=None)
+    @pytest.mark.parametrize(
+        ("context", "tool"),
+        [
+            (ANON, "search_resources"),
+            (READ_ONLY_TOKEN, "get_my_rp_accounts"),
+            (READ_ONLY_TOKEN, "search_resources"),
+            (WRITE_TOKEN, "register_for_event"),
+            (WRITE_TOKEN, "get_my_rp_accounts"),
+        ],
+        ids=[
+            "anon-public",
+            "read-only-token-private-read",
+            "read-only-token-public",
+            "write-token-write",
+            "write-token-private-read",
+        ],
+    )
+    async def test_allowed_call_reaches_the_tool(self, context, tool):
+        gate = RequiresAuthMiddleware()
 
-        result = await gate.awrap_tool_call(_request("search_resources"), _handler_passthrough)
+        result = await gate.awrap_tool_call(_request(tool, context), _handler_passthrough)
 
         assert result.content == "ok"
         assert gate.refusals == []
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("tool", ["register_for_event", "get_my_rp_accounts"])
-    async def test_signed_in_gated_tool_calls_handler(self, tool):
-        gate = RequiresAuthMiddleware(acting_user="user123")
+    async def test_read_only_deployment_refuses_writes_for_a_write_token(self, monkeypatch):
+        monkeypatch.setattr(settings, "READ_ONLY", True)
+        gate = RequiresAuthMiddleware()
 
-        result = await gate.awrap_tool_call(_request(tool), _handler_passthrough)
+        result = await gate.awrap_tool_call(
+            _request("register_for_event", WRITE_TOKEN), _handler_must_not_be_called
+        )
 
-        assert result.content == "ok"
-        assert gate.refusals == []
+        assert result.artifact == {"refusal": {"reason": "write_scope"}}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("context", [None, {"acting_user": "user123"}, "user123"])
+    async def test_a_call_without_an_agent_context_fails_closed(self, context):
+        gate = RequiresAuthMiddleware()
+
+        with pytest.raises(TypeError):
+            await gate.awrap_tool_call(
+                _request("search_resources", context), _handler_must_not_be_called
+            )
+
+
+def test_a_tool_with_no_name_is_never_gated():
+    from src.agent.middleware.requires_auth import refusal_reason
+
+    assert refusal_reason(ANON, None) is None
+    assert refusal_reason(ANON, "") is None
 
 
 class TestRefusalText:
@@ -84,15 +136,28 @@ class TestRefusalText:
         assert settings.LOGIN_URL in text
         assert "Until they sign in" in text
 
+    def test_write_scope_prose_offers_no_sign_in_and_points_to_a_ticket(self):
+        text = refusal_text("write_scope")
+
+        assert text.startswith("Not done.")
+        assert settings.LOGIN_URL not in text
+        assert "can't make changes on their behalf" in text
+        assert "https://support.access-ci.org/open-a-ticket" in text
+
 
 def _tool(name: str) -> StructuredTool:
     return StructuredTool.from_function(func=lambda: "ok", name=name, description=name)
 
 
 class TestAwrapModelCall:
-    async def _bound_after(self, gate: RequiresAuthMiddleware) -> list[str]:
+    async def _bound_after(self, gate: RequiresAuthMiddleware, context: AgentContext) -> list[str]:
         tools = [_tool("register_for_event"), _tool("get_my_rp_accounts"), _tool("search_events")]
-        request = ModelRequest(model=MagicMock(), messages=[HumanMessage("hi")], tools=tools)
+        request = ModelRequest(
+            model=MagicMock(),
+            messages=[HumanMessage("hi")],
+            tools=tools,
+            runtime=Runtime(context=context),
+        )
         seen: list[str] = []
 
         async def handler(req):
@@ -104,20 +169,32 @@ class TestAwrapModelCall:
 
     @pytest.mark.asyncio
     async def test_all_tools_are_offered_before_any_refusal(self):
-        gate = RequiresAuthMiddleware(acting_user=None)
+        gate = RequiresAuthMiddleware()
 
-        assert await self._bound_after(gate) == [
+        assert await self._bound_after(gate, ANON) == [
             "register_for_event",
             "get_my_rp_accounts",
             "search_events",
         ]
 
     @pytest.mark.asyncio
-    async def test_after_a_refusal_every_gated_tool_is_hidden(self):
-        gate = RequiresAuthMiddleware(acting_user=None)
+    async def test_after_an_anonymous_refusal_every_gated_tool_is_hidden(self):
+        gate = RequiresAuthMiddleware()
         await gate.awrap_tool_call(_request("register_for_event"), _handler_must_not_be_called)
 
-        assert await self._bound_after(gate) == ["search_events"]
+        assert await self._bound_after(gate, ANON) == ["search_events"]
+
+    @pytest.mark.asyncio
+    async def test_after_a_write_scope_refusal_only_write_tools_are_hidden(self):
+        gate = RequiresAuthMiddleware()
+        await gate.awrap_tool_call(
+            _request("register_for_event", READ_ONLY_TOKEN), _handler_must_not_be_called
+        )
+
+        assert await self._bound_after(gate, READ_ONLY_TOKEN) == [
+            "get_my_rp_accounts",
+            "search_events",
+        ]
 
 
 @pytest.fixture
@@ -126,20 +203,24 @@ def base_state():
         "messages": [HumanMessage(content="register me for the workshop")],
         "query": "register me for the workshop",
         "tool_catalog": {"servers": []},
-        "acting_user": None,
         "rag_matches": [],
         "query_classification": None,
     }
 
 
 class TestLoopNode:
-    """The node builds one gate per turn and returns its refusals."""
+    """The node reads the caller from its runtime and returns the gate's refusals."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("acting_user", [None, "user123"])
-    async def test_gate_is_built_with_the_nodes_acting_user(self, base_state, acting_user):
+    @pytest.mark.parametrize("context", [None, {"acting_user": "user123"}, "user123"])
+    async def test_a_run_without_an_agent_context_fails_closed(self, base_state, context):
         from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
 
+        with pytest.raises(TypeError):
+            await tool_calling_loop_node(base_state, Runtime(context=context))
+
+    @pytest.mark.asyncio
+    async def test_one_gate_is_built_per_turn(self, base_state):
         mock_graph = AsyncMock()
         mock_graph.ainvoke.return_value = {
             "messages": [*base_state["messages"], AIMessage(content="hello")]
@@ -151,17 +232,14 @@ class TestLoopNode:
             return mock_graph
 
         with patch("src.agent.nodes.tool_calling_loop.create_agent", side_effect=fake_create_agent):
-            result = await tool_calling_loop_node({**base_state, "acting_user": acting_user})
+            result = await run_loop(base_state, "user123")
 
         gates = [m for m in captured["middleware"] if isinstance(m, RequiresAuthMiddleware)]
         assert len(gates) == 1
-        assert gates[0]._acting_user == acting_user
         assert result["tool_refusals"] == []
 
     @pytest.mark.asyncio
     async def test_refused_result_is_marked_and_not_counted(self, base_state):
-        from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
         call = AIMessage(
             content="", tool_calls=[{"id": "c1", "name": "register_for_event", "args": {}}]
         )
@@ -177,7 +255,7 @@ class TestLoopNode:
         }
 
         with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
-            result = await tool_calling_loop_node(base_state)
+            result = await run_loop(base_state)
 
         (entry,) = result["tool_results"]
         assert entry.refused is True

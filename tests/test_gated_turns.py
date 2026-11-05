@@ -404,3 +404,144 @@ async def test_the_model_gets_prose_and_never_the_artifact(client, stack):
     # The provider payload carries role, content and tool_call_id, never the artifact.
     assert "artifact" not in _convert_message_to_dict(refused[0])
     assert "refusal" not in json.dumps(_convert_message_to_dict(refused[0]))
+
+
+# --- A signed-in caller whose token lacks agent:write ----------------------------
+
+READ_ONLY = {"scope": "agent:read"}
+
+
+async def test_read_only_token_write_is_refused_as_write_scope(client, stack, agent_tokens):
+    model, ran = stack
+    model.script = [[WRITE], "That change can't be made from here."]
+
+    events = await _run(
+        client, "t-scope", "Register me", headers=agent_tokens.headers("user@x", **READ_ONLY)
+    )
+
+    assert ran == []
+    assert [d for n, d in events if n == "custom"] == [
+        {"type": "requires_auth", "reason": "write_scope"}
+    ]
+    # Hiding after the refusal drops write tools only; the private read stays.
+    assert set(model.bound[1]) == {PRIVATE, PUBLIC}
+    (report,), _ = _rows("t-scope")
+    assert report.permission_refusal == "write_scope"
+    assert report.invoked_write is False
+
+
+async def test_read_only_token_private_read_runs(client, stack, agent_tokens):
+    model, ran = stack
+    model.script = [[PRIVATE], "Here are your accounts."]
+
+    events = await _run(
+        client, "t-scope-read", "My accounts?", headers=agent_tokens.headers("user@x", **READ_ONLY)
+    )
+
+    assert ran == [PRIVATE]
+    assert "custom" not in _names(events)
+
+
+async def test_query_write_scope_refusal_offers_no_sign_in(client, stack, agent_tokens):
+    model, _ran = stack
+    model.script = [[WRITE], "That change can't be made from here."]
+
+    r = await client.post(
+        "/api/v1/query",
+        headers=agent_tokens.headers("user@x", **READ_ONLY),
+        json={"query": "Register me", "session_id": "s-scope"},
+    )
+    events = _events(r.text)
+
+    assert [d for n, d in events if n == "requires_auth"] == [{"reason": "write_scope"}]
+    (done,) = [d for n, d in events if n == "done"]
+    assert done["metadata"]["refusal"] == {"reason": "write_scope"}
+
+
+@pytest.mark.parametrize("order", ["write-then-read-only", "read-only-then-write"])
+async def test_each_turn_is_gated_by_its_own_token(client, stack, agent_tokens, order):
+    """The scope comes from the request, never from the thread's history."""
+    model, ran = stack
+    model.script = [[WRITE], "Done.", [WRITE], "Done."]
+    tokens = [agent_tokens.headers("user@x"), agent_tokens.headers("user@x", **READ_ONLY)]
+    if order == "read-only-then-write":
+        tokens.reverse()
+
+    first = await _run(client, f"t-{order}", "Register me", headers=tokens[0])
+    second = await _run(client, f"t-{order}", "Register me again", headers=tokens[1])
+
+    refused = ["custom" in _names(e) for e in (first, second)]
+    assert refused == ([False, True] if order == "write-then-read-only" else [True, False])
+    assert ran == [WRITE]
+
+
+async def test_concurrent_requests_are_each_gated_by_their_own_token(client, agent_tokens):
+    """Two runs at once, one per token: neither sees the other's context."""
+    import asyncio
+
+    ran: list[str] = []
+
+    class _PerThreadModel(_ScriptedModel):
+        def _next(self, messages):
+            # Each thread's first call writes; anything after answers.
+            if any(isinstance(m, ToolMessage) for m in messages):
+                return AIMessage(content="Done.")
+            return AIMessage(
+                content="", tool_calls=[{"name": WRITE, "args": {}, "id": "chatcmpl-tool-0"}]
+            )
+
+    with (
+        patch.object(loop_mod, "get_llm", return_value=_PerThreadModel()),
+        patch.object(
+            loop_mod, "_build_prompt_and_tools", return_value=("system", _tools(ran), False)
+        ),
+        patch.object(routes, "get_registry", _fake_registry),
+    ):
+        writer, reader = await asyncio.gather(
+            _run(client, "t-conc-w", "Register me", headers=agent_tokens.headers("w@x")),
+            _run(
+                client,
+                "t-conc-r",
+                "Register me",
+                headers=agent_tokens.headers("r@x", **READ_ONLY),
+            ),
+        )
+
+    assert "custom" not in _names(writer)
+    assert [d for n, d in reader if n == "custom"] == [
+        {"type": "requires_auth", "reason": "write_scope"}
+    ]
+    assert ran == [WRITE]
+
+
+async def test_nothing_about_the_caller_is_checkpointed(client, stack, agent_tokens):
+    model, _ran = stack
+    model.script = ["Hello."]
+
+    await _run(client, "t-stored", "Hi", headers=agent_tokens.headers("stored-user@x"))
+
+    saved = await app.state.checkpointer.aget_tuple({"configurable": {"thread_id": "t-stored"}})
+    dumped = json.dumps({"checkpoint": saved.checkpoint, "metadata": saved.metadata}, default=str)
+    assert "stored-user@x" not in dumped
+    assert "agent:write" not in dumped
+    assert "acting_user" not in saved.checkpoint["channel_values"]
+
+
+async def test_a_body_context_claiming_a_user_has_no_effect(client, stack):
+    model, ran = stack
+    model.script = [[WRITE], "Sign in to register."]
+
+    r = await client.post(
+        "/api/v1/threads/t-body/runs/stream",
+        json={
+            "input": {"messages": [{"role": "user", "content": "Register me"}]},
+            "context": {"acting_user": "someone@x", "scopes": ["agent:read", "agent:write"]},
+            "config": {"configurable": {"acting_user": "someone@x"}},
+        },
+    )
+    events = _events(r.text)
+
+    assert ran == []
+    assert [d for n, d in events if n == "custom"] == [
+        {"type": "requires_auth", "reason": "write_action"}
+    ]

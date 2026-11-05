@@ -6,14 +6,15 @@ with create_react_agent's function-calling loop.
 
 import json
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field, create_model
 
 from ...tools.mcp_client import MCPClient
+from ..auth_tools import ToolIdentityClass, tool_identity_class
+from ..middleware.requires_auth import CoarseReason, refusal_artifact, refusal_text
 from ..turn_capture import record_tool_timing
-from .config import DomainAgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -75,14 +76,35 @@ class MCPToolWrapper(BaseTool):
     acting_user: str | None = None
     """ACCESS ID of the acting user."""
 
+    can_write: bool = False
+    """Whether this run may make changes. Off unless the caller's context says so."""
+
+    # The artifact carries a refusal's reason, as the identity gate's does.
+    response_format: Literal["content", "content_and_artifact"] = "content_and_artifact"
+
     class Config:
         arbitrary_types_allowed = True
 
-    def _run(self, **kwargs: Any) -> str:
+    def _run(self, **kwargs: Any) -> tuple[str, Any]:
         raise NotImplementedError("Use async _arun")
 
-    async def _arun(self, **kwargs: Any) -> str:
-        """Call the MCP tool and return the result as a JSON string."""
+    async def _arun(self, **kwargs: Any) -> tuple[str, Any]:
+        """Call the MCP tool; return its result as a JSON string, with no artifact.
+
+        The MCP servers trust ``X-Acting-User``, so the agent is the only place
+        a write is stopped. The identity gate refuses first; this checks again
+        at the one path to ``call_tool``, against the same rule, so a context
+        plumbing mistake can't let a write through. It returns a refusal rather
+        than raising, because a tool that raises aborts the whole turn.
+        """
+        if tool_identity_class(self.name) is ToolIdentityClass.WRITE and not self.can_write:
+            logger.error(
+                "write tool %s reached the MCP wrapper without write permission; refused",
+                self.name,
+            )
+            reason: CoarseReason = "write_scope" if self.acting_user else "write_action"
+            return refusal_text(reason), refusal_artifact(reason)
+
         # Filter out None values — MCP servers don't expect them
         arguments = {k: v for k, v in kwargs.items() if v is not None}
 
@@ -98,79 +120,27 @@ class MCPToolWrapper(BaseTool):
         record_tool_timing(self.name, result.duration_ms)
 
         if result.success:
-            return json.dumps(result.data, default=str)
-        return json.dumps({"error": result.error})
-
-
-def create_domain_tools(
-    config: DomainAgentConfig,
-    tool_catalog: dict[str, Any],
-    acting_user: str | None = None,
-) -> list[BaseTool]:
-    """Create LangChain tool wrappers for a domain's MCP tools.
-
-    Filters the full tool catalog to only include tools from the
-    domain's configured MCP servers.
-
-    Args:
-        config: Domain agent config specifying which servers to include.
-        tool_catalog: The full MCP tool catalog.
-        acting_user: ACCESS ID for auth headers.
-
-    Returns:
-        List of BaseTool instances ready for create_react_agent.
-    """
-    client = MCPClient()
-    tools: list[BaseTool] = []
-
-    servers = tool_catalog.get("servers", [])
-    for server_info in servers:
-        server_name = server_info.get("server", "")
-        if server_name not in config.mcp_servers:
-            continue
-
-        if server_info.get("status") != "available":
-            logger.warning(f"Domain {config.name}: server {server_name} unavailable, skipping")
-            continue
-
-        for tool_def in server_info.get("tools", []):
-            tool_name = tool_def.get("name", "")
-            description = tool_def.get("description", "")
-            parameters = tool_def.get("parameters", [])
-
-            args_schema = _build_args_schema(tool_name, parameters)
-
-            wrapper = MCPToolWrapper(
-                name=tool_name,
-                description=description,
-                args_schema=args_schema,
-                tool_server=server_name,
-                mcp_client=client,
-                acting_user=acting_user,
-            )
-            tools.append(wrapper)
-
-    logger.info(
-        f"Created {len(tools)} tools for domain '{config.name}' from servers {config.mcp_servers}"
-    )
-    return tools
+            return json.dumps(result.data, default=str), None
+        return json.dumps({"error": result.error}), None
 
 
 def create_mcp_tools_from_catalog(
     tool_catalog: dict[str, Any],
     acting_user: str | None = None,
+    *,
+    can_write: bool = False,
 ) -> list[BaseTool]:
     """Create LangChain tool wrappers for every available tool in the catalog.
 
-    Unlike create_domain_tools, this function is not scoped to a single
-    domain — it materializes every enabled MCP tool so the tool_calling_loop
-    can pick from the full set. Respects the capability registry via the
+    It materializes every enabled MCP tool so the tool_calling_loop can pick
+    from the full set. Respects the capability registry via the
     tool_catalog input (caller populates the catalog from enabled
     capabilities only).
 
     Args:
         tool_catalog: The MCP tool catalog dict with "servers" key.
         acting_user: ACCESS ID for auth headers, or None for anonymous.
+        can_write: Whether write tools may reach the MCP server this run.
 
     Returns:
         List of MCPToolWrapper instances, one per available tool in the catalog.
@@ -207,6 +177,7 @@ def create_mcp_tools_from_catalog(
                 tool_server=server_name,
                 mcp_client=client,
                 acting_user=acting_user,
+                can_write=can_write,
             )
             tools.append(wrapper)
 

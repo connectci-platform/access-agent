@@ -15,13 +15,13 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.errors import GraphRecursionError
 
 from src.agent.turn_capture import record_tool_timing, reset_turn_capture
+from tests.agent_runtime import run_loop
 
 
 def _state() -> dict:
     return {
         "messages": [HumanMessage(content="What GPU types do ACCESS resources have?")],
         "tool_catalog": {"tools": [], "quick_lookup": {}},
-        "acting_user": None,
         "resource_context": None,
     }
 
@@ -46,8 +46,6 @@ def _fanout_result(n: int = 14) -> dict:
 @pytest.mark.asyncio
 async def test_fanout_counts_every_invocation_not_distinct_names():
     """14 calls to one tool is tool_call_count=14 and tools_used=[that tool]."""
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
     reset_turn_capture()
     mock_graph = AsyncMock()
     mock_graph.ainvoke.return_value = _fanout_result(14)
@@ -57,7 +55,7 @@ async def test_fanout_counts_every_invocation_not_distinct_names():
         # since create_agent is mocked out.
         for _ in range(14):
             record_tool_timing("get_resource_hardware", 100)
-        result = await tool_calling_loop_node(_state())
+        result = await run_loop(_state())
 
     assert result["tool_call_count"] == 14
     assert result["tools_used"] == ["get_resource_hardware"]
@@ -67,8 +65,6 @@ async def test_fanout_counts_every_invocation_not_distinct_names():
 async def test_exhaustion_reports_the_calls_it_actually_made():
     """A budget-exhausted turn must not report zero tools — the dashboard
     would classify it as a "zero_tool" turn."""
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
     reset_turn_capture()
     mock_graph = AsyncMock()
     mock_graph.ainvoke.side_effect = GraphRecursionError("budget exhausted")
@@ -76,7 +72,7 @@ async def test_exhaustion_reports_the_calls_it_actually_made():
     with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
         for _ in range(27):
             record_tool_timing("get_resource_hardware", 100)
-        result = await tool_calling_loop_node(_state())
+        result = await run_loop(_state())
 
     assert result["tool_call_count"] == 27, "work done before the budget ran out must be reported"
     assert result["tools_used"] == ["get_resource_hardware"]
@@ -86,8 +82,6 @@ async def test_exhaustion_reports_the_calls_it_actually_made():
 
 @pytest.mark.asyncio
 async def test_distinct_tools_are_listed_once_each():
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
     reset_turn_capture()
     mock_graph = AsyncMock()
     mock_graph.ainvoke.return_value = {"messages": [AIMessage(content="done")]}
@@ -96,7 +90,7 @@ async def test_distinct_tools_are_listed_once_each():
         record_tool_timing("search_access_documents", 50)
         record_tool_timing("get_resource_hardware", 60)
         record_tool_timing("get_resource_hardware", 70)
-        result = await tool_calling_loop_node(_state())
+        result = await run_loop(_state())
 
     assert result["tool_call_count"] == 3
     assert result["tools_used"] == ["search_access_documents", "get_resource_hardware"]
@@ -106,14 +100,12 @@ async def test_distinct_tools_are_listed_once_each():
 async def test_message_scan_is_the_fallback_when_no_timings_recorded():
     """Timings come from our own wrappers; if a tool were ever invoked by a
     path that bypasses them, attribution should still populate."""
-    from src.agent.nodes.tool_calling_loop import tool_calling_loop_node
-
     reset_turn_capture()
     mock_graph = AsyncMock()
     mock_graph.ainvoke.return_value = _fanout_result(3)
 
     with patch("src.agent.nodes.tool_calling_loop.create_agent", return_value=mock_graph):
-        result = await tool_calling_loop_node(_state())  # no timings recorded
+        result = await run_loop(_state())  # no timings recorded
 
     assert result["tools_used"] == ["get_resource_hardware"]
     assert result["tool_call_count"] == 3

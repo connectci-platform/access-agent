@@ -4,6 +4,7 @@ import asyncio
 
 from langchain_core.messages import AIMessage, ToolMessage
 
+from src.agent.context import AgentContext
 from src.agent.domains.tools import MCPToolWrapper
 from src.agent.nodes.tool_calling_loop import _build_tool_results
 from src.agent.turn_capture import (
@@ -223,13 +224,21 @@ def test_run_agent_records_trace_id(monkeypatch):
     import src.agent.graph as graph_mod
 
     class _Graph:
-        async def ainvoke(self, state, config):
+        async def ainvoke(self, state, config, context=None):
             return {}
 
     monkeypatch.setattr(graph_mod, "create_agent_graph", _Graph)
     monkeypatch.setattr(graph_mod, "get_tracer", lambda name="t": TracerProvider().get_tracer(name))
     reset_turn_capture()
-    asyncio.run(graph_mod.run_agent(query="q", session_id="s", question_id="qid", tool_catalog={}))
+    asyncio.run(
+        graph_mod.run_agent(
+            query="q",
+            session_id="s",
+            question_id="qid",
+            tool_catalog={},
+            context=AgentContext.anonymous(),
+        )
+    )
     assert get_turn_capture()["trace_id"] is not None
 
 
@@ -239,7 +248,7 @@ def test_stream_agent_records_trace_id(monkeypatch):
     import src.agent.graph as graph_mod
 
     class _Graph:
-        async def astream(self, state, config=None, stream_mode=None):
+        async def astream(self, state, config=None, stream_mode=None, context=None):
             return
             yield  # makes this an (empty) async generator
 
@@ -249,7 +258,11 @@ def test_stream_agent_records_trace_id(monkeypatch):
 
     async def _consume():
         async for _ in graph_mod.stream_agent(
-            query="q", session_id="s", question_id="qid", tool_catalog={}
+            query="q",
+            session_id="s",
+            question_id="qid",
+            tool_catalog={},
+            context=AgentContext.anonymous(),
         ):
             pass
 

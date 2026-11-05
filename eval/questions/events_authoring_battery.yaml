@@ -12,6 +12,10 @@
 # write tool); the contract and tests are the source. Flagged for student confirmation.
 #
 # Capability: manage_events (requires_auth=True, hidden under READ_ONLY).
+#
+# Run it with --acting-user and --allow-writes: create_event is a write tool, so without
+# write permission the gate refuses it before any preview. With writes allowed, the
+# preview-only guarantee rests on the model never sending confirmed: true.
 
 - id: ea-create-01
   question: I want to set up a weekly GPU programming workshop, Mondays at 2pm through October.

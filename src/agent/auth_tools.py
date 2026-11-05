@@ -19,11 +19,12 @@ plumbing, not auth-read, and must NOT be treated as needing identity.
 Known limit: the WRITE/AUTH_READ name sets (plus their regex fallbacks) are
 hand-maintained in ``src.agent.domains.capabilities``. They are a floor, not a
 proof — a newly added write or private-data tool that doesn't match an
-existing name or prefix pattern is served unguarded. That's a fail-open UX
-seam (the caller gets a raw MCP error instead of a clean "please sign in"
-prompt), not a tenant-isolation breach: no identity-gated tool call succeeds
-without a resolved identity of its own accord, this helper just decides
-whether to ask for one up front.
+existing name or prefix pattern is served unguarded. For an anonymous caller
+the MCP server still refuses an identity-gated call itself. For a signed-in
+caller whose token lacks ``agent:write``, this classification IS the
+boundary: the agent sends ``X-Acting-User``, so a write tool classified as
+NONE runs as that user. The nightly writeguard drift check is the alarm until
+the MCP catalog tags each tool as read or write.
 """
 
 from __future__ import annotations

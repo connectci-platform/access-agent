@@ -261,6 +261,28 @@ async def test_acting_user_required_with_acting_user_runs(tmp_path):
     assert results[0].thread_id == "mt-auth-01"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allow_writes", [True, False])
+async def test_each_turn_runs_with_the_battery_write_permission(tmp_path, allow_writes):
+    from unittest.mock import AsyncMock, patch
+
+    from src.agent.context import AgentContext
+    from src.eval.multiturn import run_battery
+
+    battery = _write(tmp_path, "b.json", VALID)
+    run_agent = AsyncMock(return_value=STATE)
+
+    with (
+        patch("src.eval.multiturn.run_agent", new=run_agent),
+        patch("src.eval.multiturn.get_catalog_aggregator") as agg,
+    ):
+        agg.return_value.fetch_catalog = AsyncMock(return_value={"tools": []})
+        await run_battery(battery_path=battery, acting_user="u@x", allow_writes=allow_writes)
+
+    expected = AgentContext.for_eval("u@x", allow_writes=allow_writes)
+    assert [c.kwargs["context"] for c in run_agent.call_args_list] == [expected, expected]
+
+
 def test_support_battery_file_is_valid():
     from src.eval.multiturn import load_thread_battery
 

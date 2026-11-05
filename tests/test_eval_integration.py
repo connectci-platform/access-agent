@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.agent.context import AgentContext
 from src.agent.profile import AllocatedResource, UserProfile
 from src.eval.db import EvalDB
 from src.eval.judge import parse_judge_response
@@ -416,11 +417,14 @@ async def test_run_eval_forwards_and_records_acting_user(mock_db, tiny_question_
             acting_user="jdoe",
         )
 
-    assert all(call.kwargs.get("acting_user") == "jdoe" for call in mock_run_agent.call_args_list)
+    # No write flag given, so the run may not make changes as jdoe.
+    expected = AgentContext.for_eval("jdoe", allow_writes=False)
+    assert all(call.kwargs["context"] == expected for call in mock_run_agent.call_args_list)
 
     db = EvalDB(mock_db)
     run = db.get_run(summary["run_id"])
     assert run.metadata_["acting_user"] == "jdoe"
+    assert run.metadata_["allow_writes"] is False
 
 
 @pytest.mark.asyncio
@@ -449,7 +453,7 @@ async def test_run_question_passes_profile_to_run_agent(mock_db):
 
 @pytest.mark.asyncio
 async def test_run_question_passes_acting_user_to_run_agent(mock_db):
-    """run_question forwards acting_user= to run_agent on the agent_full path."""
+    """run_question turns acting_user= and allow_writes= into run_agent's context."""
     mock_state = {
         "final_answer": "ACCESS is a program for HPC resources.",
         "tools_used": [],
@@ -463,9 +467,12 @@ async def test_run_question_passes_acting_user_to_run_agent(mock_db):
             "What is ACCESS?",
             tool_catalog={"tools": []},
             acting_user="jdoe",
+            allow_writes=True,
         )
 
-    assert mock_run_agent.call_args.kwargs["acting_user"] == "jdoe"
+    assert mock_run_agent.call_args.kwargs["context"] == AgentContext.for_eval(
+        "jdoe", allow_writes=True
+    )
 
 
 @pytest.mark.asyncio

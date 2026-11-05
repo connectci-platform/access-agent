@@ -23,6 +23,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 
+from ..agent.context import AgentContext
 from ..agent.graph import create_checkpointed_graph, stream_agent
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..config import settings
@@ -108,11 +109,13 @@ class RunInput(BaseModel):
 
 
 class RunRequest(BaseModel):
-    """SDK run body. Only ``input.messages`` is load-bearing here; the rest are
-    accepted for protocol compatibility and ignored (the agent resolves its own
-    tools, and profile/resource context are accepted-loss). A run always
-    creates-and-owns a non-existent thread, so ``if_not_exists`` is accepted and
-    ignored rather than honored."""
+    """SDK run body. The route reads ``input.messages``, ``turnstile_token``, and
+    ``resource_context`` from ``config.configurable`` or ``context``; everything
+    else is accepted for protocol compatibility and ignored. The body's
+    ``context`` never reaches the agent's runtime context, which comes from the
+    verified token only, so a body claiming a user or scopes has no effect. A
+    run always creates-and-owns a non-existent thread, so ``if_not_exists`` is
+    accepted and ignored rather than honored."""
 
     input: RunInput = RunInput()
     assistant_id: str | None = None
@@ -173,7 +176,7 @@ async def _stream_run_events(
     thread_id: str,
     run_id: str,
     query: str,
-    caller: str | None,
+    context: AgentContext,
     resource_context: str | None,
     checkpointer: Any,
     final_state: dict[str, Any],
@@ -197,7 +200,7 @@ async def _stream_run_events(
         session_id=thread_id,
         question_id=run_id,
         tool_catalog=registry.catalog,
-        acting_user=caller,
+        context=context,
         resource_context=resource_context,
         profile=None,
         checkpointer=checkpointer,
@@ -222,7 +225,7 @@ async def _stream_run_events(
 
     refusals = final_state.get("tool_refusals") or []
     if refusals:
-        # An anonymous caller asked for something that needs sign-in. Sent as a
+        # The caller asked for something they may not do here. Sent as a
         # LangGraph `custom` event because useStream drops event names it doesn't
         # know; `type` keeps it apart from the ui events on the same channel. The
         # turn still completes below with the model's reply.
@@ -468,7 +471,7 @@ async def thread_run_stream(
                         thread_id=thread_id,
                         run_id=run_id,
                         query=query,
-                        caller=caller,
+                        context=AgentContext.from_identity(identity),
                         resource_context=resource_context,
                         checkpointer=getattr(raw_request.app.state, "checkpointer", None),
                         final_state=final_state,

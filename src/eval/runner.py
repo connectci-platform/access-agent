@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from src.agent.context import AgentContext
 from src.agent.domains.capabilities import get_capability_registry
 from src.agent.graph import run_agent
 from src.agent.profile import UserProfile
@@ -96,6 +97,7 @@ async def run_question(
     battery_run_id: str | None = None,
     profile: UserProfile | None = None,
     acting_user: str | None = None,
+    allow_writes: bool = False,
 ) -> RunResult:
     start = time.monotonic()
     try:
@@ -117,6 +119,7 @@ async def run_question(
                 battery_run_id=battery_run_id,
                 profile=profile,
                 acting_user=acting_user,
+                allow_writes=allow_writes,
             )
         result.duration_ms = (time.monotonic() - start) * 1000
         return result
@@ -208,6 +211,7 @@ async def _run_agent(
     battery_run_id: str | None = None,
     profile: UserProfile | None = None,
     acting_user: str | None = None,
+    allow_writes: bool = False,
 ) -> RunResult:
     """Call run_agent() and capture the final answer + execution context.
 
@@ -229,7 +233,7 @@ async def _run_agent(
             use_checkpointing=False,
             resource_context=resource_context,
             profile=profile,
-            acting_user=acting_user,
+            context=AgentContext.for_eval(acting_user, allow_writes=allow_writes),
         )
     except Exception:
         # Mirror src/api/routes.py's failure write: a failed battery question
