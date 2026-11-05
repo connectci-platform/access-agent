@@ -123,12 +123,20 @@ def _build_prompt_and_tools(
 def _apply_read_only_filter(tools: list[BaseTool]) -> list[BaseTool]:
     """Strip write-capable MCP tools when ``settings.READ_ONLY`` is True.
 
-    See `docs/security/write-capability-audit.md`.
+    Strips the explicit ``WRITE_MCP_TOOL_NAMES`` plus any tool whose server
+    publishes ``readOnlyHint: false``. It deliberately ignores the name-prefix
+    rule: a name heuristic must not strip tools silently (see src/writeguard),
+    while the hint is the server's own declaration. See
+    `docs/security/write-capability-audit.md`.
     """
     if not settings.READ_ONLY:
         return tools
     before = len(tools)
-    filtered = [t for t in tools if t.name not in WRITE_MCP_TOOL_NAMES]
+    filtered = [
+        t
+        for t in tools
+        if t.name not in WRITE_MCP_TOOL_NAMES and getattr(t, "read_only", None) is not False
+    ]
     removed = before - len(filtered)
     if removed:
         logger.info(

@@ -6,7 +6,7 @@ import pytest
 
 from src.writeguard import looks_like_write
 from src.writeguard.__main__ import main_argv
-from src.writeguard.check import check_drift
+from src.writeguard.check import check_drift, check_hints
 
 
 class TestLooksLikeWrite:
@@ -84,15 +84,49 @@ class TestCheckDrift:
         assert report.ok
 
 
-def _catalog_with(tool_names, servers=("announcements", "events", "jsm")):
+def _catalog_with(tool_names, servers=("announcements", "events", "jsm"), hints=None):
     """A catalog carrying every write-owning server as available.
 
     The blindness guards require all write-owning servers to be present and
     available before the drift check runs, so CLI tests must supply them.
+    Each tool gets the readOnlyHint its server would publish (writes by name
+    are False, everything else True) unless ``hints`` overrides it.
     """
+    from src import writeguard  # read at call time, so patched waivers apply
+
+    hints = hints or {}
     entries = [{"server": s, "status": "available", "tools": []} for s in servers]
-    entries[0]["tools"] = [{"name": n} for n in tool_names]
+    entries[0]["tools"] = [
+        {
+            "name": n,
+            "read_only": hints.get(
+                n, not looks_like_write(n) or n in writeguard.HEURISTIC_EXCEPTIONS
+            ),
+        }
+        for n in tool_names
+    ]
     return {"servers": entries}
+
+
+class TestCheckHints:
+    def test_agreeing_hints_are_ok(self):
+        report = check_hints(
+            {"create_event": False, "search_events": True}, frozenset({"create_event"})
+        )
+        assert report.ok
+
+    def test_a_missing_hint_is_reported(self):
+        report = check_hints({"search_events": None}, frozenset())
+        assert report.unhinted == ("search_events",)
+        assert not report.ok
+
+    def test_a_write_name_published_read_only_is_a_contradiction(self):
+        report = check_hints({"create_event": True}, frozenset({"create_event"}))
+        assert report.contradicted == ("create_event",)
+
+    def test_a_hinted_write_missing_from_the_list_is_unlisted(self):
+        report = check_hints({"toggle_alerts": False}, frozenset())
+        assert report.unlisted == ("toggle_alerts",)
 
 
 class TestCli:
@@ -146,6 +180,48 @@ class TestCli:
         out = capsys.readouterr().out
         assert "WAIVED: add_bookmark — client-side only" in out
         assert "STALE: delete_gone" in out
+
+    @pytest.mark.parametrize(
+        ("hints", "line"),
+        [
+            ({"search_events": None}, "UNHINTED: search_events"),
+            ({"create_event": True}, "CONTRADICTED: create_event"),
+            ({"toggle_alerts": False}, "UNLISTED: toggle_alerts"),
+        ],
+    )
+    def test_exits_nonzero_on_a_hint_finding(self, capsys, hints, line):
+        async def _fetch():
+            return _catalog_with({"create_event", "search_events", *hints}, hints=hints)
+
+        with (
+            patch("src.writeguard.__main__.WRITE_MCP_TOOL_NAMES", frozenset({"create_event"})),
+            pytest.raises(SystemExit) as exc,
+        ):
+            main_argv(_fetch=_fetch)
+
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert line in out
+        assert "marker on its MCP server" in out
+
+    def test_both_kinds_of_finding_print_both_fixes(self, capsys):
+        async def _fetch():
+            return _catalog_with(
+                {"publish_dataset", "search_events"}, hints={"search_events": None}
+            )
+
+        with (
+            patch("src.writeguard.__main__.WRITE_MCP_TOOL_NAMES", frozenset()),
+            pytest.raises(SystemExit) as exc,
+        ):
+            main_argv(_fetch=_fetch)
+
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "UNGUARDED: publish_dataset" in out
+        assert "UNHINTED: search_events" in out
+        assert "marker on its MCP server" in out
+        assert "HEURISTIC_EXCEPTIONS" in out
 
     def test_main_entrypoint_delegates(self):
         """`python -m src.writeguard` path."""
@@ -278,7 +354,11 @@ class TestBlindnessGuards:
             return self._catalog(
                 [
                     {"server": "announcements", "status": "available", "tools": []},
-                    {"server": "events", "status": "available", "tools": [{"name": "search_x"}]},
+                    {
+                        "server": "events",
+                        "status": "available",
+                        "tools": [{"name": "search_x", "read_only": True}],
+                    },
                 ]
             )
 
@@ -296,7 +376,11 @@ class TestBlindnessGuards:
             return self._catalog(
                 [
                     {"server": "announcements", "status": "available", "tools": []},
-                    {"server": "events", "status": "available", "tools": [{"name": "search_x"}]},
+                    {
+                        "server": "events",
+                        "status": "available",
+                        "tools": [{"name": "search_x", "read_only": True}],
+                    },
                     {"server": "jsm", "status": "available", "tools": []},
                 ]
             )
