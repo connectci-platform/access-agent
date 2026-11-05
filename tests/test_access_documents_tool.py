@@ -672,3 +672,34 @@ class TestEmptyOrFailedSearchIsFinalForTheTurn:
         await _search_access_documents(query="how do I get started")
 
         assert mock_client.retrieve.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_unscoped_retry_after_zero_scoped_chunks_can_fail(self, mock_client: Any) -> None:
+        from src.agent.turn_capture import reset_turn_capture
+
+        reset_turn_capture()
+        mock_client.retrieve.side_effect = [UKYRetrieval(chunks=[]), httpx.ReadTimeout("timed out")]
+        result = await _search_access_documents(query="Delta GPUs", rp_name="delta")
+
+        assert isinstance(result, dict)
+        assert "error" in result
+        assert mock_client.retrieve.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_widened_retry_after_a_repeat_scoped_search_can_fail(
+        self, mock_client: Any
+    ) -> None:
+        from src.agent.turn_capture import reset_turn_capture
+
+        reset_turn_capture()
+        mock_client.retrieve.side_effect = [
+            UKYRetrieval(chunks=[UKYChunk(rank=1, text="Delta overview.", url="https://x")]),
+            httpx.ReadTimeout("timed out"),
+        ]
+        await _search_access_documents(query="Delta GPUs", rp_name="delta")
+        result = await _search_access_documents(query="Delta GPU partitions", rp_name="delta")
+
+        assert isinstance(result, dict)
+        assert "error" in result
+        # The repeat was widened: its one call went out unscoped.
+        assert mock_client.retrieve.await_args.kwargs["rp_name"] is None
