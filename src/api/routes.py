@@ -396,15 +396,6 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
             await _report(success=False)
             return
 
-        requires_auth = final_state.get("requires_auth")
-        if requires_auth:
-            # Anon caller tried a write/private-read tool (RequiresAuthMiddleware
-            # suppressed it; see tool_calling_loop_node). Emit the signal as a
-            # distinct event — sibling of token/status/error/done — and end the
-            # stream cleanly; there is no real answer to stream for this turn.
-            yield _format_sse_event("requires_auth", requires_auth)
-            return
-
         # Build metadata from final state (mirrors non-streaming QueryResponse fields)
         final_answer = final_state.get("final_answer") or "No answer generated"
         tools_used = final_state.get("tools_used", [])
@@ -475,6 +466,13 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                 **({"node_trace": final_state.get("node_trace", [])} if include_trace else {}),
             },
         }
+        refusals = final_state.get("tool_refusals") or []
+        if refusals:
+            # An anonymous caller asked for something that needs sign-in. The
+            # turn still completes with the model's reply; this annotates it.
+            refusal = {"login_url": settings.LOGIN_URL, "reason": refusals[0]["reason"]}
+            yield _format_sse_event("requires_auth", refusal)
+            done_data["metadata"]["refusal"] = refusal
         yield _format_sse_event("done", done_data)
 
         # The answer is delivered. Nothing below may fail the turn: a failure

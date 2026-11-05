@@ -16,11 +16,14 @@ from src.agent.prompts.system_prompt import build_system_prompt
 DEAD_URLS = ("https://access-ci.org/sign-in",)
 
 
-def test_anonymous_prompt_points_at_a_live_login_url():
-    """The anonymous branch must send users to the login that mints the
-    agent's session cookie (support.access-ci.org, via CILogon)."""
+def test_anonymous_prompt_points_at_the_configured_login_url():
+    """The anonymous branch sends users to the same sign-in the refusal text
+    and the requires_auth event name. Checked 2026-11-04: it redirects to the
+    support site's CILogon sign-in."""
+    from src.config import settings
+
     prompt = build_system_prompt(acting_user=None)
-    assert "https://support.access-ci.org/login" in prompt
+    assert settings.LOGIN_URL in prompt
 
 
 def test_no_known_dead_urls_in_either_prompt_branch():

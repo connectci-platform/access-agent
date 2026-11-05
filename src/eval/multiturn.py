@@ -113,7 +113,7 @@ from .runner import report_battery_turn
 from .scoring import persist_skipped_turn, score_and_persist_turn
 
 if TYPE_CHECKING:
-    from src.agent.state import AgentState
+    from src.agent.state import AgentState, ToolRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -227,10 +227,13 @@ def _tool_names(entries: list[Any]) -> list[str]:
     """Tool names off delta entries, in call order, deduped.
 
     Reads only ``tool_name``, so the UNSCORED path gets correct per-turn tools
-    without paying for the deepcopy of every tool payload.
+    without paying for the deepcopy of every tool payload. A call the identity
+    gate refused never ran, so it is left out.
     """
     names: list[str] = []
     for entry in entries:
+        if _entry_field(entry, "refused", False):
+            continue
         name = _entry_field(entry, "tool_name", None)
         if name and str(name) not in names:
             names.append(str(name))
@@ -293,6 +296,7 @@ def _turn_delta_state(state: Any, turn_tool_entries: list[Any] | None = None) ->
         "model_calls": list(state.get("model_calls", []) or []),
         "resource_context": state.get("resource_context"),
         "total_tokens": state.get("total_tokens"),
+        "tool_refusals": list(state.get("tool_refusals", []) or []),
     }
 
 
@@ -324,6 +328,8 @@ class TurnResult:
     answerable: bool | None = None
     # Per-dimension raw scores from the JudgeResult, for the run's per_dimension means.
     scores: dict[str, int | None] | None = None
+    # Calls the identity gate refused this turn ({tool_name, reason}).
+    tool_refusals: list[ToolRefusal] = field(default_factory=list)
 
 
 @dataclass
@@ -468,9 +474,8 @@ async def run_thread(
             returned_state = True
             duration_ms = (time.monotonic() - start) * 1000
             messages = state.get("messages", [])
-            # THIS turn's tools, not state["tools_used"] — that is a full-thread
-            # rescan under checkpointing, so a turn that called nothing would report
-            # every earlier turn's tools. Names only: no payload copying needed.
+            # THIS turn's tools, from the same slice the judge and the report see.
+            # Names only: no payload copying needed.
             turn_tool_entries = _turn_tool_entries(state)
             tools_used = _tool_names(turn_tool_entries)
             answer = state.get("final_answer", "") or ""
@@ -487,6 +492,7 @@ async def run_thread(
                 message_count=len(messages),
                 duration_ms=duration_ms,
                 success=bool(answer) and not answer_unavailable,
+                tool_refusals=list(state.get("tool_refusals", []) or []),
             )
             logger.info(
                 f"  -> answer_len={len(answer)} tools={tools_used} "
