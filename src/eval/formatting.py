@@ -38,6 +38,7 @@ def format_tool_results(state: Any) -> str | None:
                 "duration_ms": getattr(r, "duration_ms", 0),
                 "data": getattr(r, "data", None),
                 "error": getattr(r, "error", None),
+                "refused": getattr(r, "refused", False),
             }
         if isinstance(r, dict):
             return {
@@ -47,6 +48,7 @@ def format_tool_results(state: Any) -> str | None:
                 "duration_ms": r.get("duration_ms", 0),
                 "data": r.get("data"),
                 "error": r.get("error"),
+                "refused": r.get("refused", False),
             }
         return {
             "tool_name": "unknown",
@@ -55,6 +57,7 @@ def format_tool_results(state: Any) -> str | None:
             "duration_ms": 0,
             "data": r,
             "error": None,
+            "refused": False,
         }
 
     def _summarize(data: Any) -> tuple[int | None, bool]:
@@ -82,6 +85,9 @@ def format_tool_results(state: Any) -> str | None:
     parts: list[str] = []
     for r in results:
         info = _extract(r)
+        # A refused call never ran, so it is no evidence for or against the answer.
+        if info["refused"]:
+            continue
         count, empty = _summarize(info["data"])
         args_json = json.dumps(info["arguments"], default=str, sort_keys=True)
         lines = [

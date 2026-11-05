@@ -220,17 +220,13 @@ async def _stream_run_events(
                             m.model_dump() if hasattr(m, "model_dump") else m for m in msgs
                         ]
 
-    requires_auth = final_state.get("requires_auth")
-    if requires_auth:
-        # Anon caller tried a write/private-read tool (RequiresAuthMiddleware
-        # suppressed it; see tool_calling_loop_node). Sent as a LangGraph
-        # `custom` event because useStream drops event names it doesn't know;
-        # `type` keeps it apart from the ui events on the same channel. The
-        # stream then ends cleanly, since there is no real answer to stream.
-        yield format_sse_event(
-            "custom", {"type": "requires_auth", "reason": requires_auth["reason"]}
-        )
-        return
+    refusals = final_state.get("tool_refusals") or []
+    if refusals:
+        # An anonymous caller asked for something that needs sign-in. Sent as a
+        # LangGraph `custom` event because useStream drops event names it doesn't
+        # know; `type` keeps it apart from the ui events on the same channel. The
+        # turn still completes below with the model's reply.
+        yield format_sse_event("custom", {"type": "requires_auth", "reason": refusals[0]["reason"]})
 
     if accumulated is not None:
         # Complete message reuses the stable streamed id.
@@ -500,12 +496,8 @@ async def thread_run_stream(
 
         # Turn report write lives OUTSIDE both run_with_timeout and held_run — a
         # slow reporter write must not trip a spurious TimeoutError into an
-        # already-successful stream. Mirrors routes.py:454 (after its own
-        # `async with held_run` closes). A gated (requires_auth) turn produced
-        # no answer — `_stream_run_events` returns normally after emitting the
-        # signal, so `success` is still True here; skip the write so this path
-        # matches /query's requires_auth branch, which writes no row either.
-        if success and not final_state.get("requires_auth"):
+        # already-successful stream, as on /query.
+        if success:
             await _report(state=final_state, ok=True)
 
     # The lock was acquired synchronously above; it is released by held_run's

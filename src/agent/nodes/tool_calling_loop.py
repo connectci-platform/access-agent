@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable, Iterable
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
@@ -40,7 +40,7 @@ from ...llm import get_llm, is_empty_answer
 from ...telemetry import get_tracer
 from ..domains.capabilities import WRITE_MCP_TOOL_NAMES
 from ..domains.tools import create_mcp_tools_from_catalog
-from ..middleware.requires_auth import RequiresAuthMiddleware, find_requires_auth_reason
+from ..middleware.requires_auth import RequiresAuthMiddleware
 from ..profile import UserProfile
 from ..prompts.system_prompt import build_system_prompt
 from ..state import ToolResult
@@ -352,7 +352,9 @@ class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
 
 
 def _attribute_tool_calls(
-    timings: list[dict[str, Any]], turn_messages: list[Any]
+    timings: list[dict[str, Any]],
+    turn_messages: list[Any],
+    refused_calls: Counter[str] | None = None,
 ) -> tuple[list[str], int]:
     """Return (distinct tool names, total invocations) for this turn.
 
@@ -360,6 +362,8 @@ def _attribute_tool_calls(
     invocation on a ContextVar independent of the message list — so it holds
     even when compaction rewrites the thread or the exhaustion path replaces
     it. Falls back to scanning this turn's messages when no timing was recorded.
+    A refused call never runs, so it records no timing, and the scan leaves out
+    as many calls per name as ``refused_calls`` counts.
 
     Names stay distinct: ``db_reports.py`` aggregates per-tool over
     ``tools_used``, so duplicates would inflate those counts.
@@ -372,12 +376,16 @@ def _attribute_tool_calls(
     if tools_used:
         return tools_used, len(timings)
 
+    unmatched_refusals = Counter(refused_calls or {})
     scanned = 0
     for msg in turn_messages:
         if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
             for tc in msg.tool_calls:
-                scanned += 1
                 name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+                if name and unmatched_refusals[name] > 0:
+                    unmatched_refusals[name] -= 1
+                    continue
+                scanned += 1
                 if name and name not in tools_used:
                     tools_used.append(name)
     return tools_used, len(timings) or scanned
@@ -565,6 +573,10 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:  # no
         span.set_attribute("agent.profile_present", profile_used)
 
         llm = get_llm(max_tokens=settings.MAX_TOKENS_LOOP)
+        # acting_user captured by closure: the inner create_agent state does
+        # not carry it (it lives on the OUTER graph's AgentState). One gate per
+        # turn, so its refusals are this turn's record.
+        gate = RequiresAuthMiddleware(acting_user)
         # Same list feeds create_agent and the limit (#295).
         middleware = [
             # These hook different points — context editing wraps the model
@@ -578,10 +590,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:  # no
                 trigger=("tokens", settings.SUMMARIZATION_TRIGGER_TOKENS),
                 keep=("tokens", settings.SUMMARIZATION_KEEP_TOKENS),
             ),
-            # acting_user captured by closure: the inner create_agent state
-            # does not carry it (it lives on the OUTER graph's AgentState),
-            # so it must be threaded in here rather than read from request.state.
-            RequiresAuthMiddleware(acting_user),
+            gate,
         ]
         agent = create_agent(
             model=llm,
@@ -653,23 +662,19 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:  # no
 
         timings = get_turn_capture().get("tool_timings", [])
         turn_messages = _this_turn_messages(messages, result_messages)
-        tools_used, tool_call_count = _attribute_tool_calls(timings, turn_messages)
-
-        tool_result_count = sum(1 for m in turn_messages if isinstance(m, ToolMessage))
         tool_results, orphan_count = _build_tool_results(turn_messages, tools, timings)
-
-        # RequiresAuthMiddleware suppresses a gated call by injecting a sentinel
-        # ToolMessage rather than halting the loop (the react loop continues and
-        # the model may call another tool or answer anyway) — create_agent's
-        # output state carries only {messages, structured_response}, so the
-        # sentinel is detected by scanning result_messages, not a custom state
-        # field (which create_agent would silently drop).
-        requires_auth_reason = find_requires_auth_reason(result_messages)
-        requires_auth = (
-            {"login_url": settings.LOGIN_URL, "reason": requires_auth_reason}
-            if requires_auth_reason is not None
-            else None
+        refused_calls = Counter(r.tool_name for r in tool_results if r.refused)
+        # A refused call never ran, so its result isn't counted as one received.
+        tool_result_count = sum(1 for m in turn_messages if isinstance(m, ToolMessage)) - sum(
+            refused_calls.values()
         )
+        tools_used, tool_call_count = _attribute_tool_calls(timings, turn_messages, refused_calls)
+
+        # Read from the gate, not the messages: compaction may have summarized
+        # a refused call's message away.
+        tool_refusals = list(gate.refusals)
+        if tool_refusals:
+            span.set_attribute("agent.tool_refusals", len(tool_refusals))
 
         answer_length = len(final_answer) if final_answer else 0
         span.set_attribute("agent.answer_length", answer_length)
@@ -689,7 +694,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:  # no
             answer_length,
         )
 
-        return_dict: dict[str, Any] = {
+        return {
             "final_answer": final_answer,
             "messages": result_messages,
             "tools_used": tools_used,
@@ -698,6 +703,7 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:  # no
             "total_tokens": token_accumulator.total_tokens,
             "model_calls": token_accumulator.model_calls,
             "tool_results": tool_results,
+            "tool_refusals": tool_refusals,
             "node_trace": [
                 {
                     "node": "tool_calling_loop",
@@ -709,9 +715,6 @@ async def tool_calling_loop_node(state: dict[str, Any]) -> dict[str, Any]:  # no
                 }
             ],
         }
-        if requires_auth is not None:
-            return_dict["requires_auth"] = requires_auth
-        return return_dict
 
 
 def _this_turn_messages(input_messages: list[Any], result_messages: list[Any]) -> list[Any]:
@@ -842,6 +845,20 @@ def _parse_tool_message(
 
     ``message_id`` is the source ToolMessage's LangChain id.
     """
+    refusal = msg.artifact.get("refusal") if isinstance(msg.artifact, dict) else None
+    if isinstance(refusal, dict):
+        return ToolResult(
+            step_id=tc_id,
+            tool_name=tool_name,
+            server=server,
+            success=False,
+            refused=True,
+            error=f"refused:{refusal.get('reason')}",
+            arguments=tool_args,
+            duration_ms=duration_ms,
+            message_id=message_id,
+        )
+
     raw_content = msg.content if isinstance(msg.content, str) else str(msg.content)
     try:
         parsed: Any = json.loads(raw_content)

@@ -708,15 +708,20 @@ class CapabilityRegistry:
         bare tool name the LLM used (which can't be mapped to a server). MCP
         tools map via their server; the doc-search tool
         (``search_access_documents``, RAG-backed) maps via its source/rp_name.
+        A call the identity gate refused never ran, so it is skipped.
         Accepts ToolResult objects or plain dicts.
         """
         out: set[str] = set()
         for r in tool_results or []:
             if isinstance(r, dict):
+                if r.get("refused"):
+                    continue
                 server = r.get("server")
                 name = r.get("tool_name")
                 args = r.get("arguments") or {}
             else:
+                if getattr(r, "refused", False):
+                    continue
                 server = getattr(r, "server", None)
                 name = getattr(r, "tool_name", None)
                 args = getattr(r, "arguments", None) or {}

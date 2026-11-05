@@ -18,6 +18,7 @@ capability is re-enabled, restore the per-user routing here.
 
 from __future__ import annotations
 
+from ...config import settings
 from ..profile import UserProfile, render_profile_section
 
 # Opening — describes the job, no implementation history. Default workflow:
@@ -419,11 +420,10 @@ def build_system_prompt(
     else:
         sections.append(
             "## Acting user\n\n"
-            "The user is anonymous (not logged in). Tools that require "
-            "identity will return auth errors — handle those gracefully "
-            "and suggest login at https://support.access-ci.org/login. Write "
-            "actions (create/update/delete announcements, file tickets) "
-            "are also unavailable to anonymous users."
+            "The user is anonymous (not logged in). Call tools as the request "
+            "needs. If a tool's result says the user needs to sign in, tell "
+            "them they can sign in with their ACCESS account at "
+            f"{settings.LOGIN_URL}."
         )
 
     if resource_context:

@@ -5,6 +5,6 @@ re-exports/extends) — this package holds middleware authored for the loop's
 ``create_agent`` build, currently the anon write/private-read gate.
 """
 
-from .requires_auth import REQUIRES_AUTH_SENTINEL, RequiresAuthMiddleware
+from .requires_auth import RequiresAuthMiddleware
 
-__all__ = ["REQUIRES_AUTH_SENTINEL", "RequiresAuthMiddleware"]
+__all__ = ["RequiresAuthMiddleware"]

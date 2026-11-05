@@ -10,7 +10,7 @@ from typing import Any, Literal
 from src.agent.domains.capabilities import get_capability_registry
 from src.agent.graph import run_agent
 from src.agent.profile import UserProfile
-from src.agent.state import AgentState
+from src.agent.state import AgentState, ToolRefusal
 from src.agent.turn_capture import get_turn_capture, reset_turn_capture
 from src.config import settings
 from src.eval.formatting import format_node_trace, format_rag_matches, format_tool_results
@@ -61,6 +61,8 @@ class RunResult:
     duration_ms: float = 0.0
     success: bool = True
     error: str | None = None
+    # Calls the identity gate refused ({tool_name, reason}); the answer is still judged.
+    tool_refusals: list[ToolRefusal] = field(default_factory=list)
 
 
 def get_git_info() -> dict[str, Any]:
@@ -270,6 +272,7 @@ async def _run_agent(
         # bad answer: judging it would average a near-zero composite into the
         # run while `skipped` read 0, hiding the breakage that caused it.
         success=bool(answer) and not state.get("answer_unavailable"),
+        tool_refusals=list(state.get("tool_refusals", []) or []),
     )
 
 
