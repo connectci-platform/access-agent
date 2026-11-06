@@ -1,5 +1,6 @@
 """LLM provider abstraction supporting OpenAI, vLLM, and custom endpoints."""
 
+import logging
 import re
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterator
@@ -12,6 +13,8 @@ from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
 from ..config import settings
+
+logger = logging.getLogger(__name__)
 
 # Wire-protocol sentinel, NOT user-facing text. Stands in for a response whose
 # visible content stripped to nothing, so the assistant turn is non-empty: UKY's
@@ -164,7 +167,8 @@ class _ThinkStripState:
       reasoning trace.
 
     Once a close has been processed, ``seen_close`` flips to True and
-    subsequent chunks pass through unchanged. Truncation handling lives
+    subsequent chunks pass through unchanged, unless the response is on a
+    reasoning field (see below). Truncation handling lives
     in :meth:`flush` — an unpaired ``<think>`` tail is dropped before
     the buffered remainder (if any) is emitted, covering the
     truncation-with-preamble case while still letting non-reasoning
@@ -191,6 +195,8 @@ class _ThinkStripState:
         self._reasoning_in_field = False
         # Reasoning-field content whose tail could be the start of a think tag.
         self._held = ""
+        # One warning per response, however many late close tags it has.
+        self._warned_late_close = False
 
     @property
     def seen_close(self) -> bool:
@@ -260,6 +266,8 @@ class _ThinkStripState:
         text = self._held + content
         self._held = ""
         if _THINK_OPEN in text or _THINK_CLOSE in text or not self._seen_close:
+            # feed passes everything through once _seen_close is set, so it has
+            # to be cleared for feed to look for the block at all.
             self._seen_close = False
             emitted_any = self._emitted_any
             out = self.feed(text)
@@ -296,6 +304,12 @@ class _ThinkStripState:
         self._buffer = ""
         if has_close:
             # Bare </think> remains (Qwen no-open-tag case) — partition.
+            if self._reasoning_in_field and self._emitted_any and not self._warned_late_close:
+                # With no open tag, text sent before this close may have been
+                # trace. It can't be recalled, so make it visible. Never log the
+                # text itself: it may be the reasoning.
+                self._warned_late_close = True
+                logger.warning("Reasoning close tag after answer text on a reasoning-field stream")
             before, _, after = new_buffer.partition(_THINK_CLOSE)
             if before.strip():
                 parts.append(before.strip())
@@ -506,7 +520,9 @@ def _apply_strip_to_chunk(
 
     Once the state machine has consumed the first ``</think>`` (or a
     paired ``<think>...</think>`` block), subsequent chunks pass through
-    unchanged — Qwen emits one reasoning trace per response, no more.
+    unchanged — Qwen emits one reasoning trace per response, no more. A
+    response that reported a reasoning field goes through
+    :meth:`_ThinkStripState.feed_field` instead, which scans every chunk.
 
     A chunk carrying a ``reasoning_delta`` never keeps it. LangChain merges
     generation_info into response_metadata, so it has to go before any return.

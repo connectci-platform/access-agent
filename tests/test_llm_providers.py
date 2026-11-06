@@ -1,5 +1,6 @@
 """Tests for LLM provider abstraction — Qwen `</think>` strip + enable_thinking knob."""
 
+import logging
 from collections.abc import AsyncIterator, Iterator
 from typing import Any, Self, cast
 from unittest.mock import patch
@@ -1312,6 +1313,44 @@ class TestReasoningReportedInASeparateField:
             [" world"],
         ]
         assert tail is None
+
+    def test_close_tag_after_answer_text_warns_once_without_the_text(self, caplog):
+        caplog.set_level(logging.WARNING, logger="src.llm.providers")
+
+        _strip_all(
+            [
+                _reasoning_chunk("real"),
+                _chunk("SECRET-SENT"),
+                _chunk("SECRET-HELD</think>SECRET-AFTER"),
+                _chunk("SECRET-AGAIN</think>SECRET-LAST"),
+            ]
+        )
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert [r.getMessage() for r in warnings] == [
+            "Reasoning close tag after answer text on a reasoning-field stream"
+        ]
+        assert "SECRET" not in caplog.text
+
+    @pytest.mark.parametrize(
+        "chunks",
+        [
+            # A close before any text went out: nothing leaked.
+            [_reasoning_chunk("real"), _chunk("trace</think>Answer")],
+            # A paired block after text: the whole block is stripped.
+            [_reasoning_chunk("real"), _chunk("Hello"), _chunk("<think>x</think> world")],
+            [_reasoning_chunk("real"), _chunk("Hello"), _chunk("<think>x"), _chunk("</think>")],
+            # No field: not this stream's residual.
+            [_chunk("trace</think>Answer"), _chunk(" more</think>")],
+        ],
+        ids=["before-text", "paired", "paired-split", "no-field"],
+    )
+    def test_no_warning_when_nothing_could_have_leaked(self, chunks, caplog):
+        caplog.set_level(logging.WARNING, logger="src.llm.providers")
+
+        _strip_all(chunks)
+
+        assert caplog.records == []
 
     def test_field_cannot_reopen_a_stream_a_tag_put_back_into_buffering(self):
         per_chunk, tail, _ = _strip_all(
