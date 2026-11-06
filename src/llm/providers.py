@@ -160,6 +160,10 @@ class _ThinkStripState:
     the buffered remainder (if any) is emitted, covering the
     truncation-with-preamble case while still letting non-reasoning
     streams flush their content.
+
+    A server that reports reasoning in a separate delta field never sends a
+    close tag, so :meth:`note_reasoning_field` is the third way out of
+    buffering. See that method for why it fails closed.
     """
 
     def __init__(self) -> None:
@@ -172,10 +176,27 @@ class _ThinkStripState:
         self._emitted_any = False
         # Set when a chunk carries a tool-call delta; suppresses the sentinel.
         self._saw_tool_call = False
+        # Set when a reasoning field, not a close tag, released the stream.
+        self._reasoning_in_field = False
 
     @property
     def seen_close(self) -> bool:
         return self._seen_close
+
+    @property
+    def trims_leading_whitespace(self) -> bool:
+        """Whether content is still ahead of the answer on a reasoning-field stream.
+
+        These servers open the content with blank lines, and a tool round has
+        nothing else. Dropping them keeps the stored message what buffering
+        produced: empty for a tool round, no leading blank lines for an answer.
+        """
+        return self._reasoning_in_field and not self._emitted_any
+
+    def _add_reasoning(self, text: str) -> None:
+        """Join a trace onto what a reasoning field may already have recorded."""
+        if text:
+            self.reasoning = f"{self.reasoning}\n{text}" if self.reasoning else text
 
     def mark_tool_call_seen(self) -> None:
         """Record that this response carries a tool call.
@@ -195,6 +216,21 @@ class _ThinkStripState:
         state machine would otherwise never learn that an answer was streamed.
         """
         self._emitted_any = True
+
+    def note_reasoning_field(self, text: str) -> None:
+        """Record a reasoning delta, and stop buffering if that is safe.
+
+        The field is positive evidence that this server separates reasoning from
+        content, so content from here on can stream. Text already buffered was
+        sent with no such evidence and could be a trace, so it stays buffered and
+        goes through the close-tag and flush paths, however the field looks.
+        """
+        self.reasoning += text
+        if self._seen_close or self._buffer.strip():
+            return
+        self._buffer = ""
+        self._seen_close = True
+        self._reasoning_in_field = True
 
     def feed(self, content: str) -> str | None:
         """Feed one chunk's text; return what should be emitted now."""
@@ -217,12 +253,12 @@ class _ThinkStripState:
             before, _, after = new_buffer.partition(_THINK_CLOSE)
             if before.strip():
                 parts.append(before.strip())
-            self.reasoning = "\n".join(parts)
+            self._add_reasoning("\n".join(parts))
             out = after.lstrip() or None
             if out:
                 self._emitted_any = True
             return out
-        self.reasoning = "\n".join(parts)
+        self._add_reasoning("\n".join(parts))
         # Only paired blocks were present. ``lstrip`` only — a trailing
         # space here connects to the next chunk; ``strip`` would eat it.
         out = new_buffer.lstrip() or None
@@ -252,8 +288,7 @@ class _ThinkStripState:
                 return EMPTY_ANSWER_SENTINEL
             return None
         answer, reasoning = _split_think_block(self._buffer)
-        if reasoning:
-            self.reasoning = reasoning
+        self._add_reasoning(reasoning)
         self._buffer = ""
         if answer:
             self._emitted_any = True
@@ -292,6 +327,20 @@ def _chunk_carries_non_text_payload(chunk: ChatGenerationChunk) -> bool:
     return bool(getattr(msg, "additional_kwargs", None))
 
 
+def _chunk_outlives_its_text(chunk: ChatGenerationChunk) -> bool:
+    """True if a chunk with no text left still has something to deliver.
+
+    Wider than _chunk_carries_non_text_payload: a truncated response can end on a
+    reasoning delta, and dropping that chunk would lose its finish_reason. Reads
+    generation_info, so call it after reasoning_delta has been popped.
+    """
+    return bool(
+        _chunk_carries_non_text_payload(chunk)
+        or chunk.generation_info
+        or getattr(chunk.message, "usage_metadata", None)
+    )
+
+
 class _StrippingChatOpenAI(ChatOpenAI):
     """ChatOpenAI subclass that strips reasoning-model ``</think>`` blocks.
 
@@ -309,7 +358,30 @@ class _StrippingChatOpenAI(ChatOpenAI):
       ``_astream`` and bypasses ``_agenerate``; aggregated chunks then become
       the result of ``ainvoke``. Stripping at the chunk level keeps both
       streaming consumers and ``ainvoke`` callers seeing clean content.
+
+    ``_convert_chunk_to_generation_chunk`` is overridden because the parent
+    discards ``delta.reasoning_content``, which is what tells the strip that
+    a server keeps reasoning out of ``content``.
     """
+
+    def _convert_chunk_to_generation_chunk(
+        self,
+        chunk: dict[str, Any],
+        default_chunk_class: type,
+        base_generation_info: dict[str, Any] | None,
+    ) -> ChatGenerationChunk | None:
+        result = super()._convert_chunk_to_generation_chunk(
+            chunk, default_chunk_class, base_generation_info
+        )
+        choices = chunk.get("choices")
+        if result is None or not choices:
+            return result
+        delta = choices[0]["delta"]
+        # One or the other, never both: a server may fill both names with one text.
+        text = delta.get("reasoning_content") or delta.get("reasoning")
+        if text and isinstance(text, str):
+            result.generation_info = {**(result.generation_info or {}), "reasoning_delta": text}
+        return result
 
     def _generate(
         self,
@@ -380,9 +452,18 @@ def _apply_strip_to_chunk(
     Once the state machine has consumed the first ``</think>`` (or a
     paired ``<think>...</think>`` block), subsequent chunks pass through
     unchanged — Qwen emits one reasoning trace per response, no more.
+
+    A chunk carrying a ``reasoning_delta`` never keeps it. LangChain merges
+    generation_info into response_metadata, so it has to go before any return.
     """
     msg = chunk.message
     raw = msg.content if isinstance(msg.content, str) else ""
+
+    generation_info = chunk.generation_info or {}
+    reasoning_delta = generation_info.pop("reasoning_delta", None)
+    if reasoning_delta:
+        # Logprobs on a reasoning delta spell out the reasoning tokens.
+        generation_info.pop("logprobs", None)
 
     # Deliberately narrower than _chunk_carries_non_text_payload, which is true
     # for ANY additional_kwargs: only a real tool call should suppress the
@@ -392,6 +473,20 @@ def _apply_strip_to_chunk(
         getattr(chunk.message, "additional_kwargs", None) or {}
     ).get("function_call"):
         state.mark_tool_call_seen()
+
+    if reasoning_delta:
+        state.note_reasoning_field(reasoning_delta)
+        if not msg.content and not _chunk_outlives_its_text(chunk):
+            return []
+
+    if raw and state.trims_leading_whitespace:
+        visible = raw.lstrip()
+        if visible:
+            state.mark_emitted()
+            return [_replace_chunk_content(chunk, visible)]
+        if _chunk_outlives_its_text(chunk):
+            return [_replace_chunk_content(chunk, "")]
+        return []
 
     if state.seen_close:
         # Post-trace chunks pass through without re-entering feed(), so record
