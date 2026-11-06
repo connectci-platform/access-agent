@@ -628,7 +628,7 @@ class TestSseTokenGuard:
     """
 
     @staticmethod
-    def _loop(content, node="tool_calling_loop", chunk=True):
+    def _loop(content, node="model", chunk=True):
         from langchain_core.messages import AIMessage, AIMessageChunk
 
         cls = AIMessageChunk if chunk else AIMessage
@@ -788,7 +788,7 @@ class TestEmptyAnswerIntegrationPaths:
         src = inspect.getsource(routes._stream_events)
         assert "_should_stream_token(msg, metadata)" in src
 
-        loop = {"langgraph_node": "tool_calling_loop"}
+        loop = {"langgraph_node": "model"}
         assert not routes._should_stream_token(
             AIMessageChunk(content=f"\n{EMPTY_ANSWER_SENTINEL}"), loop
         )

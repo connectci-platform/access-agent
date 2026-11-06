@@ -117,7 +117,7 @@ class _CapturingGraph:
         self.contexts.append(context)
         return {}
 
-    async def astream(self, state, config, *, stream_mode, context):
+    async def astream(self, state, config, *, stream_mode, context, subgraphs=False):
         self.contexts.append(context)
         return
         yield

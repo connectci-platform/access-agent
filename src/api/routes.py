@@ -10,7 +10,6 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from langchain_core.messages import AIMessageChunk
 from pydantic import BaseModel, Field
 from starlette.datastructures import Headers
 from starlette.responses import StreamingResponse
@@ -20,11 +19,11 @@ from ..agent.graph import stream_agent
 from ..agent.profile import UserProfile
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..config import settings
-from ..llm import is_empty_answer
 from ..thread_owners import get_thread_owner_store
 from ..tools import ToolRegistry, get_catalog_aggregator
 from ..turnstile import check_turnstile, get_turnstile_guard
 from ..usage_logger import get_usage_logger
+from .answer_tokens import is_answer_token
 from .identity import Identity
 from .sse import format_sse_event as _format_sse_event
 from .thread_runs import acquire_thread_run, held_run, release_thread_run, run_with_timeout
@@ -225,30 +224,8 @@ async def _check_capability_discovery(
 
 
 def _should_stream_token(msg: Any, metadata: dict[str, Any]) -> bool:
-    """Whether a LangGraph message chunk should reach the browser as a token.
-
-    Extracted from _stream_events so it can be tested without standing up the
-    registry, reporter and Turnstile machinery that generator also drives.
-
-    Four conditions, all load-bearing:
-
-    * AIMessageChunk only — the messages stream also carries complete AIMessage
-      objects added to state, and streaming those duplicates the whole answer.
-    * tool_calling_loop only — other nodes' chatter is not the user's answer.
-    * Non-empty — nothing to render.
-    * Not the empty-answer sentinel — the LLM client emits that in place of a
-      response that stripped to nothing, so the assistant turn stays non-empty
-      for vLLM. It is wire-protocol only, and qa-bot-core concatenates every
-      token event it receives (qa-flow.tsx), so streaming it would paste the
-      marker into the visible answer. tool_calling_loop substitutes real prose
-      when it builds final_answer, which the done event carries.
-    """
-    return (
-        isinstance(msg, AIMessageChunk)
-        and metadata.get("langgraph_node") == "tool_calling_loop"
-        and bool(msg.content)
-        and not is_empty_answer(msg.content if isinstance(msg.content, str) else None)
-    )
+    """Whether a message chunk should reach the browser as a token event."""
+    return is_answer_token(msg, metadata)
 
 
 async def _write_query_turn_report(

@@ -23,7 +23,7 @@ from src.agent.context import AgentContext
 from src.api import routes
 from src.llm.providers import EMPTY_ANSWER_SENTINEL
 
-LOOP = {"langgraph_node": "tool_calling_loop"}
+LOOP = {"langgraph_node": "model"}
 
 
 async def _fake_registry():
@@ -99,7 +99,11 @@ def test_sentinel_with_whitespace_tail_is_not_streamed():
 
 
 def test_other_nodes_do_not_stream():
-    assert _stream([(AIMessageChunk(content="internal"), {"langgraph_node": "other"})]) == ""
+    # The old node name is "other" now that answer text comes from the nested model node.
+    assert (
+        _stream([(AIMessageChunk(content="internal"), {"langgraph_node": "tool_calling_loop"})])
+        == ""
+    )
 
 
 def test_complete_messages_do_not_stream():
