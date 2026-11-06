@@ -265,7 +265,8 @@ async def stream_agent(
     Yields ``(stream_type, data)`` tuples where ``stream_type`` is one of:
       - ``"custom"``: Status messages from nodes via ``get_stream_writer()``
       - ``"messages"``: LLM token chunks (with metadata including ``langgraph_node``)
-      - ``"updates"``: State updates after each node completes
+      - ``"updates"``: State updates after each top-level node completes
+        (nested updates are dropped, see ``_flatten_subgraph_events``)
     """
     from .state import create_initial_state
 

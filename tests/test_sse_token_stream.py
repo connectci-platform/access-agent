@@ -31,12 +31,14 @@ async def _fake_registry():
     return SimpleNamespace(catalog={"servers": []})
 
 
-def _stream(chunks: list[tuple[object, dict]]) -> str:
-    """Run the generator over scripted chunks; return what a browser concatenates."""
+def _stream(chunks: list[tuple[object, dict]], updates: list[dict] | None = None) -> str:
+    """Run the generator over scripted chunks, then updates; return what a browser concatenates."""
 
     async def _fake_stream(**_kwargs):
         for msg, meta in chunks:
             yield "messages", (msg, meta)
+        for update in updates or []:
+            yield "updates", {"tool_calling_loop": update}
 
     collected: list[str] = []
 
@@ -99,7 +101,7 @@ def test_sentinel_with_whitespace_tail_is_not_streamed():
 
 
 def test_other_nodes_do_not_stream():
-    # The old node name is "other" now that answer text comes from the nested model node.
+    # Only the nested "model" node carries answer text; any other node name is internal.
     assert (
         _stream([(AIMessageChunk(content="internal"), {"langgraph_node": "tool_calling_loop"})])
         == ""
@@ -110,3 +112,41 @@ def test_complete_messages_do_not_stream():
     # The messages stream carries both AIMessageChunk (tokens) and the complete
     # AIMessage added to state; streaming the latter duplicates the answer.
     assert _stream([(AIMessage(content="whole answer"), LOOP)]) == ""
+
+
+APOLOGY = {"final_answer": "Sorry.", "answer_unavailable": True}
+
+
+def test_rounds_are_separated():
+    out = _stream(
+        [
+            (AIMessageChunk(content="Let me check.", id="a"), LOOP),
+            (AIMessageChunk(content="Anvil has GPUs.", id="b"), LOOP),
+        ]
+    )
+    assert out == "Let me check.\n\nAnvil has GPUs."
+
+
+def test_chunks_without_an_id_stay_in_the_same_round():
+    out = _stream(
+        [
+            (AIMessageChunk(content="Anvil ", id="a"), LOOP),
+            (AIMessageChunk(content="has GPUs."), LOOP),
+        ]
+    )
+    assert out == "Anvil has GPUs."
+
+
+def test_apology_reaches_the_widget_after_partial_text():
+    out = _stream([(AIMessageChunk(content="Let me check.", id="a"), LOOP)], [APOLOGY])
+    assert out == "Let me check.\n\nSorry."
+
+
+def test_apology_is_not_resent_when_already_streamed():
+    out = _stream([(AIMessageChunk(content="Sorry.", id="a"), LOOP)], [APOLOGY])
+    assert out == "Sorry."
+
+
+def test_no_extra_token_when_nothing_streamed():
+    # done.response carries the apology when no token was sent.
+    assert _stream([], [APOLOGY]) == ""

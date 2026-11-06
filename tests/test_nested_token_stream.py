@@ -89,7 +89,7 @@ async def test_nested_custom_events_pass():
 
 def test_summarization_is_not_answer_text():
     chunk = AIMessageChunk(content="summary")
-    meta = {"langgraph_node": "SummarizationMiddleware.before_model"}
+    meta = {"langgraph_node": "_FlaggingSummarizationMiddleware.before_model"}
     assert not is_answer_token(chunk, meta)
     assert is_answer_token(chunk, {"langgraph_node": ANSWER_MODEL_NODE})
 
