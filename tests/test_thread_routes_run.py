@@ -7,7 +7,9 @@ sqlite file.
 """
 
 import asyncio
+import json
 import time
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -119,7 +121,7 @@ def _mock_stream_agent(monkeypatch, *, content: str = "hi", msg_id: str = "m1"):
             "messages",
             (
                 AIMessageChunk(content=content, id=msg_id),
-                {"langgraph_node": "tool_calling_loop"},
+                {"langgraph_node": "model"},
             ),
         )
         yield "updates", {"tool_calling_loop": {"final_answer": content}}
@@ -145,8 +147,9 @@ async def test_run_stream_emits_protocol_events(client, bearer, monkeypatch):
     assert r.status_code == 200
     body = r.text
     assert "event: metadata" in body
-    assert "event: messages/partial" in body
-    assert "event: messages/complete" in body
+    assert "event: messages\n" in body
+    assert "event: messages/partial" not in body
+    assert "event: messages/complete" not in body
     assert "event: values" in body
     assert "event: end" not in body  # protocol has no end terminator
 
@@ -267,7 +270,7 @@ async def test_concurrent_run_rejected(client, bearer, monkeypatch):
             "messages",
             (
                 AIMessageChunk(content="hi", id="m1"),
-                {"langgraph_node": "tool_calling_loop"},
+                {"langgraph_node": "model"},
             ),
         )
         await release.wait()
@@ -313,7 +316,7 @@ async def test_widget_and_fullscreen_share_lock(client, bearer, monkeypatch):
             "messages",
             (
                 AIMessageChunk(content="hi", id="m1"),
-                {"langgraph_node": "tool_calling_loop"},
+                {"langgraph_node": "model"},
             ),
         )
         await release.wait()
@@ -363,7 +366,7 @@ async def test_widget_thread_owned_by_creator(client, bearer_for, monkeypatch):
             "messages",
             (
                 AIMessageChunk(content="hi", id="m1"),
-                {"langgraph_node": "tool_calling_loop"},
+                {"langgraph_node": "model"},
             ),
         )
         yield "updates", {"tool_calling_loop": {"final_answer": "hi"}}
@@ -433,7 +436,7 @@ async def test_widget_registry_failure_does_not_leak_lock(client, bearer, monkey
 
 async def test_run_stream_builds_final_messages_from_updates_chunk(client, bearer, monkeypatch):
     """The 'updates' branch pulls node_output['messages'] into final_messages,
-    which the 'values' event carries even when no messages/partial ever fired."""
+    which the 'values' event carries even when no messages event ever fired."""
 
     async def _fake(**_kwargs):
         yield "updates", {"some_node": {"messages": [{"type": "human", "content": "hi"}]}}
@@ -746,7 +749,7 @@ async def test_run_stream_failed_turn_writes_success_false_row(client, monkeypat
     async def _boom(**_kwargs):
         yield (
             "messages",
-            (AIMessageChunk(content="partial", id="m1"), {"langgraph_node": "tool_calling_loop"}),
+            (AIMessageChunk(content="partial", id="m1"), {"langgraph_node": "model"}),
         )
         raise RuntimeError("mid-stream failure")
 
@@ -795,7 +798,7 @@ async def test_run_stream_reporter_failure_does_not_break_the_stream(client, mon
 
     assert r.status_code == 200
     body = r.text
-    assert "event: messages/complete" in body
+    assert "event: messages\n" in body
     assert "event: values" in body
     assert "event: error" not in body  # reporter failure must not surface to the client
     broken_reporter.log_turn_report.assert_not_called()  # raised before this point
@@ -858,3 +861,77 @@ async def test_run_anon_caller_not_challenged_when_turnstile_disabled(client, mo
     )
     assert r.status_code == 200
     assert "event: metadata" in r.text
+
+
+def _sse(body: str) -> list[tuple[str, Any]]:
+    out = []
+    for block in body.strip().split("\n\n"):
+        lines = block.split("\n")
+        out.append((lines[0].removeprefix("event: "), json.loads(lines[1].removeprefix("data: "))))
+    return out
+
+
+def _stream_of(monkeypatch, items):
+    async def _fake(**_kwargs):
+        for item in items:
+            yield item
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _fake)
+
+
+async def _run_events(client, bearer, thread_id):
+    r = await client.post(
+        f"/api/v1/threads/{thread_id}/runs/stream",
+        headers=bearer,
+        json={"input": {"messages": [{"role": "user", "content": "hi"}]}},
+    )
+    assert r.status_code == 200
+    return _sse(r.text)
+
+
+async def test_messages_event_is_a_message_and_metadata_pair(client, bearer, monkeypatch):
+    _mock_stream_agent(monkeypatch, content="hello", msg_id="m9")
+    events = await _run_events(client, bearer, "t-pair")
+    (data,) = [d for n, d in events if n == "messages"]
+    assert len(data) == 2
+    assert data[0]["id"] == "m9"
+    assert data[0]["content"] == "hello"
+    assert data[1] == {"langgraph_node": "model"}
+
+
+async def test_tool_call_chunks_are_not_sent(client, bearer, monkeypatch):
+    chunk = AIMessageChunk(
+        content="",
+        id="m1",
+        tool_call_chunks=[{"name": "search", "args": "{}", "id": "c1", "index": 0}],
+    )
+    _stream_of(monkeypatch, [("messages", (chunk, {"langgraph_node": "model"}))])
+    events = await _run_events(client, bearer, "t-toolchunk")
+    assert "messages" not in [n for n, _ in events]
+
+
+async def test_sentinel_is_not_sent(client, bearer, monkeypatch):
+    from src.llm import EMPTY_ANSWER_SENTINEL
+
+    chunk = AIMessageChunk(content=EMPTY_ANSWER_SENTINEL, id="m1")
+    _stream_of(monkeypatch, [("messages", (chunk, {"langgraph_node": "model"}))])
+    events = await _run_events(client, bearer, "t-sentinel")
+    assert "messages" not in [n for n, _ in events]
+
+
+async def test_values_fallback_has_one_message_per_id_in_order(client, bearer, monkeypatch):
+    meta = {"langgraph_node": "model"}
+    _stream_of(
+        monkeypatch,
+        [
+            ("messages", (AIMessageChunk(content="Let me ", id="a"), meta)),
+            ("messages", (AIMessageChunk(content="look.", id="a"), meta)),
+            ("messages", (AIMessageChunk(content="The answer.", id="b"), meta)),
+        ],
+    )
+    events = await _run_events(client, bearer, "t-fallback")
+    (values,) = [d for n, d in events if n == "values"]
+    assert [(m["id"], m["content"]) for m in values["messages"]] == [
+        ("a", "Let me look."),
+        ("b", "The answer."),
+    ]
