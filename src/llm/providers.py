@@ -172,9 +172,9 @@ class _ThinkStripState:
 
     A server that reports reasoning in a separate delta field never sends a
     close tag, so :meth:`note_reasoning_field` is the third way out of
-    buffering, and :meth:`feed_field` takes the content from there. A think
-    tag in that content puts the stream back on the paths above, because the
-    field proves the server can separate reasoning, not that it always did.
+    buffering, and :meth:`feed_field` takes the content from there. Think tags
+    in that content are still stripped, for the rest of the response, because
+    the field proves the server can separate reasoning, not that it always did.
     """
 
     def __init__(self) -> None:
@@ -199,6 +199,10 @@ class _ThinkStripState:
     @property
     def reasoning_in_field(self) -> bool:
         return self._reasoning_in_field
+
+    def _trim_lead(self, text: str) -> str:
+        """Drop leading whitespace, unless it now separates text already sent."""
+        return text if self._emitted_any else text.lstrip()
 
     def _add_reasoning(self, text: str) -> None:
         """Join a trace onto what a reasoning field may already have recorded."""
@@ -243,9 +247,11 @@ class _ThinkStripState:
     def feed_field(self, content: str) -> str | None:
         """Feed one chunk's text on a reasoning-field stream; return what to emit.
 
-        A think tag leaves field mode and goes through :meth:`feed`, so the block
-        is stripped or buffered as on any other stream. A tail that could be the
-        start of a tag waits for the next chunk or :meth:`flush`.
+        A think tag, or a block still open, goes through :meth:`feed`, so the
+        block is stripped or buffered as on any other stream. What feed returns
+        is scanned again, since another block can follow in the same chunk. A
+        tail that could be the start of a tag waits for the next chunk or
+        :meth:`flush`.
 
         Leading whitespace is dropped until visible text has gone out. These
         servers open the content with blank lines, and a tool round has nothing
@@ -253,12 +259,17 @@ class _ThinkStripState:
         """
         text = self._held + content
         self._held = ""
-        if _THINK_OPEN in text or _THINK_CLOSE in text:
+        if _THINK_OPEN in text or _THINK_CLOSE in text or not self._seen_close:
             self._seen_close = False
-            self._reasoning_in_field = False
-            return self.feed(text)
-        if not self._emitted_any:
-            text = text.lstrip()
+            emitted_any = self._emitted_any
+            out = self.feed(text)
+            if out:
+                # feed counted this as sent, but the scan may yet strip all of
+                # it, and flush needs to know to emit the sentinel.
+                self._emitted_any = emitted_any
+                return self.feed_field(out)
+            return None
+        text = self._trim_lead(text)
         held = _partial_tag_len(text)
         if held:
             self._held = text[-held:]
@@ -289,14 +300,14 @@ class _ThinkStripState:
             if before.strip():
                 parts.append(before.strip())
             self._add_reasoning("\n".join(parts))
-            out = after.lstrip() or None
+            out = self._trim_lead(after) or None
             if out:
                 self._emitted_any = True
             return out
         self._add_reasoning("\n".join(parts))
         # Only paired blocks were present. ``lstrip`` only — a trailing
         # space here connects to the next chunk; ``strip`` would eat it.
-        out = new_buffer.lstrip() or None
+        out = self._trim_lead(new_buffer) or None
         if out:
             self._emitted_any = True
         return out

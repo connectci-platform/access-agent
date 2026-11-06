@@ -1240,6 +1240,79 @@ class TestReasoningReportedInASeparateField:
         assert tail is not None
         assert tail.message.content == EMPTY_ANSWER_SENTINEL
 
+    @pytest.mark.parametrize(
+        ("pieces", "expected"),
+        [
+            # Second block across chunks.
+            (["<think>x</think>", "ok ", "<think>SECRET</think>", "done"], "ok done"),
+            (["<think>x</think>", "ok ", "<think>SEC", "RET</think>", "done"], "ok done"),
+            # Second block never closed.
+            (["<think>x</think>", "ok", "<think>SECRET"], "ok"),
+            (["<think>x</think>", "ok", "<think>SECRET", " MORE SECRET"], "ok"),
+            # Second block with a split tag.
+            (["<think>x</think>", "ok ", "<th", "ink>SECRET</think>", "done"], "ok done"),
+            (["<think>x</think>", "ok <th", "ink>SECRET"], "ok "),
+            # Both blocks in one chunk.
+            (["<think>x</think>ok <think>SECRET"], "ok"),
+            (["</think>ok <think>SECRET"], "ok"),
+            (["<think>x</think>ok <think>SECRET</think> done"], "ok  done"),
+            (["</think>ok <think>SECRET</think>done"], "ok done"),
+            # A split tag at the end of what feed returned.
+            (["<think>x</think>ok <th", "ink>SECRET</think>done"], "ok done"),
+        ],
+    )
+    def test_second_think_block_cannot_stream(self, pieces, expected):
+        per_chunk, tail, _ = _strip_all([_reasoning_chunk("real"), *map(_chunk, pieces)])
+
+        out = _flatten(per_chunk, tail)
+        assert _aggregate_text(out) == expected
+        assert "SECRET" not in str([c.model_dump() for c in out])
+
+    @pytest.mark.parametrize(
+        "pieces",
+        [
+            ["<think>x</think><think>SECRET"],
+            ["<think>x</think>", "<think>SECRET"],
+            ["</think><think>SECRET"],
+            ["<think>x</think><think>SECRET</think>"],
+        ],
+    )
+    def test_nothing_but_think_blocks_gets_the_sentinel(self, pieces):
+        per_chunk, tail, _ = _strip_all([_reasoning_chunk("real"), *map(_chunk, pieces)])
+
+        assert _flatten(per_chunk, None) == []
+        assert tail is not None
+        assert tail.message.content == EMPTY_ANSWER_SENTINEL
+
+    def test_tool_round_with_only_think_blocks_gets_no_sentinel(self):
+        per_chunk, tail, _ = _strip_all(
+            [_reasoning_chunk("real"), _chunk("<think>x</think><think>SECRET"), _tool_chunk()]
+        )
+
+        out = _flatten(per_chunk, tail)
+        assert _aggregate_text(out) == ""
+        assert tail is None
+
+    def test_blank_lines_after_a_block_are_still_trimmed(self):
+        per_chunk, tail, _ = _strip_all(
+            [_reasoning_chunk("real"), _chunk("<think>x</think>"), _chunk("\n\n"), _chunk("Answer")]
+        )
+
+        assert _aggregate_text(_flatten(per_chunk, tail)) == "Answer"
+
+    @pytest.mark.parametrize(
+        "block", ["<think>x</think> world", "x</think> world"], ids=["paired", "bare-close"]
+    )
+    def test_space_after_a_block_survives_once_text_has_gone_out(self, block):
+        per_chunk, tail, _ = _strip_all([_reasoning_chunk("real"), _chunk("Hello"), _chunk(block)])
+
+        assert [[c.message.content for c in group] for group in per_chunk] == [
+            [],
+            ["Hello"],
+            [" world"],
+        ]
+        assert tail is None
+
     def test_field_cannot_reopen_a_stream_a_tag_put_back_into_buffering(self):
         per_chunk, tail, _ = _strip_all(
             [

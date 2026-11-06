@@ -4,12 +4,12 @@ Carries seven kinds of data the agent graph doesn't surface in final_state:
 retrieved chunks (search_access_documents flattens them to a string before
 returning), whether SummarizationMiddleware fired, per-tool-call durations,
 the turn's OTEL trace id, the per-model-call reasoning the LLM wrapper keeps out
-of responses (``<think>`` text or a separate delta field), and the set of normalized rp_name slugs
-search_access_documents has already searched this turn (so a second scoped
-call to the same slug can widen instead of repeating a search the model
-already saw fail — see record_scoped_search), and whether a general
-documentation search already came back empty or failed this turn (so later
-calls skip the backend — see mark_docs_search_exhausted).
+of responses (``<think>`` text or a separate delta field), and the set of
+normalized rp_name slugs search_access_documents has already searched this turn
+(so a second scoped call to the same slug can widen instead of repeating a
+search the model already saw fail — see record_scoped_search), and whether a
+general documentation search already came back empty or failed this turn (so
+later calls skip the backend — see mark_docs_search_exhausted).
 
 We carry them out via a ContextVar holding one mutable dict. The route resets
 it per turn; the doc-search tool, the summarization middleware, the MCP tool
