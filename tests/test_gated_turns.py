@@ -200,10 +200,16 @@ def _names(events: list[tuple[str, Any]]) -> list[str]:
     return [name for name, _ in events]
 
 
+def _auth_prompts(events):
+    """The sign-in prompts in a stream; status lines are custom events too."""
+    return [d for n, d in events if n == "custom" and d.get("type") == "requires_auth"]
+
+
 def _after_tokens_and_before(events, prompt: str, token: str, closing: list[str]) -> None:
     """The prompt comes after every streamed token and before the closing events."""
     names = _names(events)
-    at = names.index(prompt)
+    # The last one: on the thread route, status lines share the custom event.
+    at = len(names) - 1 - names[::-1].index(prompt)
     assert all(i < at for i, n in enumerate(names) if n == token)
     assert all(names.index(c) > at for c in closing if c in names)
     assert closing[-1] in names
@@ -224,7 +230,7 @@ async def test_anonymous_write_on_runs_stream_completes_with_a_sign_in_prompt(cl
     events = await _run(client, "t-write", "Register me for the Python workshop")
 
     assert ran == []
-    custom = [d for n, d in events if n == "custom"]
+    custom = _auth_prompts(events)
     assert custom == [{"type": "requires_auth", "reason": "write_action"}]
     _after_tokens_and_before(events, "custom", "messages", ["values"])
     assert "sign in to register" in _thread_reply(events)
@@ -237,9 +243,7 @@ async def test_anonymous_private_read_is_refused_as_private_data(client, stack):
     events = await _run(client, "t-private", "What are my RP accounts?")
 
     assert ran == []
-    assert [d for n, d in events if n == "custom"] == [
-        {"type": "requires_auth", "reason": "private_data"}
-    ]
+    assert _auth_prompts(events) == [{"type": "requires_auth", "reason": "private_data"}]
 
 
 async def test_signed_in_write_runs_with_no_prompt(client, stack, agent_tokens):
@@ -251,7 +255,7 @@ async def test_signed_in_write_runs_with_no_prompt(client, stack, agent_tokens):
     )
 
     assert ran == [WRITE]
-    assert "custom" not in _names(events)
+    assert not _auth_prompts(events)
     assert all(set(b) == {WRITE, PRIVATE, PUBLIC} for b in model.bound)
     (report,), (call,) = _rows("t-signed-in")
     assert report.permission_refusal is None
@@ -284,7 +288,7 @@ async def test_the_next_turn_on_the_thread_has_no_refusal(client, stack):
     turn_two_starts = model.calls
     events = await _run(client, "t-next", "What events are there?")
 
-    assert "custom" not in _names(events)
+    assert not _auth_prompts(events)
     # The tools hidden after turn 1's refusal are offered again in turn 2.
     assert set(model.bound[turn_two_starts]) == {WRITE, PRIVATE, PUBLIC}
     first, second = sorted(_rows("t-next")[0], key=lambda r: r.id)
@@ -419,9 +423,7 @@ async def test_read_only_token_write_is_refused_as_write_scope(client, stack, ag
     )
 
     assert ran == []
-    assert [d for n, d in events if n == "custom"] == [
-        {"type": "requires_auth", "reason": "write_scope"}
-    ]
+    assert _auth_prompts(events) == [{"type": "requires_auth", "reason": "write_scope"}]
     # Hiding after the refusal drops write tools only; the private read stays.
     assert set(model.bound[1]) == {PRIVATE, PUBLIC}
     (report,), _ = _rows("t-scope")
@@ -438,7 +440,7 @@ async def test_read_only_token_private_read_runs(client, stack, agent_tokens):
     )
 
     assert ran == [PRIVATE]
-    assert "custom" not in _names(events)
+    assert not _auth_prompts(events)
 
 
 async def test_query_write_scope_refusal_offers_no_sign_in(client, stack, agent_tokens):
@@ -469,7 +471,7 @@ async def test_each_turn_is_gated_by_its_own_token(client, stack, agent_tokens, 
     first = await _run(client, f"t-{order}", "Register me", headers=tokens[0])
     second = await _run(client, f"t-{order}", "Register me again", headers=tokens[1])
 
-    refused = ["custom" in _names(e) for e in (first, second)]
+    refused = [bool(_auth_prompts(e)) for e in (first, second)]
     assert refused == ([False, True] if order == "write-then-read-only" else [True, False])
     assert ran == [WRITE]
 
@@ -506,10 +508,8 @@ async def test_concurrent_requests_are_each_gated_by_their_own_token(client, age
             ),
         )
 
-    assert "custom" not in _names(writer)
-    assert [d for n, d in reader if n == "custom"] == [
-        {"type": "requires_auth", "reason": "write_scope"}
-    ]
+    assert not _auth_prompts(writer)
+    assert _auth_prompts(reader) == [{"type": "requires_auth", "reason": "write_scope"}]
     assert ran == [WRITE]
 
 
@@ -541,6 +541,4 @@ async def test_a_body_context_claiming_a_user_has_no_effect(client, stack):
     events = _events(r.text)
 
     assert ran == []
-    assert [d for n, d in events if n == "custom"] == [
-        {"type": "requires_auth", "reason": "write_action"}
-    ]
+    assert _auth_prompts(events) == [{"type": "requires_auth", "reason": "write_action"}]
