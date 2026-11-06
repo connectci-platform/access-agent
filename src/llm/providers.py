@@ -44,6 +44,15 @@ _PAIRED_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 _PAIRED_THINK_INNER_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
 
+def _partial_tag_len(text: str) -> int:
+    """How many trailing characters of ``text`` could be the start of a think tag."""
+    for size in range(min(len(text), len(_THINK_CLOSE) - 1), 0, -1):
+        tail = text[-size:]
+        if _THINK_OPEN.startswith(tail) or _THINK_CLOSE.startswith(tail):
+            return size
+    return 0
+
+
 def _record_model_reasoning(reasoning: str) -> None:
     """Stash one model call's stripped reasoning in turn_capture.
 
@@ -163,7 +172,9 @@ class _ThinkStripState:
 
     A server that reports reasoning in a separate delta field never sends a
     close tag, so :meth:`note_reasoning_field` is the third way out of
-    buffering. See that method for why it fails closed.
+    buffering, and :meth:`feed_field` takes the content from there. A think
+    tag in that content puts the stream back on the paths above, because the
+    field proves the server can separate reasoning, not that it always did.
     """
 
     def __init__(self) -> None:
@@ -178,20 +189,16 @@ class _ThinkStripState:
         self._saw_tool_call = False
         # Set when a reasoning field, not a close tag, released the stream.
         self._reasoning_in_field = False
+        # Reasoning-field content whose tail could be the start of a think tag.
+        self._held = ""
 
     @property
     def seen_close(self) -> bool:
         return self._seen_close
 
     @property
-    def trims_leading_whitespace(self) -> bool:
-        """Whether content is still ahead of the answer on a reasoning-field stream.
-
-        These servers open the content with blank lines, and a tool round has
-        nothing else. Dropping them keeps the stored message what buffering
-        produced: empty for a tool round, no leading blank lines for an answer.
-        """
-        return self._reasoning_in_field and not self._emitted_any
+    def reasoning_in_field(self) -> bool:
+        return self._reasoning_in_field
 
     def _add_reasoning(self, text: str) -> None:
         """Join a trace onto what a reasoning field may already have recorded."""
@@ -221,16 +228,44 @@ class _ThinkStripState:
         """Record a reasoning delta, and stop buffering if that is safe.
 
         The field is positive evidence that this server separates reasoning from
-        content, so content from here on can stream. Text already buffered was
-        sent with no such evidence and could be a trace, so it stays buffered and
-        goes through the close-tag and flush paths, however the field looks.
+        content, so content from here on can stream. Whitespace is no evidence.
+        Text already buffered was sent with no such evidence and could be a
+        trace, so it stays buffered and goes through the close-tag and flush
+        paths, however the field looks.
         """
         self.reasoning += text
-        if self._seen_close or self._buffer.strip():
+        if not text.strip() or self._seen_close or self._buffer.strip():
             return
         self._buffer = ""
         self._seen_close = True
         self._reasoning_in_field = True
+
+    def feed_field(self, content: str) -> str | None:
+        """Feed one chunk's text on a reasoning-field stream; return what to emit.
+
+        A think tag leaves field mode and goes through :meth:`feed`, so the block
+        is stripped or buffered as on any other stream. A tail that could be the
+        start of a tag waits for the next chunk or :meth:`flush`.
+
+        Leading whitespace is dropped until visible text has gone out. These
+        servers open the content with blank lines, and a tool round has nothing
+        else, so this keeps the stored message what buffering produced.
+        """
+        text = self._held + content
+        self._held = ""
+        if _THINK_OPEN in text or _THINK_CLOSE in text:
+            self._seen_close = False
+            self._reasoning_in_field = False
+            return self.feed(text)
+        if not self._emitted_any:
+            text = text.lstrip()
+        held = _partial_tag_len(text)
+        if held:
+            self._held = text[-held:]
+            text = text[:-held]
+        if text.strip():
+            self._emitted_any = True
+        return text or None
 
     def feed(self, content: str) -> str | None:
         """Feed one chunk's text; return what should be emitted now."""
@@ -269,13 +304,18 @@ class _ThinkStripState:
     def flush(self) -> str | None:
         """End-of-stream: emit remaining safe content.
 
-        - Already closed → nothing more to emit.
+        - Already closed → nothing more to emit, bar a held tail that turned
+          out not to be a tag.
         - No close ever arrived → defer to :func:`_strip_think_block`
           which handles the truncation case (drops any unpaired
           ``<think>`` tail) and the non-reasoning fall-through (the
           buffer IS the answer; emit it). Full ``strip`` is fine here
           — we're at end-of-stream, no more chunks to connect to.
         """
+        if self._held:
+            held, self._held = self._held, ""
+            self._emitted_any = True
+            return held
         if self._seen_close:
             # Reasoning-only stream: the trace closed but no answer followed, so
             # nothing was emitted and the aggregated message would be empty.
@@ -413,6 +453,9 @@ class _StrippingChatOpenAI(ChatOpenAI):
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
         state = _ThinkStripState()
+        # With a run_manager the parent fires on_llm_new_token on raw chunks, before
+        # the strip, and those carry reasoning_delta. LangChain passes one only on its
+        # v2 path, so a move to stream_events must withhold it here and in _astream.
         for chunk in super()._stream(messages, stop=stop, run_manager=run_manager, **kwargs):
             yield from _apply_strip_to_chunk(chunk, state)
         tail = _flush_strip_state(state)
@@ -429,6 +472,7 @@ class _StrippingChatOpenAI(ChatOpenAI):
         **kwargs: Any,
     ) -> AsyncIterator[ChatGenerationChunk]:
         state = _ThinkStripState()
+        # See _stream: run_manager exposes raw chunks to callbacks on the v2 path.
         async for chunk in super()._astream(messages, stop=stop, run_manager=run_manager, **kwargs):
             for out in _apply_strip_to_chunk(chunk, state):
                 yield out
@@ -479,10 +523,9 @@ def _apply_strip_to_chunk(
         if not msg.content and not _chunk_outlives_its_text(chunk):
             return []
 
-    if raw and state.trims_leading_whitespace:
-        visible = raw.lstrip()
+    if raw and state.reasoning_in_field:
+        visible = state.feed_field(raw)
         if visible:
-            state.mark_emitted()
             return [_replace_chunk_content(chunk, visible)]
         if _chunk_outlives_its_text(chunk):
             return [_replace_chunk_content(chunk, "")]

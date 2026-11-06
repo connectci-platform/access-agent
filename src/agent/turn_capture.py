@@ -3,8 +3,8 @@
 Carries seven kinds of data the agent graph doesn't surface in final_state:
 retrieved chunks (search_access_documents flattens them to a string before
 returning), whether SummarizationMiddleware fired, per-tool-call durations,
-the turn's OTEL trace id, the per-model-call ``<think>`` reasoning the LLM
-wrapper strips from responses, and the set of normalized rp_name slugs
+the turn's OTEL trace id, the per-model-call reasoning the LLM wrapper keeps out
+of responses (``<think>`` text or a separate delta field), and the set of normalized rp_name slugs
 search_access_documents has already searched this turn (so a second scoped
 call to the same slug can widen instead of repeating a search the model
 already saw fail — see record_scoped_search), and whether a general
@@ -93,7 +93,7 @@ def record_trace_id(trace_id: str) -> None:
 
 
 def record_model_reasoning(reasoning: str) -> None:
-    """Record one model call's stripped ``<think>`` reasoning (call order)."""
+    """Record one model call's ``<think>`` or reasoning-field text (call order)."""
     cap = _turn_capture.get()
     if cap is None or not reasoning:
         return
