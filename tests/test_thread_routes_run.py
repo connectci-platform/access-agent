@@ -935,3 +935,50 @@ async def test_values_fallback_has_one_message_per_id_in_order(client, bearer, m
         ("a", "Let me look."),
         ("b", "The answer."),
     ]
+
+
+async def test_whitespace_then_tool_call_sends_no_messages_event(client, bearer, monkeypatch):
+    meta = {"langgraph_node": "model"}
+    tool = AIMessageChunk(
+        content="",
+        id="a",
+        tool_call_chunks=[{"name": "search", "args": "{}", "id": "c1", "index": 0}],
+    )
+    _stream_of(
+        monkeypatch,
+        [
+            ("messages", (AIMessageChunk(content="\n\n", id="a"), meta)),
+            ("messages", (tool, meta)),
+        ],
+    )
+    events = await _run_events(client, bearer, "t-ws-tool")
+    assert "messages" not in [n for n, _ in events]
+
+
+async def test_leading_whitespace_is_held_back_not_resent(client, bearer, monkeypatch):
+    meta = {"langgraph_node": "model"}
+    _stream_of(
+        monkeypatch,
+        [
+            ("messages", (AIMessageChunk(content="\n\n", id="a"), meta)),
+            ("messages", (AIMessageChunk(content="The ", id="a"), meta)),
+        ],
+    )
+    events = await _run_events(client, bearer, "t-ws-lead")
+    sent = [d[0]["content"] for n, d in events if n == "messages"]
+    assert sent == ["The "]
+
+
+async def test_mid_answer_whitespace_is_still_sent(client, bearer, monkeypatch):
+    meta = {"langgraph_node": "model"}
+    _stream_of(
+        monkeypatch,
+        [
+            ("messages", (AIMessageChunk(content="Hi", id="a"), meta)),
+            ("messages", (AIMessageChunk(content=" ", id="a"), meta)),
+            ("messages", (AIMessageChunk(content="there", id="a"), meta)),
+        ],
+    )
+    events = await _run_events(client, bearer, "t-ws-mid")
+    sent = [d[0]["content"] for n, d in events if n == "messages"]
+    assert sent == ["Hi", " ", "there"]

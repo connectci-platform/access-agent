@@ -6,10 +6,9 @@ model), the tool list (stub tools that record whether they ran) and the MCP
 catalog. The model implements ``_astream`` as well as ``_generate``, because
 both routes stream only ``AIMessageChunk`` tokens.
 
-The routes don't currently receive token chunks from the loop's inner agent,
-so a reply arrives whole in ``values`` and ``done.response``. The assertions
-hold either way: the prompt follows any streamed tokens and precedes the
-events that complete the turn.
+The routes receive token chunks from the loop's inner agent. The assertions
+check that the prompt follows any streamed tokens and precedes the events that
+complete the turn.
 """
 
 import json

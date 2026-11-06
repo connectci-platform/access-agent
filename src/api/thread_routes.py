@@ -182,7 +182,7 @@ async def _stream_run_events(
     checkpointer: Any,
     final_state: dict[str, Any],
 ) -> AsyncGenerator[str, None]:
-    """The metadata/partial/complete/values SSE sequence for one run, mutating
+    """The metadata/messages/custom/values SSE sequence for one run, mutating
     ``final_state`` in place (mirrors turn_capture's in-place-mutation pattern)
     so the caller can read it after this generator is exhausted. Extracted
     from thread_run_stream's ``_gen`` to keep both under ruff's branch/statement
@@ -212,6 +212,11 @@ async def _stream_run_events(
             if is_answer_token(msg, metadata):
                 key = msg.id or ""
                 streamed[key] = streamed[key] + msg if key in streamed else msg
+                if not streamed[key].text.strip():
+                    # Whitespace before any visible text (such as the "\n\n" after
+                    # a think block) would open a blank bubble. Held back, and not
+                    # resent: the final values event replaces the text.
+                    continue
                 # The SDK reads event `messages` with data [message, metadata].
                 yield format_sse_event(
                     "messages", [msg.model_dump(), {"langgraph_node": ANSWER_MODEL_NODE}]
