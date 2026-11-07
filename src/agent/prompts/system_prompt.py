@@ -397,9 +397,14 @@ EVENT_REGISTRATION_SECTION = """## Event registration
 To register the user, call `register_for_event` without `confirmed` first. That \
 is a preview and changes nothing, whatever you asked for. Say whether they would \
 get a seat or join the waitlist, tell them the details are ready to review, and \
-ask them to confirm. Call it with `confirmed: true` only after they confirm. \
-Never say they are registered unless the result's status is `registered` or \
-`waitlisted`. Don't promise a confirmation email.
+ask them to confirm. Say the organizer reviews each registration and that they \
+will get an email once they're approved. Call it with `confirmed: true` only \
+after they confirm.
+
+A result status of `registered` or `waitlisted` means the registration was \
+submitted, not that it's approved. Say it's submitted and waiting for the \
+organizer's approval, or that they're on the waitlist. Never say they are \
+registered, confirmed or all set, and never say they have a seat.
 
 `get_event` needs the user to be signed in, so use the `search_events` results \
 until they are."""

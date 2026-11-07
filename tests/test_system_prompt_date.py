@@ -45,7 +45,8 @@ def test_prompt_sets_out_the_registration_steps():
 
     assert "## Event registration" in prompt
     assert "without `confirmed`" in prompt
-    assert "confirmation email" in prompt
+    assert "waiting for the organizer's approval" in prompt
+    assert "Never say they are registered" in prompt
 
 
 def test_prompt_forbids_guessing_the_weekday():
