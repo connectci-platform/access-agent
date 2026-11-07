@@ -114,12 +114,13 @@ SIGNED_IN_SINCE_TEXT = (
 SIGNED_IN_NOTE = "(The user is signed in now. Earlier sign-in requests no longer apply.)"
 
 
-def _needed_sign_in(message: Any) -> bool:
-    """Whether this is a refusal that signing in clears."""
+def _cleared_by_sign_in(message: Any, context: AgentContext) -> bool:
+    """Whether this refusal no longer applies to this signed-in caller."""
     if not isinstance(message, ToolMessage) or not isinstance(message.artifact, dict):
         return False
     refusal = message.artifact.get("refusal")
-    return isinstance(refusal, dict) and refusal.get("reason") in ("write_action", "private_data")
+    reason = refusal.get("reason") if isinstance(refusal, dict) else None
+    return reason == "private_data" or (reason == "write_action" and context.can_write)
 
 
 def signed_in_since(messages: list[Any], context: AgentContext) -> list[Any]:
@@ -129,16 +130,18 @@ def signed_in_since(messages: list[Any], context: AgentContext) -> list[Any]:
     calling the tool again. For a signed-in caller the model sees it rewritten,
     with a note on the latest request. The stored thread doesn't change.
     """
-    if context.acting_user is None or not any(_needed_sign_in(m) for m in messages):
+    if context.acting_user is None or not any(_cleared_by_sign_in(m, context) for m in messages):
         return messages
     view = [
-        m.model_copy(update={"content": SIGNED_IN_SINCE_TEXT}) if _needed_sign_in(m) else m
+        m.model_copy(update={"content": SIGNED_IN_SINCE_TEXT})
+        if _cleared_by_sign_in(m, context)
+        else m
         for m in messages
     ]
     last = len(view) - 1
     while last >= 0 and not isinstance(view[last], HumanMessage):
         last -= 1
-    refused_before = any(_needed_sign_in(m) for m in messages[: max(last, 0)])
+    refused_before = any(_cleared_by_sign_in(m, context) for m in messages[: max(last, 0)])
     if refused_before and isinstance(view[last].content, str):
         note = f"{view[last].content}\n\n{SIGNED_IN_NOTE}"
         view[last] = view[last].model_copy(update={"content": note})

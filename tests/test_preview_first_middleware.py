@@ -118,6 +118,77 @@ async def test_the_original_call_is_not_mutated():
     assert call["args"]["confirmed"] is True
 
 
+def _tool(content: str, call_id: str = "chatcmpl-tool-0") -> ToolMessage:
+    return ToolMessage(content=content, tool_call_id=call_id, name="register_for_event")
+
+
+def _ai(event: str, confirmed: Any = None, call_id: str = "chatcmpl-tool-0") -> AIMessage:
+    args = {"eventinstance_id": event}
+    if confirmed is not None:
+        args["confirmed"] = confirmed
+    return AIMessage(content="", tool_calls=[_call(args, call_id)])
+
+
+REGISTERED = json.dumps({"status": "registered", "executed": True})
+
+
+def test_a_reused_call_id_does_not_lend_one_events_preview_to_another():
+    messages = [
+        _ai("A"),
+        _tool("Not done."),
+        HumanMessage(content="Now B."),
+        _ai("B"),
+        _tool(PREVIEW),
+        HumanMessage(content="Also A."),
+    ]
+
+    assert not PreviewFirstMiddleware._may_confirm(messages, "A")
+    assert PreviewFirstMiddleware._may_confirm(messages, "B")
+
+
+def test_a_downgraded_preview_counts_so_the_user_can_confirm():
+    messages = [_ai("A", True), _tool(PREVIEW), HumanMessage(content="Yes.")]
+
+    assert PreviewFirstMiddleware._may_confirm(messages, "A")
+
+
+def test_a_newer_preview_needs_its_own_reply():
+    messages = [
+        _ai("A"),
+        _tool(PREVIEW),
+        HumanMessage(content="Still a seat?"),
+        _ai("A"),
+        _tool(PREVIEW),
+    ]
+
+    assert not PreviewFirstMiddleware._may_confirm(messages, "A")
+
+
+def test_a_write_uses_the_preview_up():
+    messages = [
+        _ai("A"),
+        _tool(PREVIEW),
+        HumanMessage(content="Yes."),
+        _ai("A", True),
+        _tool(REGISTERED),
+        HumanMessage(content="Thanks."),
+    ]
+
+    assert not PreviewFirstMiddleware._may_confirm(messages, "A")
+
+
+def test_a_call_id_reused_by_another_tool_is_not_a_preview():
+    other = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "search_events", "args": {}, "id": "chatcmpl-tool-0", "type": "tool_call"}
+        ],
+    )
+    messages = [other, _tool(PREVIEW), HumanMessage(content="Yes.")]
+
+    assert not PreviewFirstMiddleware._may_confirm(messages, "A")
+
+
 def test_numeric_ids_match_string_ids():
     middleware = PreviewFirstMiddleware()
     messages = [*_previewed(), HumanMessage(content="Yes.")]
@@ -136,18 +207,6 @@ async def test_every_way_of_saying_confirmed_becomes_a_preview(confirmed):
     args = await _sent_args(_call({"eventinstance_id": "9372", "confirmed": confirmed}), [])
 
     assert args["confirmed"] is False
-
-
-async def test_a_confirmed_call_sent_as_text_does_not_count_as_a_preview():
-    messages = [
-        AIMessage(
-            content="", tool_calls=[_call({"eventinstance_id": "9372", "confirmed": "true"}, "c1")]
-        ),
-        ToolMessage(content=PREVIEW, tool_call_id="c1", name="register_for_event"),
-        HumanMessage(content="Yes."),
-    ]
-
-    assert not PreviewFirstMiddleware._may_confirm(messages, "9372")
 
 
 async def test_a_value_that_is_not_a_boolean_passes_through_for_the_tool_to_reject():
@@ -181,3 +240,25 @@ async def test_a_real_agent_sends_the_downgraded_call_to_the_tool():
     await agent.ainvoke({"messages": [HumanMessage(content="Sign me up.")]})
 
     assert received == [False]
+
+
+async def test_a_real_agent_lets_a_confirmed_call_through_after_a_reply():
+    received: list[Any] = []
+
+    @tool
+    def register_for_event(eventinstance_id: str, confirmed: bool = False) -> str:
+        """Register for an event."""
+        received.append(confirmed)
+        return REGISTERED
+
+    call = _call({"eventinstance_id": "9372", "confirmed": True}, "c9")
+    model = _ScriptedModel(
+        messages=iter([AIMessage(content="", tool_calls=[call]), AIMessage(content="Submitted.")])
+    )
+    agent = create_agent(
+        model=model, tools=[register_for_event], middleware=[PreviewFirstMiddleware()]
+    )
+
+    await agent.ainvoke({"messages": [*_previewed(), HumanMessage(content="Yes.")]})
+
+    assert received == [True]

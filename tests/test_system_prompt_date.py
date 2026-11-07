@@ -31,9 +31,9 @@ def test_prompt_requires_saying_when_the_scope_changed():
     assert "broader or different scope" in build_system_prompt()
 
 
-def test_signed_in_prompt_says_earlier_sign_in_requests_no_longer_apply():
+def test_a_caller_who_can_write_is_told_earlier_sign_in_requests_no_longer_apply():
     assert "no longer applies" in build_system_prompt(acting_user="u@access-ci.org", can_write=True)
-    assert "no longer applies" in build_system_prompt(acting_user="u@access-ci.org")
+    assert "no longer applies" not in build_system_prompt(acting_user="u@access-ci.org")
 
 
 def test_anonymous_prompt_does_not_say_sign_in_is_done():
@@ -51,3 +51,7 @@ def test_prompt_sets_out_the_registration_steps():
 
 def test_prompt_forbids_guessing_the_weekday():
     assert "weekday" in build_system_prompt()
+
+
+def test_a_caller_who_cannot_write_is_not_told_how_to_register():
+    assert "## Event registration" not in build_system_prompt(acting_user="u@access-ci.org")

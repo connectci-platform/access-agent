@@ -57,24 +57,32 @@ class PreviewFirstMiddleware(AgentMiddleware):
 
     @staticmethod
     def _may_confirm(messages: list[Any], event_id: Any) -> bool:
-        """Whether this event's preview was shown and the user has replied since."""
-        preview_calls = {
-            call["id"]
-            for message in messages
-            if isinstance(message, AIMessage)
-            for call in message.tool_calls
-            if call["name"] == TOOL_NAME
-            and str(call["args"].get(EVENT_ARG)) == str(event_id)
-            and not _is_confirmed(call["args"].get("confirmed", False))
-        }
+        """Whether the user has replied since this event's latest preview.
+
+        Reads the thread in order, because call ids repeat across a thread: a
+        result belongs to the nearest earlier call with its id. A preview is
+        recognized by its result, not its arguments, since a downgraded call
+        keeps ``confirmed: true`` in the stored message. Any other result for
+        this event uses the preview up, so each write needs a fresh one.
+        """
+        calls: dict[str | None, Any] = {}
         previewed = False
+        answered = False
         for message in messages:
-            if isinstance(message, ToolMessage):
-                if message.tool_call_id in preview_calls and _is_preview(message):
-                    previewed = True
-            elif isinstance(message, HumanMessage) and previewed:
-                return True
-        return False
+            if isinstance(message, AIMessage):
+                calls.update({call["id"]: call for call in message.tool_calls})
+            elif isinstance(message, HumanMessage):
+                answered = previewed
+            elif isinstance(message, ToolMessage):
+                call = calls.get(message.tool_call_id)
+                if (
+                    call
+                    and call["name"] == TOOL_NAME
+                    and str(call["args"].get(EVENT_ARG)) == str(event_id)
+                ):
+                    previewed = _is_preview(message)
+                    answered = False
+        return previewed and answered
 
     async def awrap_tool_call(
         self,

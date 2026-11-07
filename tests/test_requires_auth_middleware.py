@@ -331,6 +331,20 @@ def test_a_write_scope_refusal_is_kept():
     assert _after_sign_in(messages, READ_ONLY_TOKEN) == messages
 
 
+def test_a_write_refusal_stands_for_a_caller_who_still_cannot_write():
+    messages = [_refused("write_action"), HumanMessage(content="Again.")]
+
+    assert _after_sign_in(messages, READ_ONLY_TOKEN) == messages
+
+
+def test_a_private_data_refusal_clears_for_a_read_only_caller():
+    messages = _after_sign_in(
+        [_refused("private_data"), HumanMessage(content="Again.")], READ_ONLY_TOKEN
+    )
+
+    assert "has signed in since" in messages[0].content
+
+
 def test_a_conversation_with_no_refusal_is_unchanged():
     messages = [HumanMessage(content="Hello."), ToolMessage(content="{}", tool_call_id="c1")]
 

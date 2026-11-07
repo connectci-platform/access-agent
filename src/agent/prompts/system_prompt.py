@@ -470,8 +470,7 @@ def build_system_prompt(
             f"## Acting user\n\nCurrent user: `{acting_user}`. "
             f"Use this when calling tools that accept an acting-user "
             f"identity (allocations, personal usage queries). This chat can read "
-            f"information for the user but can't make changes on their behalf. "
-            f"{SIGNED_IN_NOTE}"
+            f"information for the user but can't make changes on their behalf."
         )
     elif acting_user:
         sections.append(
@@ -506,9 +505,8 @@ def build_system_prompt(
         if profile_section:
             sections.append(profile_section)
 
-    sections.append(EVENT_REGISTRATION_SECTION)
-
     if not read_only_session:
+        sections.append(EVENT_REGISTRATION_SECTION)
         sections.append(ANNOUNCEMENTS_WORKFLOWS_SECTION)
         sections.append(JSM_WORKFLOW_SECTION)
 
