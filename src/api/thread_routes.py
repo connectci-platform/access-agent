@@ -24,7 +24,7 @@ from ..agent.graph import create_checkpointed_graph, stream_agent
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..config import settings
 from ..turn_reporter import _hash_user, get_turn_reporter
-from ..turnstile import check_turnstile
+from ..turnstile import check_turnstile, get_turnstile_guard
 from .answer_tokens import ANSWER_MODEL_NODE, is_answer_token
 from .handoff_tokens import (
     DEFAULT_TTL_SECONDS,
@@ -70,8 +70,9 @@ class RunInput(BaseModel):
 
 
 class RunRequest(BaseModel):
-    """SDK run body. The route reads ``input.messages``, ``turnstile_token``, and
-    ``resource_context`` from ``config.configurable`` or ``context``; everything
+    """SDK run body. The route reads ``input.messages``, ``turnstile_token`` (top
+    level, or in ``context`` because the SDK's submit can't add a top-level field),
+    and ``resource_context`` from ``config.configurable`` or ``context``; everything
     else is accepted for protocol compatibility and ignored. The body's
     ``context`` never reaches the agent's runtime context, which comes from the
     verified token only, so a body claiming a user or scopes has no effect. A
@@ -403,7 +404,8 @@ async def thread_run_stream(
     # always exists (it's in the URL path), so the guard always has a key to
     # track. Placed AFTER the ownership gate and BEFORE acquire_thread_run so a
     # challenged request never acquires the run lock.
-    turnstile_response = await check_turnstile(caller, thread_id, body.turnstile_token)
+    turnstile_token = body.turnstile_token or (body.context or {}).get("turnstile_token")
+    turnstile_response = await check_turnstile(caller, thread_id, turnstile_token)
     if turnstile_response is not None:
         return turnstile_response
 
@@ -474,6 +476,14 @@ async def thread_run_stream(
         # slow reporter write must not trip a spurious TimeoutError into an
         # already-successful stream, as on /query.
         if success:
+            # Count before the report write, so a slow or cancelled write can't
+            # leave the question uncounted. Same guard and key as /query, where
+            # session_id == thread_id, so a handed-off conversation keeps its count.
+            if not caller:
+                try:
+                    get_turnstile_guard().record_query(thread_id)
+                except Exception:
+                    logger.exception("Turnstile query count failed")
             await _report(state=final_state, ok=True)
 
     # The lock was acquired synchronously above; it is released by held_run's

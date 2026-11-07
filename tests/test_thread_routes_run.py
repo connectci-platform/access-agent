@@ -863,6 +863,171 @@ async def test_run_anon_caller_not_challenged_when_turnstile_disabled(client, mo
     assert "event: metadata" in r.text
 
 
+def _deferred_turnstile(monkeypatch, free_queries: int = 3) -> None:
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "TURNSTILE_SECRET_KEY", "test-secret", raising=False)
+    monkeypatch.setattr(settings, "TURNSTILE_SITE_KEY", "test-site-key", raising=False)
+    monkeypatch.setattr(settings, "TURNSTILE_MODE", "deferred", raising=False)
+    monkeypatch.setattr(settings, "TURNSTILE_FREE_QUERIES", free_queries, raising=False)
+
+
+async def _ask(client, thread_id: str, *, headers=None, **body):
+    return await client.post(
+        f"/api/v1/threads/{thread_id}/runs/stream",
+        headers=headers,
+        json={"input": {"messages": [{"role": "user", "content": "hi"}]}, **body},
+    )
+
+
+def _challenged(response) -> bool:
+    return response.headers["content-type"].startswith("application/json") and (
+        response.json().get("requires_turnstile") is True
+    )
+
+
+async def test_run_anon_caller_is_challenged_after_the_free_questions(client, monkeypatch):
+    """D8-2978: the count has to grow on this route, or deferred mode never fires."""
+    _deferred_turnstile(monkeypatch)
+    _mock_stream_agent(monkeypatch)
+
+    for _ in range(3):
+        r = await _ask(client, "t-free")
+        assert "event: metadata" in r.text
+
+    r = await _ask(client, "t-free")
+    assert _challenged(r)
+    assert r.json()["site_key"] == "test-site-key"
+
+
+async def test_run_free_question_count_follows_the_setting(client, monkeypatch):
+    _deferred_turnstile(monkeypatch, free_queries=1)
+    _mock_stream_agent(monkeypatch)
+
+    assert not _challenged(await _ask(client, "t-one-free"))
+    assert _challenged(await _ask(client, "t-one-free"))
+
+
+async def test_run_failed_turn_does_not_use_a_free_question(client, monkeypatch):
+    _deferred_turnstile(monkeypatch, free_queries=1)
+
+    async def _boom(**_kwargs):
+        raise RuntimeError("model down")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _boom)
+    r = await _ask(client, "t-failed")
+    assert "event: error" in r.text
+
+    _mock_stream_agent(monkeypatch)
+    assert not _challenged(await _ask(client, "t-failed"))
+
+
+async def test_run_count_is_shared_with_the_widget_session(client, monkeypatch):
+    """A handed-off conversation keeps its count: session_id == thread_id."""
+    from src.turnstile import get_turnstile_guard
+
+    _deferred_turnstile(monkeypatch)
+    _mock_stream_agent(monkeypatch)
+    for _ in range(3):
+        get_turnstile_guard().record_query("t-handed-off")
+
+    assert _challenged(await _ask(client, "t-handed-off"))
+
+
+async def test_run_signing_in_continues_a_thread_at_the_limit(client, bearer, monkeypatch):
+    _deferred_turnstile(monkeypatch, free_queries=1)
+    _mock_stream_agent(monkeypatch)
+    await _ask(client, "t-sign-in")
+    assert _challenged(await _ask(client, "t-sign-in"))
+
+    r = await _ask(client, "t-sign-in", headers=bearer)
+
+    assert "event: metadata" in r.text
+    assert get_thread_owner_store().resolve_owner("t-sign-in").was_authenticated
+
+
+async def test_run_signed_in_turns_are_not_counted(client, bearer, monkeypatch):
+    from src.turnstile import get_turnstile_guard
+
+    _deferred_turnstile(monkeypatch, free_queries=1)
+    _mock_stream_agent(monkeypatch)
+
+    for _ in range(3):
+        assert not _challenged(await _ask(client, "t-authed-count", headers=bearer))
+
+    assert "t-authed-count" not in get_turnstile_guard()._sessions
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"turnstile_token": "tok"}, {"context": {"turnstile_token": "tok"}}],
+    ids=["top-level", "context"],
+)
+async def test_run_passing_the_challenge_answers_the_question(client, monkeypatch, body):
+    """The SDK's submit can only send the token in ``context``."""
+    _deferred_turnstile(monkeypatch, free_queries=1)
+    _mock_stream_agent(monkeypatch)
+    verify = MagicMock(return_value=True)
+
+    async def _verify(token):
+        return verify(token)
+
+    monkeypatch.setattr("src.turnstile.verify_turnstile_token", _verify)
+    await _ask(client, "t-verify")
+    assert _challenged(await _ask(client, "t-verify"))
+
+    r = await _ask(client, "t-verify", **body)
+
+    assert "event: metadata" in r.text
+    verify.assert_called_once_with("tok")
+    assert not _challenged(await _ask(client, "t-verify"))  # verified for the TTL
+
+
+async def test_run_rejected_token_is_challenged_again(client, monkeypatch):
+    _deferred_turnstile(monkeypatch, free_queries=1)
+    _mock_stream_agent(monkeypatch)
+
+    async def _reject(_token):
+        return False
+
+    monkeypatch.setattr("src.turnstile.verify_turnstile_token", _reject)
+    await _ask(client, "t-bad-token")
+
+    assert _challenged(await _ask(client, "t-bad-token", context={"turnstile_token": "bad"}))
+
+
+async def test_run_count_failure_does_not_fail_the_turn(client, monkeypatch):
+    _deferred_turnstile(monkeypatch)
+    _mock_stream_agent(monkeypatch)
+    monkeypatch.setattr(
+        "src.turnstile.TurnstileGuard.record_query",
+        MagicMock(side_effect=RuntimeError("count failed")),
+    )
+
+    r = await _ask(client, "t-count-fails")
+
+    assert "event: values" in r.text
+    assert "event: error" not in r.text
+
+
+async def test_run_is_counted_before_the_turn_report_is_written(client, monkeypatch):
+    """A slow or cancelled report write must not leave a free question uncounted."""
+    from src.turnstile import get_turnstile_guard
+
+    _deferred_turnstile(monkeypatch)
+    _mock_stream_agent(monkeypatch)
+    seen: list[int] = []
+
+    async def _report(**_kwargs):
+        seen.append(get_turnstile_guard()._sessions["t-order"].query_count)
+
+    monkeypatch.setattr("src.api.thread_routes._write_turn_report", _report)
+    await _ask(client, "t-order")
+
+    assert seen == [1]
+
+
 def _sse(body: str) -> list[tuple[str, Any]]:
     out = []
     for block in body.strip().split("\n\n"):
