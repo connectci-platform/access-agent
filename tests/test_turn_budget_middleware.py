@@ -190,6 +190,10 @@ def test_the_answer_note_warns_against_saying_there_are_none():
     assert "never say something doesn't exist" in ANSWER_NOW_NOTE
 
 
+def test_the_answer_note_says_nothing_more_can_happen():
+    assert "This is your final message" in ANSWER_NOW_NOTE
+
+
 async def test_the_same_call_after_a_timeout_is_blocked():
     middleware = TurnBudgetMiddleware(_later())
     handler = _Tool(_timed_out)

@@ -68,7 +68,8 @@ ANSWER_NOW_NOTE = (
     "(This request is out of time, so no more tools are available. Answer now from "
     "the tool results you already have, and tell the user plainly what you couldn't "
     "get. Your searches may be incomplete, so never say something doesn't exist or "
-    "that there are none. Say what you found and that there may be more.)"
+    "that there are none. Say what you found and that there may be more. This is your "
+    "final message, so don't say you'll search or do anything next.)"
 )
 # The turn's answer when the model's last response held no text for the user.
 OUT_OF_TIME_ANSWER = (
