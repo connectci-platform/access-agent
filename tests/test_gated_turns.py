@@ -6,10 +6,9 @@ model), the tool list (stub tools that record whether they ran) and the MCP
 catalog. The model implements ``_astream`` as well as ``_generate``, because
 both routes stream only ``AIMessageChunk`` tokens.
 
-The routes don't currently receive token chunks from the loop's inner agent,
-so a reply arrives whole in ``values`` and ``done.response``. The assertions
-hold either way: the prompt follows any streamed tokens and precedes the
-events that complete the turn.
+The routes receive token chunks from the loop's inner agent. The assertions
+check that the prompt follows any streamed tokens and precedes the events that
+complete the turn.
 """
 
 import json
@@ -227,7 +226,7 @@ async def test_anonymous_write_on_runs_stream_completes_with_a_sign_in_prompt(cl
     assert ran == []
     custom = [d for n, d in events if n == "custom"]
     assert custom == [{"type": "requires_auth", "reason": "write_action"}]
-    _after_tokens_and_before(events, "custom", "messages/partial", ["messages/complete", "values"])
+    _after_tokens_and_before(events, "custom", "messages", ["values"])
     assert "sign in to register" in _thread_reply(events)
 
 

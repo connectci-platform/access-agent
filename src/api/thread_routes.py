@@ -30,6 +30,7 @@ from ..config import settings
 from ..thread_owners import get_thread_owner_store
 from ..turn_reporter import _hash_user, get_turn_reporter
 from ..turnstile import check_turnstile
+from .answer_tokens import ANSWER_MODEL_NODE, is_answer_token
 from .handoff_tokens import (
     DEFAULT_TTL_SECONDS,
     exchange_handoff_token,
@@ -181,7 +182,7 @@ async def _stream_run_events(
     checkpointer: Any,
     final_state: dict[str, Any],
 ) -> AsyncGenerator[str, None]:
-    """The metadata/partial/complete/values SSE sequence for one run, mutating
+    """The metadata/messages/custom/values SSE sequence for one run, mutating
     ``final_state`` in place (mirrors turn_capture's in-place-mutation pattern)
     so the caller can read it after this generator is exhausted. Extracted
     from thread_run_stream's ``_gen`` to keep both under ruff's branch/statement
@@ -192,7 +193,8 @@ async def _stream_run_events(
     from .routes import get_registry
 
     registry = await get_registry()
-    accumulated: AIMessageChunk | None = None
+    # Answer chunks by message id, in arrival order, for the values fallback below.
+    streamed: dict[str, AIMessageChunk] = {}
     final_messages: list[dict[str, Any]] = []
 
     async for stream_type, chunk in stream_agent(
@@ -207,12 +209,18 @@ async def _stream_run_events(
     ):
         if stream_type == "messages":
             msg, metadata = chunk
-            if (
-                isinstance(msg, AIMessageChunk)
-                and metadata.get("langgraph_node") == "tool_calling_loop"
-            ):
-                accumulated = msg if accumulated is None else accumulated + msg
-                yield format_sse_event("messages/partial", [msg.model_dump()])
+            if is_answer_token(msg, metadata):
+                key = msg.id or ""
+                streamed[key] = streamed[key] + msg if key in streamed else msg
+                if not streamed[key].text.strip():
+                    # Whitespace before any visible text (such as the "\n\n" after
+                    # a think block) would open a blank bubble. Held back, and not
+                    # resent: the final values event replaces the text.
+                    continue
+                # The SDK reads event `messages` with data [message, metadata].
+                yield format_sse_event(
+                    "messages", [msg.model_dump(), {"langgraph_node": ANSWER_MODEL_NODE}]
+                )
         elif stream_type == "updates" and isinstance(chunk, dict):
             for node_output in chunk.values():
                 if isinstance(node_output, dict):
@@ -231,13 +239,12 @@ async def _stream_run_events(
         # turn still completes below with the model's reply.
         yield format_sse_event("custom", {"type": "requires_auth", "reason": refusals[0]["reason"]})
 
-    if accumulated is not None:
-        # Complete message reuses the stable streamed id.
-        final = AIMessage(content=accumulated.content, id=accumulated.id)
-        dumped = final.model_dump()
-        yield format_sse_event("messages/complete", [dumped])
-        if not final_messages:
-            final_messages = [dumped]
+    if streamed and not final_messages:
+        # The model produced tokens but no node update carried messages. One AI
+        # message per streamed id, so separate rounds are never merged.
+        final_messages = [
+            AIMessage(content=c.content, id=c.id or None).model_dump() for c in streamed.values()
+        ]
 
     yield format_sse_event("values", {"messages": final_messages})
 

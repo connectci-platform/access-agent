@@ -10,7 +10,7 @@ paths have been removed; see ``archive/classify-then-loop`` and
 """
 
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -232,6 +232,21 @@ async def run_agent(
         return result
 
 
+async def _flatten_subgraph_events(
+    events: AsyncIterator[tuple[tuple[str, ...], str, Any]],
+) -> AsyncGenerator[tuple[str, Any], None]:
+    """Turn subgraphs=True events back into (stream_type, chunk) pairs.
+
+    The model runs in a create_agent graph nested inside tool_calling_loop, so
+    its tokens only surface with subgraphs=True. Nested "updates" are dropped,
+    because their keys are inner node names that callers would merge into state.
+    """
+    async for namespace, stream_type, chunk in events:
+        if namespace and stream_type == "updates":
+            continue
+        yield stream_type, chunk
+
+
 async def stream_agent(
     query: str,
     session_id: str,
@@ -250,7 +265,8 @@ async def stream_agent(
     Yields ``(stream_type, data)`` tuples where ``stream_type`` is one of:
       - ``"custom"``: Status messages from nodes via ``get_stream_writer()``
       - ``"messages"``: LLM token chunks (with metadata including ``langgraph_node``)
-      - ``"updates"``: State updates after each node completes
+      - ``"updates"``: State updates after each top-level node completes
+        (nested updates are dropped, see ``_flatten_subgraph_events``)
     """
     from .state import create_initial_state
 
@@ -290,8 +306,10 @@ async def stream_agent(
                     f"Resuming conversation with {len(existing_messages)} previous messages"
                 )
 
-            async for stream_type, chunk in graph.astream(
-                initial_state, config, stream_mode=stream_mode, context=context
+            async for stream_type, chunk in _flatten_subgraph_events(
+                graph.astream(
+                    initial_state, config, stream_mode=stream_mode, context=context, subgraphs=True
+                )
             ):
                 yield stream_type, chunk
         elif use_checkpointing and db_uri:
@@ -310,13 +328,21 @@ async def stream_agent(
                         f"Resuming conversation with {len(existing_messages)} previous messages"
                     )
 
-                async for stream_type, chunk in graph.astream(
-                    initial_state, config, stream_mode=stream_mode, context=context
+                async for stream_type, chunk in _flatten_subgraph_events(
+                    graph.astream(
+                        initial_state,
+                        config,
+                        stream_mode=stream_mode,
+                        context=context,
+                        subgraphs=True,
+                    )
                 ):
                     yield stream_type, chunk
         else:
             graph = create_agent_graph()
-            async for stream_type, chunk in graph.astream(
-                initial_state, {}, stream_mode=stream_mode, context=context
+            async for stream_type, chunk in _flatten_subgraph_events(
+                graph.astream(
+                    initial_state, {}, stream_mode=stream_mode, context=context, subgraphs=True
+                )
             ):
                 yield stream_type, chunk

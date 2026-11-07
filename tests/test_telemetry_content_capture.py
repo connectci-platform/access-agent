@@ -173,7 +173,9 @@ def _root_span_attributes(monkeypatch, stream: bool) -> dict:
         async def ainvoke(self, state, config, context=None):
             return {}
 
-        async def astream(self, state, config=None, stream_mode=None, context=None):
+        async def astream(
+            self, state, config=None, stream_mode=None, context=None, subgraphs=False
+        ):
             return
             yield  # makes this an (empty) async generator
 

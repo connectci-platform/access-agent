@@ -10,7 +10,6 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from langchain_core.messages import AIMessageChunk
 from pydantic import BaseModel, Field
 from starlette.datastructures import Headers
 from starlette.responses import StreamingResponse
@@ -20,11 +19,11 @@ from ..agent.graph import stream_agent
 from ..agent.profile import UserProfile
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..config import settings
-from ..llm import is_empty_answer
 from ..thread_owners import get_thread_owner_store
 from ..tools import ToolRegistry, get_catalog_aggregator
 from ..turnstile import check_turnstile, get_turnstile_guard
 from ..usage_logger import get_usage_logger
+from .answer_tokens import is_answer_token
 from .identity import Identity
 from .sse import format_sse_event as _format_sse_event
 from .thread_runs import acquire_thread_run, held_run, release_thread_run, run_with_timeout
@@ -225,30 +224,8 @@ async def _check_capability_discovery(
 
 
 def _should_stream_token(msg: Any, metadata: dict[str, Any]) -> bool:
-    """Whether a LangGraph message chunk should reach the browser as a token.
-
-    Extracted from _stream_events so it can be tested without standing up the
-    registry, reporter and Turnstile machinery that generator also drives.
-
-    Four conditions, all load-bearing:
-
-    * AIMessageChunk only — the messages stream also carries complete AIMessage
-      objects added to state, and streaming those duplicates the whole answer.
-    * tool_calling_loop only — other nodes' chatter is not the user's answer.
-    * Non-empty — nothing to render.
-    * Not the empty-answer sentinel — the LLM client emits that in place of a
-      response that stripped to nothing, so the assistant turn stays non-empty
-      for vLLM. It is wire-protocol only, and qa-bot-core concatenates every
-      token event it receives (qa-flow.tsx), so streaming it would paste the
-      marker into the visible answer. tool_calling_loop substitutes real prose
-      when it builds final_answer, which the done event carries.
-    """
-    return (
-        isinstance(msg, AIMessageChunk)
-        and metadata.get("langgraph_node") == "tool_calling_loop"
-        and bool(msg.content)
-        and not is_empty_answer(msg.content if isinstance(msg.content, str) else None)
-    )
+    """Whether a message chunk should reach the browser as a token event."""
+    return is_answer_token(msg, metadata)
 
 
 async def _write_query_turn_report(
@@ -330,6 +307,10 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
     reset_turn_capture()
     lock_run_id = run_id or str(uuid.uuid4())
     timed_out = False
+    # The widget concatenates every token and then ignores done.response, so
+    # what is streamed has to read as the whole answer.
+    streamed = ""
+    last_chunk_id: str | None = None
 
     async def _report(*, success: bool, duration_ms: float | None = None) -> None:
         await _write_query_turn_report(
@@ -374,11 +355,20 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                         elif stream_type == "messages":
                             # LLM token chunks — tuple of (message, metadata)
                             msg, metadata = chunk
-                            # Only stream incremental tokens from the tool_calling_loop
-                            # node. LangGraph's messages stream emits both AIMessageChunk
+                            # Tokens come from the model nested in tool_calling_loop.
+                            # LangGraph's messages stream emits both AIMessageChunk
                             # (tokens) and AIMessage (complete messages added to state).
                             # We only want the chunks to avoid duplicating the response.
                             if _should_stream_token(msg, metadata):
+                                # Each model round has its own message id; a chunk
+                                # without one continues the previous round.
+                                chunk_id = getattr(msg, "id", None)
+                                if streamed and chunk_id and chunk_id != last_chunk_id:
+                                    streamed += "\n\n"
+                                    yield _format_sse_event("token", {"content": "\n\n"})
+                                if chunk_id:
+                                    last_chunk_id = chunk_id
+                                streamed += msg.content
                                 yield _format_sse_event("token", {"content": msg.content})
 
                         elif stream_type == "updates" and isinstance(chunk, dict):
@@ -402,6 +392,14 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
 
         # Build metadata from final state (mirrors non-streaming QueryResponse fields)
         final_answer = final_state.get("final_answer") or "No answer generated"
+        # An apology written after the model stopped was never streamed, and the
+        # widget ignores done.response once any token arrived.
+        if (
+            final_state.get("answer_unavailable")
+            and streamed
+            and not streamed.endswith(final_answer)
+        ):
+            yield _format_sse_event("token", {"content": f"\n\n{final_answer}"})
         tools_used = final_state.get("tools_used", [])
         # Invocations, not distinct names; older state lacks the field.
         tool_call_count = final_state.get("tool_call_count")

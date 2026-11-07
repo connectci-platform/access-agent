@@ -109,6 +109,7 @@ class _CapturingGraph:
 
     def __init__(self) -> None:
         self.contexts: list[Any] = []
+        self.subgraphs: list[bool] = []
 
     async def aget_state(self, config):
         return type("Snapshot", (), {"values": {}})()
@@ -117,8 +118,9 @@ class _CapturingGraph:
         self.contexts.append(context)
         return {}
 
-    async def astream(self, state, config, *, stream_mode, context):
+    async def astream(self, state, config, *, stream_mode, context, subgraphs=False):
         self.contexts.append(context)
+        self.subgraphs.append(subgraphs)
         return
         yield
 
@@ -156,6 +158,8 @@ async def test_every_invocation_site_passes_the_context(monkeypatch, entry, bran
             pass
 
     assert fake.contexts == [context]
+    if entry == "stream_agent":
+        assert fake.subgraphs == [True]
 
 
 # --- The eval's write flag ----------------------------------------------------

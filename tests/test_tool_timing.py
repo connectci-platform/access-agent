@@ -248,7 +248,9 @@ def test_stream_agent_records_trace_id(monkeypatch):
     import src.agent.graph as graph_mod
 
     class _Graph:
-        async def astream(self, state, config=None, stream_mode=None, context=None):
+        async def astream(
+            self, state, config=None, stream_mode=None, context=None, subgraphs=False
+        ):
             return
             yield  # makes this an (empty) async generator
 

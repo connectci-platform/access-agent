@@ -1,21 +1,28 @@
 """Tests for LLM provider abstraction — Qwen `</think>` strip + enable_thinking knob."""
 
+import logging
 from collections.abc import AsyncIterator, Iterator
-from typing import Any, cast
+from typing import Any, Self, cast
 from unittest.mock import patch
 
 import pytest
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_openai import ChatOpenAI
+from langgraph.graph import START, MessagesState, StateGraph
+from openai.types.chat import ChatCompletionChunk
 
 from src.llm.providers import (
     EMPTY_ANSWER_SENTINEL,
     OpenAICompatibleProvider,
     OpenAIProvider,
+    _apply_strip_to_chunk,
+    _flush_strip_state,
     _strip_generations,
     _strip_think_block,
     _StrippingChatOpenAI,
+    _ThinkStripState,
 )
 
 
@@ -628,7 +635,7 @@ class TestSseTokenGuard:
     """
 
     @staticmethod
-    def _loop(content, node="tool_calling_loop", chunk=True):
+    def _loop(content, node="model", chunk=True):
         from langchain_core.messages import AIMessage, AIMessageChunk
 
         cls = AIMessageChunk if chunk else AIMessage
@@ -788,7 +795,7 @@ class TestEmptyAnswerIntegrationPaths:
         src = inspect.getsource(routes._stream_events)
         assert "_should_stream_token(msg, metadata)" in src
 
-        loop = {"langgraph_node": "tool_calling_loop"}
+        loop = {"langgraph_node": "model"}
         assert not routes._should_stream_token(
             AIMessageChunk(content=f"\n{EMPTY_ANSWER_SENTINEL}"), loop
         )
@@ -803,3 +810,684 @@ class TestEmptyAnswerIntegrationPaths:
         state.mark_tool_call_seen()
         assert state.feed("<think>choosing a tool") is None
         assert state.flush() is None
+
+
+REASONING = "SECRET-TRACE the user wants a scheduler"
+
+
+def _reasoning_chunk(
+    reasoning: str, content: str = "", generation_info: dict[str, Any] | None = None
+) -> ChatGenerationChunk:
+    """A chunk as _convert_chunk_to_generation_chunk leaves it for a reasoning delta."""
+    return ChatGenerationChunk(
+        message=AIMessageChunk(content=content),
+        generation_info={"reasoning_delta": reasoning, **(generation_info or {})},
+    )
+
+
+def _tool_chunk(content: str = "") -> ChatGenerationChunk:
+    return _chunk(
+        content,
+        tool_call_chunks=[{"name": "search", "args": "{}", "id": "c1", "index": 0}],
+    )
+
+
+def _strip_all(
+    chunks: list[ChatGenerationChunk],
+) -> tuple[list[list[ChatGenerationChunk]], ChatGenerationChunk | None, _ThinkStripState]:
+    """Drive the real strip over a script: what each chunk yielded, the tail, the state."""
+    state = _ThinkStripState()
+    per_chunk = [_apply_strip_to_chunk(chunk, state) for chunk in chunks]
+    return per_chunk, _flush_strip_state(state), state
+
+
+def _flatten(
+    per_chunk: list[list[ChatGenerationChunk]], tail: ChatGenerationChunk | None
+) -> list[ChatGenerationChunk]:
+    out = [chunk for group in per_chunk for chunk in group]
+    return [*out, tail] if tail is not None else out
+
+
+def _wire_chunk(delta: dict[str, Any], finish_reason: str | None = None) -> dict[str, Any]:
+    """One chat.completion.chunk as the OpenAI client dumps it."""
+    return {
+        "id": "chatcmpl-1",
+        "object": "chat.completion.chunk",
+        "created": 1,
+        "model": "m",
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+    }
+
+
+def _compatible_model() -> _StrippingChatOpenAI:
+    provider = OpenAICompatibleProvider(
+        base_url="http://example/v1", api_key="k", default_model="m"
+    )
+    return cast("_StrippingChatOpenAI", provider.get_chat_model())
+
+
+def _convert(model: _StrippingChatOpenAI, wire: dict[str, Any]) -> ChatGenerationChunk | None:
+    return model._convert_chunk_to_generation_chunk(wire, AIMessageChunk, {})
+
+
+class _FakeCompletionStream:
+    """The async context manager and iterator client.create() hands back."""
+
+    def __init__(self, wire_chunks: list[dict[str, Any]]) -> None:
+        self._chunks = [ChatCompletionChunk.model_validate(c) for c in wire_chunks]
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def __aiter__(self) -> AsyncIterator[ChatCompletionChunk]:
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _FakeAsyncCompletions:
+    def __init__(self, wire_chunks: list[dict[str, Any]]) -> None:
+        self._wire_chunks = wire_chunks
+
+    async def create(self, **payload: Any) -> _FakeCompletionStream:
+        return _FakeCompletionStream(self._wire_chunks)
+
+
+class _TokenSpy(BaseCallbackHandler):
+    """Records everything an on_llm_new_token listener gets to see."""
+
+    def __init__(self) -> None:
+        self.seen: list[str] = []
+
+    def on_llm_new_token(self, token: str, *, chunk: Any = None, **kwargs: Any) -> None:
+        self.seen.append(f"{token!r} {chunk.model_dump() if chunk is not None else None}")
+
+
+class TestReasoningReportedInASeparateField:
+    """UKY's vLLM sends reasoning in delta.reasoning_content and clean text in
+    delta.content, with no </think>. The field is the evidence that content can
+    stream; without it the strip buffers exactly as it did before.
+    """
+
+    def setup_method(self):
+        from src.agent.turn_capture import reset_turn_capture
+
+        reset_turn_capture()
+
+    def test_reasoning_field_releases_content_chunk_by_chunk(self):
+        per_chunk, tail, _ = _strip_all(
+            [
+                _reasoning_chunk("step one, "),
+                _reasoning_chunk("step two"),
+                _chunk("\n\n"),
+                _chunk("A batch"),
+                _chunk(" scheduler"),
+            ]
+        )
+
+        assert [[c.message.content for c in group] for group in per_chunk] == [
+            [],
+            [],
+            [],
+            ["A batch"],
+            [" scheduler"],
+        ]
+        assert tail is None
+
+    def test_spacing_inside_the_answer_survives(self):
+        per_chunk, tail, _ = _strip_all(
+            [_reasoning_chunk("r"), _chunk("\n\n  First"), _chunk("\n\n"), _chunk(" second ")]
+        )
+
+        assert _aggregate_text(_flatten(per_chunk, tail)) == "First\n\n second "
+
+    def test_reasoning_text_never_reaches_the_message(self):
+        per_chunk, tail, _ = _strip_all(
+            [
+                _reasoning_chunk(REASONING),
+                _reasoning_chunk(REASONING, generation_info={"finish_reason": "length"}),
+                _reasoning_chunk(REASONING, content="Answer"),
+                _chunk(" more"),
+                _reasoning_chunk(REASONING, generation_info={"finish_reason": "stop"}),
+            ]
+        )
+
+        out = _flatten(per_chunk, tail)
+        assert out
+        for chunk in out:
+            assert "SECRET-TRACE" not in str(chunk.model_dump())
+            assert "reasoning_delta" not in (chunk.generation_info or {})
+
+    def test_logprobs_of_reasoning_tokens_do_not_survive(self):
+        logprobs = {"content": [{"token": "SECRET-TRACE", "logprob": -0.1}]}
+        chunk = _reasoning_chunk(
+            REASONING, generation_info={"logprobs": logprobs, "finish_reason": "length"}
+        )
+
+        per_chunk, _, _ = _strip_all([chunk])
+
+        assert "SECRET-TRACE" not in str(per_chunk[0][0].model_dump())
+
+    def test_reasoning_only_chunk_yields_nothing(self):
+        per_chunk, _, _ = _strip_all([_reasoning_chunk(REASONING)])
+
+        assert per_chunk == [[]]
+
+    def test_reasoning_chunk_keeps_its_finish_reason(self):
+        per_chunk, _, _ = _strip_all(
+            [_reasoning_chunk("r", generation_info={"finish_reason": "length"})]
+        )
+
+        assert per_chunk[0][0].generation_info == {"finish_reason": "length"}
+
+    def test_reasoning_chunk_keeps_its_usage(self):
+        chunk = _reasoning_chunk("r")
+        chunk.message.usage_metadata = {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+
+        per_chunk, _, _ = _strip_all([chunk])
+
+        assert per_chunk[0][0].message.usage_metadata == chunk.message.usage_metadata
+
+    def test_whitespace_chunk_keeps_its_finish_reason(self):
+        last = ChatGenerationChunk(
+            message=AIMessageChunk(content="\n\n"), generation_info={"finish_reason": "stop"}
+        )
+
+        per_chunk, _, _ = _strip_all([_reasoning_chunk("r"), last])
+
+        assert per_chunk[1][0].message.content == ""
+        assert per_chunk[1][0].generation_info == {"finish_reason": "stop"}
+
+    def test_reasoning_field_tool_round_has_empty_content(self):
+        per_chunk, tail, _ = _strip_all(
+            [_reasoning_chunk(REASONING), _chunk("\n\n"), _tool_chunk(), _tool_chunk()]
+        )
+
+        out = _flatten(per_chunk, tail)
+        assert len(out) == 2
+        assert all(c.message.tool_call_chunks for c in out)
+        assert _aggregate_text(out) == ""
+
+    def test_whitespace_on_a_tool_call_chunk_is_emptied(self):
+        per_chunk, tail, _ = _strip_all([_reasoning_chunk("r"), _tool_chunk("\n\n")])
+
+        assert per_chunk[1][0].message.content == ""
+        assert per_chunk[1][0].message.tool_call_chunks
+        assert tail is None
+
+    def test_reasoning_only_response_gets_the_sentinel(self):
+        per_chunk, tail, _ = _strip_all([_reasoning_chunk(REASONING), _chunk("\n\n")])
+
+        assert _flatten(per_chunk, None) == []
+        assert tail is not None
+        assert tail.message.content == EMPTY_ANSWER_SENTINEL
+
+    def test_no_reasoning_field_buffers_as_before(self):
+        per_chunk, tail, _ = _strip_all([_chunk("A batch"), _chunk(" scheduler")])
+
+        assert per_chunk == [[], []]
+        assert tail is not None
+        assert tail.message.content == "A batch scheduler"
+
+    def test_content_before_reasoning_field_stays_buffered(self):
+        per_chunk, tail, state = _strip_all(
+            [_chunk("Maybe a trace"), _reasoning_chunk(REASONING), _chunk(" still held")]
+        )
+
+        assert per_chunk == [[], [], []]
+        assert not state.seen_close
+        assert tail is not None
+        assert tail.message.content == "Maybe a trace still held"
+        assert "SECRET-TRACE" not in str(tail.model_dump())
+
+    def test_content_before_reasoning_field_is_still_stripped_at_the_close_tag(self):
+        per_chunk, tail, state = _strip_all(
+            [_chunk("early trace"), _reasoning_chunk("field text"), _chunk("</think>Answer")]
+        )
+
+        assert _aggregate_text(_flatten(per_chunk, tail)) == "Answer"
+        assert "field text" in state.reasoning
+        assert "early trace" in state.reasoning
+
+    def test_truncated_buffer_keeps_the_field_reasoning(self):
+        per_chunk, tail, state = _strip_all(
+            [_chunk("Plain <think>cut off"), _reasoning_chunk("field text")]
+        )
+
+        assert _aggregate_text(_flatten(per_chunk, tail)) == "Plain"
+        assert "field text" in state.reasoning
+        assert "cut off" in state.reasoning
+
+    def test_whitespace_before_the_reasoning_field_does_not_hold_the_stream(self):
+        per_chunk, tail, _ = _strip_all(
+            [_chunk("\n"), _reasoning_chunk("r"), _chunk("Answer"), _chunk(" now")]
+        )
+
+        assert [[c.message.content for c in group] for group in per_chunk] == [
+            [],
+            [],
+            ["Answer"],
+            [" now"],
+        ]
+        assert tail is None
+
+    def test_field_after_a_close_tag_leaves_that_path_alone(self):
+        per_chunk, tail, state = _strip_all(
+            [_chunk("trace</think>"), _reasoning_chunk("late"), _chunk("\n\n"), _chunk("Answer")]
+        )
+
+        assert _aggregate_text(_flatten(per_chunk, tail)) == "\n\nAnswer"
+        assert "late" in state.reasoning
+
+    def test_think_block_in_content_is_still_stripped(self):
+        per_chunk, tail, state = _strip_all(
+            [_chunk("<think>I should look."), _chunk("</think>\n\nAnswer"), _chunk(" here")]
+        )
+
+        assert _aggregate_text(_flatten(per_chunk, tail)) == "Answer here"
+        assert state.reasoning == "I should look."
+
+    def test_reasoning_is_recorded(self):
+        _, _, state = _strip_all(
+            [_reasoning_chunk("step one, "), _reasoning_chunk("step two"), _chunk("Answer")]
+        )
+
+        assert state.reasoning == "step one, step two"
+
+    @pytest.mark.parametrize("field", ["reasoning_content", "reasoning"])
+    def test_convert_carries_the_field_in_generation_info(self, field):
+        converted = _convert(_compatible_model(), _wire_chunk({field: "thinking", "content": None}))
+
+        assert converted is not None
+        assert converted.generation_info == {"reasoning_delta": "thinking"}
+        assert converted.message.content == ""
+        assert "thinking" not in str(converted.message.model_dump())
+
+    def test_convert_does_not_double_a_delta_that_carries_both_fields(self):
+        converted = _convert(
+            _compatible_model(), _wire_chunk({"reasoning_content": "t", "reasoning": "t"})
+        )
+
+        assert converted is not None
+        assert converted.generation_info == {"reasoning_delta": "t"}
+
+    @pytest.mark.parametrize(
+        "delta",
+        [
+            {"content": "Answer"},
+            {"content": "Answer", "reasoning_content": ""},
+            {"content": "Answer", "reasoning_content": None, "reasoning": None},
+            {"content": "Answer", "reasoning_content": {"not": "text"}},
+        ],
+    )
+    def test_convert_sets_nothing_without_reasoning_text(self, delta):
+        converted = _convert(_compatible_model(), _wire_chunk(delta))
+
+        assert converted is not None
+        assert "reasoning_delta" not in (converted.generation_info or {})
+
+    def test_convert_keeps_what_the_parent_recorded(self):
+        converted = _convert(
+            _compatible_model(), _wire_chunk({"reasoning_content": "t"}, finish_reason="length")
+        )
+
+        assert converted is not None
+        assert converted.generation_info is not None
+        assert converted.generation_info["finish_reason"] == "length"
+        assert converted.generation_info["reasoning_delta"] == "t"
+
+    def test_convert_does_not_touch_the_shared_base_generation_info(self):
+        base = {"headers": {"x": "1"}}
+
+        _compatible_model()._convert_chunk_to_generation_chunk(
+            _wire_chunk({"reasoning_content": "t"}), AIMessageChunk, base
+        )
+
+        assert base == {"headers": {"x": "1"}}
+
+    def test_convert_passes_through_a_chunk_with_no_choices(self):
+        wire = {**_wire_chunk({}), "choices": []}
+
+        converted = _convert(_compatible_model(), wire)
+
+        assert converted is not None
+        assert "reasoning_delta" not in (converted.generation_info or {})
+
+    @pytest.mark.parametrize(
+        "wire",
+        [
+            {"type": "content.delta"},
+            {"choices": [{"index": 0, "delta": None}]},
+        ],
+    )
+    def test_convert_passes_through_none_from_the_parent(self, wire):
+        assert _convert(_compatible_model(), wire) is None
+
+    def test_whitespace_reasoning_delta_is_not_evidence(self):
+        per_chunk, tail, state = _strip_all(
+            [_reasoning_chunk(" "), _chunk("A batch"), _chunk(" scheduler")]
+        )
+
+        assert per_chunk == [[], [], []]
+        assert tail is not None
+        assert tail.message.content == "A batch scheduler"
+        assert state.reasoning == " "
+
+    def test_think_block_after_the_field_is_stripped(self):
+        per_chunk, tail, state = _strip_all(
+            [_reasoning_chunk("real"), _chunk("<think>SECRET</think>"), _chunk("answer")]
+        )
+
+        out = _flatten(per_chunk, tail)
+        assert _aggregate_text(out) == "answer"
+        assert "SECRET" not in str([c.model_dump() for c in out])
+        assert "SECRET" in state.reasoning
+
+    def test_bare_close_after_a_whitespace_delta_is_stripped(self):
+        per_chunk, tail, _ = _strip_all([_reasoning_chunk(" "), _chunk("SECRET think</think>")])
+
+        out = _flatten(per_chunk, tail)
+        assert "SECRET" not in str([c.model_dump() for c in out])
+        assert tail is not None
+        assert tail.message.content == EMPTY_ANSWER_SENTINEL
+
+    def test_bare_close_after_the_field_drops_what_came_before_it(self):
+        per_chunk, tail, _ = _strip_all(
+            [_reasoning_chunk("real"), _chunk("SECRET think</think>Answer")]
+        )
+
+        assert _aggregate_text(_flatten(per_chunk, tail)) == "Answer"
+
+    def test_tag_split_across_chunks_is_stripped(self):
+        per_chunk, tail, _ = _strip_all(
+            [
+                _reasoning_chunk("real"),
+                _chunk("<th"),
+                _chunk("ink>SECRET</think>"),
+                _chunk("answer"),
+            ]
+        )
+
+        out = _flatten(per_chunk, tail)
+        assert _aggregate_text(out) == "answer"
+        assert "SECRET" not in str([c.model_dump() for c in out])
+
+    def test_think_block_after_visible_text_keeps_the_text_and_strips_the_block(self):
+        per_chunk, tail, _ = _strip_all(
+            [
+                _reasoning_chunk("real"),
+                _chunk("Hello "),
+                _chunk("<think>SECRET</think>"),
+                _chunk("world"),
+            ]
+        )
+
+        assert _aggregate_text(_flatten(per_chunk, tail)) == "Hello world"
+
+    def test_unclosed_think_after_visible_text_flushes_no_sentinel_and_no_trace(self):
+        per_chunk, tail, _ = _strip_all(
+            [_reasoning_chunk("real"), _chunk("Hello"), _chunk("<think>SECRET")]
+        )
+
+        assert _aggregate_text(_flatten(per_chunk, None)) == "Hello"
+        assert tail is None
+
+    def test_think_block_with_no_answer_gets_the_sentinel(self):
+        per_chunk, tail, _ = _strip_all([_reasoning_chunk("real"), _chunk("<think>SECRET</think>")])
+
+        assert _flatten(per_chunk, None) == []
+        assert tail is not None
+        assert tail.message.content == EMPTY_ANSWER_SENTINEL
+
+    @pytest.mark.parametrize(
+        ("pieces", "expected"),
+        [
+            # Second block across chunks.
+            (["<think>x</think>", "ok ", "<think>SECRET</think>", "done"], "ok done"),
+            (["<think>x</think>", "ok ", "<think>SEC", "RET</think>", "done"], "ok done"),
+            # Second block never closed.
+            (["<think>x</think>", "ok", "<think>SECRET"], "ok"),
+            (["<think>x</think>", "ok", "<think>SECRET", " MORE SECRET"], "ok"),
+            # Second block with a split tag.
+            (["<think>x</think>", "ok ", "<th", "ink>SECRET</think>", "done"], "ok done"),
+            (["<think>x</think>", "ok <th", "ink>SECRET"], "ok "),
+            # Both blocks in one chunk.
+            (["<think>x</think>ok <think>SECRET"], "ok"),
+            (["</think>ok <think>SECRET"], "ok"),
+            (["<think>x</think>ok <think>SECRET</think> done"], "ok  done"),
+            (["</think>ok <think>SECRET</think>done"], "ok done"),
+            # A split tag at the end of what feed returned.
+            (["<think>x</think>ok <th", "ink>SECRET</think>done"], "ok done"),
+        ],
+    )
+    def test_second_think_block_cannot_stream(self, pieces, expected):
+        per_chunk, tail, _ = _strip_all([_reasoning_chunk("real"), *map(_chunk, pieces)])
+
+        out = _flatten(per_chunk, tail)
+        assert _aggregate_text(out) == expected
+        assert "SECRET" not in str([c.model_dump() for c in out])
+
+    @pytest.mark.parametrize(
+        "pieces",
+        [
+            ["<think>x</think><think>SECRET"],
+            ["<think>x</think>", "<think>SECRET"],
+            ["</think><think>SECRET"],
+            ["<think>x</think><think>SECRET</think>"],
+        ],
+    )
+    def test_nothing_but_think_blocks_gets_the_sentinel(self, pieces):
+        per_chunk, tail, _ = _strip_all([_reasoning_chunk("real"), *map(_chunk, pieces)])
+
+        assert _flatten(per_chunk, None) == []
+        assert tail is not None
+        assert tail.message.content == EMPTY_ANSWER_SENTINEL
+
+    def test_tool_round_with_only_think_blocks_gets_no_sentinel(self):
+        per_chunk, tail, _ = _strip_all(
+            [_reasoning_chunk("real"), _chunk("<think>x</think><think>SECRET"), _tool_chunk()]
+        )
+
+        out = _flatten(per_chunk, tail)
+        assert _aggregate_text(out) == ""
+        assert tail is None
+
+    def test_blank_lines_after_a_block_are_still_trimmed(self):
+        per_chunk, tail, _ = _strip_all(
+            [_reasoning_chunk("real"), _chunk("<think>x</think>"), _chunk("\n\n"), _chunk("Answer")]
+        )
+
+        assert _aggregate_text(_flatten(per_chunk, tail)) == "Answer"
+
+    @pytest.mark.parametrize(
+        "block", ["<think>x</think> world", "x</think> world"], ids=["paired", "bare-close"]
+    )
+    def test_space_after_a_block_survives_once_text_has_gone_out(self, block):
+        per_chunk, tail, _ = _strip_all([_reasoning_chunk("real"), _chunk("Hello"), _chunk(block)])
+
+        assert [[c.message.content for c in group] for group in per_chunk] == [
+            [],
+            ["Hello"],
+            [" world"],
+        ]
+        assert tail is None
+
+    def test_close_tag_after_answer_text_warns_once_without_the_text(self, caplog):
+        caplog.set_level(logging.WARNING, logger="src.llm.providers")
+
+        _strip_all(
+            [
+                _reasoning_chunk("real"),
+                _chunk("SECRET-SENT"),
+                _chunk("SECRET-HELD</think>SECRET-AFTER"),
+                _chunk("SECRET-AGAIN</think>SECRET-LAST"),
+            ]
+        )
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert [r.getMessage() for r in warnings] == [
+            "Reasoning close tag after answer text on a reasoning-field stream"
+        ]
+        assert "SECRET" not in caplog.text
+
+    @pytest.mark.parametrize(
+        "chunks",
+        [
+            # A close before any text went out: nothing leaked.
+            [_reasoning_chunk("real"), _chunk("trace</think>Answer")],
+            # A paired block after text: the whole block is stripped.
+            [_reasoning_chunk("real"), _chunk("Hello"), _chunk("<think>x</think> world")],
+            [_reasoning_chunk("real"), _chunk("Hello"), _chunk("<think>x"), _chunk("</think>")],
+            # No field: not this stream's residual.
+            [_chunk("trace</think>Answer"), _chunk(" more</think>")],
+        ],
+        ids=["before-text", "paired", "paired-split", "no-field"],
+    )
+    def test_no_warning_when_nothing_could_have_leaked(self, chunks, caplog):
+        caplog.set_level(logging.WARNING, logger="src.llm.providers")
+
+        _strip_all(chunks)
+
+        assert caplog.records == []
+
+    def test_field_cannot_reopen_a_stream_a_tag_put_back_into_buffering(self):
+        per_chunk, tail, _ = _strip_all(
+            [
+                _reasoning_chunk("real"),
+                _chunk("<think>SECRET"),
+                _reasoning_chunk("more"),
+                _chunk(" still secret"),
+            ]
+        )
+
+        out = _flatten(per_chunk, tail)
+        assert "ecret" not in _aggregate_text(out).lower()
+
+    @pytest.mark.parametrize(
+        ("pieces", "expected"),
+        [
+            (["a < b"], "a < b"),
+            (["a <", " b"], "a < b"),
+            (["x </", "div>"], "x </div>"),
+            (["<", "b>bold"], "<b>bold"),
+            (["ends with <"], "ends with <"),
+            (["<"], "<"),
+            (["  <", " b"], "< b"),
+        ],
+    )
+    def test_harmless_angle_brackets_arrive_intact(self, pieces, expected):
+        per_chunk, tail, _ = _strip_all([_reasoning_chunk("real"), *map(_chunk, pieces)])
+
+        assert _aggregate_text(_flatten(per_chunk, tail)) == expected
+
+    def test_held_tail_goes_out_with_the_next_chunk(self):
+        per_chunk, tail, _ = _strip_all([_reasoning_chunk("r"), _chunk("a <"), _chunk(" b")])
+
+        assert [[c.message.content for c in group] for group in per_chunk] == [
+            [],
+            ["a "],
+            ["< b"],
+        ]
+        assert tail is None
+
+    def test_held_tail_on_a_tool_call_chunk_keeps_the_tool_call(self):
+        per_chunk, _, _ = _strip_all([_reasoning_chunk("r"), _tool_chunk("<")])
+
+        assert per_chunk[1][0].message.content == ""
+        assert per_chunk[1][0].message.tool_call_chunks
+
+    async def test_real_stream_with_a_think_block_in_content_stays_clean(self):
+        model = _compatible_model()
+        model.streaming = True
+        model.async_client = _FakeAsyncCompletions(
+            [
+                _wire_chunk({"reasoning_content": "real"}),
+                _wire_chunk({"content": "<think>SECRET</think>"}),
+                _wire_chunk({"content": "answer"}),
+                _wire_chunk({}, finish_reason="stop"),
+            ]
+        )
+
+        message = await model.ainvoke("hi")
+
+        assert message.content == "answer"
+        assert "SECRET" not in str(message.model_dump())
+
+    async def test_nested_graph_message_stream_never_carries_the_reasoning(self):
+        model = _compatible_model()
+        model.async_client = _FakeAsyncCompletions(
+            [
+                _wire_chunk({"reasoning_content": REASONING}),
+                _wire_chunk({"content": "\n\n"}),
+                _wire_chunk({"content": "A batch"}),
+                _wire_chunk({"content": " scheduler"}),
+                _wire_chunk({}, finish_reason="stop"),
+            ]
+        )
+
+        async def call_model(state: MessagesState) -> dict[str, Any]:
+            return {"messages": [await model.ainvoke(state["messages"])]}
+
+        inner = StateGraph(MessagesState)
+        inner.add_node("model", call_model)
+        inner.add_edge(START, "model")
+        outer = StateGraph(MessagesState)
+        outer.add_node("inner", inner.compile())
+        outer.add_edge(START, "inner")
+
+        events = [
+            event
+            async for event in outer.compile().astream(
+                {"messages": [("user", "hi")]}, stream_mode=["messages"], subgraphs=True
+            )
+        ]
+
+        tokens = [message.content for _, _, (message, _) in events if message.content]
+        assert tokens == ["A batch", " scheduler"]
+        assert "SECRET-TRACE" not in str(events)
+
+    async def test_real_stream_through_the_openai_client_shape(self):
+        """Real ChatCompletionChunk objects through the real parent _astream."""
+        from src.agent.turn_capture import get_turn_capture
+
+        model = _compatible_model()
+        model.async_client = _FakeAsyncCompletions(
+            [
+                _wire_chunk({"role": "assistant", "content": ""}),
+                _wire_chunk({"reasoning_content": REASONING}),
+                _wire_chunk({"content": "\n\n"}),
+                _wire_chunk({"content": "A batch"}),
+                _wire_chunk({"content": " scheduler"}),
+                _wire_chunk({}, finish_reason="stop"),
+            ]
+        )
+        spy = _TokenSpy()
+
+        chunks = [c async for c in model.astream("hi", config={"callbacks": [spy]})]
+
+        assert "".join(str(c.content) for c in chunks) == "A batch scheduler"
+        assert [c.content for c in chunks if c.content] == ["A batch", " scheduler"]
+        assert any(c.response_metadata.get("finish_reason") == "stop" for c in chunks)
+        assert "SECRET-TRACE" not in str([c.model_dump() for c in chunks])
+        assert spy.seen
+        assert "SECRET-TRACE" not in " ".join(spy.seen)
+        assert "reasoning_delta" not in " ".join(spy.seen)
+        assert REASONING in get_turn_capture()["model_reasoning"]
+
+    async def test_real_stream_ainvoke_aggregates_clean(self):
+        model = _compatible_model()
+        model.streaming = True
+        model.async_client = _FakeAsyncCompletions(
+            [
+                _wire_chunk({"reasoning": REASONING}),
+                _wire_chunk({"content": "\n\nAnswer"}),
+                _wire_chunk({}, finish_reason="stop"),
+            ]
+        )
+
+        message = await model.ainvoke("hi")
+
+        assert message.content == "Answer"
+        assert "SECRET-TRACE" not in str(message.model_dump())
