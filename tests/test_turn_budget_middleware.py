@@ -147,16 +147,44 @@ async def test_a_running_tool_is_cut_off_at_the_deadline():
     assert [t["tool_name"] for t in get_turn_capture()["tool_timings"]] == ["get_chart_data"]
 
 
-async def test_a_cut_off_change_is_not_reported_either_way():
-    async def hangs(request: Any) -> ToolMessage:
-        await asyncio.Event().wait()
-        raise AssertionError("never finishes")  # pragma: no cover
+async def test_a_change_already_running_is_left_to_finish():
+    middleware = TurnBudgetMiddleware(_later(0.02))
+    finished = ToolMessage(content="{}", tool_call_id=CALL_ID, name="register_for_event")
 
-    result = await TurnBudgetMiddleware(_later(0.01)).awrap_tool_call(
-        _ToolRequest(_call({"eventinstance_id": "1"}, "register_for_event")), hangs
+    async def slow_write(request: Any) -> ToolMessage:
+        await asyncio.sleep(0.06)
+        return finished
+
+    call = {"name": "register_for_event", "args": {}, "id": CALL_ID, "type": "tool_call"}
+    result = await middleware.awrap_tool_call(_ToolRequest(call), slow_write)
+
+    assert result is finished
+
+
+async def test_a_change_that_timed_out_is_not_repeated():
+    middleware = TurnBudgetMiddleware(_later())
+    timed_out = ToolMessage(
+        content="{}",
+        tool_call_id=CALL_ID,
+        name="register_for_event",
+        artifact=TIMED_OUT_ARTIFACT,
     )
+    calls: list[Any] = []
 
-    assert "may or may not have happened" in result.content
+    async def write(request: Any) -> ToolMessage:
+        calls.append(request)
+        return timed_out
+
+    call = {"name": "register_for_event", "args": {}, "id": CALL_ID, "type": "tool_call"}
+    await middleware.awrap_tool_call(_ToolRequest(call), write)
+    result = await middleware.awrap_tool_call(_ToolRequest(call), write)
+
+    assert len(calls) == 1
+    assert "Not run" in result.content
+
+
+def test_the_answer_note_warns_against_saying_there_are_none():
+    assert "never say something doesn't exist" in ANSWER_NOW_NOTE
 
 
 async def test_the_same_call_after_a_timeout_is_blocked():

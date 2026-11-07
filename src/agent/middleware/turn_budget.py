@@ -2,8 +2,8 @@
 
 The routes stop a turn at ``AGENT_TURN_TIMEOUT_S`` and throw it away, good
 results included. So tools stop ``AGENT_ANSWER_RESERVE_S`` before that: a call
-still running is cut off, a later call is not run, and the model gets no tools
-and has to answer. The model isn't asked to watch the time. It can't see it, and
+still running is cut off unless it makes a change, a later call is not run, and
+the model gets no tools and has to answer. The model isn't asked to watch the time. It can't see it, and
 for this model a tool result outweighs prompt text.
 
 A call that timed out isn't run again with the same arguments this turn, since
@@ -23,6 +23,7 @@ from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import HumanMessage, ToolMessage
 from pydantic import BaseModel, ValidationError
 
+from ..auth_tools import ToolIdentityClass, tool_identity_class
 from ..turn_capture import record_tool_timing
 
 if TYPE_CHECKING:
@@ -42,9 +43,9 @@ PAST_DEADLINE_TEXT = (
 )
 CUT_OFF_TEXT = (
     "Stopped. This call was still running when this request ran out of time, so "
-    "there is no result. If it was making a change, that change may or may not have "
-    "happened, so tell the user to check rather than saying either way. Answer now "
-    "from the tool results you already have, and tell the user what you couldn't get."
+    "there is no result. Answer now from the tool results you already have, and tell "
+    "the user what you couldn't get. Don't draw a conclusion about anything you "
+    "couldn't check."
 )
 REPEAT_TEXT = (
     "Not run. This same call already timed out during this request, and repeating "
@@ -53,7 +54,9 @@ REPEAT_TEXT = (
 )
 ANSWER_NOW_NOTE = (
     "(This request is out of time, so no more tools are available. Answer now from "
-    "the tool results you already have, and tell the user plainly what you couldn't get.)"
+    "the tool results you already have, and tell the user plainly what you couldn't "
+    "get. Your searches may be incomplete, so never say something doesn't exist or "
+    "that there are none. Say what you found and that there may be more.)"
 )
 
 
@@ -118,6 +121,14 @@ class TurnBudgetMiddleware(AgentMiddleware):
         key = self._call_key(call, request.tool)
         if key in self._timed_out_calls:
             return _not_run(call, REPEAT_TEXT, "repeat_timeout")
+        # A change is left to finish: cutting it off would leave it unknown whether
+        # it happened. Its own tool timeout still bounds it.
+        read_only = getattr(request.tool, "read_only", None)
+        if tool_identity_class(call["name"], read_only) is ToolIdentityClass.WRITE:
+            result = await handler(request)
+            if _timed_out(result):
+                self._timed_out_calls.add(key)
+            return result
         try:
             result = await asyncio.wait_for(handler(request), remaining)
         except TimeoutError:
