@@ -277,9 +277,14 @@ def check_agent_token_config(settings: Settings) -> None:
     # left, and that has to stay under the browser's 180-second refresh point.
     if not 1 <= settings.AGENT_TURN_TIMEOUT_S <= MAX_TURN_TIMEOUT_S:
         raise RuntimeError(f"AGENT_TURN_TIMEOUT_S must be between 1 and {MAX_TURN_TIMEOUT_S}")
-    # Otherwise every tool call is past its deadline before it starts.
-    if settings.AGENT_ANSWER_RESERVE_S >= settings.AGENT_TURN_TIMEOUT_S:
-        raise RuntimeError("AGENT_ANSWER_RESERVE_S must be less than AGENT_TURN_TIMEOUT_S")
+    # Otherwise every tool call is past its deadline before it starts, or the
+    # model has no time left to answer.
+    if not 0 < settings.AGENT_ANSWER_RESERVE_S < settings.AGENT_TURN_TIMEOUT_S:
+        raise RuntimeError(
+            "AGENT_ANSWER_RESERVE_S must be positive and less than AGENT_TURN_TIMEOUT_S"
+        )
+    if settings.XDMOD_TOOL_TIMEOUT_S <= 0:
+        raise RuntimeError("XDMOD_TOOL_TIMEOUT_S must be positive")
     if settings.ENVIRONMENT != "production":
         return
     missing = [

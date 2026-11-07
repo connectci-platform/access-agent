@@ -1,5 +1,6 @@
 """HTTP client for MCP (Model Context Protocol) server communication."""
 
+import asyncio
 import json
 import logging
 import time
@@ -77,6 +78,10 @@ class MCPClient:
         self.timeout = timeout
         self._server_urls = settings.mcp_server_urls
 
+    def timeout_for(self, server: str) -> float:
+        """The timeout a call to ``server`` gets, in seconds."""
+        return settings.mcp_server_timeouts.get(server, self.timeout)
+
     def get_server_url(self, server_name: str) -> str:
         """Get the URL for an MCP server.
 
@@ -148,7 +153,7 @@ class MCPClient:
                     headers=headers,
                     # Per request: the shared client keeps whichever timeout it
                     # was first built with, which can be health_check's.
-                    timeout=settings.mcp_server_timeouts.get(server, self.timeout),
+                    timeout=self.timeout_for(server),
                 )
                 response.raise_for_status()
 
@@ -183,6 +188,12 @@ class MCPClient:
                     duration_ms=int(time.time() * 1000) - start_ms,
                     timed_out=True,
                 )
+            except asyncio.CancelledError:
+                # Cut off at the turn's deadline, or the turn itself was stopped.
+                span.set_attribute("mcp.success", False)
+                span.set_attribute("mcp.error", "cancelled")
+                span.set_status(Status(StatusCode.ERROR, "cancelled"))
+                raise
             except Exception as e:
                 span_error = type(e).__name__
                 result = MCPToolResult(

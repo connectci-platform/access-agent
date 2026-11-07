@@ -511,3 +511,29 @@ async def test_other_failures_are_not_marked_as_timeouts(httpx_mock: HTTPXMock):
 
     assert result.success is False
     assert result.timed_out is False
+
+
+async def test_a_cancelled_call_marks_its_span_as_an_error(monkeypatch):
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from opentelemetry.trace import StatusCode
+
+    span = MagicMock()
+    trace = MagicMock()
+    trace.return_value.__enter__.return_value = span
+    monkeypatch.setattr("src.tools.mcp_client.trace_mcp_call", trace)
+
+    class _Client:
+        async def post(self, url, json=None, headers=None, timeout=None):
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr("src.tools.mcp_client.get_shared_client", lambda timeout: _Client())
+    monkeypatch.setattr(MCPClient, "get_server_url", lambda self, s: "http://x")
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(MCPClient().call_tool("xdmod", "get_chart_data", {}), 0.01)
+
+    assert span.set_status.call_args.args[0].status_code == StatusCode.ERROR
+    span.set_attribute.assert_any_call("mcp.success", False)
+    span.set_attribute.assert_any_call("mcp.error", "cancelled")

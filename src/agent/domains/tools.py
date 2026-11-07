@@ -4,8 +4,10 @@ Wraps MCP tools as LangChain BaseTool instances so they can be used
 with create_react_agent's function-calling loop.
 """
 
+import asyncio
 import json
 import logging
+import time
 from typing import Annotated, Any, Literal
 
 from langchain_core.tools import BaseTool
@@ -112,6 +114,11 @@ class MCPToolWrapper(BaseTool):
     class Config:
         arbitrary_types_allowed = True
 
+    @property
+    def call_timeout(self) -> float:
+        """The timeout a call to this tool gets, in seconds."""
+        return self.mcp_client.timeout_for(self.tool_server)
+
     def _run(self, **kwargs: Any) -> tuple[str, Any]:
         raise NotImplementedError("Use async _arun")
 
@@ -138,12 +145,18 @@ class MCPToolWrapper(BaseTool):
 
         logger.info(f"Domain agent calling {self.tool_server}/{self.name} with {arguments}")
 
-        result = await self.mcp_client.call_tool(
-            server=self.tool_server,
-            tool_name=self.name,
-            arguments=arguments,
-            acting_user=self.acting_user,
-        )
+        started = time.monotonic()
+        try:
+            result = await self.mcp_client.call_tool(
+                server=self.tool_server,
+                tool_name=self.name,
+                arguments=arguments,
+                acting_user=self.acting_user,
+            )
+        except asyncio.CancelledError:
+            # Cut off at the turn's deadline. It still ran, so it still counts.
+            record_tool_timing(self.name, (time.monotonic() - started) * 1000)
+            raise
 
         record_tool_timing(self.name, result.duration_ms)
 

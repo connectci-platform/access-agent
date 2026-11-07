@@ -26,6 +26,7 @@ def test_gate_env_passes_the_lifespan_agent_token_check():
         SimpleNamespace(
             AGENT_TURN_TIMEOUT_S=120,
             AGENT_ANSWER_RESERVE_S=30,
+            XDMOD_TOOL_TIMEOUT_S=60.0,
             ENVIRONMENT=env["ENVIRONMENT"],
             AGENT_TOKEN_ISSUER=env.get("AGENT_TOKEN_ISSUER", ""),
             AGENT_TOKEN_JWKS_URL=env.get("AGENT_TOKEN_JWKS_URL", ""),

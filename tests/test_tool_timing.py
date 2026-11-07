@@ -3,6 +3,7 @@
 import asyncio
 import json
 
+import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
 from src.agent.context import AgentContext
@@ -287,3 +288,19 @@ def test_a_timed_out_mcp_call_says_so_in_its_artifact(monkeypatch):
 
     assert json.loads(content) == {"error": "Timeout calling s/t"}
     assert artifact == TIMED_OUT_ARTIFACT
+
+
+async def test_a_cut_off_mcp_call_records_its_timing_once(monkeypatch):
+    reset_turn_capture()
+    client = MCPClient()
+
+    async def hangs(**kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(client, "call_tool", hangs)
+    wrapper = MCPToolWrapper(name="t", description="d", tool_server="s", mcp_client=client)
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(wrapper._arun(), 0.01)
+
+    assert [t["tool_name"] for t in get_turn_capture()["tool_timings"]] == ["t"]
