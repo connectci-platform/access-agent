@@ -19,6 +19,7 @@ from src.agent.domains.tools import MCPToolWrapper, _build_args_schema
 from src.agent.graph import create_agent_graph
 from src.agent.middleware.turn_budget import (
     ANSWER_NOW_NOTE,
+    INCOMPLETE_NOTICE,
     OUT_OF_TIME_ANSWER,
     TIMED_OUT_ARTIFACT,
     TurnBudgetMiddleware,
@@ -474,7 +475,7 @@ async def test_a_real_agent_refuses_a_call_that_arrives_after_the_deadline():
     result = await agent.ainvoke({"messages": [HumanMessage(content="Usage?")]})
 
     assert ran == []
-    assert result["messages"][-1].content == "Out of time."
+    assert result["messages"][-1].content == f"Out of time.\n\n{INCOMPLETE_NOTICE}"
 
 
 def _mcp_tool(client: MCPClient) -> MCPToolWrapper:
@@ -649,7 +650,7 @@ async def test_a_slow_model_loses_its_tools_while_it_can_still_answer_in_time():
     assert time.monotonic() < budget.tool_deadline + 0.2
     assert [len(tools) for tools in sees.tools] == [1, 0]
     assert ran == ["Jobs"]
-    assert result["messages"][-1].content == "Jobs shows 3 rows."
+    assert result["messages"][-1].content == f"Jobs shows 3 rows.\n\n{INCOMPLETE_NOTICE}"
 
 
 async def test_a_fast_model_keeps_its_tools_until_the_deadline():
@@ -692,7 +693,7 @@ async def test_a_real_agent_skips_summarizing_once_out_of_time():
 
     result = await agent.ainvoke({"messages": [HumanMessage(content="Usage?")]})
 
-    assert result["messages"][-1].content == "Answered."
+    assert result["messages"][-1].content == f"Answered.\n\n{INCOMPLETE_NOTICE}"
 
 
 def test_summarizing_is_skipped_on_the_sync_path_too():
@@ -812,7 +813,7 @@ async def test_a_real_agent_ends_the_turn_when_the_model_asks_for_tools_it_lost(
     result = await agent.ainvoke({"messages": [HumanMessage(content="Usage?")]})
 
     assert ran == []
-    assert result["messages"][-1].content == "Jobs shows 3 rows."
+    assert result["messages"][-1].content == f"Jobs shows 3 rows.\n\n{INCOMPLETE_NOTICE}"
     assert result["messages"][-1].tool_calls == []
 
 
@@ -840,14 +841,14 @@ async def test_raw_tool_call_text_is_removed_from_the_last_answer():
 
     message = await _final_message(AIMessage(content=text, id="m1"))
 
-    assert message.content == "Jobs shows 3 rows."
+    assert message.content == f"Jobs shows 3 rows.\n\n{INCOMPLETE_NOTICE}"
     assert message.id == "m1"
 
 
 async def test_an_unfinished_raw_tool_call_is_removed_too():
     message = await _final_message(AIMessage(content='Found 3.<tool_call>{"name"'))
 
-    assert message.content == "Found 3."
+    assert message.content == f"Found 3.\n\n{INCOMPLETE_NOTICE}"
 
 
 async def test_a_response_of_only_raw_tool_call_text_becomes_the_fallback():
@@ -995,3 +996,12 @@ def test_a_refused_call_does_not_take_a_siblings_duration():
     results, _ = _build_tool_results([ai, blocked, ran], [], timings)
 
     assert [r.duration_ms for r in results] == [0, 900]
+
+
+def test_an_answer_at_the_deadline_says_it_may_be_incomplete():
+    middleware = TurnBudgetMiddleware(_later(-1))
+
+    message = middleware._answer_only(AIMessage(content="Found one event. Let me check more."))
+
+    assert message.content.startswith("Found one event.")
+    assert message.content.endswith(INCOMPLETE_NOTICE)

@@ -72,6 +72,11 @@ ANSWER_NOW_NOTE = (
     "final message, so don't say you'll search or do anything next.)"
 )
 # The turn's answer when the model's last response held no text for the user.
+# Added by code because the model can still end on "Let me check that now",
+# whatever it's told, and nothing more will run.
+INCOMPLETE_NOTICE = (
+    "I ran out of time before finishing, so this answer may be incomplete. Ask again to continue."
+)
 OUT_OF_TIME_ANSWER = (
     "I ran out of time before I could finish answering. Please try again, or ask about "
     "a smaller part of your question."
@@ -200,7 +205,7 @@ class TurnBudgetMiddleware(AgentMiddleware):
             self.gave_up = True
         return message.model_copy(
             update={
-                "content": text or OUT_OF_TIME_ANSWER,
+                "content": f"{text}\n\n{INCOMPLETE_NOTICE}" if text else OUT_OF_TIME_ANSWER,
                 "tool_calls": [],
                 "invalid_tool_calls": [],
                 "additional_kwargs": {
