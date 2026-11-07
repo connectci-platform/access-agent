@@ -46,11 +46,11 @@ EARLIER_NOTES_PREFIX = (
     "[These notes are from earlier turns. Any live data or failures in them may be out of date.]"
 )
 EARLIER_TURN_NOTE = (
-    "(Results from before this message are out of date, and so are earlier answers "
-    "based on them. If this message asks for live data, call the tool again even if "
-    "it was asked before, and don't call an earlier result current. Results after "
-    "this message are current. If this message only discusses an earlier answer, "
-    "no tool call is needed.)"
+    "(Results marked as from an earlier turn may be out of date, and so may earlier "
+    "answers based on them. If this message asks for that data again, call the tool "
+    "again, and don't call an earlier result current. Anything not marked still "
+    "stands, including a preview this message is answering. If this message only "
+    "discusses an earlier answer, no tool call is needed.)"
 )
 
 
@@ -74,26 +74,31 @@ def _is_refusal(message: ToolMessage) -> bool:
     return isinstance(message.artifact, dict) and "refusal" in message.artifact
 
 
-def _earlier_tool_text(message: ToolMessage, live_tools: frozenset[str]) -> str | None:
+def _earlier_tool_text(
+    message: ToolMessage, live_tools: frozenset[str], read_only: bool | None = None
+) -> str | None:
     """What the model should see for this earlier result, or None to leave it.
 
     A refusal may still apply, and ``signed_in_since`` handles the ones that
-    don't. A failed write keeps its reason and gets no invitation to retry. A
-    cleared result has no body to judge, and may be a refusal without its
-    artifact, so only its tool decides.
+    don't. A write is never marked: a failed one keeps its reason, and neither
+    gets an invitation to run again. A cleared result has no body to judge, and
+    may be a refusal without its artifact, so only its tool decides.
     """
     name = message.name
     if not name or _is_refusal(message):
         return None
+    if tool_identity_class(name, read_only) is ToolIdentityClass.WRITE:
+        return None
     if not _is_cleared(message) and _is_failure(message):
-        is_write = tool_identity_class(name) is ToolIdentityClass.WRITE
-        return None if is_write else EARLIER_FAILURE_TEXT
+        return EARLIER_FAILURE_TEXT
     return f"{EARLIER_RESULT_PREFIX}\n\n{message.text}" if name in live_tools else None
 
 
-def _earlier_text(message: Any, live_tools: frozenset[str]) -> str | None:
+def _earlier_text(
+    message: Any, live_tools: frozenset[str], read_only_hints: dict[str, bool | None]
+) -> str | None:
     if isinstance(message, ToolMessage):
-        return _earlier_tool_text(message, live_tools)
+        return _earlier_tool_text(message, live_tools, read_only_hints.get(message.name or ""))
     if (
         isinstance(message, AIMessage)
         and message.additional_kwargs.get("lc_source") == "summarization"
@@ -102,7 +107,9 @@ def _earlier_text(message: Any, live_tools: frozenset[str]) -> str | None:
     return None
 
 
-def earlier_results_view(messages: list[Any]) -> list[Any]:
+def earlier_results_view(
+    messages: list[Any], read_only_hints: dict[str, bool | None] | None = None
+) -> list[Any]:
     """The model's view of a thread, with earlier turns' results marked as earlier.
 
     Returns ``messages`` itself when nothing needs marking. Also used by the
@@ -117,7 +124,7 @@ def earlier_results_view(messages: list[Any]) -> list[Any]:
     view = list(messages)
     marked = False
     for index, message in enumerate(messages[: max(latest, 0)]):
-        text = _earlier_text(message, live_tools)
+        text = _earlier_text(message, live_tools, read_only_hints or {})
         if text is not None:
             view[index] = message.model_copy(update={"content": text})
             marked = True
@@ -137,4 +144,12 @@ class EarlierResultsMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        return await handler(request.override(messages=earlier_results_view(request.messages)))
+        tools: list[Any] = list(request.tools)
+        hints = {
+            tool.name: tool.read_only
+            for tool in tools
+            if isinstance(getattr(tool, "read_only", None), bool)
+        }
+        return await handler(
+            request.override(messages=earlier_results_view(request.messages, hints))
+        )

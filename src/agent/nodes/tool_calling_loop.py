@@ -392,7 +392,7 @@ class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
         return [
             AIMessage(
                 content=(
-                    "Notes from my earlier tool calls in this turn "
+                    "Notes from my earlier tool calls in this conversation "
                     f"(condensed to save context):\n\n{summary}"
                 ),
                 additional_kwargs={"lc_source": "summarization"},

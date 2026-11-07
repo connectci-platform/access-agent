@@ -33,6 +33,8 @@ capabilities from the section-to-question mapping and the RPSectionCache.
 """
 
 import logging
+import re
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -220,12 +222,34 @@ LIVE_DATA_MCP_TOOL_NAMES: frozenset[str] = frozenset(
 )
 
 
+@lru_cache(maxsize=4)
+def _parse_live_data_tools(configured: str) -> frozenset[str]:
+    """The usable names in ``LIVE_DATA_TOOLS``, warning about any that aren't.
+
+    A write's result isn't data to look up again, and telling the model to do so
+    would repeat the write, so those are dropped however the list is set.
+    """
+    names = {name.strip() for name in configured.split(",") if name.strip()}
+    usable = {
+        name
+        for name in names
+        if re.fullmatch(r"[a-z][a-z0-9_]*", name) and name not in WRITE_MCP_TOOL_NAMES
+    }
+    if names - usable:
+        logger.warning("LIVE_DATA_TOOLS: ignoring %s", sorted(names - usable))
+    unknown = usable - LIVE_DATA_MCP_TOOL_NAMES
+    if unknown:
+        logger.warning(
+            "LIVE_DATA_TOOLS: not default live tools, check spelling: %s", sorted(unknown)
+        )
+    return frozenset(usable)
+
+
 def live_data_tool_names() -> frozenset[str]:
     """The tools treated as live: ``LIVE_DATA_TOOLS`` when set, else the defaults."""
     from ...config import settings
 
-    configured = {name.strip() for name in settings.LIVE_DATA_TOOLS.split(",") if name.strip()}
-    return frozenset(configured) or LIVE_DATA_MCP_TOOL_NAMES
+    return _parse_live_data_tools(settings.LIVE_DATA_TOOLS) or LIVE_DATA_MCP_TOOL_NAMES
 
 
 # ── Categories ────────────────────────────────────────────────────────────

@@ -24,6 +24,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from src.agent.domains.capabilities import (
     LIVE_DATA_MCP_TOOL_NAMES,
     WRITE_MCP_TOOL_NAMES,
+    _parse_live_data_tools,
     live_data_tool_names,
 )
 from src.agent.middleware.earlier_results import (
@@ -454,3 +455,47 @@ async def test_the_loop_rewrites_after_context_editing():
 
     kinds = [type(m) for m in built["middleware"]]
     assert kinds.index(EarlierResultsMiddleware) > kinds.index(ContextEditingMiddleware)
+
+
+def test_the_note_says_an_unmarked_preview_still_stands():
+    assert "still stands, including a preview" in EARLIER_TURN_NOTE
+    assert "from before this message" not in EARLIER_TURN_NOTE
+
+
+def test_a_write_known_only_by_its_hint_keeps_its_failure_reason():
+    failed = ToolMessage(
+        content=json.dumps({"error": "event is locked"}), tool_call_id="c1", name="publish_event"
+    )
+
+    view = earlier_results_view([failed, HumanMessage(content="Again.")], {"publish_event": False})
+
+    assert "event is locked" in view[0].content
+
+
+def test_a_write_in_the_live_list_is_never_marked():
+    done = ToolMessage(content="{}", tool_call_id="c1", name="register_for_event")
+
+    with patch(
+        "src.agent.middleware.earlier_results.live_data_tool_names",
+        return_value=frozenset({"register_for_event"}),
+    ):
+        view = earlier_results_view([done, HumanMessage(content="Again.")])
+
+    assert view[0].content == "{}"
+
+
+def test_live_tool_config_drops_writes_and_malformed_names(caplog):
+    parsed = _parse_live_data_tools('get_chart_data, register_for_event, ["x"]')
+
+    assert parsed == frozenset({"get_chart_data"})
+    assert "ignoring" in caplog.text
+
+
+def test_live_tool_config_warns_about_a_likely_typo(caplog):
+    assert _parse_live_data_tools("get_chart_dat") == frozenset({"get_chart_dat"})
+    assert "check spelling" in caplog.text
+
+
+def test_live_tool_config_falls_back_when_nothing_is_usable():
+    with patch("src.config.settings.LIVE_DATA_TOOLS", "register_for_event"):
+        assert live_data_tool_names() == LIVE_DATA_MCP_TOOL_NAMES
