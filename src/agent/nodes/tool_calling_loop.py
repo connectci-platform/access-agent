@@ -45,6 +45,7 @@ from ..domains.capabilities import WRITE_MCP_TOOL_NAMES
 from ..domains.tools import create_mcp_tools_from_catalog
 from ..middleware.preview_first import PreviewFirstMiddleware
 from ..middleware.requires_auth import RequiresAuthMiddleware
+from ..middleware.turn_budget import TurnBudgetMiddleware
 from ..profile import UserProfile
 from ..prompts.system_prompt import build_system_prompt
 from ..state import ToolResult
@@ -630,6 +631,12 @@ async def tool_calling_loop_node(  # noqa: PLR0915
         # create_agent inherits. One gate per turn, so its refusals are this
         # turn's record.
         gate = RequiresAuthMiddleware()
+        # From the route's limit, since the turn started before this node. With
+        # no route around it (the eval CLIs), the turn starts here.
+        turn_deadline = get_turn_capture()["turn_deadline"] or (
+            time.monotonic() + settings.AGENT_TURN_TIMEOUT_S
+        )
+        budget = TurnBudgetMiddleware(turn_deadline - settings.AGENT_ANSWER_RESERVE_S)
         # Same list feeds create_agent and the limit (#295).
         middleware = [
             # These hook different points — context editing wraps the model
@@ -647,6 +654,9 @@ async def tool_calling_loop_node(  # noqa: PLR0915
             # After the gate, so a caller who may not register is refused
             # rather than shown a preview.
             PreviewFirstMiddleware(),
+            # Innermost, so only a call that would really run is timed, and the
+            # model's last view of the thread is the one that says time is up.
+            budget,
         ]
         agent = create_agent(
             model=llm,
@@ -733,6 +743,8 @@ async def tool_calling_loop_node(  # noqa: PLR0915
         tool_refusals = list(gate.refusals)
         if tool_refusals:
             span.set_attribute("agent.tool_refusals", len(tool_refusals))
+
+        span.set_attribute("agent.turn_deadline_hit", budget.deadline_hit)
 
         answer_length = len(final_answer) if final_answer else 0
         span.set_attribute("agent.answer_length", answer_length)

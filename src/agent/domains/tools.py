@@ -14,6 +14,7 @@ from pydantic import BaseModel, BeforeValidator, Field, create_model
 from ...tools.mcp_client import MCPClient
 from ..auth_tools import ToolIdentityClass, tool_identity_class
 from ..middleware.requires_auth import CoarseReason, refusal_artifact, refusal_text
+from ..middleware.turn_budget import TIMED_OUT_ARTIFACT
 from ..turn_capture import record_tool_timing
 
 logger = logging.getLogger(__name__)
@@ -104,7 +105,8 @@ class MCPToolWrapper(BaseTool):
     read_only: bool | None = None
     """The server's readOnlyHint for this tool, or None when it published none."""
 
-    # The artifact carries a refusal's reason, as the identity gate's does.
+    # The artifact carries a refusal's reason, as the identity gate's does, or
+    # marks a timeout.
     response_format: Literal["content", "content_and_artifact"] = "content_and_artifact"
 
     class Config:
@@ -147,7 +149,7 @@ class MCPToolWrapper(BaseTool):
 
         if result.success:
             return json.dumps(result.data, default=str), None
-        return json.dumps({"error": result.error}), None
+        return json.dumps({"error": result.error}), TIMED_OUT_ARTIFACT if result.timed_out else None
 
 
 def create_mcp_tools_from_catalog(

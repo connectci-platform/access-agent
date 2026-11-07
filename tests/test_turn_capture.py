@@ -2,6 +2,7 @@ import asyncio
 from types import SimpleNamespace
 
 from src.agent.turn_capture import (
+    _turn_capture,
     docs_search_exhausted,
     get_turn_capture,
     mark_docs_search_exhausted,
@@ -10,6 +11,7 @@ from src.agent.turn_capture import (
     record_scoped_search,
     record_tool_timing,
     record_trace_id,
+    record_turn_deadline,
     reset_turn_capture,
 )
 
@@ -85,6 +87,7 @@ def test_default_capture_is_safe_without_reset():
         "model_reasoning": [],
         "scoped_rp_searched": set(),
         "docs_search_exhausted": False,
+        "turn_deadline": None,
     }
 
 
@@ -187,3 +190,18 @@ def test_docs_search_exhausted_is_false_without_a_turn():
         return docs_search_exhausted()
 
     assert asyncio.run(_isolated()) is False
+
+
+def test_a_turn_deadline_is_kept_for_the_turn():
+    reset_turn_capture()
+    record_turn_deadline(123.0)
+    assert get_turn_capture()["turn_deadline"] == 123.0
+
+
+def test_a_turn_deadline_outside_a_turn_is_dropped():
+    async def outside_a_turn():
+        _turn_capture.set(None)
+        record_turn_deadline(123.0)
+        return get_turn_capture()["turn_deadline"]
+
+    assert asyncio.run(outside_a_turn()) is None

@@ -491,6 +491,13 @@ def test_turn_timeout_of_120_is_allowed():
     check_agent_token_config(_settings(ENVIRONMENT="local", AGENT_TURN_TIMEOUT_S=120))
 
 
+def test_an_answer_reserve_that_leaves_no_time_for_tools_is_refused():
+    with pytest.raises(RuntimeError, match="AGENT_ANSWER_RESERVE_S"):
+        check_agent_token_config(
+            _settings(ENVIRONMENT="local", AGENT_TURN_TIMEOUT_S=30, AGENT_ANSWER_RESERVE_S=30)
+        )
+
+
 @pytest.mark.parametrize("missing", ["AGENT_TOKEN_ISSUER", "AGENT_TOKEN_JWKS_URL"])
 def test_production_refuses_to_start_without_issuer_settings(missing):
     with pytest.raises(RuntimeError, match=missing):

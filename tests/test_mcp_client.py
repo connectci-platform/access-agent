@@ -1,11 +1,11 @@
 """Tests for MCP client."""
 
+import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
 from src.config import settings
 from src.tools.mcp_client import (
-    SERVER_TIMEOUTS_S,
     MCPClient,
     MCPToolResult,
     get_shared_client,
@@ -198,7 +198,7 @@ class TestMCPClient:
 
     def test_slowest_server_leaves_time_to_answer(self):
         """A timed-out tool call must not use up the whole turn."""
-        assert max(SERVER_TIMEOUTS_S.values()) <= settings.AGENT_TURN_TIMEOUT_S / 2
+        assert max(settings.mcp_server_timeouts.values()) <= settings.AGENT_TURN_TIMEOUT_S / 2
 
     def test_parse_mcp_response_text_content(self):
         """Test parsing MCP text content response."""
@@ -450,3 +450,64 @@ def test_trace_mcp_call_records_only_the_exception_type(monkeypatch):
     assert span.status.status_code is StatusCode.ERROR
     assert span.events[0].attributes["exception.type"] == "ValueError"
     assert SECRET not in _exported(span)
+
+
+async def _timeout_sent_for(monkeypatch, server: str, client: MCPClient) -> float:
+    """The timeout call_tool puts on the request to ``server``."""
+    seen: list[float] = []
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"ok": True}
+
+    class _Client:
+        async def post(self, url, json=None, headers=None, timeout=None):
+            seen.append(timeout)
+            return _Resp()
+
+    monkeypatch.setattr("src.tools.mcp_client.get_shared_client", lambda timeout: _Client())
+    monkeypatch.setattr(MCPClient, "get_server_url", lambda self, s: "http://x")
+    await client.call_tool(server=server, tool_name="t", arguments={})
+    return seen[0]
+
+
+@pytest.mark.parametrize("server", ["xdmod", "xdmod-data"])
+async def test_xdmod_servers_get_the_longer_timeout_on_each_request(monkeypatch, server):
+    # On the request, because the client is shared and keeps the first timeout it
+    # was built with, which can be health_check's 5 seconds.
+    monkeypatch.setattr("src.tools.mcp_client.settings.XDMOD_TOOL_TIMEOUT_S", 75.0)
+
+    assert await _timeout_sent_for(monkeypatch, server, MCPClient()) == 75.0
+
+
+async def test_other_servers_keep_the_default_timeout(monkeypatch):
+    assert await _timeout_sent_for(monkeypatch, "compute-resources", MCPClient()) == 30.0
+
+
+async def test_a_client_timeout_applies_to_servers_with_no_setting_of_their_own(monkeypatch):
+    client = MCPClient(timeout=7.0)
+
+    assert await _timeout_sent_for(monkeypatch, "compute-resources", client) == 7.0
+
+
+@pytest.mark.asyncio
+async def test_a_timeout_is_marked_so_code_need_not_read_the_error_text(httpx_mock: HTTPXMock):
+    httpx_mock.add_exception(httpx.ReadTimeout("slow"))
+
+    result = await MCPClient().call_tool("xdmod", "get_chart_data", {})
+
+    assert result.timed_out is True
+    assert result.error == "Timeout calling xdmod/get_chart_data"
+
+
+@pytest.mark.asyncio
+async def test_other_failures_are_not_marked_as_timeouts(httpx_mock: HTTPXMock):
+    httpx_mock.add_response(status_code=500)
+
+    result = await MCPClient().call_tool("xdmod", "get_chart_data", {})
+
+    assert result.success is False
+    assert result.timed_out is False

@@ -1,13 +1,16 @@
 import asyncio
+import time
 
 import pytest
 from fastapi import HTTPException
 
+from src.agent.turn_capture import get_turn_capture, reset_turn_capture
 from src.api.thread_runs import (
     acquire_thread_run,
     cancel_run,
     held_run,
     release_thread_run,
+    run_with_timeout,
 )
 
 
@@ -90,3 +93,13 @@ async def test_cancel_run_rejects_wrong_thread():
     assert cancel_run("thread-b", "run-b") is True
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+async def test_run_with_timeout_records_when_the_turn_will_be_stopped():
+    reset_turn_capture()
+    before = time.monotonic()
+
+    async with run_with_timeout(120):
+        deadline = get_turn_capture()["turn_deadline"]
+
+    assert before + 120 <= deadline <= time.monotonic() + 120

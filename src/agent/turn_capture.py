@@ -1,6 +1,6 @@
 """Per-request side-channel for turn observations absent from final_state.
 
-Carries seven kinds of data the agent graph doesn't surface in final_state:
+Carries eight kinds of data the agent graph doesn't surface in final_state:
 retrieved chunks (search_access_documents flattens them to a string before
 returning), whether SummarizationMiddleware fired, per-tool-call durations,
 the turn's OTEL trace id, the per-model-call reasoning the LLM wrapper keeps out
@@ -9,7 +9,8 @@ normalized rp_name slugs search_access_documents has already searched this turn
 (so a second scoped call to the same slug can widen instead of repeating a
 search the model already saw fail — see record_scoped_search), and whether a
 general documentation search already came back empty or failed this turn (so
-later calls skip the backend — see mark_docs_search_exhausted).
+later calls skip the backend — see mark_docs_search_exhausted), and when the
+route will stop the turn (so tools can stop first — see record_turn_deadline).
 
 We carry them out via a ContextVar holding one mutable dict. The route resets
 it per turn; the doc-search tool, the summarization middleware, the MCP tool
@@ -46,6 +47,7 @@ def _fresh_capture() -> dict[str, Any]:
         "model_reasoning": [],
         "scoped_rp_searched": set(),
         "docs_search_exhausted": False,
+        "turn_deadline": None,
     }
 
 
@@ -83,6 +85,13 @@ def record_tool_timing(tool_name: str, duration_ms: float) -> None:
     if cap is None:
         return
     cap["tool_timings"].append({"tool_name": tool_name, "duration_ms": int(duration_ms)})
+
+
+def record_turn_deadline(deadline: float) -> None:
+    """Record when the route will stop this turn, as a ``time.monotonic()`` value."""
+    cap = _turn_capture.get()
+    if cap is not None:
+        cap["turn_deadline"] = deadline
 
 
 def record_trace_id(trace_id: str) -> None:

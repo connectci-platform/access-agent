@@ -15,10 +15,6 @@ from ..telemetry.spans import trace_mcp_call
 
 logger = logging.getLogger(__name__)
 
-# Some XDMoD chart queries take over 45 seconds. A limit has to leave the model
-# time to answer inside AGENT_TURN_TIMEOUT_S after a call times out.
-SERVER_TIMEOUTS_S = {"xdmod": 60.0}
-
 # Global shared HTTP client for connection pooling
 _shared_client: httpx.AsyncClient | None = None
 
@@ -58,6 +54,7 @@ class MCPToolResult(BaseModel):
     data: Any = None
     error: str | None = None
     duration_ms: int = 0
+    timed_out: bool = False
 
 
 class MCPClient:
@@ -149,7 +146,9 @@ class MCPClient:
                     url,
                     json={"arguments": arguments},
                     headers=headers,
-                    timeout=SERVER_TIMEOUTS_S.get(server, self.timeout),
+                    # Per request: the shared client keeps whichever timeout it
+                    # was first built with, which can be health_check's.
+                    timeout=settings.mcp_server_timeouts.get(server, self.timeout),
                 )
                 response.raise_for_status()
 
@@ -182,6 +181,7 @@ class MCPClient:
                     success=False,
                     error=span_error,
                     duration_ms=int(time.time() * 1000) - start_ms,
+                    timed_out=True,
                 )
             except Exception as e:
                 span_error = type(e).__name__
