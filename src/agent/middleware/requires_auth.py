@@ -23,7 +23,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Literal
 
 from langchain.agents.middleware.types import AgentMiddleware
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 
 from ...config import settings
 from ..auth_tools import ToolIdentityClass, tool_identity_class
@@ -107,6 +107,44 @@ def refusal_text(reason: CoarseReason) -> str:
     )
 
 
+SIGNED_IN_SINCE_TEXT = (
+    "This call was refused because the user wasn't signed in. The user has signed "
+    "in since, so if they ask again, call the tool again."
+)
+SIGNED_IN_NOTE = "(The user is signed in now. Earlier sign-in requests no longer apply.)"
+
+
+def _needed_sign_in(message: Any) -> bool:
+    """Whether this is a refusal that signing in clears."""
+    if not isinstance(message, ToolMessage) or not isinstance(message.artifact, dict):
+        return False
+    refusal = message.artifact.get("refusal")
+    return isinstance(refusal, dict) and refusal.get("reason") in ("write_action", "private_data")
+
+
+def signed_in_since(messages: list[Any], context: AgentContext) -> list[Any]:
+    """The model's view of a thread whose user signed in after a refusal.
+
+    A refusal stays in the thread, and the model can repeat it instead of
+    calling the tool again. For a signed-in caller the model sees it rewritten,
+    with a note on the latest request. The stored thread doesn't change.
+    """
+    if context.acting_user is None or not any(_needed_sign_in(m) for m in messages):
+        return messages
+    view = [
+        m.model_copy(update={"content": SIGNED_IN_SINCE_TEXT}) if _needed_sign_in(m) else m
+        for m in messages
+    ]
+    last = len(view) - 1
+    while last >= 0 and not isinstance(view[last], HumanMessage):
+        last -= 1
+    refused_before = any(_needed_sign_in(m) for m in messages[: max(last, 0)])
+    if refused_before and isinstance(view[last].content, str):
+        note = f"{view[last].content}\n\n{SIGNED_IN_NOTE}"
+        view[last] = view[last].model_copy(update={"content": note})
+    return view
+
+
 def _tool_name(tool: Any) -> str | None:
     return tool.get("name") if isinstance(tool, dict) else getattr(tool, "name", None)
 
@@ -161,8 +199,9 @@ class RequiresAuthMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
+        context = require_context(request.runtime.context)
+        request = request.override(messages=signed_in_since(request.messages, context))
         if self.refusals:
-            context = require_context(request.runtime.context)
             allowed = [
                 t
                 for t in request.tools

@@ -1,0 +1,183 @@
+"""A registration only goes through after the user has answered its preview."""
+
+import json
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+from langchain.agents import create_agent
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.tools import tool
+
+from src.agent.middleware.preview_first import PreviewFirstMiddleware
+
+PREVIEW = json.dumps({"action": "register", "status": "preview", "executed": False})
+
+
+def _call(args: dict[str, Any], call_id: str = "c9") -> dict[str, Any]:
+    return {"name": "register_for_event", "args": args, "id": call_id, "type": "tool_call"}
+
+
+def _previewed(event: str = "9372") -> list[Any]:
+    return [
+        HumanMessage(content="Sign me up."),
+        AIMessage(content="", tool_calls=[_call({"eventinstance_id": event}, "c1")]),
+        ToolMessage(content=PREVIEW, tool_call_id="c1", name="register_for_event"),
+        AIMessage(content="Please confirm."),
+    ]
+
+
+class _Request:
+    def __init__(self, tool_call: dict[str, Any], messages: list[Any]) -> None:
+        self.tool_call = tool_call
+        self.state = {"messages": messages}
+
+    def override(self, **changes: Any) -> "_Request":
+        return _Request(changes.get("tool_call", self.tool_call), self.state["messages"])
+
+
+async def _sent_args(tool_call: dict[str, Any], messages: list[Any]) -> dict[str, Any]:
+    seen: list[dict[str, Any]] = []
+
+    async def handler(request: Any) -> ToolMessage:
+        seen.append(request.tool_call["args"])
+        return ToolMessage(content="{}", tool_call_id=request.tool_call["id"])
+
+    await PreviewFirstMiddleware().awrap_tool_call(_Request(tool_call, messages), handler)
+    return seen[0]
+
+
+async def test_a_first_confirmed_call_becomes_a_preview():
+    args = await _sent_args(_call({"eventinstance_id": "9372", "confirmed": True}), [])
+
+    assert args == {"eventinstance_id": "9372", "confirmed": False}
+
+
+async def test_a_preview_call_is_unchanged():
+    args = await _sent_args(_call({"eventinstance_id": "9372"}), [])
+
+    assert args == {"eventinstance_id": "9372"}
+
+
+async def test_confirming_after_the_user_answered_the_preview_goes_through():
+    messages = [*_previewed(), HumanMessage(content="Yes, confirm.")]
+
+    args = await _sent_args(_call({"eventinstance_id": "9372", "confirmed": True}), messages)
+
+    assert args == {"eventinstance_id": "9372", "confirmed": True}
+
+
+async def test_confirming_with_no_user_answer_since_the_preview_stays_a_preview():
+    args = await _sent_args(_call({"eventinstance_id": "9372", "confirmed": True}), _previewed())
+
+    assert args["confirmed"] is False
+
+
+async def test_a_preview_of_another_event_does_not_count():
+    messages = [*_previewed("9373"), HumanMessage(content="Yes.")]
+
+    args = await _sent_args(_call({"eventinstance_id": "9372", "confirmed": True}), messages)
+
+    assert args["confirmed"] is False
+
+
+async def test_a_failed_preview_does_not_count():
+    messages = _previewed()
+    messages[2] = ToolMessage(
+        content=json.dumps({"status": "error"}), tool_call_id="c1", name="register_for_event"
+    )
+    messages.append(HumanMessage(content="Yes."))
+
+    args = await _sent_args(_call({"eventinstance_id": "9372", "confirmed": True}), messages)
+
+    assert args["confirmed"] is False
+
+
+async def test_a_result_that_is_not_json_does_not_count():
+    messages = _previewed()
+    messages[2] = ToolMessage(content="Not done.", tool_call_id="c1", name="register_for_event")
+    messages.append(HumanMessage(content="Yes."))
+
+    args = await _sent_args(_call({"eventinstance_id": "9372", "confirmed": True}), messages)
+
+    assert args["confirmed"] is False
+
+
+async def test_other_tools_are_unchanged():
+    call = {"name": "search_events", "args": {"confirmed": True}, "id": "c1", "type": "tool_call"}
+
+    assert await _sent_args(call, []) == {"confirmed": True}
+
+
+async def test_the_original_call_is_not_mutated():
+    call = _call({"eventinstance_id": "9372", "confirmed": True})
+
+    await _sent_args(call, [])
+
+    assert call["args"]["confirmed"] is True
+
+
+def test_numeric_ids_match_string_ids():
+    middleware = PreviewFirstMiddleware()
+    messages = [*_previewed(), HumanMessage(content="Yes.")]
+
+    assert middleware._may_confirm(messages, 9372)
+
+
+def test_missing_state_means_no_preview():
+    request = SimpleNamespace(state={})
+
+    assert PreviewFirstMiddleware._messages(request) == []
+
+
+@pytest.mark.parametrize("confirmed", [True, "true", "True", "yes", 1])
+async def test_every_way_of_saying_confirmed_becomes_a_preview(confirmed):
+    args = await _sent_args(_call({"eventinstance_id": "9372", "confirmed": confirmed}), [])
+
+    assert args["confirmed"] is False
+
+
+async def test_a_confirmed_call_sent_as_text_does_not_count_as_a_preview():
+    messages = [
+        AIMessage(
+            content="", tool_calls=[_call({"eventinstance_id": "9372", "confirmed": "true"}, "c1")]
+        ),
+        ToolMessage(content=PREVIEW, tool_call_id="c1", name="register_for_event"),
+        HumanMessage(content="Yes."),
+    ]
+
+    assert not PreviewFirstMiddleware._may_confirm(messages, "9372")
+
+
+async def test_a_value_that_is_not_a_boolean_passes_through_for_the_tool_to_reject():
+    args = await _sent_args(_call({"eventinstance_id": "9372", "confirmed": "maybe"}), [])
+
+    assert args["confirmed"] == "maybe"
+
+
+class _ScriptedModel(GenericFakeChatModel):
+    def bind_tools(self, tools: Any, **kwargs: Any) -> "_ScriptedModel":
+        return self
+
+
+async def test_a_real_agent_sends_the_downgraded_call_to_the_tool():
+    received: list[Any] = []
+
+    @tool
+    def register_for_event(eventinstance_id: str, confirmed: bool = False) -> str:
+        """Register for an event."""
+        received.append(confirmed)
+        return PREVIEW
+
+    call = _call({"eventinstance_id": "9372", "confirmed": "true"}, "c1")
+    model = _ScriptedModel(
+        messages=iter([AIMessage(content="", tool_calls=[call]), AIMessage(content="Confirm?")])
+    )
+    agent = create_agent(
+        model=model, tools=[register_for_event], middleware=[PreviewFirstMiddleware()]
+    )
+
+    await agent.ainvoke({"messages": [HumanMessage(content="Sign me up.")]})
+
+    assert received == [False]

@@ -29,3 +29,24 @@ def test_today_is_a_real_date():
 
 def test_prompt_requires_saying_when_the_scope_changed():
     assert "broader or different scope" in build_system_prompt()
+
+
+def test_signed_in_prompt_says_earlier_sign_in_requests_no_longer_apply():
+    assert "no longer applies" in build_system_prompt(acting_user="u@access-ci.org", can_write=True)
+    assert "no longer applies" in build_system_prompt(acting_user="u@access-ci.org")
+
+
+def test_anonymous_prompt_does_not_say_sign_in_is_done():
+    assert "no longer applies" not in build_system_prompt()
+
+
+def test_prompt_sets_out_the_registration_steps():
+    prompt = build_system_prompt()
+
+    assert "## Event registration" in prompt
+    assert "without `confirmed`" in prompt
+    assert "confirmation email" in prompt
+
+
+def test_prompt_forbids_guessing_the_weekday():
+    assert "weekday" in build_system_prompt()

@@ -392,6 +392,24 @@ says "I need help" or similar, ask what they need help with before \
 jumping to ticket creation."""
 
 
+EVENT_REGISTRATION_SECTION = """## Event registration
+
+To register the user, call `register_for_event` without `confirmed` first. That \
+is a preview and changes nothing, whatever you asked for. Say whether they would \
+get a seat or join the waitlist, tell them the details are ready to review, and \
+ask them to confirm. Call it with `confirmed: true` only after they confirm. \
+Never say they are registered unless the result's status is `registered` or \
+`waitlisted`. Don't promise a confirmation email.
+
+`get_event` needs the user to be signed in, so use the `search_events` results \
+until they are."""
+
+SIGNED_IN_NOTE = (
+    "They are signed in now, so any earlier message in this conversation saying "
+    "they need to sign in no longer applies. If they ask again, call the tool again."
+)
+
+
 def _today() -> date:
     return datetime.now(UTC).date()
 
@@ -403,7 +421,9 @@ def _current_date_section() -> str:
         f"Today is {today:%A, %B} {today.day}, {today.year} ({today.isoformat()}). "
         f'Use it to work out relative dates such as "last month". When a tool '
         f"needs a date range and the user didn't give one, use a recent period "
-        f"ending today."
+        f"ending today. Never write a weekday name for any other date: write "
+        f'"November 20, 2026", not "Friday, November 20". You can\'t work '
+        f"weekdays out reliably."
     )
 
 
@@ -445,13 +465,15 @@ def build_system_prompt(
             f"## Acting user\n\nCurrent user: `{acting_user}`. "
             f"Use this when calling tools that accept an acting-user "
             f"identity (allocations, personal usage queries). This chat can read "
-            f"information for the user but can't make changes on their behalf."
+            f"information for the user but can't make changes on their behalf. "
+            f"{SIGNED_IN_NOTE}"
         )
     elif acting_user:
         sections.append(
             f"## Acting user\n\nCurrent user: `{acting_user}`. "
             f"Use this when calling tools that accept an acting-user "
-            f"identity (allocations, ticket-creation, personal usage queries)."
+            f"identity (allocations, ticket-creation, personal usage queries). "
+            f"{SIGNED_IN_NOTE}"
         )
     else:
         sections.append(
@@ -478,6 +500,8 @@ def build_system_prompt(
         profile_section = render_profile_section(profile, resource_context=resource_context)
         if profile_section:
             sections.append(profile_section)
+
+    sections.append(EVENT_REGISTRATION_SECTION)
 
     if not read_only_session:
         sections.append(ANNOUNCEMENTS_WORKFLOWS_SECTION)
