@@ -187,6 +187,47 @@ COMPOSITIONAL_MCP_TOOL_NAMES: frozenset[str] = frozenset(
     }
 )
 
+# Read-only MCP tools whose results can change between turns: usage, allocations,
+# system status, events and news. A result from one of these in an earlier turn
+# is shown to the model as old (src/agent/middleware/earlier_results.py), so it
+# calls the tool again rather than repeating it. Hardware, software and awards
+# aren't here because they change too slowly to be worth a repeat call.
+# A deployment replaces this list with LIVE_DATA_TOOLS; use live_data_tool_names().
+LIVE_DATA_MCP_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        # allocations
+        "get_allocation_statistics",
+        "get_my_rp_accounts",
+        "get_rp_account",
+        "search_projects",
+        # announcements
+        "get_my_announcements",
+        "search_announcements",
+        # events
+        "get_event",
+        "get_my_events",
+        "get_my_registrations",
+        "search_events",
+        # system status
+        "get_infrastructure_news",
+        # usage
+        "get_chart_data",
+        "get_chart_image",
+        "get_chart_link",
+        "get_raw_data",
+        "get_user_data",
+    }
+)
+
+
+def live_data_tool_names() -> frozenset[str]:
+    """The tools treated as live: ``LIVE_DATA_TOOLS`` when set, else the defaults."""
+    from ...config import settings
+
+    configured = {name.strip() for name in settings.LIVE_DATA_TOOLS.split(",") if name.strip()}
+    return frozenset(configured) or LIVE_DATA_MCP_TOOL_NAMES
+
+
 # ── Categories ────────────────────────────────────────────────────────────
 
 CATEGORIES: list[Category] = [

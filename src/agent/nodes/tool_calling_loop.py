@@ -43,6 +43,7 @@ from ...telemetry import get_tracer
 from ..context import AgentContext, require_context
 from ..domains.capabilities import WRITE_MCP_TOOL_NAMES
 from ..domains.tools import create_mcp_tools_from_catalog
+from ..middleware.earlier_results import EarlierResultsMiddleware, earlier_results_view
 from ..middleware.preview_first import PreviewFirstMiddleware
 from ..middleware.requires_auth import RequiresAuthMiddleware
 from ..profile import UserProfile
@@ -510,6 +511,7 @@ def _edit_aware_token_counter() -> TokenCounter:
     Applying the same edits to a copy before counting makes the trigger reflect
     what the model actually sees, so summarization stays the long-conversation
     backstop the sizing comments in src/config.py describe.
+    The earlier-results view is applied last, as it is on the way to the model.
     """
     edit = ClearToolUsesEdit(
         trigger=settings.CONTEXT_EDIT_TRIGGER_TOKENS,
@@ -519,7 +521,7 @@ def _edit_aware_token_counter() -> TokenCounter:
     def count(messages: Iterable[Any]) -> int:
         edited = deepcopy(list(messages))
         edit.apply(edited, count_tokens=count_tokens_approximately)
-        return int(count_tokens_approximately(edited))
+        return int(count_tokens_approximately(earlier_results_view(edited)))
 
     return count
 
@@ -643,6 +645,8 @@ async def tool_calling_loop_node(  # noqa: PLR0915
                 trigger=("tokens", settings.SUMMARIZATION_TRIGGER_TOKENS),
                 keep=("tokens", settings.SUMMARIZATION_KEEP_TOKENS),
             ),
+            # Inside context editing, so it sees which results were cleared.
+            EarlierResultsMiddleware(),
             gate,
             # After the gate, so a caller who may not register is refused
             # rather than shown a preview.
