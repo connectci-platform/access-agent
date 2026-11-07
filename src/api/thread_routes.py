@@ -4,9 +4,10 @@ The Bearer agent token is optional, not required: a caller without one is
 anonymous, not rejected. Every route still passes through the
 thread-ownership gate from src/thread_owners.py, which is where access is
 actually decided — an anon caller can create/resume an anon-owned thread, an
-authed caller resuming an anon-owned thread upgrades it to authed ownership,
-and a non-owner (authed or anon) hitting someone else's authed-owned thread
-gets an identical 404, indistinguishable from an unknown thread.
+authed caller resuming an anon-owned thread upgrades it to authed ownership
+if it holds the thread's claim key, and a non-owner (authed or anon) hitting
+someone else's authed-owned thread gets an identical 404, indistinguishable
+from an unknown thread.
 """
 
 import asyncio
@@ -36,7 +37,7 @@ from .handoff_tokens import (
     exchange_handoff_token,
     mint_handoff_token,
 )
-from .identity import Identity, require_identity
+from .identity import ClaimKey, Identity, require_identity
 from .sse import format_sse_event
 from .thread_runs import (
     acquire_thread_run,
@@ -56,7 +57,9 @@ def _require_access(thread_id: str, caller: str | None) -> None:
         raise HTTPException(status_code=404, detail="Thread not found")  # never 403
 
 
-def _resolve_first_ownership_gate(thread_id: str, caller: str | None) -> None:
+def _resolve_first_ownership_gate(
+    thread_id: str, caller: str | None, claim_key: str | None = None
+) -> None:
     """Resolve-first ownership gate with the anon->authed upgrade flip.
 
     Mirrors routes.py's /query gate in logic and ORDER — resolve/upgrade,
@@ -81,10 +84,13 @@ def _resolve_first_ownership_gate(thread_id: str, caller: str | None) -> None:
         # two authed callers can both read anon-owned, but only the
         # flip-winner may backfill, else a cross-tenant label leak (see
         # routes.py:640-663).
-        if owner_store.upgrade_owner(thread_id, caller):
+        if owner_store.upgrade_owner(thread_id, caller, claim_key):
             get_turn_reporter().backfill_user_hash(thread_id, caller)
+        elif not owner_store.owned_by(thread_id, caller):
+            # Wrong or missing claim key, or another caller won the flip.
+            raise HTTPException(status_code=404, detail="Thread not found")
     # anon-owned + anon caller, or unknown → fall through to claim_thread.
-    owner_store.claim_thread(thread_id, caller)  # lazy-create / no-op for existing
+    owner_store.claim_thread(thread_id, caller, claim_key)  # lazy-create / no-op for existing
 
 
 class HistoryRequest(BaseModel):
@@ -367,6 +373,28 @@ def _serialize_values(values: dict[str, Any] | None) -> dict[str, Any]:
     return {"messages": [m.model_dump() if hasattr(m, "model_dump") else m for m in msgs]}
 
 
+@thread_router.post("/threads/{thread_id}/claim")
+async def claim_thread_on_sign_in(
+    thread_id: str, identity: Identity, claim_key: ClaimKey = None
+) -> dict[str, str]:
+    """Link a conversation started signed out to the caller who just signed in.
+
+    Needs the claim key from the thread's first anonymous run: the thread id
+    alone is in the page URL and proves nothing. Repeating this as the owner
+    succeeds, which also retries a backfill that failed. Everything else gets
+    the same 404 as an unknown thread.
+    """
+    caller = require_identity(identity)
+    owner_store = get_thread_owner_store()
+    if not owner_store.claim_with_key(thread_id, caller, claim_key) and not owner_store.owned_by(
+        thread_id, caller
+    ):
+        raise HTTPException(status_code=404, detail="Thread not found")  # never 403
+    # Only reached by the flip winner or the owner: backfill has no check of its own.
+    get_turn_reporter().backfill_user_hash(thread_id, caller)
+    return {"thread_id": thread_id}
+
+
 @thread_router.post("/threads/{thread_id}/handoff")
 async def mint_handoff(thread_id: str, identity: Identity) -> dict[str, Any]:
     """Mint a single-use cross-surface handoff token for an authed-owned thread.
@@ -419,6 +447,7 @@ async def thread_run_stream(
     body: RunRequest,
     raw_request: Request,
     identity: Identity,
+    claim_key: ClaimKey = None,
 ) -> StreamingResponse | JSONResponse:
     """Stream one agent turn on a thread as the LangGraph run protocol SSE.
 
@@ -434,7 +463,7 @@ async def thread_run_stream(
 
     # 2. Resolve-first ownership gate (replaces the old claim-then-check):
     # resolve/upgrade, THEN claim. See _resolve_first_ownership_gate.
-    _resolve_first_ownership_gate(thread_id, caller)
+    _resolve_first_ownership_gate(thread_id, caller, claim_key)
 
     # Turnstile gate — ported from routes.py's /query (see src/turnstile.py).
     # Authed callers skip immediately inside check_turnstile. The thread_id IS

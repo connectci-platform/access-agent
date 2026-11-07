@@ -279,8 +279,9 @@ async def test_losing_race_caller_does_not_backfill_winners_thread(
             json={"query": "hi again", "session_id": "t-race"},
         )
 
-    assert r.status_code == 200
-    mock_agent.assert_called_once()
+    # Bob lost the flip, so the thread is alice's and he gets the usual 404.
+    assert r.status_code == 404
+    mock_agent.assert_not_called()
 
     # Ownership must remain alice's — bob's upgrade_owner call lost the race.
     owner = owner_store.resolve_owner("t-race")
@@ -294,12 +295,6 @@ async def test_losing_race_caller_does_not_backfill_winners_thread(
     assert owner.user_hash == alice_hash
 
     # The historical pre-login turn (q-anon-1) must NOT be tagged with bob's
-    # hash. Querying list_threads_for_user would be misleading here: bob's
-    # own new turn on t-race ("hi again") legitimately gets logged under
-    # bob's hash by the normal end-of-turn log_turn_report call, which would
-    # make t-race show up in bob's sidebar regardless of whether the bug is
-    # fixed — that's correct, not a leak. The actual invariant is on the
-    # *historical* row specifically: it must never end up carrying bob's
     # hash, whether it's still NULL or has alice's hash.
     from src.turn_reporter import TurnReport
 

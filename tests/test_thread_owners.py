@@ -171,3 +171,70 @@ def test_check_access_fails_closed_on_authed_row_with_null_hash():
 
     assert store.check_access("t-corrupt", "anyone@x") is False
     assert store.check_access("t-corrupt", None) is False
+
+
+KEY = "k" * 43
+
+
+def test_key_gated_upgrade_needs_the_first_runs_key():
+    store = get_thread_owner_store()
+    assert store.claim_thread("t-key", None, KEY) is True
+    assert store.upgrade_owner("t-key", "thief@x") is False
+    assert store.upgrade_owner("t-key", "thief@x", "o" * 43) is False
+    assert store.upgrade_owner("t-key", "me@x", KEY) is True
+
+
+def test_second_claim_cannot_replace_the_key():
+    store = get_thread_owner_store()
+    store.claim_thread("t-key2", None, KEY)
+    assert store.claim_thread("t-key2", None, "o" * 43) is False
+    assert store.upgrade_owner("t-key2", "thief@x", "o" * 43) is False
+    assert store.upgrade_owner("t-key2", "me@x", KEY) is True
+
+
+def test_a_key_outside_the_allowed_length_is_not_stored():
+    store = get_thread_owner_store()
+    store.claim_thread("t-short", None, "short")
+    store.claim_thread("t-long", None, "k" * 129)
+    assert store.claim_with_key("t-short", "me@x", "short") is False
+    assert store.claim_with_key("t-long", "me@x", "k" * 129) is False
+
+
+def test_authed_first_run_stores_no_key():
+    store = get_thread_owner_store()
+    store.claim_thread("t-authed", "alice@x", KEY)
+    assert store.claim_with_key("t-authed", "thief@x", KEY) is False
+
+
+def test_claim_with_key_refuses_a_row_without_a_key():
+    store = get_thread_owner_store()
+    store.claim_thread("t-legacy", None)
+    assert store.claim_with_key("t-legacy", "me@x", KEY) is False
+    assert store.claim_with_key("t-legacy", "me@x", None) is False
+
+
+def test_claim_with_key_flips_once():
+    store = get_thread_owner_store()
+    store.claim_thread("t-once", None, KEY)
+    assert store.claim_with_key("t-once", "me@x", KEY) is True
+    assert store.claim_with_key("t-once", "thief@x", KEY) is False
+    assert store.owned_by("t-once", "me@x") is True
+    assert store.owned_by("t-once", "thief@x") is False
+
+
+def test_owned_by_is_false_for_anon_and_unknown_threads():
+    store = get_thread_owner_store()
+    store.claim_thread("t-anon", None)
+    assert store.owned_by("t-anon", "me@x") is False
+    assert store.owned_by("t-missing", "me@x") is False
+
+
+def test_key_store_is_inert_without_a_database(monkeypatch):
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "DATABASE_URL", "", raising=False)
+    import src.thread_owners as m
+
+    m._store = None
+    store = get_thread_owner_store()
+    assert store.claim_with_key("t", "me@x", KEY) is False

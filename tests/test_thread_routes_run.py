@@ -688,7 +688,7 @@ async def test_run_losing_concurrent_upgrade_caller_does_not_backfill(
             headers=bearer_for("bob@access-ci.org"),
             json={"input": {"messages": [{"role": "user", "content": "hi again"}]}},
         )
-        assert r.status_code == 200
+        assert r.status_code == 404  # the thread is alice's now
         mock_reporter.backfill_user_hash.assert_not_called()
 
     # Ownership must remain alice's — bob's upgrade_owner call lost the race.

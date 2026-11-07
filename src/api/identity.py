@@ -12,7 +12,7 @@ import time
 from contextvars import ContextVar
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, Header, HTTPException, Request
 
 from ..agent_token import (
     AgentIdentity,
@@ -27,6 +27,10 @@ from ..config import settings
 _agent_token: ContextVar[str | None] = ContextVar("agent_token", default=None)
 
 _INVALID_TOKEN = {"WWW-Authenticate": 'Bearer error="invalid_token"'}
+
+# Carries the browser tab's secret for claiming a conversation it started
+# anonymously. Header, not body or URL, and never logged.
+CLAIM_KEY_HEADER = "X-Thread-Claim-Key"
 
 # A token must outlive the longest turn it could start, or a tool call late in
 # the turn would act on an expired identity.
@@ -77,6 +81,9 @@ async def request_identity(request: Request) -> AgentIdentity | None:
 
 # The parameter type for an endpoint that takes the caller's identity.
 Identity = Annotated[AgentIdentity | None, Depends(request_identity)]
+
+# The parameter type for an endpoint that takes the caller's claim key.
+ClaimKey = Annotated[str | None, Header(alias=CLAIM_KEY_HEADER)]
 
 
 def require_identity(identity: AgentIdentity | None) -> str:

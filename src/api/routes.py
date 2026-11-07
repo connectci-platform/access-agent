@@ -659,6 +659,10 @@ async def query_agent(
 
         if owner_store.upgrade_owner(session_id, user):
             get_turn_reporter().backfill_user_hash(session_id, user)
+        elif not owner_store.owned_by(session_id, user):
+            # Another caller won the flip, or this is a fullscreen thread held
+            # by its claim key. The widget sends none, and its rows store none.
+            raise HTTPException(status_code=404, detail="Thread not found")
     # anon-owned + anon caller, or unknown thread → proceed (claim_thread below
     # lazy-creates).
 
