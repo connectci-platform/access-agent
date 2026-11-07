@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from collections import Counter, deque
 from collections.abc import Callable, Iterable
@@ -196,8 +197,39 @@ _STATUS_TOOL_OVERRIDES = {
 }
 
 
-def _friendly_tool_status(name: str) -> str:
-    """Turn a raw tool name into a human-readable status-bubble message."""
+# Read-only tools whose status can name a subject: the argument to read and the
+# wording. Only short name fields belong here. Free-text fields can hold the
+# user's whole question, and write tools and people's names stay generic.
+_STATUS_SUBJECT_TOOLS = {
+    "search_software": ("query", "Searching software for {}..."),
+    "get_software_details": ("software_name", "Looking up {}..."),
+    "get_resource_hardware": ("id", "Looking up {} hardware..."),
+    "search_access_documents": ("rp_name", "Searching ACCESS documentation for {}..."),
+}
+
+# A plain name of up to three words. Anything else is dropped rather than cut
+# down, so sentences, addresses, domains and token-like strings never show.
+_STATUS_SUBJECT_RE = re.compile(r"[A-Za-z0-9+#_-]{1,24}(?: [A-Za-z0-9+#_-]{1,24}){0,2}")
+_STATUS_SUBJECT_MAX_LENGTH = 40
+
+
+def _status_subject(value: Any) -> str | None:
+    """Return ``value`` if it is safe to show in a status line, else ``None``."""
+    if not isinstance(value, str):
+        return None
+    subject = value.strip()
+    if len(subject) > _STATUS_SUBJECT_MAX_LENGTH or not _STATUS_SUBJECT_RE.fullmatch(subject):
+        return None
+    return subject
+
+
+def _friendly_tool_status(name: str, inputs: Any = None) -> str:
+    """Turn a tool call into a human-readable status-bubble message."""
+    field, wording = _STATUS_SUBJECT_TOOLS.get(name, (None, ""))
+    if field and isinstance(inputs, dict):
+        subject = _status_subject(inputs.get(field))
+        if subject:
+            return wording.format(subject)
     override = _STATUS_TOOL_OVERRIDES.get(name)
     if override:
         return override
@@ -259,13 +291,13 @@ class _ToolStatusEmitter(AsyncCallbackHandler):
         # Unused today, kept in the signature to document LangChain's
         # on_tool_start contract — `run_id` is the correlation key for any
         # future on_tool_end pairing or LangSmith tracing.
-        del input_str, run_id, parent_run_id, tags, metadata, inputs, kwargs
+        del input_str, run_id, parent_run_id, tags, metadata, kwargs
         if self._writer is None:
             return
         name = serialized.get("name") if serialized else None
         if not name:
             return
-        self._writer({"type": "status", "message": _friendly_tool_status(name)})
+        self._writer({"type": "status", "message": _friendly_tool_status(name, inputs)})
 
 
 class _TokenUsageAccumulator(AsyncCallbackHandler):

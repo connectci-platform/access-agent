@@ -804,6 +804,77 @@ class TestFriendlyToolStatus:
         assert _friendly_tool_status("standalone") == "Working on standalone..."
 
 
+class TestToolStatusSubject:
+    """Allowlisted tools name their subject. Anything doubtful stays generic."""
+
+    @pytest.mark.parametrize(
+        ("name", "inputs", "expected"),
+        [
+            ("search_software", {"query": "PyTorch"}, "Searching software for PyTorch..."),
+            ("get_software_details", {"software_name": "gromacs"}, "Looking up gromacs..."),
+            ("get_resource_hardware", {"id": "Anvil"}, "Looking up Anvil hardware..."),
+            (
+                "search_access_documents",
+                {"query": "How do I log in?", "rp_name": "delta"},
+                "Searching ACCESS documentation for delta...",
+            ),
+            ("search_software", {"query": "  c++ "}, "Searching software for c++..."),
+        ],
+    )
+    def test_allowlisted_field_is_named(self, name, inputs, expected):
+        from src.agent.nodes.tool_calling_loop import _friendly_tool_status
+
+        assert _friendly_tool_status(name, inputs) == expected
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "x" * 41,
+            "a" * 25,
+            "how do I install pytorch",
+            "line\nbreak",
+            "tab\tbreak",
+            "someone@example.edu",
+            "anvil.purdue.access-ci.org",
+            "<b>python</b>",
+            "",
+            "   ",
+            None,
+            42,
+            ["python"],
+        ],
+    )
+    def test_doubtful_value_keeps_the_generic_line(self, value):
+        from src.agent.nodes.tool_calling_loop import _friendly_tool_status
+
+        assert _friendly_tool_status("search_software", {"query": value}) == "Searching software..."
+
+    @pytest.mark.parametrize("inputs", [None, {}, {"resource": "anvil"}, "PyTorch"])
+    def test_missing_field_keeps_the_generic_line(self, inputs):
+        from src.agent.nodes.tool_calling_loop import _friendly_tool_status
+
+        assert _friendly_tool_status("search_software", inputs) == "Searching software..."
+
+    def test_doc_search_never_shows_the_question(self):
+        from src.agent.nodes.tool_calling_loop import _friendly_tool_status
+
+        status = _friendly_tool_status("search_access_documents", {"query": "delta"})
+        assert status == "Searching ACCESS documentation..."
+
+    @pytest.mark.parametrize(
+        ("name", "inputs", "expected"),
+        [
+            ("search_events", {"query": "gpu"}, "Searching events..."),
+            ("search_nsf_awards", {"pi": "Smith"}, "Searching NSF awards..."),
+            ("create_support_ticket", {"query": "help"}, "Preparing support ticket..."),
+        ],
+    )
+    def test_tool_off_the_list_keeps_the_generic_line(self, name, inputs, expected):
+        from src.agent.nodes.tool_calling_loop import _friendly_tool_status
+
+        assert _friendly_tool_status(name, inputs) == expected
+
+
 class TestToolStatusEmitter:
     @pytest.mark.asyncio
     async def test_emits_status_for_each_tool_start(self):
@@ -822,6 +893,28 @@ class TestToolStatusEmitter:
             {"type": "status", "message": "Searching announcements..."},
             {"type": "status", "message": "Searching ACCESS documentation..."},
         ]
+
+    @pytest.mark.asyncio
+    async def test_real_tool_call_names_its_subject(self):
+        """LangChain hands the tool's arguments to the handler on a real call."""
+        from langchain_core.tools import StructuredTool
+
+        from src.agent.nodes.tool_calling_loop import _ToolStatusEmitter
+
+        async def search(query: str) -> str:
+            return "ok"
+
+        tool = StructuredTool.from_function(
+            coroutine=search, name="search_software", description="Search software."
+        )
+        events: list[dict] = []
+
+        result = await tool.ainvoke(
+            {"query": "PyTorch"}, config={"callbacks": [_ToolStatusEmitter(events.append)]}
+        )
+
+        assert result == "ok"
+        assert events == [{"type": "status", "message": "Searching software for PyTorch..."}]
 
     @pytest.mark.asyncio
     async def test_no_op_without_writer(self):
