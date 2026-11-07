@@ -982,3 +982,26 @@ async def test_mid_answer_whitespace_is_still_sent(client, bearer, monkeypatch):
     events = await _run_events(client, bearer, "t-ws-mid")
     sent = [d[0]["content"] for n, d in events if n == "messages"]
     assert sent == ["Hi", " ", "there"]
+
+
+async def test_status_events_reach_the_client_before_the_answer(client, bearer, monkeypatch):
+    _stream_of(
+        monkeypatch,
+        [
+            ("custom", {"type": "status", "message": "Searching software..."}),
+            ("custom", {"type": "other", "message": "ignored"}),
+            ("custom", "not a dict"),
+            ("custom", {"type": "status"}),
+            ("custom", {"type": "status", "message": 42}),
+            (
+                "messages",
+                (AIMessageChunk(content="Yes", id="m1"), {"langgraph_node": "model"}),
+            ),
+        ],
+    )
+    events = await _run_events(client, bearer, "t-status")
+    names = [name for name, _ in events]
+    custom = [data for name, data in events if name == "custom"]
+    assert custom == [{"type": "status", "message": "Searching software..."}]
+    assert names.index("custom") < names.index("messages")
+    assert "error" not in names
