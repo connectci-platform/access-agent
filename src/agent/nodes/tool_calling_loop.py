@@ -913,6 +913,21 @@ def _parse_tool_message(
         )
 
     raw_content = msg.content if isinstance(msg.content, str) else str(msg.content)
+
+    # A call rejected before it ran, such as on invalid arguments, carries plain
+    # text rather than the {"error": ...} shape an MCP failure returns.
+    if msg.status == "error":
+        return ToolResult(
+            step_id=tc_id,
+            tool_name=tool_name,
+            server=server,
+            success=False,
+            error=raw_content,
+            arguments=tool_args,
+            duration_ms=duration_ms,
+            message_id=message_id,
+        )
+
     try:
         parsed: Any = json.loads(raw_content)
     except (json.JSONDecodeError, TypeError):

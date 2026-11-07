@@ -18,6 +18,8 @@ capability is re-enabled, restore the per-user routing here.
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime
+
 from ...config import settings
 from ..profile import UserProfile, render_profile_section
 
@@ -95,7 +97,11 @@ an unsourced answer will be subtly wrong.
 
 Do not invent data you can't verify. If a tool fails or returns \
 unexpected output, try a different approach or tell the user what \
-you tried and what failed — do not silently drop the failure.
+you tried and what failed — do not silently drop the failure. If you \
+could only get results by using a broader or different scope than the \
+user asked for, such as another date range or dropping a filter, say so \
+in your answer. Do not present those results as the answer to the \
+original question.
 
 An empty tool result is not proof of absence. When a tool returns no \
 items, it found nothing for *that query* — which is not the same as \
@@ -386,6 +392,21 @@ says "I need help" or similar, ask what they need help with before \
 jumping to ticket creation."""
 
 
+def _today() -> date:
+    return datetime.now(UTC).date()
+
+
+def _current_date_section() -> str:
+    today = _today()
+    return (
+        f"## Current date\n\n"
+        f"Today is {today:%A, %B} {today.day}, {today.year} ({today.isoformat()}). "
+        f'Use it to work out relative dates such as "last month". When a tool '
+        f"needs a date range and the user didn't give one, use a recent period "
+        f"ending today."
+    )
+
+
 def build_system_prompt(
     acting_user: str | None = None,
     *,
@@ -416,7 +437,7 @@ def build_system_prompt(
     Returns:
         Complete system prompt string for the tool-calling loop.
     """
-    sections: list[str] = [SYSTEM_IDENTITY]
+    sections: list[str] = [SYSTEM_IDENTITY, _current_date_section()]
 
     read_only_session = acting_user is not None and not can_write
     if read_only_session:

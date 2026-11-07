@@ -6,10 +6,10 @@ with create_react_agent's function-calling loop.
 
 import json
 import logging
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from langchain_core.tools import BaseTool
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, BeforeValidator, Field, create_model
 
 from ...tools.mcp_client import MCPClient
 from ..auth_tools import ToolIdentityClass, tool_identity_class
@@ -29,6 +29,26 @@ _TYPE_MAP: dict[str, type] = {
 }
 
 
+def _parse_json_text(expected: type) -> BeforeValidator:
+    """Accept an object or array the model sent as JSON text.
+
+    Some models send ``'{"resource": "ACES"}'`` instead of the object. Rejecting
+    that led the model to retry without the filter and answer for the wrong
+    scope. Text that isn't the expected shape is left for validation to reject.
+    """
+
+    def parse(value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return value
+        return parsed if isinstance(parsed, expected) else value
+
+    return BeforeValidator(parse)
+
+
 def _build_args_schema(
     tool_name: str,
     parameters: list[dict[str, Any]],
@@ -46,7 +66,9 @@ def _build_args_schema(
 
     for param in parameters:
         name = param["name"]
-        py_type = _TYPE_MAP.get(param.get("type", "string"), str)
+        py_type: Any = _TYPE_MAP.get(param.get("type", "string"), str)
+        if py_type in (dict, list):
+            py_type = Annotated[py_type, _parse_json_text(py_type)]
         required = param.get("required", False)
         description = param.get("description", "")
 
