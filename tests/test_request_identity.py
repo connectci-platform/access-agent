@@ -135,8 +135,8 @@ async def test_other_authorization_scheme_is_401(client, agent_tokens, downstrea
 
 @pytest.mark.parametrize("endpoint", ENDPOINTS)
 async def test_unavailable_key_set_is_503(client, agent_tokens, downstream, endpoint, monkeypatch):
-    unavailable = SimpleNamespace(verify=AsyncMock(side_effect=AgentTokenUnavailableError()))
-    monkeypatch.setattr(app.state, "agent_token_verifier", unavailable)
+    verify = AsyncMock(side_effect=AgentTokenUnavailableError())
+    monkeypatch.setattr(app.state.agent_token_verifier, "verify", verify)
 
     r = await _call(client, endpoint, agent_tokens.headers("jsmith@access-ci.org"))
 
