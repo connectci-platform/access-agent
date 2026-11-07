@@ -181,3 +181,61 @@ async def test_lock_released_when_stream_generator_never_started(client):
     # And a fresh acquire on the same thread succeeds (not permanently 409-wedged).
     tr.acquire_thread_run(sid, "next-run")
     tr.release_thread_run(sid, "next-run")
+
+
+def _count(session_id: str) -> int:
+    from src.turnstile import get_turnstile_guard
+
+    return get_turnstile_guard()._sessions[session_id].query_count
+
+
+@pytest.fixture
+def fresh_guard(monkeypatch):
+    monkeypatch.setattr("src.turnstile._guard", None)
+
+
+async def test_anon_query_is_counted_before_the_answer_starts(client, fresh_guard):
+    """D8-2978: closing the stream early can't be a way to read an answer free."""
+    from unittest.mock import AsyncMock, patch
+
+    seen: list[int] = []
+
+    async def _fake(**_kwargs: object):
+        seen.append(_count("counted"))
+        yield "updates", {"__end__": FAKE_AGENT_RESULT}
+
+    with (
+        patch("src.api.routes.get_registry", new_callable=AsyncMock) as mock_reg,
+        patch("src.api.routes.stream_agent", _fake),
+    ):
+        mock_reg.return_value = AsyncMock(catalog={"tools": [], "quick_lookup": {}})
+        await _post_query(client, {"query": "hi", "session_id": "counted"})
+
+    assert seen == [1]
+    assert _count("counted") == 1  # and only once
+
+
+async def test_busy_query_does_not_use_a_question(client, fresh_guard):
+    import src.api.thread_runs as tr
+    from src.turnstile import get_turnstile_guard
+
+    tr.acquire_thread_run("busy", "other-run")
+    try:
+        r = await _post_query(client, {"query": "hi", "session_id": "busy"})
+    finally:
+        tr.release_thread_run("busy", "other-run")
+
+    assert r.status_code == 409
+    assert "busy" not in get_turnstile_guard()._sessions
+
+
+async def test_query_failure_before_hand_off_refunds_the_question(client, fresh_guard):
+    from unittest.mock import patch
+
+    with (
+        patch("src.api.routes.StreamingResponse", side_effect=RuntimeError("boom")),
+        pytest.raises(RuntimeError, match="boom"),
+    ):
+        await _post_query(client, {"query": "hi", "session_id": "no-hand-off"})
+
+    assert _count("no-hand-off") == 0

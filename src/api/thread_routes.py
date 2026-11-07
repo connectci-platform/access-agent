@@ -24,7 +24,7 @@ from ..agent.graph import create_checkpointed_graph, stream_agent
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..config import settings
 from ..turn_reporter import _hash_user, get_turn_reporter
-from ..turnstile import check_turnstile, get_turnstile_guard
+from ..turnstile import charge_query, check_turnstile
 from .answer_tokens import ANSWER_MODEL_NODE, is_answer_token
 from .handoff_tokens import (
     DEFAULT_TTL_SECONDS,
@@ -421,6 +421,9 @@ async def thread_run_stream(
     #    real 409 status, not an event flushed after a 200.
     run_id = str(uuid.uuid4())
     acquire_thread_run(thread_id, run_id)
+    # Same guard and key as /query, where session_id == thread_id, so a handed-off
+    # conversation keeps its count.
+    charge = charge_query(caller, thread_id)
 
     async def _gen() -> AsyncGenerator[str, None]:
         start_time = time.time()
@@ -463,11 +466,13 @@ async def thread_run_stream(
             except TimeoutError:
                 # asyncio.timeout expiry (a TimeoutError in 3.11, NOT CancelledError).
                 # Emit and return; do not synthesize a CancelledError.
+                charge.refund()
                 yield format_sse_event("error", {"error": "timeout"})
                 await _report(state=final_state, ok=False)
                 return
             except Exception as exc:
                 logger.exception("Run stream failed: %s", exc)
+                charge.refund()
                 yield format_sse_event("error", {"error": "agent_error"})
                 await _report(state=final_state, ok=False)
                 return
@@ -476,14 +481,6 @@ async def thread_run_stream(
         # slow reporter write must not trip a spurious TimeoutError into an
         # already-successful stream, as on /query.
         if success:
-            # Count before the report write, so a slow or cancelled write can't
-            # leave the question uncounted. Same guard and key as /query, where
-            # session_id == thread_id, so a handed-off conversation keeps its count.
-            if not caller:
-                try:
-                    get_turnstile_guard().record_query(thread_id)
-                except Exception:
-                    logger.exception("Turnstile query count failed")
             await _report(state=final_state, ok=True)
 
     # The lock was acquired synchronously above; it is released by held_run's
@@ -501,6 +498,7 @@ async def thread_run_stream(
         )
     except BaseException:
         release_thread_run(thread_id, run_id)
+        charge.refund()
         raise
 
 

@@ -14,6 +14,7 @@ import pytest
 
 from src.agent.context import AgentContext
 from src.api import routes
+from src.turnstile import NOT_CHARGED, charge_query, get_turnstile_guard
 
 
 async def _fake_registry():
@@ -36,7 +37,7 @@ def reporter():
         yield fake
 
 
-async def _drain(fake_stream, run_id: str | None = None) -> list[str]:
+async def _drain(fake_stream, run_id: str | None = None, charge=NOT_CHARGED) -> list[str]:
     events: list[str] = []
     with (
         patch.object(routes, "stream_agent", fake_stream),
@@ -50,6 +51,7 @@ async def _drain(fake_stream, run_id: str | None = None) -> list[str]:
             include_trace=False,
             raw_request=_raw_request(),
             run_id=run_id,
+            charge=charge,
         )
         try:
             async for line in gen:
@@ -102,18 +104,62 @@ def test_timed_out_turn_writes_one_failure_report(reporter):
     assert report["turn_index"] == 3
 
 
-@pytest.mark.parametrize("failing", ["usage_logger", "turnstile"])
-def test_failure_after_the_answer_does_not_fail_the_turn(reporter, failing):
+def test_failure_after_the_answer_does_not_fail_the_turn(reporter):
     """Bookkeeping after done can't turn an answered turn into a failed one."""
     boom = MagicMock(side_effect=RuntimeError("store down"))
-    target = "get_usage_logger" if failing == "usage_logger" else "get_turnstile_guard"
 
-    with patch.object(routes, target, boom):
+    with patch.object(routes, "get_usage_logger", boom):
         events = asyncio.run(_drain(_answers))
 
     assert events == ["done"]
     (report,) = _reports(reporter)
     assert report["success"] is True
+
+
+@pytest.fixture
+def charged(monkeypatch):
+    """A question counted against session s1, as the handler does on acquire."""
+    monkeypatch.setattr("src.turnstile._guard", None)
+    return charge_query(None, "s1")
+
+
+def _s1_count() -> int:
+    return get_turnstile_guard()._sessions["s1"].query_count
+
+
+async def _fails(**_kwargs):
+    raise RuntimeError("model down")
+    yield  # pragma: no cover
+
+
+async def _times_out(**_kwargs):
+    raise TimeoutError
+    yield  # pragma: no cover
+
+
+async def _cancelled(**_kwargs):
+    raise asyncio.CancelledError
+    yield  # pragma: no cover
+
+
+def test_answered_turn_keeps_its_question_used(reporter, charged):
+    asyncio.run(_drain(_answers, charge=charged))
+
+    assert _s1_count() == 1
+
+
+@pytest.mark.parametrize("stream", [_fails, _times_out], ids=["agent_error", "timeout"])
+def test_failed_turn_refunds_its_question(reporter, charged, stream):
+    asyncio.run(_drain(stream, charge=charged))
+
+    assert _s1_count() == 0
+
+
+def test_cancelled_turn_keeps_its_question_used(reporter, charged):
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(_drain(_cancelled, charge=charged))
+
+    assert _s1_count() == 1
 
 
 def test_report_write_failure_never_reaches_the_stream(reporter):

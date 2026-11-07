@@ -96,7 +96,6 @@ def _drive_stream_events(headers: Headers) -> MagicMock:
         patch.object(routes, "get_usage_logger", return_value=MagicMock()),
         patch("src.turn_reporter.get_turn_reporter", return_value=reporter),
         patch.object(routes, "get_turn_capture", return_value={}),
-        patch.object(routes, "get_turnstile_guard", return_value=MagicMock()),
         patch(
             "src.services.resource_matcher.resources_for_turn",
             new=AsyncMock(return_value=[]),

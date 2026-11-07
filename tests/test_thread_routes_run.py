@@ -16,6 +16,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from langchain_core.messages import AIMessageChunk
 
+from src.api import thread_routes
 from src.main import app
 from src.thread_owners import get_thread_owner_store
 
@@ -863,6 +864,12 @@ async def test_run_anon_caller_not_challenged_when_turnstile_disabled(client, mo
     assert "event: metadata" in r.text
 
 
+def thread_routes_runs():
+    import src.api.thread_runs as tr
+
+    return tr
+
+
 def _deferred_turnstile(monkeypatch, free_queries: int = 3) -> None:
     from src.config import settings
 
@@ -1011,21 +1018,148 @@ async def test_run_count_failure_does_not_fail_the_turn(client, monkeypatch):
     assert "event: error" not in r.text
 
 
-async def test_run_is_counted_before_the_turn_report_is_written(client, monkeypatch):
-    """A slow or cancelled report write must not leave a free question uncounted."""
+def _anon_count(thread_id: str) -> int:
     from src.turnstile import get_turnstile_guard
+
+    return get_turnstile_guard()._sessions[thread_id].query_count
+
+
+async def test_run_is_counted_before_the_answer_starts(client, monkeypatch):
+    """Stop can't be a way to read an answer for free."""
+    _deferred_turnstile(monkeypatch)
+    seen: list[int] = []
+
+    async def _fake(**_kwargs):
+        seen.append(_anon_count("t-early"))
+        yield "updates", {"tool_calling_loop": {"final_answer": "hi"}}
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _fake)
+    await _ask(client, "t-early")
+
+    assert seen == [1]
+    assert _anon_count("t-early") == 1  # and only once
+
+
+async def test_run_cancelled_turn_uses_a_question(monkeypatch):
+    from types import SimpleNamespace
+
+    import src.api.thread_runs as tr
+    from src.api.thread_routes import RunRequest, thread_run_stream
+
+    _deferred_turnstile(monkeypatch)
+    started = asyncio.Event()
+
+    async def _long_stream(**_kwargs):
+        started.set()
+        await asyncio.sleep(10)
+        yield "updates", {}
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _long_stream)
+    raw_request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(checkpointer=None)))
+    body = RunRequest.model_validate({"input": {"messages": [{"role": "user", "content": "hi"}]}})
+
+    async def _consume() -> None:
+        response = await thread_run_stream("t-stop", body, raw_request, None)
+        async for _ in response.body_iterator:
+            pass
+
+    task = asyncio.ensure_future(_consume())
+    await started.wait()
+    assert tr.cancel_run("t-stop", tr._active_by_thread["t-stop"]) is True
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert _anon_count("t-stop") == 1
+
+
+async def test_run_timed_out_turn_refunds_the_question(client, monkeypatch):
+    _deferred_turnstile(monkeypatch)
+
+    async def _times_out(**_kwargs):
+        raise TimeoutError
+        yield  # pragma: no cover
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _times_out)
+
+    r = await _ask(client, "t-timeout")
+
+    assert '"error": "timeout"' in r.text
+    assert _anon_count("t-timeout") == 0
+
+
+async def test_run_refund_is_in_place_before_the_error_event_is_sent(client, monkeypatch):
+    """The client may leave as soon as it reads the error."""
+    _deferred_turnstile(monkeypatch)
+
+    async def _boom(**_kwargs):
+        raise RuntimeError("model down")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _boom)
+    real_format = thread_routes.format_sse_event
+    seen: list[int] = []
+
+    def _format(event, data):
+        if event == "error":
+            seen.append(_anon_count("t-refund-first"))
+        return real_format(event, data)
+
+    monkeypatch.setattr(thread_routes, "format_sse_event", _format)
+
+    await _ask(client, "t-refund-first")
+
+    assert seen == [0]
+
+
+async def test_run_refused_as_busy_does_not_use_a_question(client, monkeypatch):
+    import src.api.thread_runs as tr
 
     _deferred_turnstile(monkeypatch)
     _mock_stream_agent(monkeypatch)
-    seen: list[int] = []
+    await _ask(client, "t-busy")
+    tr.acquire_thread_run("t-busy", "other-run")
 
-    async def _report(**_kwargs):
-        seen.append(get_turnstile_guard()._sessions["t-order"].query_count)
+    r = await _ask(client, "t-busy")
 
-    monkeypatch.setattr("src.api.thread_routes._write_turn_report", _report)
-    await _ask(client, "t-order")
+    assert r.status_code == 409
+    assert _anon_count("t-busy") == 1
 
-    assert seen == [1]
+
+async def test_run_concurrent_questions_cannot_exceed_the_limit(client, monkeypatch):
+    """Only the run that holds the thread is counted, so a burst can't share
+    one free question or spend extra ones."""
+    _deferred_turnstile(monkeypatch, free_queries=1)
+    release = asyncio.Event()
+
+    async def _waits(**_kwargs):
+        await release.wait()
+        yield "updates", {"tool_calling_loop": {"final_answer": "hi"}}
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _waits)
+
+    first = asyncio.ensure_future(_ask(client, "t-burst"))
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if "t-burst" in thread_routes_runs()._active_by_thread:
+            break
+    second = await _ask(client, "t-burst")
+    release.set()
+    await first
+
+    assert _challenged(second)
+    assert _anon_count("t-burst") == 1
+
+
+async def test_run_failure_before_hand_off_refunds_the_question(client, monkeypatch):
+    _deferred_turnstile(monkeypatch)
+
+    with (
+        patch("src.api.thread_routes.StreamingResponse", side_effect=RuntimeError("boom")),
+        pytest.raises(RuntimeError, match="boom"),
+    ):
+        await _ask(client, "t-no-hand-off")
+
+    assert _anon_count("t-no-hand-off") == 0
 
 
 def _sse(body: str) -> list[tuple[str, Any]]:
