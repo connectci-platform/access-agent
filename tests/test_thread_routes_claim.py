@@ -1,7 +1,8 @@
-"""Tests for POST /threads/{id}/claim and the key rule on the upgrade paths.
+"""Tests for POST /threads/{id}/claim through to the sidebar.
 
 A fullscreen thread id travels in ``?threadId=``, so knowing it proves nothing.
 Only the claim key the browser sent on the thread's first anonymous run does.
+The full access table is in tests/test_thread_access.py.
 """
 
 import pytest
@@ -129,7 +130,10 @@ async def test_knowing_the_thread_id_is_not_enough(client, bearer_for, key):
 
 async def test_a_later_anonymous_visitor_cannot_replace_the_key(client, bearer_for):
     await _anon_run(client, "t-keyed")
-    await _anon_run(client, "t-keyed", OTHER_KEY)
+    r = await client.post(
+        "/api/v1/threads/t-keyed/runs/stream", headers={CLAIM_KEY_HEADER: OTHER_KEY}, json=RUN_BODY
+    )
+    assert r.status_code == 404
 
     assert (await _claim(client, "t-keyed", bearer_for("thief@x"), OTHER_KEY)).status_code == 404
     assert (await _claim(client, "t-keyed", bearer_for("me@x"))).status_code == 200

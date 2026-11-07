@@ -128,14 +128,15 @@ async def test_history_anon_caller_on_authed_owned_thread_404(client):
 
 
 async def test_history_anon_owner_gets_200(client):
-    """An anon caller (no token) who owns an anon thread (same session_id)
-    can read their own history — 200, not 404/401."""
-    get_thread_owner_store().claim_thread("t-anon-owned", None)
+    """An anon caller (no token) holding the thread's claim key can read their
+    own history — 200, not 404/401."""
+    get_thread_owner_store().claim_thread("t-anon-owned", None, "k" * 43)
     app.state.checkpointer = None
 
     r = await client.post(
         "/api/v1/threads/t-anon-owned/history",
         json={"limit": 5},
+        headers={"X-Thread-Claim-Key": "k" * 43},
     )
     assert r.status_code == 200
     assert r.json() == []

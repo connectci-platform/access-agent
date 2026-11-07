@@ -2,7 +2,7 @@
 
 Covers defect #1 from the tenant-isolation audit: the widget path resolved
 the caller's identity and called claim_thread, but never called the existing
-check_access gate — so an authenticated caller who was not the thread's owner
+access check — so an authenticated caller who was not the thread's owner
 could resume/append to someone else's authed-owned thread by supplying its
 session_id. Mirrors the runs/stream gate in src/api/thread_routes.py (404,
 never 403, on mismatch — identical body to an unknown thread).
@@ -34,7 +34,7 @@ def _no_turnstile(monkeypatch):
 def _sqlite_db(monkeypatch, tmp_path):
     # Pin the owner store at a temp sqlite file — mirrors tests/test_thread_owners.py
     # and tests/test_query_anon_session_security.py's autouse pin. Without this the
-    # widget claim_thread/check_access calls hit whatever DATABASE_URL is exported
+    # widget claim_thread/access calls hit whatever DATABASE_URL is exported
     # in the dev shell.
     from src.config import settings
 
@@ -55,6 +55,10 @@ def _reset_run_registry():
     yield
     tr._active_by_thread.clear()
     tr._task_by_run.clear()
+
+
+WIDGET_UPGRADE = "qa_bot_session_00000000-0000-4000-8000-000000000001"
+WIDGET_RACE = "qa_bot_session_00000000-0000-4000-8000-000000000002"
 
 
 @pytest.fixture
@@ -187,12 +191,12 @@ async def test_authed_caller_upgrades_anon_thread_and_appears_in_sidebar(
     from src.thread_owners import get_thread_owner_store
     from src.turn_reporter import get_turn_reporter
 
-    seed_owner("t-upgrade", None)  # anon-owned
+    seed_owner(WIDGET_UPGRADE, None)  # anon-owned
 
     reporter = get_turn_reporter()
     reporter.log_turn_report(
         final_state={"final_answer": "hi", "tools_used": []},
-        session_id="t-upgrade",
+        session_id=WIDGET_UPGRADE,
         turn_index=1,
         question_id="q-anon-1",
         query_text="anon turn before login",
@@ -205,13 +209,13 @@ async def test_authed_caller_upgrades_anon_thread_and_appears_in_sidebar(
     r = await client.post(
         "/api/v1/query",
         headers=bearer_for("me@access-ci.org"),
-        json={"query": "hi again", "session_id": "t-upgrade"},
+        json={"query": "hi again", "session_id": WIDGET_UPGRADE},
     )
 
     assert r.status_code == 200
     mock_agent.assert_called_once()
 
-    owner = get_thread_owner_store().resolve_owner("t-upgrade")
+    owner = get_thread_owner_store().resolve_owner(WIDGET_UPGRADE)
     assert owner is not None
     assert owner.was_authenticated is True
 
@@ -221,30 +225,30 @@ async def test_authed_caller_upgrades_anon_thread_and_appears_in_sidebar(
     assert owner.user_hash == expected_hash
 
     threads = reporter.list_threads_for_user(expected_hash, limit=10)
-    assert any(t["session_id"] == "t-upgrade" for t in threads)
+    assert any(t["session_id"] == WIDGET_UPGRADE for t in threads)
 
 
 async def test_losing_race_caller_does_not_backfill_winners_thread(
     client, bearer_for, seed_owner, mock_agent, mock_registry
 ):
     """Two authed users race their first post-login turn on the same anon
-    session_id. A wins the upgrade_owner flip first (simulated here by flipping
+    session_id. A wins the flip first (simulated here by flipping
     ownership to alice out-of-band, before B's request arrives). B's branch
     still runs (B read the owner as anon-owned before the flip) but B's own
-    upgrade_owner call must lose (WHERE was_authenticated == False matches
-    zero rows once alice's flip has landed) — and per the fix, a losing
-    upgrade_owner must gate off backfill_user_hash so B never re-tags alice's
+    flip must lose (WHERE was_authenticated == False matches zero rows once
+    alice's flip has landed) — and per the fix, a losing flip must gate off
+    backfill_user_hash so B never re-tags alice's
     still-NULL-hashed historical turn_reports row onto bob's hash.
     """
     from src.thread_owners import get_thread_owner_store
     from src.turn_reporter import get_turn_reporter
 
-    seed_owner("t-race", None)  # anon-owned
+    seed_owner(WIDGET_RACE, None)  # anon-owned
 
     reporter = get_turn_reporter()
     reporter.log_turn_report(
         final_state={"final_answer": "hi", "tools_used": []},
-        session_id="t-race",
+        session_id=WIDGET_RACE,
         turn_index=1,
         question_id="q-anon-1",
         query_text="anon turn before login",
@@ -255,16 +259,16 @@ async def test_losing_race_caller_does_not_backfill_winners_thread(
     )
 
     owner_store = get_thread_owner_store()
-    # Simulate alice's upgrade_owner call having already won the race and
-    # committed, before bob's backfill (or upgrade_owner) call executes.
-    assert owner_store.upgrade_owner("t-race", "alice@access-ci.org") is True
+    # Simulate alice's flip having already won the race and committed, before
+    # bob's backfill (or flip) call executes.
+    assert owner_store.upgrade_widget_session(WIDGET_RACE, "alice@access-ci.org") is True
 
     # Simulate the race window: bob's request resolved the owner as
     # anon-owned (a stale read taken before alice's flip committed), so bob's
     # request still enters the anon-owned+authed-caller elif branch in
-    # src/api/routes.py — exactly as the real concurrent scenario would, since
-    # resolve_owner and the branch's own upgrade_owner call are not in the
-    # same transaction. The real upgrade_owner call below still hits the
+    # src/api/thread_access.py — exactly as the real concurrent scenario would,
+    # since resolve_owner and the flip are not in the same transaction. The
+    # real flip below still hits the
     # live (already-flipped) row and correctly returns False; only the stale
     # *read* is faked, not the write.
     from unittest.mock import patch
@@ -276,15 +280,15 @@ async def test_losing_race_caller_does_not_backfill_winners_thread(
         r = await client.post(
             "/api/v1/query",
             headers=bearer_for("bob@access-ci.org"),
-            json={"query": "hi again", "session_id": "t-race"},
+            json={"query": "hi again", "session_id": WIDGET_RACE},
         )
 
     # Bob lost the flip, so the thread is alice's and he gets the usual 404.
     assert r.status_code == 404
     mock_agent.assert_not_called()
 
-    # Ownership must remain alice's — bob's upgrade_owner call lost the race.
-    owner = owner_store.resolve_owner("t-race")
+    # Ownership must remain alice's — bob's flip lost the race.
+    owner = owner_store.resolve_owner(WIDGET_RACE)
     assert owner is not None
     assert owner.was_authenticated is True
 

@@ -80,7 +80,7 @@ async def test_mint_anon_owned_thread_gets_404(client, bearer_for):
     the anon guard the request would fall through to `_hash_user(caller) != None`
     and still 404. That is not a test gap that can be closed: the state the anon
     guard uniquely defends — was_authenticated=False WITH a non-null user_hash —
-    is unreachable (only upgrade_owner writes a non-null hash, and it also flips
+    is unreachable (only a flip writes a non-null hash, and it also flips
     was_authenticated=True). The guard is therefore fail-closed defense-in-depth,
     not the sole load-bearing check for this scenario. See mint_handoff's
     docstring in thread_routes.py."""

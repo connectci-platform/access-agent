@@ -12,6 +12,9 @@ access-agent.elytra.net qa.access-ci.org {
 
     log {
         output stdout
-        format json
+        format filter {
+            request>headers>X-Thread-Claim-Key delete
+            wrap json
+        }
     }
 }

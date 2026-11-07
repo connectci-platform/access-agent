@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import logging
+import re
 from datetime import UTC, datetime
+from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
-from sqlalchemy import Boolean, Column, DateTime, String, create_engine, exists, or_, update
+from sqlalchemy import Boolean, Column, DateTime, String, create_engine, exists, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
@@ -19,6 +22,30 @@ ThreadOwnerBase = declarative_base()
 
 MIN_CLAIM_KEY_LENGTH = 32
 MAX_CLAIM_KEY_LENGTH = 128
+
+_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_FULLSCREEN_THREAD_ID = re.compile(_UUID, re.IGNORECASE)
+# qa-bot-core's generateSessionId, the widget's only source of session_id.
+_WIDGET_SESSION_ID = re.compile(f"qa_bot_session_{_UUID}", re.IGNORECASE)
+
+
+def is_fullscreen_thread_id(thread_id: str) -> bool:
+    """A bare uuid: what POST /threads mints and the client puts in ?threadId=."""
+    return _FULLSCREEN_THREAD_ID.fullmatch(thread_id) is not None
+
+
+def is_widget_session(thread_id: str) -> bool:
+    return _WIDGET_SESSION_ID.fullmatch(thread_id) is not None
+
+
+class ThreadAccess(Enum):
+    """How a caller stands with a thread, before any route's rules apply."""
+
+    NEW = auto()  # no such thread yet
+    OWNER = auto()  # the signed-in owner
+    KEY_HOLDER = auto()  # unclaimed, and the caller has its key
+    KEYLESS = auto()  # unclaimed, with no key on record to check
+    DENIED = auto()  # someone else's, or the wrong or missing key
 
 
 class ThreadOwner(NamedTuple):
@@ -123,24 +150,19 @@ class ThreadOwnerStore:
         finally:
             session.close()
 
-    def upgrade_owner(self, thread_id: str, acting_user: str, claim_key: str | None = None) -> bool:
-        """Flip an anon-owned thread to authed ownership on login.
+    def upgrade_widget_session(self, thread_id: str, acting_user: str) -> bool:
+        """Flip a widget session to authed ownership when its user signs in.
 
-        A thread with a stored claim key flips only for that key. A thread
-        without one (a widget session, whose id stays private, or a row from
-        before keys existed) flips for any caller presenting its id.
+        The one flip that needs no key: the widget has none, and its id stays
+        in the browser. Anything else with no key on record stays locked.
         """
-        key_hash = _hash_claim_key(claim_key)
+        if not is_widget_session(thread_id):
+            return False
         has_key = exists().where(ThreadClaimKeyRow.thread_id == thread_id)
-        key_matches = has_key.where(ThreadClaimKeyRow.key_hash == key_hash)
-        return self._flip_to_authed(thread_id, acting_user, or_(~has_key, key_matches))
+        return self._flip_to_authed(thread_id, acting_user, ~has_key)
 
     def claim_with_key(self, thread_id: str, acting_user: str, claim_key: str | None) -> bool:
-        """Flip an anon-owned thread only on a stored, matching claim key.
-
-        Stricter than upgrade_owner: a thread with no stored key has no proof
-        to check, so it is refused.
-        """
+        """Flip an anon-owned thread only on a stored, matching claim key."""
         key_hash = _hash_claim_key(claim_key)
         if key_hash is None:
             return False
@@ -205,45 +227,42 @@ class ThreadOwnerStore:
             and owner.user_hash == _hash_user(acting_user)
         )
 
-    def check_access(self, thread_id: str, acting_user: str | None) -> bool:
-        acting_user = acting_user or None  # empty string is anonymous, not authed-with-null-hash
+    def _stored_key_hash(self, thread_id: str) -> str | None:
+        if not self._ensure() or self._session_factory is None:
+            return None
+        session = self._session_factory()
+        try:
+            row = session.get(ThreadClaimKeyRow, thread_id)
+            return None if row is None else str(row.key_hash)
+        finally:
+            session.close()
+
+    def access(
+        self, thread_id: str, acting_user: str | None, claim_key: str | None = None
+    ) -> ThreadAccess:
+        """Where the caller stands. The rules live in src/api/thread_access.py.
+
+        The thread id itself counts for nothing here: the fullscreen client
+        keeps it in ?threadId=, so anyone can hold it.
+        """
         owner = self.resolve_owner(thread_id)
         if owner is None:
-            return False
+            return ThreadAccess.NEW
         if owner.was_authenticated:
             # Fail-closed: an authed row must carry a user_hash to grant access.
-            # Today unreachable (claim_thread/upgrade_owner never set
-            # was_authenticated=True without also hashing a truthy
-            # acting_user) but a NULL-hash authed row must never fall through
-            # to the anon branch's unconditional True — that would be a
-            # fail-OPEN on the tenant-isolation security boundary.
-            if not owner.user_hash:
-                return False
-            return _hash_user(acting_user) == owner.user_hash
-        # Anon-owned thread: access is granted to ANY caller by design, and that
-        # is safe because an anon thread is a capability. It is reachable only by
-        # a caller who already presents its session_id, and that session_id is a
-        # high-entropy, unguessable token (client-supplied qa_bot_session_<uuid>,
-        # or the server's secrets.token_urlsafe fallback — see src/api/routes.py).
-        # The unguessable id IS the credential; access does not derive from being
-        # authenticated. This deliberately preserves the anon→login→keep-resuming
-        # flow (a user who signs in mid-thread keeps their history). Do NOT "fix"
-        # this by adding a caller-identity check — that would break resumption
-        # without adding security, since the id already gates reachability.
-        #
-        # CONSEQUENCE THIS COMMENT CANNOT ENFORCE: because the id is the
-        # credential for an anon thread, a session_id must be handled with the
-        # same care as a password or bearer token everywhere it appears. Do NOT
-        # put a session_id in a URL/query string, a redirect, a log line, a
-        # support ticket, an analytics/error report, or any place it could be
-        # observed — leaking one grants access to that conversation. If you ever
-        # need to weaken that (e.g. a session_id genuinely must travel in a URL),
-        # the anon capability model here must change first; it is load-bearing.
-        #
-        # The fullscreen client does keep its thread id in ?threadId=, so for
-        # those threads the id grants reading only. Taking ownership needs the
-        # claim key (see ThreadClaimKeyRow).
-        return True
+            # Today unreachable (no write path sets was_authenticated=True
+            # without hashing a truthy acting_user), but a NULL-hash authed row
+            # must never match a caller with no identity.
+            if owner.user_hash and owner.user_hash == _hash_user(acting_user or None):
+                return ThreadAccess.OWNER
+            return ThreadAccess.DENIED
+        stored = self._stored_key_hash(thread_id)
+        if stored is None:
+            return ThreadAccess.KEYLESS
+        presented = _hash_claim_key(claim_key) or ""
+        if hmac.compare_digest(stored, presented):
+            return ThreadAccess.KEY_HOLDER
+        return ThreadAccess.DENIED
 
 
 _store: ThreadOwnerStore | None = None
