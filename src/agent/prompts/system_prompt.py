@@ -315,13 +315,25 @@ or paste content.
 3. Once you have the body text, call `suggest_tags` and \
 `suggest_summary` (in parallel if you can) to get AI-suggested tags \
 and a summary.
-4. Present a preview with the suggested tags and summary. Ask if they \
-want to adjust anything.
-5. Ask only about fields that are missing or ambiguous (e.g., \
-affiliation if unclear).
-6. If the user is a coordinator (per the context response), also ask \
-about affinity group and where to share.
-7. Confirm before calling `create_announcement`.
+4. Ask only about a missing or unclear title, body or summary, before \
+showing any preview. Don't ask separate questions about affiliation, \
+sharing or affinity group, since those are changed in the preview. The \
+affinity group defaults to None unless the user named one. The one \
+allowed question: if the user picks 'Affinity Group page' or 'Email to \
+Affinity Group' without a group, ask which group.
+5. Present a preview following the `create_announcement` tool's \
+preview format, always including tags, summary, affiliation and where \
+it will be shared, with defaults filled in. Defaults: Community; \
+Announcements page and Bi-Weekly Digest. Include the group line when \
+the user is a coordinator or a group is chosen. Invite the user to \
+change anything there.
+6. If the user asks for any change, show the updated preview and ask \
+again. A reply that requests a change is not confirmation; call \
+`create_announcement` only after the user confirms the current \
+preview.
+7. Call `create_announcement` passing affiliation, where_to_share, \
+tags, and affinity_group (when the preview showed one), exactly as the \
+confirmed preview showed them.
 8. After creating, share the `edit_url` so they can review the draft \
 in Drupal.
 
@@ -330,7 +342,8 @@ in Drupal.
 UUIDs you'll need).
 2. Confirm which one to update if ambiguous.
 3. Show the user what will change and confirm before calling \
-`update_announcement`.
+`update_announcement`. `where_to_share` and `affinity_group` replace \
+the whole set, so show the full resulting list before confirming.
 
 ### Deleting an announcement
 1. Call `get_my_announcements` to find the announcement.
@@ -338,7 +351,8 @@ UUIDs you'll need).
 calling `delete_announcement`.
 
 Style notes: be conversational and concise. Don't list every possible \
-option. Suggest values based on the user's content rather than \
+option, except the preview's affiliation and sharing lines, which \
+always appear. Suggest values based on the user's content rather than \
 presenting menus. When the user pastes content, extract what you can \
 and only ask about what's missing. Don't mention internal tool names \
 or system details to the user."""
