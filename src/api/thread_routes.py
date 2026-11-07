@@ -208,7 +208,11 @@ async def _stream_run_events(
         checkpointer=checkpointer,
     ):
         if stream_type == "custom":
-            if isinstance(chunk, dict) and chunk.get("type") == "status":
+            if (
+                isinstance(chunk, dict)
+                and chunk.get("type") == "status"
+                and isinstance(chunk.get("message"), str)
+            ):
                 yield format_sse_event("custom", {"type": "status", "message": chunk["message"]})
         elif stream_type == "messages":
             msg, metadata = chunk

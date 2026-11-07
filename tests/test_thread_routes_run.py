@@ -991,6 +991,8 @@ async def test_status_events_reach_the_client_before_the_answer(client, bearer, 
             ("custom", {"type": "status", "message": "Searching software..."}),
             ("custom", {"type": "other", "message": "ignored"}),
             ("custom", "not a dict"),
+            ("custom", {"type": "status"}),
+            ("custom", {"type": "status", "message": 42}),
             (
                 "messages",
                 (AIMessageChunk(content="Yes", id="m1"), {"langgraph_node": "model"}),
@@ -1002,3 +1004,4 @@ async def test_status_events_reach_the_client_before_the_answer(client, bearer, 
     custom = [data for name, data in events if name == "custom"]
     assert custom == [{"type": "status", "message": "Searching software..."}]
     assert names.index("custom") < names.index("messages")
+    assert "error" not in names
