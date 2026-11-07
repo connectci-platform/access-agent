@@ -209,12 +209,13 @@ class UsageLogger:
 
         Anti-spoofing checks (per capability registry spec):
         - question_id must exist in usage_logs
+        - Ownership: the row's signed-in owner, or the row's session_id. Checked
+          first and answered like an unknown id, so a stranger can't learn that
+          a turn exists or has been rated.
         - One rating per query (409 if already rated)
-        - Ownership: authenticated users must match user_hash;
-          anonymous users must match session_id
         - Time window: only within 24h of the original query
 
-        Returns: "ok", "not_found", "already_rated", "forbidden", "expired", or "error".
+        Returns: "ok", "not_found", "already_rated", "expired", or "error".
         """
         if not self._ensure_initialized():
             return "error"
@@ -227,6 +228,14 @@ class UsageLogger:
             entry = session.query(UsageLog).filter_by(question_id=question_id).first()
             if not entry:
                 logger.warning("Rating for unknown question_id: %s", question_id)
+                session.close()
+                return "not_found"
+
+            caller_hash = self._hash_user(acting_user)
+            is_owner = caller_hash is not None and entry.user_hash == caller_hash
+            same_session = session_id is not None and entry.session_id == session_id
+            if not (is_owner or same_session):
+                logger.warning("Rating refused for question_id: %s", question_id)
                 session.close()
                 return "not_found"
 
@@ -244,20 +253,6 @@ class UsageLogger:
                     logger.warning("Expired rating for question_id: %s", question_id)
                     session.close()
                     return "expired"
-
-            # Ownership check
-            if acting_user:
-                # Authenticated: user_hash must match
-                caller_hash = self._hash_user(acting_user)
-                if entry.user_hash and entry.user_hash != caller_hash:
-                    logger.warning("Ownership mismatch for question_id: %s", question_id)
-                    session.close()
-                    return "forbidden"
-            # Anonymous: session_id must match
-            elif session_id and entry.session_id and entry.session_id != session_id:
-                logger.warning("Session mismatch for question_id: %s", question_id)
-                session.close()
-                return "forbidden"
 
             entry.rating = rating
             entry.rating_feedback = feedback

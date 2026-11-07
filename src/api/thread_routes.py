@@ -23,7 +23,6 @@ from ..agent.context import AgentContext
 from ..agent.graph import create_checkpointed_graph, stream_agent
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..config import settings
-from ..thread_owners import ThreadAccess, get_thread_owner_store
 from ..turn_reporter import _hash_user, get_turn_reporter
 from ..turnstile import check_turnstile
 from .answer_tokens import ANSWER_MODEL_NODE, is_answer_token
@@ -34,7 +33,7 @@ from .handoff_tokens import (
 )
 from .identity import ClaimKey, Identity, require_identity
 from .sse import format_sse_event
-from .thread_access import refuse_thread, require_thread_access
+from .thread_access import require_thread_access
 from .thread_runs import (
     acquire_thread_run,
     cancel_run,
@@ -337,9 +336,7 @@ async def claim_thread_on_sign_in(
 
     Repeating this as the owner succeeds, which also retries a failed backfill.
     """
-    caller = require_identity(identity)
-    if require_thread_access(thread_id, caller, claim_key, write=True) is ThreadAccess.NEW:
-        raise refuse_thread()
+    require_thread_access(thread_id, require_identity(identity), claim_key, write=True)
     return {"thread_id": thread_id}
 
 
@@ -385,9 +382,9 @@ async def thread_run_stream(
 ) -> StreamingResponse | JSONResponse:
     """Stream one agent turn on a thread as the LangGraph run protocol SSE.
 
-    Ownership is atomic on the first run: ``claim_thread`` writes the ownership
-    row transactionally (UNIQUE(thread_id)); a genuinely new thread's caller wins
-    it, an existing thread must pass ``require_thread_access``. All status-code-bearing
+    Ownership is atomic on the first run: ``require_thread_access`` writes the
+    ownership row transactionally (UNIQUE(thread_id)), so one caller wins a new
+    thread and an existing thread must pass the check. All status-code-bearing
     checks run before StreamingResponse is returned: the token's 401/503 in
     ``request_identity``, and 404/409 HERE. A status raised inside the generator
     would land after Starlette flushed 200.
@@ -395,10 +392,8 @@ async def thread_run_stream(
     # 1. Anon-accept: caller may be None; ownership below still fails closed.
     caller = identity.sub if identity else None
 
-    # 2. Check access, THEN claim: the flip to authed ownership has to be
-    # decided against the owner state from before this run's claim.
-    require_thread_access(thread_id, caller, claim_key, write=True)
-    get_thread_owner_store().claim_thread(thread_id, caller, claim_key)  # no-op if it exists
+    # 2. Check access. For a new thread this also writes the ownership row.
+    require_thread_access(thread_id, caller, claim_key, write=True, create=True)
 
     # Turnstile gate — ported from routes.py's /query (see src/turnstile.py).
     # Authed callers skip immediately inside check_turnstile. The thread_id is

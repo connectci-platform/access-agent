@@ -13,7 +13,7 @@ from langchain_core.messages import AIMessageChunk
 
 from src.api.identity import CLAIM_KEY_HEADER
 from src.main import app
-from src.thread_owners import _hash_user, get_thread_owner_store
+from src.thread_owners import ThreadAccess, _hash_user, get_thread_owner_store
 
 KEY = "k" * 43
 WRONG_KEY = "o" * 43
@@ -321,3 +321,74 @@ async def test_an_older_fullscreen_thread_stays_locked_with_uppercase_id(client,
     get_thread_owner_store().claim_thread(thread_id, None)
 
     assert (await _query(client, thread_id, headers(None, None))).status_code == 404
+
+
+# ---- losing the first-writer race ------------------------------------------
+
+
+def _stale_then_real():
+    """The first read saw no thread; another writer's row landed right after."""
+    store = get_thread_owner_store()
+    real = store.access
+    answers = iter([ThreadAccess.NEW])
+    return patch.object(
+        store,
+        "access",
+        side_effect=lambda *args: next(answers, None) or real(*args),
+    )
+
+
+@pytest.mark.parametrize("route", [_run, _query], ids=["run", "query"])
+async def test_losing_the_first_write_to_someone_else_is_a_404(client, headers, route):
+    thread_id = _seed("owned")
+
+    with _stale_then_real():
+        r = await route(client, thread_id, headers(OTHER, None))
+
+    assert r.status_code == 404
+    assert r.json() == NOT_FOUND
+
+
+async def test_losing_the_first_write_to_an_anonymous_browser_is_a_404(client, headers):
+    thread_id = _seed("keyed")
+
+    with _stale_then_real():
+        r = await _run(client, thread_id, headers(None, WRONG_KEY))
+
+    assert r.status_code == 404
+
+
+async def test_losing_the_first_write_to_your_own_other_request_is_fine(client, headers):
+    thread_id = _seed("keyed")
+
+    with _stale_then_real():
+        r = await _run(client, thread_id, headers(None, KEY))
+
+    assert r.status_code == 200
+
+
+async def test_the_widget_racing_itself_on_a_new_session_is_fine(client, headers):
+    get_thread_owner_store().claim_thread(WIDGET_ID, None)
+
+    with _stale_then_real():
+        r = await _query(client, WIDGET_ID, headers(None, None))
+
+    assert r.status_code == 200
+
+
+@pytest.mark.parametrize("route", [_run, _query], ids=["run", "query"])
+async def test_a_new_thread_works_without_a_database(client, headers, monkeypatch, route):
+    """No owner store means nothing to own, so the failed claim isn't a lost race."""
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "DATABASE_URL", "", raising=False)
+    import src.thread_owners as m
+
+    m._store = None
+
+    assert (await route(client, "t-no-db", headers(None, KEY))).status_code == 200
+
+
+async def test_a_claim_never_creates_a_thread(client, headers):
+    assert (await _claim(client, "t-new", headers(OWNER, KEY))).status_code == 404
+    assert get_thread_owner_store().resolve_owner("t-new") is None

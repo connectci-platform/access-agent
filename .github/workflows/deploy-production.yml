@@ -145,6 +145,9 @@ jobs:
             echo "Restarting services..."
             docker compose -f docker-compose.prod.yml up -d --remove-orphans
 
+            # `up -d` leaves Caddy running when only its bind-mounted config changed.
+            sh scripts/recreate-caddy-if-config-changed.sh docker-compose.prod.yml
+
             # Clean up old images
             echo "Cleaning up old images..."
             docker image prune -f

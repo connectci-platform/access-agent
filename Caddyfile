@@ -1,3 +1,14 @@
+{
+    # The default logger carries http.log.error, so a failed proxy request
+    # logs its headers here. The site's log block below only covers access logs.
+    log default {
+        format filter {
+            request>headers>X-Thread-Claim-Key delete
+            wrap json
+        }
+    }
+}
+
 access-agent.elytra.net qa.access-ci.org {
     # Use internal TLS (Cloudflare handles public SSL)
     tls internal

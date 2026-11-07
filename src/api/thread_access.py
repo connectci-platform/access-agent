@@ -56,27 +56,38 @@ def _link_to_caller(
     turn_reporter.get_turn_reporter().backfill_user_hash(thread_id, caller)
 
 
+def _allowed(access: ThreadAccess, thread_id: str, caller: str | None, *, via_query: bool) -> bool:
+    if access in (ThreadAccess.OWNER, ThreadAccess.KEY_HOLDER):
+        return True
+    return via_query and access is ThreadAccess.KEYLESS and _query_may_continue(thread_id, caller)
+
+
 def require_thread_access(
     thread_id: str,
     caller: str | None,
     claim_key: str | None,
     *,
     write: bool = False,
+    create: bool = False,
     via_query: bool = False,
-) -> ThreadAccess:
-    """Pass or raise the unknown-thread 404, returning how the caller got in.
+) -> None:
+    """Pass, or raise the unknown-thread 404.
 
-    ``write`` lets a new thread through for the caller to create, and links the
-    thread to a signed-in caller. ``via_query`` applies /query's exception.
+    ``write`` links the thread to a signed-in caller. ``create`` lets a caller
+    make a new thread, owning it from this moment. ``via_query`` applies
+    /query's exception.
     """
-    access = get_thread_owner_store().access(thread_id, caller, claim_key)
-    allowed = (
-        access in (ThreadAccess.OWNER, ThreadAccess.KEY_HOLDER)
-        or (write and access is ThreadAccess.NEW)
-        or (via_query and access is ThreadAccess.KEYLESS and _query_may_continue(thread_id, caller))
-    )
-    if not allowed:
+    store = get_thread_owner_store()
+    access = store.access(thread_id, caller, claim_key)
+    if create and access is ThreadAccess.NEW:
+        if store.claim_thread(thread_id, caller, claim_key):
+            return
+        # The row is the only arbiter across workers: someone else may have got
+        # there first, so judge this caller against what's there now.
+        access = store.access(thread_id, caller, claim_key)
+        if access is ThreadAccess.NEW:
+            return  # no database, so there's nothing to own
+    if not _allowed(access, thread_id, caller, via_query=via_query):
         raise refuse_thread()
-    if write and caller and access is not ThreadAccess.NEW:
+    if write and caller:
         _link_to_caller(thread_id, caller, claim_key, access)
-    return access

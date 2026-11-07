@@ -19,7 +19,6 @@ from ..agent.graph import stream_agent
 from ..agent.profile import UserProfile
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..config import settings
-from ..thread_owners import get_thread_owner_store
 from ..tools import ToolRegistry, get_catalog_aggregator
 from ..turnstile import check_turnstile, get_turnstile_guard
 from ..usage_logger import get_usage_logger
@@ -608,19 +607,10 @@ async def query_agent(
     report_context = redteam_report_context(raw_request.headers)
 
     # The same check as the thread routes, plus /query's exception for the
-    # widget and non-browser callers. `user` and `acting_user` are the same
+    # widget and non-browser callers. It creates a new thread's ownership row, so
+    # every thread is owned from turn one. `user` and `acting_user` are the same
     # token-verified identity; there is no body-supplied identity.
-    require_thread_access(session_id, user, claim_key, write=True, via_query=True)
-    owner_store = get_thread_owner_store()
-
-    # Claim thread ownership on the widget path too. Every thread must be owned
-    # by its creator from turn one; otherwise a fullscreen runs/stream caller
-    # could claim_thread a pre-existing widget conversation and take it over.
-    # Ignore the bool — the widget doesn't gate on it; the row just has to exist.
-    #
-    # Ownership comes from token-verified identity only (`user`). An
-    # anonymous caller claims an anon-owned thread (was_authenticated=False).
-    owner_store.claim_thread(session_id, user)
+    require_thread_access(session_id, user, claim_key, write=True, create=True, via_query=True)
 
     # Share the per-thread run lock with the runs/stream endpoint (they collide on
     # session_id == thread_id and both do the read-modify-write resume). Acquire in
@@ -765,8 +755,9 @@ class RatingRequest(BaseModel):
 async def submit_rating(request: RatingRequest, identity: Identity) -> dict[str, Any]:
     """Submit a rating for an agent response.
 
-    Anti-spoofing: authenticated users must own the query (user_hash match);
-    anonymous users must match session_id. One rating per query. 24h window.
+    Anti-spoofing: the caller must be the turn's signed-in owner or send its
+    session_id, or gets the same 404 as an unknown query. One rating per query.
+    24h window.
     """
     if request.rating not in ("helpful", "not_helpful"):
         raise HTTPException(status_code=400, detail="rating must be 'helpful' or 'not_helpful'")
@@ -799,8 +790,6 @@ async def submit_rating(request: RatingRequest, identity: Identity) -> dict[str,
         raise HTTPException(status_code=404, detail="query_id not found")
     if result == "already_rated":
         raise HTTPException(status_code=409, detail="query already rated")
-    if result == "forbidden":
-        raise HTTPException(status_code=403, detail="not authorized to rate this query")
     if result == "expired":
         raise HTTPException(status_code=410, detail="rating window expired (24h)")
     raise HTTPException(status_code=500, detail="rating failed")
