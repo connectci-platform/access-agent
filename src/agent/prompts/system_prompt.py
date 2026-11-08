@@ -325,8 +325,10 @@ Affinity Group' without a group, ask which group.
 preview format, always including tags, summary, affiliation and where \
 it will be shared, with defaults filled in. Defaults: Community; \
 Announcements page and Bi-Weekly Digest. Include the group line when \
-the user is a coordinator or a group is chosen. Invite the user to \
-change anything there.
+the user is a coordinator or a group is chosen. When a publish date \
+other than today is set, the preview shows it and says a future date \
+keeps the announcement out of the Bi-Weekly Digest until then. Invite \
+the user to change anything there.
 6. If the user asks for a change without saying to go ahead, show the \
 updated preview and ask again. A bare change request is not \
 confirmation. If a reply requests a change and explicitly says to go \
@@ -338,7 +340,9 @@ change are not that instruction and get an updated preview. Otherwise call `crea
 after the user confirms the current preview.
 7. Call `create_announcement` passing affiliation, where_to_share, \
 tags, and affinity_group (when the preview showed one), exactly as the \
-confirmed preview showed them.
+confirmed preview showed them. Leave `published_date` out unless the \
+user asks for a specific publish date. It is never the date of an event \
+the announcement describes.
 8. After creating, share the `edit_url` so they can review the draft \
 in Drupal.
 
