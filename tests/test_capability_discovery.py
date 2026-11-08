@@ -222,6 +222,21 @@ def test_sign_in_note_only_when_anonymous():
     assert signed_in.endswith("I can open a support ticket for you.")
 
 
+def test_signed_in_allocations_speak_about_your_own():
+    anonymous, anonymous_suggestions = area_overview(_enabled(), False)
+    signed_in, signed_in_suggestions = area_overview(_enabled(), True)
+
+    assert "once you sign in" in anonymous
+    assert "once you sign in" not in signed_in
+    assert (
+        "How to get an allocation and what kinds exist, plus your own "
+        "allocations, balances and usage." in signed_in
+    )
+    assert "What allocations do I have?" in signed_in_suggestions
+    assert "What allocations are available for new researchers?" not in signed_in_suggestions
+    assert "What allocations do I have?" not in anonymous_suggestions
+
+
 def test_staff_tools_never_appear():
     answer, suggestions = area_overview(_enabled(), True)
 
