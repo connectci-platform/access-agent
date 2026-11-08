@@ -359,46 +359,63 @@ class TestHealthWithFilteredCatalog:
         assert "events" in result["tools"]["unavailable_servers"]
 
 
-class TestRefreshInvalidatesRegistry:
-    """Catalog refreshes must drop the cached ToolRegistry so the agent's
-    next query rebuilds from the refreshed catalog (#240 — previously a
+class TestRefreshReachesRegistry:
+    """Catalog refreshes must reach the agent's cached ToolRegistry: the next
+    get_registry() rebuilds from the refreshed catalog (#240 — previously a
     refresh only updated the public /catalog payload)."""
 
-    @pytest.mark.asyncio
-    async def test_post_refresh_invalidates(self, httpx_mock: HTTPXMock):
+    URL = "http://allocations:3000"
+
+    def _respond(self, httpx_mock: HTTPXMock, tool: str | None) -> None:
+        if tool is None:
+            httpx_mock.add_response(method="GET", url=f"{self.URL}/tools", status_code=500)
+        else:
+            httpx_mock.add_response(
+                method="GET",
+                url=f"{self.URL}/tools",
+                json={"tools": [{"name": tool, "description": tool}]},
+            )
+
+    def _aggregator(self) -> CatalogAggregator:
+        # Long retry delay: these tests are about refreshes, not recovery.
+        return CatalogAggregator(server_urls={"allocations": self.URL}, recovery_initial_delay=3600)
+
+    @pytest.fixture(autouse=True)
+    def _fresh_registry(self):
         from src.api import routes
 
-        httpx_mock.add_response(
-            method="GET",
-            url="http://allocations:3000/tools",
-            json={"tools": []},
-        )
-        aggregator = CatalogAggregator(server_urls={"allocations": "http://allocations:3000"})
-        sentinel = object()
         with (
-            patch.object(routes, "get_catalog_aggregator", return_value=aggregator),
-            patch.object(routes, "_registry", sentinel),
+            patch.object(routes, "_registry", None),
+            patch.object(routes, "_registry_catalog", None),
         ):
+            yield
+
+    @pytest.mark.asyncio
+    async def test_post_refresh_rebuilds(self, httpx_mock: HTTPXMock):
+        from src.api import routes
+
+        self._respond(httpx_mock, "old_tool")
+        self._respond(httpx_mock, "new_tool")
+        aggregator = self._aggregator()
+        with patch.object(routes, "get_catalog_aggregator", return_value=aggregator):
+            before = await routes.get_registry()
             await routes.refresh_catalog()
-            assert routes._registry is None
+            after = await routes.get_registry()
+        assert set(before.tools) == {"old_tool"}
+        assert set(after.tools) == {"new_tool"}
 
     @pytest.mark.asyncio
-    async def test_get_with_refresh_invalidates(self, httpx_mock: HTTPXMock):
+    async def test_get_with_refresh_rebuilds(self, httpx_mock: HTTPXMock):
         from src.api import routes
 
-        httpx_mock.add_response(
-            method="GET",
-            url="http://allocations:3000/tools",
-            json={"tools": []},
-        )
-        aggregator = CatalogAggregator(server_urls={"allocations": "http://allocations:3000"})
-        sentinel = object()
-        with (
-            patch.object(routes, "get_catalog_aggregator", return_value=aggregator),
-            patch.object(routes, "_registry", sentinel),
-        ):
+        self._respond(httpx_mock, "old_tool")
+        self._respond(httpx_mock, "new_tool")
+        aggregator = self._aggregator()
+        with patch.object(routes, "get_catalog_aggregator", return_value=aggregator):
+            await routes.get_registry()
             await routes.get_catalog(refresh=True)
-            assert routes._registry is None
+            after = await routes.get_registry()
+        assert set(after.tools) == {"new_tool"}
 
     @pytest.mark.asyncio
     async def test_failed_refresh_keeps_registry(self):
@@ -429,19 +446,28 @@ class TestRefreshInvalidatesRegistry:
         the agent's tools until the next refresh or restart."""
         from src.api import routes
 
-        httpx_mock.add_response(
-            method="GET",
-            url="http://allocations:3000/tools",
-            status_code=500,
-        )
-        aggregator = CatalogAggregator(server_urls={"allocations": "http://allocations:3000"})
-        sentinel = object()
-        with (
-            patch.object(routes, "get_catalog_aggregator", return_value=aggregator),
-            patch.object(routes, "_registry", sentinel),
-        ):
+        self._respond(httpx_mock, "good_tool")
+        self._respond(httpx_mock, None)
+        aggregator = self._aggregator()
+        with patch.object(routes, "get_catalog_aggregator", return_value=aggregator):
+            before = await routes.get_registry()
             await routes.refresh_catalog()
-            assert routes._registry is sentinel
+            after = await routes.get_registry()
+            await aggregator.stop_recovery()
+        assert after is before
+        assert set(after.tools) == {"good_tool"}
+
+    @pytest.mark.asyncio
+    async def test_all_down_at_startup_still_builds_a_registry(self, httpx_mock: HTTPXMock):
+        """The blip guard only protects a registry we already have."""
+        from src.api import routes
+
+        self._respond(httpx_mock, None)
+        aggregator = self._aggregator()
+        with patch.object(routes, "get_catalog_aggregator", return_value=aggregator):
+            registry = await routes.get_registry()
+            await aggregator.stop_recovery()
+        assert registry.tools == {}
 
     @pytest.mark.asyncio
     async def test_rebuilt_registry_reflects_refreshed_catalog(self, httpx_mock: HTTPXMock):
@@ -461,13 +487,8 @@ class TestRefreshInvalidatesRegistry:
 
         with patch.object(settings, "DISABLED_CAPABILITIES", "extract_xdmod_data"):
             aggregator = CatalogAggregator(server_urls=urls)
-            sentinel = object()
-            with (
-                patch.object(routes, "get_catalog_aggregator", return_value=aggregator),
-                patch.object(routes, "_registry", sentinel),
-            ):
+            with patch.object(routes, "get_catalog_aggregator", return_value=aggregator):
                 await routes.refresh_catalog()
-                assert routes._registry is None
                 rebuilt = await routes.get_registry()
                 assert "allocations__tool" in rebuilt.tools
                 assert "xdmod-data__tool" not in rebuilt.tools
@@ -476,19 +497,12 @@ class TestRefreshInvalidatesRegistry:
     async def test_get_without_refresh_keeps_registry(self, httpx_mock: HTTPXMock):
         from src.api import routes
 
-        httpx_mock.add_response(
-            method="GET",
-            url="http://allocations:3000/tools",
-            json={"tools": []},
-        )
-        aggregator = CatalogAggregator(server_urls={"allocations": "http://allocations:3000"})
-        sentinel = object()
-        with (
-            patch.object(routes, "get_catalog_aggregator", return_value=aggregator),
-            patch.object(routes, "_registry", sentinel),
-        ):
+        self._respond(httpx_mock, "tool")
+        aggregator = self._aggregator()
+        with patch.object(routes, "get_catalog_aggregator", return_value=aggregator):
+            before = await routes.get_registry()
             await routes.get_catalog(refresh=False)
-            assert routes._registry is sentinel
+            assert await routes.get_registry() is before
 
 
 class TestGetCatalogAggregator:

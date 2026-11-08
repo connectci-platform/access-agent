@@ -13,6 +13,14 @@ access-agent.elytra.net qa.access-ci.org {
     # Use internal TLS (Cloudflare handles public SSL)
     tls internal
 
+    # Internal catalog endpoints list MCP server and tool names, and
+    # /catalog/refresh is unauthenticated, so they are not served publicly
+    # (docs/superpowers/specs/2026-03-18-capability-registry-design.md).
+    # Callers on the server reach the agent directly on port 8000 from
+    # inside its container (docker exec), as the deploy smoke test does.
+    @internal_catalog path /api/v1/catalog /api/v1/catalog/* /api/v1/tools /api/v1/tools/*
+    respond @internal_catalog 404
+
     # Proxy all requests to FastAPI backend
     reverse_proxy access-agent:8000 {
         flush_interval -1

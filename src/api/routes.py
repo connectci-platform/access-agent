@@ -69,50 +69,36 @@ def redteam_report_context(headers: Headers) -> dict[str, Any]:
     }
 
 
-# Global registry - built from aggregated catalog
+# Global registry - built from aggregated catalog, plus the catalog object it
+# was built from. The aggregator swaps in a new catalog object on every build
+# (a refresh or a background recovery), so identity tells us when to rebuild.
 _registry: ToolRegistry | None = None
-
-
-def _maybe_invalidate_registry(catalog: dict[str, Any]) -> None:
-    """Drop the cached ToolRegistry so the next query rebuilds it.
-
-    Called by the catalog-refresh paths: without this, a refresh only
-    updated the public /catalog payload while the agent kept serving tools
-    (and tool descriptions) from the registry built at startup (#240).
-
-    Guarded: a refresh that caught every MCP server down (a network blip —
-    per-server failures don't fail the fetch) must not be adopted into the
-    agent, or an unauthenticated refresh call timed during a blip would
-    strip the agent's tools until the next refresh or restart. The public
-    payload still updates (and /health goes degraded, so the blip is
-    visible); the agent keeps its last-good registry.
-    """
-    if catalog.get("servers_available", 0) <= 0:
-        logger.warning(
-            "Catalog refresh found no available servers; keeping the agent's current registry"
-        )
-        return
-    global _registry
-    _registry = None
+_registry_catalog: dict[str, Any] | None = None
 
 
 async def get_registry() -> ToolRegistry:
-    """Get or create the tool registry from aggregated catalog.
+    """Get the tool registry for the aggregator's current catalog.
 
-    Uses the CatalogAggregator to fetch tools from MCP servers.
-    The catalog is fetched at startup and cached.
+    Rebuilt whenever the aggregator has swapped in a new catalog since the
+    last build, so tools a refresh or the background recovery brought back
+    reach the next request (#240, D8-3020).
+
+    Guarded: a catalog that caught every MCP server down (a network blip —
+    per-server failures don't fail the fetch) is not adopted over a registry
+    we already have, or an unauthenticated refresh timed during a blip would
+    strip the agent's tools until the next refresh or restart. /health still
+    goes degraded, so the blip is visible.
     """
-    global _registry
-    if _registry is None:
-        # Get catalog from aggregator (fetched at startup, or fetch now if needed)
-        aggregator = get_catalog_aggregator()
-        catalog = await aggregator.fetch_catalog()
-
-        # Build registry from aggregated catalog
-        _registry = ToolRegistry(catalog=catalog)
-        logger.info(
-            f"Built tool registry with {_registry.tool_count} tools from aggregated catalog"
-        )
+    global _registry, _registry_catalog
+    catalog = await get_catalog_aggregator().fetch_catalog()
+    if catalog is _registry_catalog and _registry is not None:
+        return _registry
+    if _registry is not None and catalog.get("servers_available", 0) <= 0:
+        logger.warning("Catalog has no available servers; keeping the agent's current registry")
+        return _registry
+    _registry = ToolRegistry(catalog=catalog)
+    _registry_catalog = catalog
+    logger.info(f"Built tool registry with {_registry.tool_count} tools from aggregated catalog")
     return _registry
 
 
@@ -832,10 +818,7 @@ async def get_catalog(refresh: bool = False) -> dict[str, Any]:
     """
     try:
         aggregator = get_catalog_aggregator()
-        catalog = await aggregator.fetch_catalog(force_refresh=refresh)
-        if refresh:
-            _maybe_invalidate_registry(catalog)
-        return catalog
+        return await aggregator.fetch_catalog(force_refresh=refresh)
     except Exception as e:
         logger.exception(f"Failed to fetch catalog: {e}")
         raise HTTPException(
@@ -856,7 +839,6 @@ async def refresh_catalog() -> dict[str, Any]:
     try:
         aggregator = get_catalog_aggregator()
         catalog = await aggregator.fetch_catalog(force_refresh=True)
-        _maybe_invalidate_registry(catalog)
         return {
             "success": True,
             "message": f"Catalog refreshed with {catalog['total_tools']} tools",
