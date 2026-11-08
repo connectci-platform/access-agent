@@ -98,26 +98,21 @@ def _slug_for(resource_id: str | None, slugs_for: Callable[[str], list[str]]) ->
     return None
 
 
-def _resource_from_account(
-    account: object, slugs_for: Callable[[str], list[str]]
-) -> AllocatedResource | None:
+def _resource_from_account(account: object) -> AllocatedResource | None:
     if not isinstance(account, dict):
         return None
     name = _clean_name(account.get("rp_display_name"))
     if name is None:
         return None
-    resource_id = _clean_resource_id(account.get("resource_id"))
     # Every field is already checked against its pattern and length, so this
     # can't raise; a row that couldn't be made valid was dropped above.
     return AllocatedResource(
-        name=name, rp_slug=_slug_for(resource_id, slugs_for), resource_id=resource_id
+        name=name, rp_slug=None, resource_id=_clean_resource_id(account.get("resource_id"))
     )
 
 
-def resources_from_accounts(
-    data: Any, slugs_for: Callable[[str], list[str]]
-) -> list[AllocatedResource] | None:
-    """Map a ``get_my_rp_accounts`` response to allocated resources.
+def resources_from_accounts(data: Any) -> list[AllocatedResource] | None:
+    """Map a ``get_my_rp_accounts`` response to allocated resources, unslugged.
 
     Returns ``[]`` only for a fresh, empty account list, and ``None`` when the
     response can't say what the user holds. Rows that don't validate are
@@ -133,49 +128,62 @@ def resources_from_accounts(
         return [] if state == _STATE_NO_ROWS else None
     if state not in _STATES_WITH_ROWS:
         return None
-    resources = [r for a in accounts if (r := _resource_from_account(a, slugs_for)) is not None]
+    resources = [r for a in accounts if (r := _resource_from_account(a)) is not None]
     return resources[:MAX_RESOURCES] or None
 
 
-async def _lookup(acting_user: str) -> UserProfile | None:
-    rp_cache = get_rp_cache()
-    result, _ = await asyncio.gather(
-        MCPClient().call_tool(ALLOCATIONS_SERVER, ACCOUNTS_TOOL, {}, acting_user=acting_user),
-        rp_cache.ensure_loaded(),
+def with_slugs(
+    resources: list[AllocatedResource], slugs_for: Callable[[str], list[str]]
+) -> list[AllocatedResource]:
+    """``resources`` with ``rp_slug`` set from the group vocabulary as it is now.
+
+    Applied at read time, not cached, so a vocabulary that loads after the
+    accounts were fetched scopes the next message without a second lookup.
+    """
+    return [
+        r.model_copy(update={"rp_slug": _slug_for(r.resource_id, slugs_for)}) for r in resources
+    ]
+
+
+async def _lookup(acting_user: str) -> list[AllocatedResource] | None:
+    result = await MCPClient().call_tool(
+        ALLOCATIONS_SERVER, ACCOUNTS_TOOL, {}, acting_user=acting_user
     )
     if not result.success:
         logger.info(
             "Allocations profile unavailable: lookup failed (timed_out=%s)", result.timed_out
         )
         return None
-    if not rp_cache.list_slugs():
-        logger.info("Allocations profile unavailable: resource-group vocabulary not loaded")
-        return None
-    resources = resources_from_accounts(result.data, rp_cache.slugs_for_resource_id)
+    resources = resources_from_accounts(result.data)
     if resources is None:
         logger.info("Allocations profile unavailable: response did not list accounts")
-        return None
-    return UserProfile(allocated_resources=resources)
+    return resources
 
 
 class _ProfileCache:
-    """Per-user, short-lived, bounded. Keyed by the verified acting user only."""
+    """Per-user, short-lived, LRU-bounded. Keyed by the verified acting user only.
+
+    Holds the unslugged resources (or ``None`` for a failed lookup).
+    """
 
     def __init__(self) -> None:
-        self._entries: OrderedDict[str, tuple[float, UserProfile | None]] = OrderedDict()
+        self._entries: OrderedDict[str, tuple[float, list[AllocatedResource] | None]] = (
+            OrderedDict()
+        )
 
-    def get(self, acting_user: str) -> tuple[bool, UserProfile | None]:
+    def get(self, acting_user: str) -> tuple[bool, list[AllocatedResource] | None]:
         entry = self._entries.get(acting_user)
         if entry is None:
             return False, None
-        expires_at, profile = entry
+        expires_at, resources = entry
         if _clock() >= expires_at:
             del self._entries[acting_user]
             return False, None
-        return True, profile
+        self._entries.move_to_end(acting_user)
+        return True, resources
 
-    def put(self, acting_user: str, profile: UserProfile | None, ttl: float) -> None:
-        self._entries[acting_user] = (_clock() + ttl, profile)
+    def put(self, acting_user: str, resources: list[AllocatedResource] | None, ttl: float) -> None:
+        self._entries[acting_user] = (_clock() + ttl, resources)
         self._entries.move_to_end(acting_user)
         while len(self._entries) > MAX_CACHED_USERS:
             self._entries.popitem(last=False)
@@ -185,31 +193,62 @@ class _ProfileCache:
 
 
 _cache = _ProfileCache()
+# One lookup per user at a time; concurrent misses await the same task.
+_inflight: dict[str, asyncio.Task[list[AllocatedResource] | None]] = {}
+
+
+async def _lookup_and_cache(acting_user: str) -> list[AllocatedResource] | None:
+    resources: list[AllocatedResource] | None
+    try:
+        async with asyncio.timeout(LOOKUP_TIMEOUT_S):
+            resources = await _lookup(acting_user)
+    except TimeoutError:
+        logger.info("Allocations profile unavailable: lookup timed out")
+        resources = None
+    except Exception as exc:
+        logger.warning("Allocations profile unavailable: %s", type(exc).__name__)
+        resources = None
+    _cache.put(acting_user, resources, SUCCESS_TTL_S if resources is not None else FAILURE_TTL_S)
+    return resources
+
+
+def _forget_inflight(acting_user: str, task: asyncio.Task[Any]) -> None:
+    if _inflight.get(acting_user) is task:
+        del _inflight[acting_user]
+
+
+async def _resources_for(acting_user: str) -> list[AllocatedResource] | None:
+    hit, resources = _cache.get(acting_user)
+    if hit:
+        return resources
+    task = _inflight.get(acting_user)
+    if task is None:
+        task = asyncio.get_running_loop().create_task(_lookup_and_cache(acting_user))
+        _inflight[acting_user] = task
+        task.add_done_callback(lambda t: _forget_inflight(acting_user, t))
+    # Shielded: one waiter's run being cancelled must not cancel the lookup
+    # the others are waiting on. The lookup is bounded by its own timeout.
+    return await asyncio.shield(task)
 
 
 async def allocated_profile_for(acting_user: str | None) -> UserProfile | None:
     """The profile for a run acting for ``acting_user``, or ``None``.
 
     Anonymous runs make no lookup. Never raises, except to pass on the run's
-    own cancellation; every failure is a run without a profile.
+    own cancellation; every failure is a run without a profile. The group
+    vocabulary is never waited on: if it isn't loaded yet, resources carry no
+    slug and a background refresh is started.
     """
     if acting_user is None:
         return None
-    hit, profile = _cache.get(acting_user)
-    if hit:
-        return profile
-    try:
-        async with asyncio.timeout(LOOKUP_TIMEOUT_S):
-            profile = await _lookup(acting_user)
-    except TimeoutError:
-        logger.info("Allocations profile unavailable: lookup timed out")
-        profile = None
-    except Exception as exc:
-        logger.warning("Allocations profile unavailable: %s", type(exc).__name__)
-        profile = None
-    _cache.put(acting_user, profile, SUCCESS_TTL_S if profile is not None else FAILURE_TTL_S)
-    return profile
+    rp_cache = get_rp_cache()
+    rp_cache.refresh_in_background()
+    resources = await _resources_for(acting_user)
+    if resources is None:
+        return None
+    return UserProfile(allocated_resources=with_slugs(resources, rp_cache.slugs_for_resource_id))
 
 
 def _reset_cache_for_test() -> None:
     _cache.reset()
+    _inflight.clear()

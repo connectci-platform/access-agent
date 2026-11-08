@@ -312,3 +312,50 @@ async def test_stream_agent_per_request_checkpointer_branch(saver_with_async_set
         assert events
         stream_types = {stream_type for stream_type, _ in events}
         assert "updates" in stream_types
+
+
+async def test_the_profile_is_checkpointed_overwritten_each_run_and_not_in_history():
+    """What state.py's profile note says: each run's profile replaces the
+    last one in the checkpoint, and /history serializes only messages."""
+    from unittest.mock import patch
+
+    from langchain_core.language_models.chat_models import BaseChatModel
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, ChatResult
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    import src.agent.graph as graph_mod
+    import src.agent.nodes.tool_calling_loop as loop_mod
+    from src.agent.context import AgentContext
+    from src.agent.profile import UserProfile
+    from src.api.thread_routes import _serialize_values
+
+    class _Answer(BaseChatModel):
+        @property
+        def _llm_type(self) -> str:
+            return "answer"
+
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(content="ok"))])
+
+    saver = InMemorySaver()
+    config = {"configurable": {"thread_id": "profile-thread"}}
+    profile = UserProfile(allocated_resources=[{"name": "Delta GPU", "rp_slug": "delta"}])
+
+    with patch.object(loop_mod, "get_llm", return_value=_Answer()):
+        for run_profile in (profile, None):
+            await graph_mod.run_agent(
+                query="q",
+                session_id="profile-thread",
+                question_id="q",
+                tool_catalog={},
+                context=AgentContext.for_eval("u@x", allow_writes=False),
+                profile=run_profile,
+                checkpointer=saver,
+            )
+            values = (await saver.aget(config))["channel_values"]
+            assert values.get("profile") == (run_profile.model_dump() if run_profile else None)
+            assert set(_serialize_values(values)) == {"messages"}

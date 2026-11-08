@@ -50,3 +50,28 @@ async def test_app_lifespan_starts_and_stops_cleanly():
 
     async with lifespan(app):
         assert isinstance(app.state.agent_token_verifier, AgentTokenVerifier)
+
+
+@pytest.mark.asyncio
+async def test_lifespan_warms_the_resource_groups_and_stops_the_refresh(monkeypatch):
+    """The group vocabulary loads in the background at startup, so the first
+    signed-in request doesn't find it cold; shutdown cancels a fetch still
+    running."""
+    os.environ.pop("OTEL_EXPORTER_OTLP_ENDPOINT", None)
+
+    import src.main as main_mod
+
+    calls: list[str] = []
+
+    class _Cache:
+        def refresh_in_background(self):
+            calls.append("start")
+
+        async def stop_background_refresh(self):
+            calls.append("stop")
+
+    monkeypatch.setattr(main_mod, "get_rp_cache", _Cache)
+
+    async with main_mod.lifespan(main_mod.app):
+        assert calls == ["start"]
+    assert calls == ["start", "stop"]

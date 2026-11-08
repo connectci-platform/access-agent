@@ -11,7 +11,7 @@ import pytest
 
 from src.agent import profile_source
 from src.agent.profile import AllocatedResource, UserProfile
-from src.agent.profile_source import allocated_profile_for, resources_from_accounts
+from src.agent.profile_source import allocated_profile_for, resources_from_accounts, with_slugs
 from src.tools.mcp_client import MCPToolResult
 
 GROUPS = {
@@ -26,6 +26,11 @@ GROUPS = {
 
 def _slugs_for(resource_id: str) -> list[str]:
     return GROUPS.get(resource_id, [])
+
+
+def _map(data: Any) -> list[AllocatedResource] | None:
+    resources = resources_from_accounts(data)
+    return None if resources is None else with_slugs(resources, _slugs_for)
 
 
 def _account(name: Any = "NCSA Delta GPU", resource_id: Any = "delta-gpu.ncsa.access-ci.org"):
@@ -46,7 +51,7 @@ def _payload(accounts: list[Any], state: str = "rows_fresh") -> dict[str, Any]:
 
 
 def test_maps_an_account_to_a_resource_with_its_group_slug():
-    assert resources_from_accounts(_payload([_account()]), _slugs_for) == [
+    assert _map(_payload([_account()])) == [
         AllocatedResource(
             name="NCSA Delta GPU", rp_slug="delta", resource_id="delta-gpu.ncsa.access-ci.org"
         )
@@ -56,9 +61,7 @@ def test_maps_an_account_to_a_resource_with_its_group_slug():
 def test_a_hyphenated_group_slug_takes_the_form_the_doc_search_sends():
     """Drupal's slug for Bridges-2 is 'bridges-2'; search_access_documents
     sends 'bridges2' for it, and that is what the prompt must name."""
-    (resource,) = resources_from_accounts(
-        _payload([_account("Bridges-2 GPU", "bridges2-gpu.psc.access-ci.org")]), _slugs_for
-    )
+    (resource,) = _map(_payload([_account("Bridges-2 GPU", "bridges2-gpu.psc.access-ci.org")]))
     assert resource.rp_slug == "bridges2"
 
 
@@ -72,24 +75,20 @@ def test_a_hyphenated_group_slug_takes_the_form_the_doc_search_sends():
     ],
 )
 def test_an_unmappable_resource_keeps_its_name_without_a_slug(resource_id):
-    (resource,) = resources_from_accounts(
-        _payload([_account("Some Storage", resource_id)]), _slugs_for
-    )
+    (resource,) = _map(_payload([_account("Some Storage", resource_id)]))
     assert resource == AllocatedResource(name="Some Storage", rp_slug=None, resource_id=resource_id)
 
 
 def test_the_slug_never_comes_from_the_display_name():
     """A name that would normalize to a real slug ('delta') gets none without
     a resource id that maps to the group."""
-    (resource,) = resources_from_accounts(_payload([_account("Delta", None)]), _slugs_for)
+    (resource,) = _map(_payload([_account("Delta", None)]))
     assert resource == AllocatedResource(name="Delta", rp_slug=None, resource_id=None)
 
 
 @pytest.mark.parametrize("resource_id", ["bad id/with spaces", "x" * 129, 42, ""])
 def test_an_invalid_resource_id_is_dropped_and_so_is_the_slug(resource_id):
-    (resource,) = resources_from_accounts(
-        _payload([_account("Delta GPU", resource_id)]), _slugs_for
-    )
+    (resource,) = _map(_payload([_account("Delta GPU", resource_id)]))
     assert resource == AllocatedResource(name="Delta GPU", rp_slug=None, resource_id=None)
 
 
@@ -104,41 +103,41 @@ def test_an_invalid_resource_id_is_dropped_and_so_is_the_slug(resource_id):
     ],
 )
 def test_a_name_with_characters_the_field_rejects_is_sanitized(raw, clean):
-    (resource,) = resources_from_accounts(_payload([_account(raw)]), _slugs_for)
+    (resource,) = _map(_payload([_account(raw)]))
     assert resource.name == clean
 
 
 def test_a_name_truncated_onto_a_space_loses_the_trailing_space():
     raw = "A" * 63 + " tail"
-    (resource,) = resources_from_accounts(_payload([_account(raw)]), _slugs_for)
+    (resource,) = _map(_payload([_account(raw)]))
     assert resource.name == "A" * 63
 
 
 @pytest.mark.parametrize("name", [None, 7, "", "   ", "&&&", "<<>>"])
 def test_a_row_without_a_usable_name_is_dropped(name):
     payload = _payload([_account(name), _account("NCSA Delta CPU", "delta-cpu.ncsa.access-ci.org")])
-    assert [r.name for r in resources_from_accounts(payload, _slugs_for)] == ["NCSA Delta CPU"]
+    assert [r.name for r in _map(payload)] == ["NCSA Delta CPU"]
 
 
 @pytest.mark.parametrize("row", ["a string", 3, None, ["list"]])
 def test_a_row_that_is_not_an_object_is_dropped(row):
     payload = _payload([row, _account()])
-    assert [r.name for r in resources_from_accounts(payload, _slugs_for)] == ["NCSA Delta GPU"]
+    assert [r.name for r in _map(payload)] == ["NCSA Delta GPU"]
 
 
 def test_at_most_32_resources_are_kept():
     accounts = [_account(f"Resource {i}", f"r{i}.example.org") for i in range(40)]
-    resources = resources_from_accounts(_payload(accounts), _slugs_for)
+    resources = _map(_payload(accounts))
     assert [r.name for r in resources] == [f"Resource {i}" for i in range(32)]
     UserProfile(allocated_resources=resources)  # still a valid profile
 
 
 def test_a_stale_list_still_counts():
-    assert len(resources_from_accounts(_payload([_account()], "rows_stale"), _slugs_for)) == 1
+    assert len(_map(_payload([_account()], "rows_stale"))) == 1
 
 
 def test_a_fresh_empty_list_means_no_allocations():
-    assert resources_from_accounts(_payload([], "no_rows_fresh"), _slugs_for) == []
+    assert _map(_payload([], "no_rows_fresh")) == []
 
 
 @pytest.mark.parametrize(
@@ -159,12 +158,12 @@ def test_a_fresh_empty_list_means_no_allocations():
     ],
 )
 def test_a_response_that_does_not_say_what_the_user_holds_is_unknown(data):
-    assert resources_from_accounts(data, _slugs_for) is None
+    assert _map(data) is None
 
 
 def test_accounts_that_all_fail_validation_are_unknown_not_none():
     payload = _payload([_account(None), "junk"])
-    assert resources_from_accounts(payload, _slugs_for) is None
+    assert _map(payload) is None
 
 
 # ── Lookup, cache, and failure modes ─────────────────────────────────────
@@ -175,7 +174,10 @@ class _FakeRPCache:
         self.slugs = ["delta", "bridges-2"] if slugs is None else slugs
         self.loads = 0
 
-    async def ensure_loaded(self) -> None:
+    async def ensure_loaded(self) -> None:  # must never be awaited on the request path
+        raise AssertionError("profile lookup waited on the group vocabulary")
+
+    def refresh_in_background(self) -> None:
         self.loads += 1
 
     def list_slugs(self) -> list[str]:
@@ -315,11 +317,14 @@ async def test_every_failure_falls_back_to_no_profile(mcp, result):
     assert await allocated_profile_for("alice@x") is None
 
 
-async def test_no_profile_when_the_group_vocabulary_is_unavailable(mcp, rp_cache):
-    """Without the groups every resource would read as ungrouped, a false
-    claim that it has no scoped docs, so the lookup counts as failed."""
+async def test_without_the_group_vocabulary_the_profile_has_no_slugs(mcp, rp_cache):
     rp_cache.slugs = []
-    assert await allocated_profile_for("alice@x") is None
+    rp_cache.slugs_for_resource_id = lambda _rid: []
+    assert await allocated_profile_for("alice@x") == UserProfile(
+        allocated_resources=[
+            AllocatedResource(name="NCSA Delta GPU", resource_id="delta-gpu.ncsa.access-ci.org")
+        ]
+    )
 
 
 async def test_a_failure_is_retried_after_a_short_pause_not_every_message(mcp, clock):
@@ -358,3 +363,111 @@ async def test_failures_do_not_log_account_details(mcp, caplog):
         text = record.getMessage()
         assert "Delta" not in text
         assert "alice" not in text
+
+
+# ── Vocabulary readiness, single-flight, LRU (review fixes) ──────────────
+
+
+@pytest.fixture
+def real_rp_cache(monkeypatch):
+    """A real RPSectionCache whose Drupal fetch the test controls."""
+    from src.services.rp_cache import RPInfo, RPSectionCache
+
+    cache = RPSectionCache()
+    release = asyncio.Event()
+    fetches: list[int] = []
+
+    async def _fetch():
+        fetches.append(1)
+        await release.wait()
+        return {
+            "delta": RPInfo(
+                slug="delta", title="Delta", resource_ids=["delta-gpu.ncsa.access-ci.org"]
+            )
+        }
+
+    cache._fetch_resources = _fetch
+    monkeypatch.setattr(profile_source, "get_rp_cache", lambda: cache)
+    cache.release = release
+    cache.fetches = fetches
+    yield cache
+    release.set()
+
+
+UNSLUGGED_DELTA = UserProfile(
+    allocated_resources=[
+        AllocatedResource(name="NCSA Delta GPU", resource_id="delta-gpu.ncsa.access-ci.org")
+    ]
+)
+
+
+async def test_a_slow_vocabulary_does_not_hold_up_or_spoil_the_lookup(mcp, real_rp_cache):
+    """The groups fetch is still running: the profile comes back at once,
+    without slugs, and gains them once the vocabulary loads, with no second
+    allocations call."""
+    profile = await asyncio.wait_for(allocated_profile_for("alice@x"), timeout=1)
+    assert profile == UNSLUGGED_DELTA
+    assert real_rp_cache.fetches == [1]
+
+    real_rp_cache.release.set()
+    await real_rp_cache._task
+
+    assert await allocated_profile_for("alice@x") == DELTA_PROFILE
+    assert len(mcp.calls) == 1
+    assert real_rp_cache.fetches == [1]
+
+
+async def test_concurrent_first_lookups_during_a_refresh_still_get_a_profile(mcp, real_rp_cache):
+    real_rp_cache.refresh_in_background()
+    await asyncio.sleep(0)
+    assert real_rp_cache._refreshing
+
+    a, b = await asyncio.gather(allocated_profile_for("a@x"), allocated_profile_for("b@x"))
+
+    assert a == b == UNSLUGGED_DELTA
+    assert real_rp_cache.fetches == [1]
+
+
+async def test_a_failed_vocabulary_refresh_still_gives_a_profile(mcp, real_rp_cache):
+    async def _fail():
+        raise RuntimeError("bad url")
+
+    real_rp_cache._fetch_resources = _fail
+    real_rp_cache.refresh_in_background()
+    await real_rp_cache._task
+
+    assert await allocated_profile_for("alice@x") == UNSLUGGED_DELTA
+
+
+async def test_concurrent_misses_for_one_user_share_one_call(mcp):
+    mcp.delay = 0.05
+    results = await asyncio.gather(*(allocated_profile_for("alice@x") for _ in range(5)))
+
+    assert results == [DELTA_PROFILE] * 5
+    assert len(mcp.calls) == 1
+    assert profile_source._inflight == {}
+
+
+async def test_one_cancelled_waiter_does_not_cancel_the_shared_lookup(mcp):
+    mcp.delay = 0.05
+    first = asyncio.create_task(allocated_profile_for("alice@x"))
+    second = asyncio.create_task(allocated_profile_for("alice@x"))
+    await asyncio.sleep(0.01)
+    first.cancel()
+
+    assert await second == DELTA_PROFILE
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert len(mcp.calls) == 1
+
+
+async def test_eviction_drops_the_least_recently_used_user(mcp, monkeypatch):
+    monkeypatch.setattr(profile_source, "MAX_CACHED_USERS", 2)
+    await allocated_profile_for("a@x")
+    await allocated_profile_for("b@x")
+    await allocated_profile_for("a@x")  # a is now the most recently used
+    await allocated_profile_for("c@x")  # evicts b, not a
+    await allocated_profile_for("a@x")
+    await allocated_profile_for("b@x")
+
+    assert [c[3] for c in mcp.calls] == ["a@x", "b@x", "c@x", "b@x"]

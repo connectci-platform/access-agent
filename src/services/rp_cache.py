@@ -18,11 +18,17 @@ entry per ``resource_group`` node with:
   maps to its group by id, never by name.
 
 Refreshed on first access, then every ``settings.RP_CACHE_TTL_SECONDS``
-(default 1800 = 30 min).
+(default 1800 = 30 min). Each fetch has its own timeout, and a failed one is
+not retried for ``RETRY_AFTER_FAILURE_S``, so a slow or wrong URL costs one
+bounded fetch per window rather than one per caller. Request paths that must
+not wait (the allocations profile) call ``refresh_in_background``; the app
+also warms the cache that way at startup.
 """
 
+import asyncio
 import logging
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 
 import httpx
@@ -30,6 +36,11 @@ import httpx
 from ..config import settings
 
 logger = logging.getLogger(__name__)
+
+REFRESH_TIMEOUT_S = 10.0
+RETRY_AFTER_FAILURE_S = 60.0
+
+_now = time.time
 
 
 # All known documentation sections (matches the keys returned by Drupal).
@@ -66,6 +77,11 @@ class RPSectionCache:
         self._cache: dict[str, RPInfo] = {}
         self._last_refresh: float = 0
         self._refreshing: bool = False
+        # No refresh before this time, after a failure.
+        self._retry_at: float = 0.0
+        # In a run of failures, so only the first one warns.
+        self._failing: bool = False
+        self._task: asyncio.Task[None] | None = None
 
     async def _fetch_resources(self) -> dict[str, RPInfo]:
         """Fetch resource groups from Drupal."""
@@ -103,24 +119,57 @@ class RPSectionCache:
 
         self._refreshing = True
         try:
-            new_cache = await self._fetch_resources()
+            async with asyncio.timeout(REFRESH_TIMEOUT_S):
+                new_cache = await self._fetch_resources()
             self._cache = new_cache
-            self._last_refresh = time.time()
+            self._last_refresh = _now()
+            self._retry_at = 0.0
+            self._failing = False
             populated_count = sum(1 for r in new_cache.values() if r.populated_sections)
             logger.info(
                 f"RP section cache refreshed: {len(new_cache)} groups, "
                 f"{populated_count} with populated sections"
             )
-        except Exception:
-            logger.exception("RP cache refresh failed — serving stale data")
+        except Exception as exc:
+            self._retry_at = _now() + RETRY_AFTER_FAILURE_S
+            if self._failing:
+                logger.debug("RP cache refresh failed again (%s)", type(exc).__name__)
+            else:
+                logger.warning(
+                    "Resource-group vocabulary unavailable (%s); check "
+                    "DRUPAL_RESOURCE_GROUPS_URL. Serving stale data, and allocation "
+                    "profiles carry no resource scoping until it loads. Retrying "
+                    "every %ds.",
+                    type(exc).__name__,
+                    int(RETRY_AFTER_FAILURE_S),
+                )
+            self._failing = True
         finally:
             self._refreshing = False
 
     def _needs_refresh(self) -> bool:
         """Check if the cache needs a refresh."""
+        if _now() < self._retry_at:
+            return False
         if not self._cache:
             return True
-        return (time.time() - self._last_refresh) > settings.RP_CACHE_TTL_SECONDS
+        return (_now() - self._last_refresh) > settings.RP_CACHE_TTL_SECONDS
+
+    def refresh_in_background(self) -> None:
+        """Start a refresh if one is due and none is running; never waits."""
+        if self._task is not None and not self._task.done():
+            return
+        if self._refreshing or not self._needs_refresh():
+            return
+        self._task = asyncio.get_running_loop().create_task(self.refresh())
+
+    async def stop_background_refresh(self) -> None:
+        """Cancel a background refresh still running (app shutdown)."""
+        task, self._task = self._task, None
+        if task is not None and not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
     async def ensure_loaded(self) -> None:
         """Ensure cache is loaded, refreshing if needed."""

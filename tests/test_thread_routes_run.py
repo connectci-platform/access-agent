@@ -1356,7 +1356,7 @@ def _use_real_lookup(monkeypatch, result):
             return result
 
     class _Groups:
-        async def ensure_loaded(self):
+        def refresh_in_background(self):
             return None
 
         def list_slugs(self):
@@ -1558,3 +1558,74 @@ async def test_an_anonymous_system_prompt_has_no_profile(client, monkeypatch):
     prompt = await _system_prompt_for_run(client, monkeypatch)
 
     assert "## User profile" not in prompt
+
+
+async def test_metadata_goes_out_before_the_profile_lookup_finishes(seed_owner, monkeypatch):
+    """The run_id reaches the client at once; the lookup runs alongside."""
+    from types import SimpleNamespace
+
+    from src.agent_token import AgentIdentity
+    from src.api.thread_routes import RunRequest, thread_run_stream
+
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def _blocked_lookup(acting_user):
+        started.set()
+        await release.wait()
+
+    monkeypatch.setattr("src.api.thread_routes.allocated_profile_for", _blocked_lookup)
+    captured = _capture_stream_agent(monkeypatch)
+    identity = AgentIdentity(
+        sub="meta@x", scopes=frozenset({"agent:read"}), exp=int(time.time()) + 900
+    )
+    raw_request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(checkpointer=None)))
+    body = RunRequest.model_validate({"input": {"messages": [{"role": "user", "content": "hi"}]}})
+
+    response = await thread_run_stream("t-meta-first", body, raw_request, identity)
+    chunks = response.body_iterator.__aiter__()
+    first = await asyncio.wait_for(chunks.__anext__(), timeout=1)
+
+    assert first.startswith("event: metadata")
+    assert started.is_set()
+    assert not release.is_set()
+
+    release.set()
+    rest = [c async for c in chunks]
+    assert any(c.startswith("event: values") for c in rest)
+    assert "metadata" not in "".join(rest)
+    assert captured["profile"] is None
+
+
+async def test_a_disconnect_during_the_lookup_cancels_it(seed_owner, monkeypatch):
+    from types import SimpleNamespace
+
+    from src.agent_token import AgentIdentity
+    from src.api.thread_routes import RunRequest, thread_run_stream
+
+    cancelled = asyncio.Event()
+    started = asyncio.Event()
+
+    async def _hanging_lookup(acting_user):
+        started.set()
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    monkeypatch.setattr("src.api.thread_routes.allocated_profile_for", _hanging_lookup)
+    identity = AgentIdentity(
+        sub="gone@x", scopes=frozenset({"agent:read"}), exp=int(time.time()) + 900
+    )
+    raw_request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(checkpointer=None)))
+    body = RunRequest.model_validate({"input": {"messages": [{"role": "user", "content": "hi"}]}})
+
+    response = await thread_run_stream("t-meta-gone", body, raw_request, identity)
+    chunks = response.body_iterator
+    await chunks.__anext__()  # metadata
+    await asyncio.wait_for(started.wait(), timeout=1)
+    await chunks.aclose()  # client went away mid-lookup
+
+    await asyncio.sleep(0)
+    assert cancelled.is_set()

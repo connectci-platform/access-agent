@@ -184,8 +184,10 @@ class AgentState(TypedDict):
     profile: Annotated[
         dict[str, Any] | None,
         "UserProfile.model_dump(); revalidated at read. Plain dict, not the pydantic "
-        "model, so the channel stays JSON-plain like the other input fields — the "
-        "profile never crosses a checkpoint boundary, each request re-supplies it.",
+        "model, so the channel stays JSON-plain like the other input fields. It IS "
+        "checkpointed, like every channel, but each run overwrites it with that "
+        "run's profile (None included), so a stale one is never read, and /history "
+        "returns only messages, so it never reaches the client.",
     ]
 
     # Read by api/routes.py for response metadata; not written on the current path.
