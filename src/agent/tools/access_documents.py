@@ -102,6 +102,16 @@ _ALREADY_EXHAUSTED = (
 )
 
 
+# A line in retrieved text that looks like an excerpt header. Escaped so a
+# document can't pass off its text as an excerpt from another page; the
+# full-screen client reads these headers to show each answer's sources.
+_FORGED_HEADER = re.compile(r"^(\[\d+\] source: )", re.MULTILINE)
+
+
+def _escape_headers(text: str) -> str:
+    return _FORGED_HEADER.sub(r"\\\1", text)
+
+
 def _format_chunks(query: str, chunks: list[UKYChunk]) -> str:
     """Render retrieval chunks into text the loop's LLM can synthesize from."""
     if not chunks:
@@ -112,8 +122,9 @@ def _format_chunks(query: str, chunks: list[UKYChunk]) -> str:
         "If none are actually relevant to the question, say so plainly."
     ]
     for chunk in chunks:
-        source = chunk.url or "(no source URL)"
-        parts.append(f"[{chunk.rank}] source: {source}\n{chunk.text.strip()}")
+        # One line, so a URL can't start a header of its own.
+        source = " ".join(chunk.url.split()) or "(no source URL)"
+        parts.append(f"[{chunk.rank}] source: {source}\n{_escape_headers(chunk.text.strip())}")
     return "\n\n".join(parts)
 
 
