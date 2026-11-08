@@ -199,16 +199,30 @@ jobs:
               exit 1
             fi
 
-            # 1. Health check — verify tool catalog is complete
+            # 1. Health check — verify tool catalog is complete. MCP servers
+            # restarting alongside the agent leave it "degraded" until the
+            # agent's background catalog recovery re-fetches them (D8-3020),
+            # so poll for up to 2 minutes and fail only if it never recovers.
             echo "Checking agent health..."
-            HEALTH=$(agent_request "import urllib.request,json; r=urllib.request.urlopen('http://localhost:8000/api/v1/health'); print(r.read().decode())")
+            HEALTH=""
+            STATUS=""
+            UNAVAILABLE=""
+            for i in $(seq 1 24); do
+              HEALTH=$(agent_request "import urllib.request; r=urllib.request.urlopen('http://localhost:8000/api/v1/health'); print(r.read().decode())" 2>/dev/null) || HEALTH=""
+              STATUS=$(echo "$HEALTH" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])" 2>/dev/null) || STATUS=""
+              UNAVAILABLE=$(echo "$HEALTH" | python3 -c "import sys,json; print(', '.join(json.load(sys.stdin).get('tools',{}).get('unavailable_servers',[])))" 2>/dev/null) || UNAVAILABLE=""
+              if [ "$STATUS" = "healthy" ]; then
+                break
+              fi
+              echo "  attempt $i/24: status=${STATUS:-no response}, unavailable: ${UNAVAILABLE:-none}"
+              sleep 5
+            done
 
             if [ -z "$HEALTH" ]; then
               echo "FAIL: Agent health endpoint not responding"
               exit 1
             fi
 
-            STATUS=$(echo "$HEALTH" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
             TOOLS=$(echo "$HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tools',{}).get('total',0))")
             SERVERS=$(echo "$HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tools',{}).get('servers_available',0))")
             TOTAL_SERVERS=$(echo "$HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tools',{}).get('servers_total',0))")
@@ -218,7 +232,8 @@ jobs:
             echo "  Servers: $SERVERS/$TOTAL_SERVERS"
 
             if [ "$STATUS" != "healthy" ]; then
-              echo "FAIL: Agent status is $STATUS"
+              echo "FAIL: Agent status is $STATUS after 2 minutes"
+              echo "  Unavailable servers: ${UNAVAILABLE:-none reported}"
               echo "$HEALTH"
               exit 1
             fi

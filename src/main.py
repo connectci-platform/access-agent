@@ -81,6 +81,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from .tools.mcp_client import close_shared_client
 
     logger.info("Shutting down ACCESS Documentation Agent")
+    # First, so a retry in flight doesn't race the clients closed below.
+    await get_catalog_aggregator().stop_recovery()
     if getattr(app.state, "_checkpointer_cm", None) is not None:
         await app.state._checkpointer_cm.__aexit__(None, None, None)  # noqa: SLF001
     await app.state.agent_token_verifier.aclose()
