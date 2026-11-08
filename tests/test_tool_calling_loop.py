@@ -864,7 +864,7 @@ class TestToolStatusSubject:
     @pytest.mark.parametrize(
         ("name", "inputs", "expected"),
         [
-            ("search_events", {"query": "gpu"}, "Searching events..."),
+            ("search_projects", {"query": "gpu"}, "Searching projects..."),
             ("search_nsf_awards", {"pi": "Smith"}, "Searching NSF awards..."),
             ("create_support_ticket", {"query": "help"}, "Preparing support ticket..."),
         ],

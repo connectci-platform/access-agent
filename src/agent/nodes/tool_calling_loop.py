@@ -209,6 +209,11 @@ _STATUS_SUBJECT_TOOLS = {
     "get_software_details": ("software_name", "Looking up {}..."),
     "get_resource_hardware": ("id", "Looking up {} hardware..."),
     "search_access_documents": ("rp_name", "Searching ACCESS documentation for {}..."),
+    "search_events": ("query", "Searching events for {}..."),
+    "search_resources": ("query", "Searching resources for {}..."),
+    "search_affinity_groups": ("query", "Searching affinity groups for {}..."),
+    "get_chart_data": ("realm", "Looking up {} usage data..."),
+    "get_infrastructure_news": ("resource", "Checking system status for {}..."),
 }
 
 # A plain name of up to three words. Anything else is dropped rather than cut
