@@ -106,8 +106,28 @@ class TurnReport(TurnReportBase):  # type: ignore[valid-type,misc]
     # Rating (late UPDATE via POST /api/v1/rating, after the usage_logs write)
     rating = Column(String(16), index=True)  # "helpful" or "not_helpful"
     rating_feedback = Column(Text)
+    # The answer the full-screen client shows for this turn, which is how it
+    # names the turn it rates. NULL when the turn produced no answer.
+    message_id = Column(String(128), index=True)
 
     payload = Column(_JSONB)  # answer, tool_results, node_trace, params, etc.
+
+
+class TurnRating(TurnReportBase):  # type: ignore[valid-type,misc]
+    """A full-screen rating, keyed by the answer it rates.
+
+    The system of record for those ratings: a click can come before the run's
+    turn report is written, and the report copies the rating when it lands.
+    One row per answer, so rating again changes it rather than adding one.
+    """
+
+    __tablename__ = "turn_ratings"
+
+    thread_id = Column(String(100), primary_key=True)
+    message_id = Column(String(128), primary_key=True)
+    rating = Column(String(16), nullable=False)
+    feedback = Column(Text)
+    updated_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
 
 
 class ReportToolCall(TurnReportBase):  # type: ignore[valid-type,misc]
@@ -152,6 +172,60 @@ def _count_citations(answer: str | None) -> int:
         return 0
     urls = {m.rstrip(".,;:!?") for m in _URL_RE.findall(answer)}
     return len(urls)
+
+
+def _message_field(message: Any, name: str) -> Any:
+    if isinstance(message, dict):
+        return message.get(name)
+    return getattr(message, name, None)
+
+
+def _has_text(content: Any) -> bool:
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        return any(
+            isinstance(block, dict)
+            and block.get("type") == "text"
+            and str(block.get("text") or "").strip()
+            for block in content
+        )
+    return False
+
+
+def _turn_answers(messages: Any) -> list[str | None]:
+    """Per question, in order: the id of the last AI message with text after it.
+
+    That message is the answer a reader sees for the turn. Anything before the
+    first question belongs to no turn.
+    """
+    answers: list[str | None] = []
+    for message in messages if isinstance(messages, list) else []:
+        kind = _message_field(message, "type")
+        if kind == "human":
+            answers.append(None)
+        elif kind == "ai" and answers and _has_text(_message_field(message, "content")):
+            answers[-1] = _message_field(message, "id") or None
+    return answers
+
+
+def turn_answer_ids(messages: Any) -> list[str]:
+    """The answer message id of every turn in a thread that has one."""
+    return [answer for answer in _turn_answers(messages) if answer]
+
+
+def _this_turns_answer(messages: Any) -> str | None:
+    """The answer to the last question, or None if it has none yet.
+
+    A failed turn's messages may end at its question, so this never falls back
+    to the turn before. A node update with no question in it holds only what
+    this turn added.
+    """
+    if not isinstance(messages, list):
+        return None
+    if not any(_message_field(m, "type") == "human" for m in messages):
+        messages = [{"type": "human"}, *messages]
+    return _turn_answers(messages)[-1]
 
 
 def _hinted_write_names(tool_catalog: Any) -> set[str]:
@@ -248,6 +322,7 @@ def _assemble_turn_report(
         "refused": judged.get("refused"),
         "is_deflection": judged.get("is_deflection"),
         "permission_refusal": refusals[0]["reason"] if refusals else None,
+        "message_id": _this_turns_answer(final_state.get("messages")),
         "payload": {
             "answer": final_state.get("final_answer"),
             "tool_results": results,
@@ -323,6 +398,7 @@ class TurnReporter:
             "battery_run_id": "VARCHAR(64)",
             "trace_id": "VARCHAR(32)",
             "permission_refusal": "VARCHAR(32)",
+            "message_id": "VARCHAR(128)",
         }
         # Each ALTER runs in its own transaction with its own guard: a failure
         # (insufficient DB privileges, transient error) degrades that one column
@@ -365,6 +441,17 @@ class TurnReporter:
                 )
         except Exception as e:
             logger.warning("Failed to ensure battery_run_id index (%s); continuing", e)
+
+        try:
+            with self._engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_turn_reports_message_id "
+                        "ON turn_reports (message_id)"
+                    )
+                )
+        except Exception as e:
+            logger.warning("Failed to ensure message_id index (%s); continuing", e)
 
     def count_turns_for_session(self, session_id: str) -> int | None:
         """How many turn_reports already exist for this session (prior turns).
@@ -473,6 +560,62 @@ class TurnReporter:
         finally:
             session.close()
 
+    def rate_answer(
+        self, thread_id: str, message_id: str, rating: str, feedback: str | None
+    ) -> bool:
+        """Record a full-screen rating, replacing any earlier one for that answer.
+
+        Commits the rating before copying it to the turn report, and the report
+        writer commits the report before looking for a rating, so whichever runs
+        second sees the other's write. Never raises; False when not saved.
+        """
+        if not self._ensure_initialized() or self._session_factory is None:
+            return False
+        session = self._session_factory()
+        try:
+            row = session.get(TurnRating, (thread_id, message_id))
+            if row is None:
+                row = TurnRating(thread_id=thread_id, message_id=message_id)
+                session.add(row)
+            row.rating = rating  # type: ignore[assignment]
+            row.feedback = feedback  # type: ignore[assignment]
+            row.updated_at = datetime.now(UTC)  # type: ignore[assignment]
+            session.commit()
+            self._copy_rating_to_report(session, thread_id, message_id)
+            return True
+        except Exception as e:
+            # Never the exception text: it can carry the bound feedback value.
+            logger.error("Failed to save answer rating (%s)", type(e).__name__)
+            return False
+        finally:
+            session.close()
+
+    @staticmethod
+    def _copy_rating_to_report(session: Session, thread_id: str, message_id: str) -> None:
+        row = session.get(TurnRating, (thread_id, message_id))
+        if row is None:
+            return
+        session.execute(
+            update(TurnReport)
+            .where(TurnReport.session_id == thread_id, TurnReport.message_id == message_id)
+            .values(rating=row.rating, rating_feedback=row.feedback)
+        )
+        session.commit()
+
+    def ratings_for_thread(self, thread_id: str) -> dict[str, str] | None:
+        """Answer id to rating for one thread; None when they can't be read."""
+        if not self._ensure_initialized() or self._session_factory is None:
+            return None
+        session = self._session_factory()
+        try:
+            rows = session.query(TurnRating).filter_by(thread_id=thread_id).all()
+            return {str(row.message_id): str(row.rating) for row in rows}
+        except Exception as e:
+            logger.error("Failed to read answer ratings (%s)", type(e).__name__)
+            return None
+        finally:
+            session.close()
+
     def backfill_user_hash(self, session_id: str, acting_user: str) -> None:
         """Sweep NULL-hash turn_reports rows for a session onto acting_user's hash.
 
@@ -514,6 +657,20 @@ class TurnReporter:
             session.commit()
         except Exception as e:
             logger.error(f"Failed to write turn report: {e}")
+            return
+        finally:
+            session.close()
+        if not report_data["message_id"]:
+            return
+        # A rating made before this report existed. After the report's commit,
+        # so a rating saved meanwhile is seen here or copies onto the report.
+        session = self._session_factory()
+        try:
+            self._copy_rating_to_report(
+                session, report_data["session_id"], report_data["message_id"]
+            )
+        except Exception as e:
+            logger.error("Failed to apply pending answer rating (%s)", type(e).__name__)
         finally:
             session.close()
 

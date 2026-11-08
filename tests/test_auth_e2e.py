@@ -334,11 +334,13 @@ async def test_capabilities_unlock_for_a_token(client, agent_tokens):
 @pytest.mark.parametrize("signed_in", [True, False], ids=["token", "anonymous"])
 async def test_rating_is_bound_to_the_token_identity(client, agent_tokens, signed_in):
     usage_logger = MagicMock()
+    usage_logger.session_of.return_value = "s-1"
     usage_logger.log_rating.return_value = "ok"
     headers = agent_tokens.headers("jsmith@access-ci.org") if signed_in else {}
 
     with (
         patch("src.api.routes.get_usage_logger", return_value=usage_logger),
+        patch("src.api.routes.require_thread_access") as access,
         patch("src.turn_reporter.get_turn_reporter"),
     ):
         response = await client.post(
@@ -348,6 +350,6 @@ async def test_rating_is_bound_to_the_token_identity(client, agent_tokens, signe
         )
 
     assert response.status_code == 200
-    assert usage_logger.log_rating.call_args.kwargs["acting_user"] == (
-        "jsmith@access-ci.org" if signed_in else None
-    )
+    user = "jsmith@access-ci.org" if signed_in else None
+    assert usage_logger.log_rating.call_args.kwargs["acting_user"] == user
+    access.assert_called_once_with("s-1", user, None, via_query=True)

@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .agent.graph import create_pooled_checkpointer
 from .agent_token import AgentTokenVerifier, check_agent_token_config
 from .api import router
+from .api.rating_routes import rating_router
 from .api.thread_routes import thread_router
 from .config import settings
 from .telemetry import init_telemetry, shutdown_telemetry
@@ -149,6 +150,7 @@ app.add_middleware(
 # Include API routes
 app.include_router(router, prefix="/api/v1")
 app.include_router(thread_router, prefix="/api/v1")
+app.include_router(rating_router, prefix="/api/v1")
 
 
 def main() -> None:

@@ -24,6 +24,7 @@ from ..turnstile import NOT_CHARGED, QueryCharge, charge_query, check_turnstile
 from ..usage_logger import get_usage_logger
 from .answer_tokens import is_answer_token
 from .identity import ClaimKey, Identity
+from .rating_routes import MAX_FEEDBACK_BODY_CHARS, clean_feedback
 from .sse import format_sse_event as _format_sse_event
 from .thread_access import require_thread_access
 from .thread_runs import acquire_thread_run, held_run, release_thread_run, run_with_timeout
@@ -732,17 +733,22 @@ class RatingRequest(BaseModel):
 
     query_id: str = Field(..., description="The question_id from the original query")
     rating: str = Field(..., description="'helpful' or 'not_helpful'")
-    feedback: str | None = Field(None, description="Optional free-text feedback")
+    feedback: str | None = Field(
+        None, max_length=MAX_FEEDBACK_BODY_CHARS, description="Optional free-text feedback"
+    )
     session_id: str | None = Field(None, description="Session ID for anonymous ownership binding")
 
 
 @router.post("/rating")
-async def submit_rating(request: RatingRequest, identity: Identity) -> dict[str, Any]:
-    """Submit a rating for an agent response.
+async def submit_rating(
+    request: RatingRequest, identity: Identity, claim_key: ClaimKey = None
+) -> dict[str, Any]:
+    """Submit a rating for a widget (/query) response.
 
-    Anti-spoofing: the caller must be the turn's signed-in owner or send its
-    session_id, or gets the same 404 as an unknown query. One rating per query.
-    24h window.
+    The caller needs the turn's thread, by the same check as /query, and must
+    be the turn's signed-in owner or send its session_id; otherwise the same
+    404 as an unknown query. One rating per query. 24h window. Full-screen
+    answers are rated through rating_routes.py.
     """
     if request.rating not in ("helpful", "not_helpful"):
         raise HTTPException(status_code=400, detail="rating must be 'helpful' or 'not_helpful'")
@@ -750,11 +756,20 @@ async def submit_rating(request: RatingRequest, identity: Identity) -> dict[str,
     acting_user = identity.sub if identity else None
 
     usage_logger = get_usage_logger()
+    thread_id = await asyncio.to_thread(usage_logger.session_of, request.query_id)
+    if thread_id is None:
+        raise HTTPException(status_code=404, detail="query_id not found")
+    try:
+        require_thread_access(thread_id, acting_user, claim_key, via_query=True)
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="query_id not found") from None
+
+    feedback = clean_feedback(request.feedback)
     result = await asyncio.to_thread(
         usage_logger.log_rating,
         question_id=request.query_id,
         rating=request.rating,
-        feedback=request.feedback,
+        feedback=feedback,
         acting_user=acting_user,
         session_id=request.session_id,
     )
@@ -768,7 +783,7 @@ async def submit_rating(request: RatingRequest, identity: Identity) -> dict[str,
             get_turn_reporter().update_rating,
             question_id=request.query_id,
             rating=request.rating,
-            feedback=request.feedback,
+            feedback=feedback,
         )
         return {"success": True}
     if result == "not_found":
