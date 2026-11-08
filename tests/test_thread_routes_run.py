@@ -1308,3 +1308,253 @@ async def test_status_events_reach_the_client_before_the_answer(client, bearer, 
     assert custom == [{"type": "status", "message": "Searching software..."}]
     assert names.index("custom") < names.index("messages")
     assert "error" not in names
+
+
+# ---------------------------------------------------------------------------
+# Server-side allocated-resources profile (D8-3028)
+# ---------------------------------------------------------------------------
+
+DELTA_PROFILE_DICT = {
+    "allocated_resources": [
+        {
+            "name": "NCSA Delta GPU",
+            "rp_slug": "delta",
+            "resource_id": "delta-gpu.ncsa.access-ci.org",
+        }
+    ]
+}
+
+
+def _capture_stream_agent(monkeypatch) -> dict[str, Any]:
+    captured: dict[str, Any] = {}
+
+    async def _fake(**kwargs):
+        captured.update(kwargs)
+        yield "updates", {"tool_calling_loop": {"final_answer": "ok"}}
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _fake)
+    return captured
+
+
+def _stub_profile_lookup(monkeypatch, profile):
+    from unittest.mock import AsyncMock
+
+    lookup = AsyncMock(return_value=profile)
+    monkeypatch.setattr("src.api.thread_routes.allocated_profile_for", lookup)
+    return lookup
+
+
+def _use_real_lookup(monkeypatch, result):
+    """The real allocated_profile_for, with the MCP call and groups faked."""
+    from src.agent import profile_source
+
+    calls: list[Any] = []
+
+    class _MCP:
+        async def call_tool(self, server, tool_name, arguments, acting_user=None):
+            calls.append((server, tool_name, acting_user))
+            return result
+
+    class _Groups:
+        async def ensure_loaded(self):
+            return None
+
+        def list_slugs(self):
+            return ["delta"]
+
+        def slugs_for_resource_id(self, resource_id):
+            return ["delta"] if resource_id.startswith("delta-") else []
+
+    monkeypatch.setattr(profile_source, "MCPClient", _MCP)
+    monkeypatch.setattr(profile_source, "get_rp_cache", _Groups)
+    monkeypatch.setattr(
+        "src.api.thread_routes.allocated_profile_for", profile_source.allocated_profile_for
+    )
+    return calls
+
+
+def _accounts_result(accounts, state="rows_fresh"):
+    from src.tools.mcp_client import MCPToolResult
+
+    return MCPToolResult(success=True, data={"accounts": accounts, "state": state})
+
+
+DELTA_ACCOUNT = {"resource_id": "delta-gpu.ncsa.access-ci.org", "rp_display_name": "NCSA Delta GPU"}
+
+
+async def _run(client, headers=None, **body):
+    return await client.post(
+        "/api/v1/threads/t-profile/runs/stream",
+        headers=headers or {},
+        json={"input": {"messages": [{"role": "user", "content": "hi"}]}, **body},
+    )
+
+
+async def test_signed_in_run_gets_the_server_built_profile(client, bearer, monkeypatch):
+    from src.agent.profile import UserProfile
+
+    profile = UserProfile.model_validate(DELTA_PROFILE_DICT)
+    lookup = _stub_profile_lookup(monkeypatch, profile)
+    captured = _capture_stream_agent(monkeypatch)
+
+    r = await _run(client, bearer)
+
+    assert r.status_code == 200
+    lookup.assert_awaited_once_with("runner@x")
+    assert captured["profile"] == profile
+
+
+async def test_signed_in_run_looks_up_allocations_as_the_caller(client, bearer, monkeypatch):
+    from src.agent.profile import UserProfile
+
+    calls = _use_real_lookup(monkeypatch, _accounts_result([DELTA_ACCOUNT]))
+    captured = _capture_stream_agent(monkeypatch)
+
+    await _run(client, bearer)
+
+    assert calls == [("allocations", "get_my_rp_accounts", "runner@x")]
+    assert captured["profile"] == UserProfile.model_validate(DELTA_PROFILE_DICT)
+
+
+async def test_later_messages_in_a_thread_reuse_the_lookup(client, bearer, monkeypatch):
+    calls = _use_real_lookup(monkeypatch, _accounts_result([DELTA_ACCOUNT]))
+    _capture_stream_agent(monkeypatch)
+
+    await _run(client, bearer)
+    await _run(client, bearer)
+
+    assert len(calls) == 1
+
+
+async def test_anonymous_run_makes_no_lookup_and_has_no_profile(client, monkeypatch):
+    calls = _use_real_lookup(monkeypatch, _accounts_result([DELTA_ACCOUNT]))
+    captured = _capture_stream_agent(monkeypatch)
+
+    r = await _run(client)
+
+    assert r.status_code == 200
+    assert calls == []
+    assert captured["profile"] is None
+
+
+async def test_a_failed_lookup_runs_the_turn_without_a_profile(client, bearer, monkeypatch):
+    from src.tools.mcp_client import MCPToolResult
+
+    _use_real_lookup(monkeypatch, MCPToolResult(success=False, error="HTTP 503"))
+    captured = _capture_stream_agent(monkeypatch)
+
+    r = await _run(client, bearer)
+
+    assert r.status_code == 200
+    assert "event: values" in r.text
+    assert "event: error" not in r.text
+    assert captured["profile"] is None
+
+
+async def test_a_syncing_lookup_runs_the_turn_without_a_profile(client, bearer, monkeypatch):
+    _use_real_lookup(monkeypatch, _accounts_result([], state="syncing"))
+    captured = _capture_stream_agent(monkeypatch)
+
+    await _run(client, bearer)
+
+    assert captured["profile"] is None
+
+
+async def test_the_browser_cannot_supply_a_profile(client, bearer, monkeypatch):
+    _stub_profile_lookup(monkeypatch, None)
+    captured = _capture_stream_agent(monkeypatch)
+
+    r = await _run(
+        client,
+        bearer,
+        profile=DELTA_PROFILE_DICT,
+        context={"profile": DELTA_PROFILE_DICT},
+        config={"configurable": {"profile": DELTA_PROFILE_DICT}},
+    )
+
+    assert r.status_code == 200
+    assert captured["profile"] is None
+
+
+async def test_the_lookup_runs_before_the_turn_timer_starts(client, bearer, monkeypatch):
+    """The lookup must not eat the turn budget: the turn's deadline is set
+    only after it returns."""
+    from src.agent.turn_capture import get_turn_capture
+    from src.config import settings
+
+    finished: list[float] = []
+
+    async def _slow_lookup(acting_user):
+        await asyncio.sleep(0.05)
+        finished.append(time.monotonic())
+
+    monkeypatch.setattr("src.api.thread_routes.allocated_profile_for", _slow_lookup)
+    seen: dict[str, Any] = {}
+
+    async def _fake(**kwargs):
+        seen["deadline"] = get_turn_capture()["turn_deadline"]
+        yield "updates", {"tool_calling_loop": {"final_answer": "ok"}}
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _fake)
+
+    await _run(client, bearer)
+
+    assert seen["deadline"] - settings.AGENT_TURN_TIMEOUT_S >= finished[0]
+
+
+async def _system_prompt_for_run(client, monkeypatch, headers=None) -> str:
+    """Run one turn through the real stream_agent and loop node with a fake
+    model, and return the system prompt the model saw."""
+    from types import SimpleNamespace
+
+    from langchain_core.language_models.chat_models import BaseChatModel
+    from langchain_core.messages import AIMessage, SystemMessage
+    from langchain_core.outputs import ChatGeneration, ChatResult
+
+    import src.agent.nodes.tool_calling_loop as loop_mod
+
+    prompts: list[str] = []
+
+    class _RecordingModel(BaseChatModel):
+        @property
+        def _llm_type(self) -> str:
+            return "recording"
+
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            prompts.extend(m.text for m in messages if isinstance(m, SystemMessage))
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(content="Done."))])
+
+    async def _fake_registry():
+        return SimpleNamespace(catalog={"servers": []})
+
+    monkeypatch.setattr("src.api.routes.get_registry", _fake_registry)
+    monkeypatch.setattr(loop_mod, "get_llm", lambda *a, **k: _RecordingModel())
+
+    r = await _run(client, headers)
+
+    assert r.status_code == 200
+    assert "event: error" not in r.text
+    assert prompts
+    return prompts[0]
+
+
+async def test_the_profile_reaches_the_system_prompt_on_the_thread_path(
+    client, bearer, monkeypatch
+):
+    _use_real_lookup(monkeypatch, _accounts_result([DELTA_ACCOUNT]))
+
+    prompt = await _system_prompt_for_run(client, monkeypatch, bearer)
+
+    assert "## User profile" in prompt
+    assert "Allocated resources: NCSA Delta GPU (rp_name='delta')" in prompt
+
+
+async def test_an_anonymous_system_prompt_has_no_profile(client, monkeypatch):
+    _use_real_lookup(monkeypatch, _accounts_result([DELTA_ACCOUNT]))
+
+    prompt = await _system_prompt_for_run(client, monkeypatch)
+
+    assert "## User profile" not in prompt

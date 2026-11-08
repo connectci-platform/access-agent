@@ -159,3 +159,48 @@ class TestRPCacheLifecycle:
             "delta": RPInfo(slug="delta", title="Delta"),
         }
         assert set(cache.list_slugs()) == {"anvil", "delta"}
+
+
+# ── Variant resource ids (D8-3028) ───────────────────────────────────────
+
+
+class TestRPCacheResourceIds:
+    """Each group keeps its member variants' ACCESS global resource ids, so a
+    resource a user holds an allocation on maps to its group exactly, never by
+    name."""
+
+    async def test_fetch_keeps_variant_global_resource_ids(self):
+        variants = [
+            {"title": "Delta CPU", "global_resource_id": "delta-cpu.ncsa.access-ci.org"},
+            {"title": "Delta GPU", "global_resource_id": "delta-gpu.ncsa.access-ci.org"},
+            {"title": "No id", "global_resource_id": None},
+            {"title": "Blank id", "global_resource_id": ""},
+            "not-a-dict",
+        ]
+        result = await TestRPCacheFetch()._run_fetch(
+            [TestRPCacheFetch()._build_group("delta", "Delta", variants=variants)]
+        )
+
+        assert result["delta"].resource_ids == [
+            "delta-cpu.ncsa.access-ci.org",
+            "delta-gpu.ncsa.access-ci.org",
+        ]
+
+    async def test_fetch_tolerates_a_non_list_variants_field(self):
+        group = TestRPCacheFetch()._build_group("fabric", "FABRIC")
+        group["variants"] = None
+        result = await TestRPCacheFetch()._run_fetch([group])
+
+        assert result["fabric"].resource_ids == []
+
+    def test_slugs_for_resource_id(self):
+        cache = RPSectionCache()
+        cache._cache = {
+            "delta": RPInfo(slug="delta", title="Delta", resource_ids=["delta-gpu.x"]),
+            "anvil": RPInfo(slug="anvil", title="Anvil", resource_ids=["anvil.x"]),
+            "other": RPInfo(slug="other", title="Other", resource_ids=["anvil.x"]),
+        }
+
+        assert cache.slugs_for_resource_id("delta-gpu.x") == ["delta"]
+        assert cache.slugs_for_resource_id("anvil.x") == ["anvil", "other"]
+        assert cache.slugs_for_resource_id("unknown.x") == []

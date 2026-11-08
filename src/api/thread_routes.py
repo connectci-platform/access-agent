@@ -22,6 +22,8 @@ from starlette.responses import StreamingResponse
 from ..agent.context import AgentContext
 from ..agent.graph import create_checkpointed_graph, stream_agent
 from ..agent.nodes.capability_discovery import is_capability_question
+from ..agent.profile import UserProfile
+from ..agent.profile_source import allocated_profile_for
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..config import settings
 from ..turn_reporter import _hash_user, get_turn_reporter
@@ -141,6 +143,7 @@ async def _stream_run_events(
     query: str,
     context: AgentContext,
     resource_context: str | None,
+    profile: UserProfile | None,
     checkpointer: Any,
     final_state: dict[str, Any],
 ) -> AsyncGenerator[str, None]:
@@ -166,7 +169,7 @@ async def _stream_run_events(
         tool_catalog=registry.catalog,
         context=context,
         resource_context=resource_context,
-        profile=None,
+        profile=profile,
         checkpointer=checkpointer,
     ):
         if stream_type == "custom":
@@ -446,13 +449,20 @@ async def thread_run_stream(
 
         async with held_run(thread_id, run_id):
             try:
+                context = AgentContext.from_identity(identity)
+                # Built here from the verified identity, never from the request
+                # body, and before the turn's timer starts so it can't eat the
+                # turn budget. Bounded and cached; None for anonymous runs and
+                # for any failure.
+                profile = await allocated_profile_for(context.acting_user)
                 async with run_with_timeout(settings.AGENT_TURN_TIMEOUT_S):
                     async for event in _stream_run_events(
                         thread_id=thread_id,
                         run_id=run_id,
                         query=query,
-                        context=AgentContext.from_identity(identity),
+                        context=context,
                         resource_context=resource_context,
+                        profile=profile,
                         checkpointer=getattr(raw_request.app.state, "checkpointer", None),
                         final_state=final_state,
                     ):

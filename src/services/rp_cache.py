@@ -13,6 +13,9 @@ entry per ``resource_group`` node with:
 - ``title``: clean human-readable group title.
 - ``populated_sections``: union of populated section types across all
   member CIDER variants, computed server-side.
+- ``variants``: the member CIDER variants, each with its ACCESS
+  ``global_resource_id``. Kept so a resource a user holds an allocation on
+  maps to its group by id, never by name.
 
 Refreshed on first access, then every ``settings.RP_CACHE_TTL_SECONDS``
 (default 1800 = 30 min).
@@ -47,6 +50,8 @@ class RPInfo:
     slug: str
     title: str
     populated_sections: list[str] = field(default_factory=list)
+    # ACCESS global resource ids of the group's member variants.
+    resource_ids: list[str] = field(default_factory=list)
 
 
 class RPSectionCache:
@@ -86,6 +91,7 @@ class RPSectionCache:
                 slug=slug,
                 title=title,
                 populated_sections=populated,
+                resource_ids=_variant_resource_ids(group.get("variants")),
             )
 
         return result
@@ -136,6 +142,20 @@ class RPSectionCache:
     def list_groups(self) -> list[RPInfo]:
         """All cached RP groups."""
         return list(self._cache.values())
+
+    def slugs_for_resource_id(self, resource_id: str) -> list[str]:
+        """Slugs of every group with a member variant whose ACCESS global
+        resource id is ``resource_id``. More than one means the mapping is
+        ambiguous; the caller decides what to do with that."""
+        return [rp.slug for rp in self._cache.values() if resource_id in rp.resource_ids]
+
+
+def _variant_resource_ids(variants: object) -> list[str]:
+    """The non-empty ``global_resource_id`` of each variant entry."""
+    if not isinstance(variants, list):
+        return []
+    ids = (v.get("global_resource_id") for v in variants if isinstance(v, dict))
+    return [rid for rid in ids if isinstance(rid, str) and rid]
 
 
 # Singleton
