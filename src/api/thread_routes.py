@@ -21,10 +21,11 @@ from starlette.responses import StreamingResponse
 
 from ..agent.context import AgentContext
 from ..agent.graph import create_checkpointed_graph, stream_agent
+from ..agent.nodes.capability_discovery import is_capability_question
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..config import settings
 from ..turn_reporter import _hash_user, get_turn_reporter
-from ..turnstile import charge_query, check_turnstile
+from ..turnstile import NOT_CHARGED, charge_query, check_turnstile
 from .answer_tokens import ANSWER_MODEL_NODE, is_answer_token
 from .handoff_tokens import (
     DEFAULT_TTL_SECONDS,
@@ -422,8 +423,9 @@ async def thread_run_stream(
     run_id = str(uuid.uuid4())
     acquire_thread_run(thread_id, run_id)
     # Same guard and key as /query, where session_id == thread_id, so a handed-off
-    # conversation keeps its count.
-    charge = charge_query(caller, thread_id)
+    # conversation keeps its count. A capability question is answered from the
+    # registry, not the model, so it is free here as it is on /query.
+    charge = NOT_CHARGED if is_capability_question(query) else charge_query(caller, thread_id)
 
     async def _gen() -> AsyncGenerator[str, None]:
         start_time = time.time()
