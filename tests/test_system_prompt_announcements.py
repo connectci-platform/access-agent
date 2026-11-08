@@ -42,9 +42,17 @@ def test_missing_fields_are_asked_before_the_preview():
 
 def test_change_request_triggers_re_preview_not_creation():
     section = _normalize(ANNOUNCEMENTS_WORKFLOWS_SECTION)
+    assert "If the user asks for a change without saying to go ahead" in section
     assert "show the updated preview and ask again" in section
-    assert "A reply that requests a change is not confirmation" in section
+    assert "A bare change request is not confirmation" in section
+    assert "requests a change and explicitly says to go ahead" in section
+    assert "an explicit instruction to create in the same reply" in section
+    assert '"go ahead", "create it" or "post it"' in section
+    assert 'Approval words like "looks good" or "sounds good"' in section
+    assert "get an updated preview" in section
     assert "only after the user confirms the current preview" in section
+    assert "call `create_announcement` with that change applied" in section
+    assert "tell the user what was saved" in section
 
 
 def test_affinity_group_defaults_to_none_with_one_allowed_question():
