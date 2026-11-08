@@ -11,7 +11,7 @@ import time
 from typing import Annotated, Any, Literal
 
 from langchain_core.tools import BaseTool
-from pydantic import BaseModel, BeforeValidator, Field, create_model
+from pydantic import BaseModel, BeforeValidator, Field, WithJsonSchema, create_model
 
 from ...tools.mcp_client import MCPClient
 from ..auth_tools import ToolIdentityClass, tool_identity_class
@@ -72,6 +72,12 @@ def _build_args_schema(
         py_type: Any = _TYPE_MAP.get(param.get("type", "string"), str)
         if py_type in (dict, list):
             py_type = Annotated[py_type, _parse_json_text(py_type)]
+        declared = param.get("json_schema")
+        if declared:
+            # Only the schema shown to the model changes. Validation stays on
+            # the plain Python type, so a value the server accepts but doesn't
+            # list (an enum alias) isn't rejected here.
+            py_type = Annotated[py_type, WithJsonSchema(declared)]
         required = param.get("required", False)
         description = param.get("description", "")
 

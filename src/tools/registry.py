@@ -179,6 +179,7 @@ class ToolRegistry:
 
     def _add_tool(self, tool_data: dict[str, Any], server_name: str) -> None:
         """Add a tool to the registry."""
+        # Builds the text listing and required check, not the model-facing schema.
         parameters = []
         for param in tool_data.get("parameters", []):
             parameters.append(
@@ -578,8 +579,11 @@ class CatalogAggregator:
                     "type": param_def.get("type", "string"),
                     "required": param_name in required,
                     "description": param_def.get("description", ""),
-                    "enum": param_def.get("enum"),
                     "default": param_def.get("default"),
+                    # description and default are separate keys above.
+                    "json_schema": {
+                        k: v for k, v in param_def.items() if k not in ("description", "default")
+                    },
                 }
             )
 
