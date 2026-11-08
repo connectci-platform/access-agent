@@ -14,6 +14,7 @@ from .api import router
 from .api.rating_routes import rating_router
 from .api.thread_routes import thread_router
 from .config import settings
+from .services.rp_cache import get_rp_cache
 from .telemetry import init_telemetry, shutdown_telemetry
 from .telemetry.exceptions import RecordExceptionMiddleware
 
@@ -56,6 +57,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.warning(f"Failed to fetch catalog at startup: {e}")
         logger.warning("Will retry on first request")
 
+    # Warmed without waiting, so the first signed-in run finds the group
+    # vocabulary its allocations profile uses already loaded or loading.
+    get_rp_cache().refresh_in_background()
+
     if settings.UKY_RAG_ENABLED:
         logger.info(f"UKY RAG enabled: general={settings.UKY_RAG_GENERAL_URL}")
         logger.info(f"UKY RAG enabled: xdmod={settings.UKY_RAG_XDMOD_URL}")
@@ -84,6 +89,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Shutting down ACCESS Documentation Agent")
     # First, so a retry in flight doesn't race the clients closed below.
     await get_catalog_aggregator().stop_recovery()
+    await get_rp_cache().stop_background_refresh()
     if getattr(app.state, "_checkpointer_cm", None) is not None:
         await app.state._checkpointer_cm.__aexit__(None, None, None)  # noqa: SLF001
     await app.state.agent_token_verifier.aclose()

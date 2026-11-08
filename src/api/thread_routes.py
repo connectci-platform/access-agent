@@ -147,14 +147,13 @@ async def _stream_run_events(
     checkpointer: Any,
     final_state: dict[str, Any],
 ) -> AsyncGenerator[str, None]:
-    """The metadata/messages/custom/values SSE sequence for one run, mutating
+    """The messages/custom/values SSE sequence for one run, mutating
     ``final_state`` in place (mirrors turn_capture's in-place-mutation pattern)
     so the caller can read it after this generator is exhausted. Extracted
     from thread_run_stream's ``_gen`` to keep both under ruff's branch/statement
-    caps once the turn-report write was added.
+    caps once the turn-report write was added. The caller sends the metadata
+    event first.
     """
-    yield format_sse_event("metadata", {"run_id": run_id, "attempt": 1})
-
     from .routes import get_registry
 
     registry = await get_registry()
@@ -447,20 +446,22 @@ async def thread_run_stream(
                 success=ok,
             )
 
+        # Built from the verified identity, never from the request body. Runs
+        # while the metadata event (the client's run_id) goes out, and is
+        # awaited before the turn's timer starts so it can't eat the turn
+        # budget. Bounded and cached; None for anonymous runs and any failure.
+        # ``caller`` is the token's subject, the same user AgentContext acts for.
+        lookup = asyncio.ensure_future(allocated_profile_for(caller))
         async with held_run(thread_id, run_id):
             try:
-                context = AgentContext.from_identity(identity)
-                # Built here from the verified identity, never from the request
-                # body, and before the turn's timer starts so it can't eat the
-                # turn budget. Bounded and cached; None for anonymous runs and
-                # for any failure.
-                profile = await allocated_profile_for(context.acting_user)
+                yield format_sse_event("metadata", {"run_id": run_id, "attempt": 1})
+                profile = await lookup
                 async with run_with_timeout(settings.AGENT_TURN_TIMEOUT_S):
                     async for event in _stream_run_events(
                         thread_id=thread_id,
                         run_id=run_id,
                         query=query,
-                        context=context,
+                        context=AgentContext.from_identity(identity),
                         resource_context=resource_context,
                         profile=profile,
                         checkpointer=getattr(raw_request.app.state, "checkpointer", None),
@@ -488,6 +489,9 @@ async def thread_run_stream(
                 yield format_sse_event("error", {"error": "agent_error"})
                 await _report(state=final_state, ok=False)
                 return
+            finally:
+                # A disconnect before the lookup finished. A no-op once it has.
+                lookup.cancel()
 
         # Turn report write lives OUTSIDE both run_with_timeout and held_run — a
         # slow reporter write must not trip a spurious TimeoutError into an
