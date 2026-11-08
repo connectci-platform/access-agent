@@ -161,36 +161,18 @@ async def _check_capability_discovery(
 
     When ``resource_context`` is set, uses RP-scoped capabilities.
     """
-    from ..agent.domains.capabilities import get_capability_registry
+    from ..agent.nodes.capability_discovery import (
+        capability_categories,
+        capability_overview,
+        is_capability_question,
+    )
 
-    registry = get_capability_registry()
-    # Strip lock emoji prefix that the frontend adds to auth-required buttons
-    normalized = query.strip().removeprefix("🔒").strip().lower()
-
-    # Get categories — scoped or general
-    if resource_context:
-        scoped = await registry.get_by_category_scoped(resource_context, authenticated)
-        categories = scoped["categories"] if scoped else registry.get_by_category(authenticated)
-    else:
-        categories = registry.get_by_category(authenticated)
-
-    # "Show my options" → list capabilities with example queries from descriptions
-    if normalized in ("show my options", "what can you do", "what can you help with"):
-        lines = ["Here are some things you can try:\n"]
-        for cat in categories:
-            # Skip "general" — typing is the default
-            if cat["id"] == "general":
-                continue
-            lines.append(f"**{cat['label']}**")
-            for cap in cat["capabilities"]:
-                example = cap.get("example_query") or cap["description"]
-                locked = " 🔒 (login required)" if cap.get("locked") else ""
-                lines.append(f'- *"{example}"*{locked}')
-            lines.append("")
-        if not authenticated:
-            lines.append("*Some features require logging in. Log in to unlock all capabilities.*")
-        lines.append("Just type a question like one of these, or ask anything else!")
-        answer = "\n".join(lines)
+    if is_capability_question(query):
+        categories = await capability_categories(authenticated, resource_context)
+        answer = (
+            capability_overview(categories, authenticated)
+            + "\n\nJust type a question like one of these, or ask anything else!"
+        )
         return QueryResponse(
             success=True,
             response=answer,

@@ -27,8 +27,10 @@ docker-compose up --build                 # full local stack
 
 ## Conventions & gotchas
 
-- **The loop is the only graph node.** `src/agent/nodes/tool_calling_loop.py` (built with
-  `create_agent` + `SummarizationMiddleware`). `src/agent/graph.py` is `START → loop → END`.
+- **The loop is the only model node.** `src/agent/nodes/tool_calling_loop.py` (built with
+  `create_agent` + `SummarizationMiddleware`). `src/agent/graph.py` is `START → loop → END`,
+  except "What can you do?"-style questions, which START routes to
+  `nodes/capability_discovery.py` to answer from the capability registry without the model.
 - **LLM provider:** code default is OpenAI `gpt-4o` for local dev; **production sets `LLM_PROVIDER`
   to the UKY vLLM (Qwen) endpoint.** The default is not the production model (ADR 009).
 - **Document retrieval is a tool** — `src/agent/tools/access_documents.py`. `source="general"` →

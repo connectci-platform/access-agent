@@ -1,6 +1,8 @@
 """LangGraph definition for the ACCESS Documentation Agent.
 
-Single-node design: every query flows START → tool_calling_loop → END.
+Single-loop design: every query flows START → tool_calling_loop → END, except
+a capability question ("What can you do?"), which START routes to
+capability_discovery to answer from the registry without the model.
 The loop's system prompt and tool list (full MCP catalog plus
 ``search_access_documents``) let the LLM decide when to look things up,
 when to call tools, and when to answer — no upstream classifier or
@@ -20,6 +22,7 @@ from langgraph.graph import END, START, StateGraph
 
 from ..telemetry import get_tracer
 from .context import AgentContext
+from .nodes.capability_discovery import capability_discovery_node, is_capability_question
 from .nodes.tool_calling_loop import tool_calling_loop_node
 from .profile import UserProfile
 from .state import AgentState
@@ -48,16 +51,25 @@ def _new_builder() -> _Builder:
     return StateGraph(AgentState, context_schema=AgentContext)
 
 
-def _build_graph_structure(builder: _Builder) -> _Builder:
-    """Wire the single-node loop graph: START → tool_calling_loop → END.
+def _route_turn(state: AgentState) -> str:
+    """Send a capability question to the registry, everything else to the loop."""
+    if is_capability_question(state.get("query") or ""):
+        return "capability_discovery"
+    return "tool_calling_loop"
 
-    The node signature is ``(dict[str, Any], Runtime) -> dict[str, Any]``
+
+def _build_graph_structure(builder: _Builder) -> _Builder:
+    """Wire the graph: START → (capability_discovery | tool_calling_loop) → END.
+
+    The node signatures are ``(dict[str, Any], Runtime) -> dict[str, Any]``
     (accepts the react-agent messages dict shape); mypy can't match that to
     the StateGraph overloads, so we suppress the mismatch.
     """
     builder.add_node("tool_calling_loop", tool_calling_loop_node)  # type: ignore[call-overload]
-    builder.add_edge(START, "tool_calling_loop")
+    builder.add_node("capability_discovery", capability_discovery_node)  # type: ignore[call-overload]
+    builder.add_conditional_edges(START, _route_turn, ["capability_discovery", "tool_calling_loop"])
     builder.add_edge("tool_calling_loop", END)
+    builder.add_edge("capability_discovery", END)
     return builder
 
 
