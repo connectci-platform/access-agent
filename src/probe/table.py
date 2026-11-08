@@ -38,6 +38,16 @@ PROBE_TABLE: list[ProbeCase] = [
     ProbeCase("announcements", "search_announcements", {"query": "Expanse", "limit": 10}),
     ProbeCase("compute-resources", "search_resources", {"has_gpu": True}),
     ProbeCase("compute-resources", "get_resource_hardware", {"id": "Anvil"}),
+    # "How do I log in to Expanse using SSH?" (eval/README.md). The bare name lists
+    # Expanse's systems to choose from, so the probe names the CPU system.
+    ProbeCase("compute-resources", "get_resource", {"resource": "Expanse CPU"}),
+    # comb-007 in combined_battery.json: "Compare the GPU hardware available on
+    # Delta and Bridges-2".
+    ProbeCase(
+        "compute-resources",
+        "compare_resources",
+        {"resources": ["Delta GPU", "Bridges-2 GPU"]},
+    ),
     ProbeCase(
         "software-discovery",
         "compare_software_availability",
