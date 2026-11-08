@@ -202,3 +202,33 @@ class TestSessionOf:
         ul._session_factory = sessionmaker(bind=ul._engine)  # no table: the query raises
         ul._initialized = True
         assert ul.session_of("q-1") is None
+
+
+class TestRatingErrorsLogNoComment:
+    def test_log_rating_logs_only_the_error_type(self, caplog, monkeypatch):
+        ul, sf = _make_logger()
+        s = sf()
+        s.execute(
+            text(
+                "INSERT INTO usage_logs (timestamp, session_id, question_id, query_text) "
+                "VALUES (:ts, 's-1', 'q-1', 'hi')"
+            ),
+            {"ts": _naive_utcnow()},
+        )
+        s.commit()
+        s.close()
+        session = sf()
+
+        def _boom():
+            raise RuntimeError("[parameters: ('private comment',)]")
+
+        monkeypatch.setattr(session, "commit", _boom)
+        monkeypatch.setattr(ul, "_session_factory", lambda: session)
+
+        result = ul.log_rating(
+            question_id="q-1", rating="not_helpful", feedback="private comment", session_id="s-1"
+        )
+
+        assert result == "error"
+        assert "Failed to log rating (RuntimeError)" in caplog.text
+        assert "private comment" not in caplog.text

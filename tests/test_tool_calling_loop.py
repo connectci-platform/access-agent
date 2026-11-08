@@ -306,6 +306,9 @@ async def test_recursion_limit_error_produces_graceful_response(base_state):
     assert isinstance(messages[-1], AIMessage)
     assert messages[-1].content == answer
     assert len(messages) == len(base_state["messages"]) + 1
+    # An id from the start, so the turn report and the checkpoint name the
+    # same answer and a rating of it reaches the report (D8-3022).
+    assert messages[-1].id
 
 
 @pytest.mark.asyncio
