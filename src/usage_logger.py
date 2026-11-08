@@ -274,7 +274,8 @@ class UsageLogger:
             session.close()
             return "ok"
         except Exception as e:
-            logger.error(f"Failed to log rating: {e}")
+            # Never the exception text: it can carry the bound feedback value.
+            logger.error("Failed to log rating (%s)", type(e).__name__)
             return "error"
 
 

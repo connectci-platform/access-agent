@@ -32,6 +32,8 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 from .agent.domains.capabilities import WRITE_MCP_TOOL_NAMES
@@ -226,6 +228,13 @@ def _this_turns_answer(messages: Any) -> str | None:
     if not any(_message_field(m, "type") == "human" for m in messages):
         messages = [{"type": "human"}, *messages]
     return _turn_answers(messages)[-1]
+
+
+def _dialect_insert(session: Session) -> Any:
+    """The INSERT with ON CONFLICT support for the database in use."""
+    if session.get_bind().dialect.name == "postgresql":
+        return pg_insert
+    return sqlite_insert
 
 
 def _hinted_write_names(tool_catalog: Any) -> set[str]:
@@ -556,7 +565,8 @@ class TurnReporter:
             report.rating_feedback = feedback  # type: ignore[assignment]
             session.commit()
         except Exception as e:
-            logger.error(f"Failed to update turn report rating: {e}")
+            # Never the exception text: it can carry the bound feedback value.
+            logger.error("Failed to update turn report rating (%s)", type(e).__name__)
         finally:
             session.close()
 
@@ -567,38 +577,55 @@ class TurnReporter:
 
         Commits the rating before copying it to the turn report, and the report
         writer commits the report before looking for a rating, so whichever runs
-        second sees the other's write. Never raises; False when not saved.
+        second sees the other's write. True once the rating is saved, whatever
+        happens to the copy. Never raises.
         """
         if not self._ensure_initialized() or self._session_factory is None:
             return False
         session = self._session_factory()
         try:
-            row = session.get(TurnRating, (thread_id, message_id))
-            if row is None:
-                row = TurnRating(thread_id=thread_id, message_id=message_id)
-                session.add(row)
-            row.rating = rating  # type: ignore[assignment]
-            row.feedback = feedback  # type: ignore[assignment]
-            row.updated_at = datetime.now(UTC)  # type: ignore[assignment]
+            # One statement, so two first ratings at once can't collide.
+            values = {
+                "thread_id": thread_id,
+                "message_id": message_id,
+                "rating": rating,
+                "feedback": feedback,
+                "updated_at": datetime.now(UTC),
+            }
+            insert = _dialect_insert(session)(TurnRating).values(**values)
+            session.execute(
+                insert.on_conflict_do_update(
+                    index_elements=[TurnRating.thread_id, TurnRating.message_id],
+                    set_={k: insert.excluded[k] for k in ("rating", "feedback", "updated_at")},
+                )
+            )
             session.commit()
-            self._copy_rating_to_report(session, thread_id, message_id)
-            return True
         except Exception as e:
             # Never the exception text: it can carry the bound feedback value.
             logger.error("Failed to save answer rating (%s)", type(e).__name__)
+            session.close()
             return False
+        try:
+            self._copy_rating_to_report(session, thread_id, message_id)
+        except Exception as e:
+            # Saved all the same: the report picks it up when it's next written.
+            logger.error("Failed to copy answer rating to its report (%s)", type(e).__name__)
         finally:
             session.close()
+        return True
 
     @staticmethod
     def _copy_rating_to_report(session: Session, thread_id: str, message_id: str) -> None:
-        row = session.get(TurnRating, (thread_id, message_id))
-        if row is None:
-            return
+        """One UPDATE ... FROM, so the report gets the rating as committed now."""
         session.execute(
             update(TurnReport)
-            .where(TurnReport.session_id == thread_id, TurnReport.message_id == message_id)
-            .values(rating=row.rating, rating_feedback=row.feedback)
+            .where(
+                TurnRating.thread_id == thread_id,
+                TurnRating.message_id == message_id,
+                TurnReport.session_id == TurnRating.thread_id,
+                TurnReport.message_id == TurnRating.message_id,
+            )
+            .values(rating=TurnRating.rating, rating_feedback=TurnRating.feedback)
         )
         session.commit()
 

@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from collections import Counter, deque
 from collections.abc import Callable, Iterable
 from copy import deepcopy
@@ -413,6 +414,9 @@ class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
                     f"(condensed to save context):\n\n{summary}"
                 ),
                 additional_kwargs={"lc_source": "summarization"},
+                # The id the checkpoint would give it, set here so node
+                # updates and the checkpoint agree on it.
+                id=str(uuid.uuid4()),
             )
         ]
 
@@ -736,7 +740,9 @@ async def tool_calling_loop_node(  # noqa: PLR0915
             )
             # Clients render the thread's messages, not final_answer, so the
             # apology has to be a message or the user sees no reply at all.
-            result_messages = [*messages, AIMessage(content=final_answer)]
+            # With an id, so the turn report names the answer the checkpoint
+            # shows and a rating of it reaches the report.
+            result_messages = [*messages, AIMessage(content=final_answer, id=str(uuid.uuid4()))]
 
         if not recursion_limit_hit:
             for msg in reversed(result_messages):

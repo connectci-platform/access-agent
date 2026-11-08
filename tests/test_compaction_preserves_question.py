@@ -143,3 +143,4 @@ class TestSummaryFraming:
         )
         assert "conversation to date" not in str(message.content)
         assert "SUMMARY BODY" in str(message.content)
+        assert message.id, "an id from the start, as the checkpoint will give it"

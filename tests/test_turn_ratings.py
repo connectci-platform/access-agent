@@ -304,15 +304,118 @@ class TestMigration:
 
         @event.listens_for(r._engine, "before_cursor_execute")
         def _refuse(conn, cursor, statement, *args):
-            if "ix_turn_reports_message_id" in statement:
+            if "ix_turn_reports_message_id" in statement or "battery_run_id" in statement:
                 raise RuntimeError("no privilege")
 
         r._migrate_columns()
 
         assert "Failed to ensure message_id index" in caplog.text
+        assert "Failed to ensure battery_run_id index" in caplog.text
 
     def test_ratings_table_is_created(self):
         engine = create_engine("sqlite:///:memory:")
         TurnReportBase.metadata.create_all(engine)
         cols = {c["name"] for c in inspect(engine).get_columns("turn_ratings")}
         assert {"thread_id", "message_id", "rating", "feedback", "updated_at"} <= cols
+
+
+class TestRatingRobustness:
+    """Findings from review: the save never fails on the copy, never on a
+    race, and the copy never leaves an older rating on the report."""
+
+    def test_a_failed_copy_still_reports_the_rating_saved(self, caplog):
+        r = _reporter()
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("copy failed: secret words")
+
+        r._copy_rating_to_report = _boom  # type: ignore[method-assign]
+
+        assert r.rate_answer(THREAD, "a1", "not_helpful", "secret words") is True
+        assert [(row.rating, row.feedback) for row in _rating_rows(r)] == [
+            ("not_helpful", "secret words")
+        ]
+        assert "secret words" not in caplog.text
+
+    def test_two_first_ratings_at_once_both_save(self, tmp_path):
+        """The other writer's row lands between this one's start and its insert."""
+        url = f"sqlite:///{tmp_path / 'race.db'}"
+        r = TurnReporter()
+        r._engine = create_engine(url)
+        TurnReportBase.metadata.create_all(r._engine)
+        r._session_factory = sessionmaker(bind=r._engine)
+        r._initialized = True
+        other = create_engine(url)
+        raced = []
+
+        @event.listens_for(r._engine, "before_cursor_execute")
+        def _other_writer_first(conn, cursor, statement, *args):
+            if statement.lstrip().upper().startswith("INSERT INTO TURN_RATINGS") and not raced:
+                raced.append(True)
+                with other.begin() as c:
+                    c.execute(
+                        text(
+                            "INSERT INTO turn_ratings (thread_id, message_id, rating, updated_at) "
+                            "VALUES (:t, 'a1', 'helpful', CURRENT_TIMESTAMP)"
+                        ),
+                        {"t": THREAD},
+                    )
+
+        assert r.rate_answer(THREAD, "a1", "not_helpful", "late") is True
+        assert raced
+        assert [(row.rating, row.feedback) for row in _rating_rows(r)] == [("not_helpful", "late")]
+
+    def test_the_copy_is_one_update_from_the_ratings(self):
+        r = _reporter()
+        _report(r, message_id="a1")
+        r.rate_answer(THREAD, "a1", "helpful", None)
+        seen: list[str] = []
+
+        @event.listens_for(r._engine, "before_cursor_execute")
+        def _record(conn, cursor, statement, *args):
+            seen.append(" ".join(statement.split()).upper())
+
+        s = r._session_factory()
+        r._copy_rating_to_report(s, THREAD, "a1")
+        s.close()
+
+        statements = [st for st in seen if not st.startswith(("BEGIN", "COMMIT"))]
+        assert len(statements) == 1
+        assert statements[0].startswith("UPDATE TURN_REPORTS")
+        assert "FROM TURN_RATINGS" in statements[0]
+        assert _report_row(r, "a1").rating == "helpful"
+
+
+class TestRatingErrorsLogNoComment:
+    def test_update_rating_logs_only_the_error_type(self, caplog, monkeypatch):
+        r = _reporter()
+        _report(r, message_id="a1")
+        s = r._session_factory()
+        s.query(TurnReport).update({"question_id": "q-1"})
+        s.commit()
+        s.close()
+        session = r._session_factory()
+
+        def _boom():
+            raise RuntimeError("[parameters: ('private comment',)]")
+
+        monkeypatch.setattr(session, "commit", _boom)
+        monkeypatch.setattr(r, "_session_factory", lambda: session)
+
+        r.update_rating(question_id="q-1", rating="not_helpful", feedback="private comment")
+
+        assert "Failed to update turn report rating (RuntimeError)" in caplog.text
+        assert "private comment" not in caplog.text
+
+
+def test_postgres_gets_its_own_upsert():
+    from types import SimpleNamespace
+
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    from src.turn_reporter import _dialect_insert
+
+    session = SimpleNamespace(
+        get_bind=lambda: SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+    )
+    assert _dialect_insert(session) is pg_insert  # type: ignore[arg-type]
