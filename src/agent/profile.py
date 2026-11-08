@@ -58,6 +58,10 @@ class UserProfile(BaseModel):
     # None means "not supplied" — distinct from an explicitly empty list, which
     # still renders the "none" fact. See render_allocated_resources.
     allocated_resources: list[AllocatedResource] | None = Field(None, max_length=32)
+    # False when the resource-group list wasn't loaded, so a resource without
+    # an rp_slug is of unknown grouping, not confirmed ungrouped, and must not
+    # be described as having no scoped documentation.
+    groups_known: bool = True
 
 
 def _fact_name(resource: AllocatedResource) -> str:
@@ -66,13 +70,18 @@ def _fact_name(resource: AllocatedResource) -> str:
     return resource.name
 
 
-def render_allocated_resources(resources: list[AllocatedResource]) -> ProfileFragment:
+def render_allocated_resources(
+    resources: list[AllocatedResource], *, groups_known: bool = True
+) -> ProfileFragment:
     """Render the allocated-resources fact + instruction + hint.
 
     Facts state what the *request supplied*, never something about the user,
     so anonymous callers stay truthful. The instruction composes clauses
     (slug-scoping, ungrouped, empty) rather than picking one branch, because
     real profiles mix a grouped variant with ungrouped storage.
+
+    ``groups_known=False`` drops the ungrouped clause: without the group list
+    a slug-less resource may well have scoped docs, so only names are stated.
     """
     if not resources:
         return ProfileFragment(
@@ -112,7 +121,7 @@ def render_allocated_resources(resources: list[AllocatedResource]) -> ProfileFra
             "each of them or ask the user which resource they mean."
         )
 
-    if ungrouped:
+    if ungrouped and groups_known:
         names = ", ".join(r.name for r in ungrouped)
         pronoun = "it" if len(ungrouped) == 1 else "them"
         clauses.append(
@@ -177,7 +186,11 @@ def render_profile_section(profile: UserProfile, resource_context: str | None = 
     """
     fragments: list[ProfileFragment] = []
     if profile.allocated_resources is not None:
-        fragments.append(render_allocated_resources(profile.allocated_resources))
+        fragments.append(
+            render_allocated_resources(
+                profile.allocated_resources, groups_known=profile.groups_known
+            )
+        )
 
     facts: list[str] = []
     instructions: list[str] = []

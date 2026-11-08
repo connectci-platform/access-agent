@@ -252,3 +252,28 @@ def test_render_profile_section_none_field_with_resource_context_renders_nothing
     from src.agent.profile import UserProfile
 
     assert render_profile_section(UserProfile(), resource_context="delta") == ""
+
+
+# ── Group vocabulary not loaded (D8-3028) ────────────────────────────────
+
+
+def test_without_the_group_list_no_resource_is_said_to_lack_scoped_docs():
+    """Unknown is not the same as ungrouped: names only, no claim."""
+    from src.agent.profile import UserProfile
+
+    profile = UserProfile(
+        allocated_resources=[AllocatedResource(name="NCSA Delta GPU")], groups_known=False
+    )
+    section = render_profile_section(profile)
+
+    assert "Allocated resources: NCSA Delta GPU" in section
+    assert "No scoped documentation" not in section
+    assert "rp_name" not in section.split("Never scope")[0]
+
+
+def test_a_resource_confirmed_in_no_group_keeps_the_no_scoped_docs_wording():
+    from src.agent.profile import UserProfile
+
+    profile = UserProfile(allocated_resources=[AllocatedResource(name="Delta Storage")])
+    assert profile.groups_known is True
+    assert "No scoped documentation exists for Delta Storage" in render_profile_section(profile)
