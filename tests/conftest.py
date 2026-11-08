@@ -207,3 +207,19 @@ async def agent_tokens():
     await verifier.aclose()
     server.shutdown()
     server.server_close()
+
+
+@pytest.fixture(autouse=True)
+def _no_allocations_profile_lookup(monkeypatch):
+    """Signed-in thread runs look up the user's allocations over MCP. Keep the
+    route tests off the network (a local allocations server would otherwise
+    answer) and start each test with an empty per-user cache. Tests of the
+    lookup itself patch it back in."""
+    from unittest.mock import AsyncMock
+
+    from src.agent import profile_source
+
+    profile_source._reset_cache_for_test()
+    monkeypatch.setattr("src.api.thread_routes.allocated_profile_for", AsyncMock(return_value=None))
+    yield
+    profile_source._reset_cache_for_test()
