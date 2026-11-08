@@ -3,7 +3,13 @@
 import pytest
 from pytest_httpx import HTTPXMock
 
-from src.tools.mcp_client import MCPClient, MCPToolResult, get_shared_client
+from src.config import settings
+from src.tools.mcp_client import (
+    SERVER_TIMEOUTS_S,
+    MCPClient,
+    MCPToolResult,
+    get_shared_client,
+)
 
 
 class TestMCPToolResult:
@@ -172,6 +178,28 @@ class TestMCPClient:
         assert result.success is False
         assert "Unknown MCP server" in result.error
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("server", "seconds"),
+        [("xdmod", 60.0), ("compute-resources", 30.0)],
+    )
+    async def test_call_tool_timeout_depends_on_server(
+        self, httpx_mock: HTTPXMock, server: str, seconds: float
+    ):
+        """Slow XDMoD queries get longer than other servers, per request."""
+        httpx_mock.add_response(method="POST", json={"content": []})
+        client = MCPClient()
+        client._server_urls[server] = "http://localhost:3002"
+
+        await client.call_tool(server=server, tool_name="any_tool", arguments={})
+
+        timeout = httpx_mock.get_request().extensions["timeout"]
+        assert timeout["read"] == seconds
+
+    def test_slowest_server_leaves_time_to_answer(self):
+        """A timed-out tool call must not use up the whole turn."""
+        assert max(SERVER_TIMEOUTS_S.values()) <= settings.AGENT_TURN_TIMEOUT_S / 2
+
     def test_parse_mcp_response_text_content(self):
         """Test parsing MCP text content response."""
         client = MCPClient()
@@ -237,7 +265,7 @@ def test_call_tool_emits_span(monkeypatch):
             return {"content": [{"type": "text", "text": '{"ok": true}'}]}
 
     class _Client:
-        async def post(self, url, json=None, headers=None):
+        async def post(self, url, json=None, headers=None, timeout=None):
             return _Resp()
 
     monkeypatch.setattr("src.tools.mcp_client.get_shared_client", lambda timeout: _Client())
@@ -278,7 +306,7 @@ def test_call_tool_failure_span_has_error_status(monkeypatch):
     )
 
     class _Client:
-        async def post(self, url, json=None, headers=None):
+        async def post(self, url, json=None, headers=None, timeout=None):
             raise httpx.TimeoutException("timed out")
 
     monkeypatch.setattr("src.tools.mcp_client.get_shared_client", lambda timeout: _Client())
@@ -300,7 +328,7 @@ def test_call_tool_generic_exception_returns_error(monkeypatch):
     from src.tools.mcp_client import MCPClient
 
     class _Client:
-        async def post(self, url, json=None, headers=None):
+        async def post(self, url, json=None, headers=None, timeout=None):
             raise ValueError("kaboom")
 
     monkeypatch.setattr("src.tools.mcp_client.get_shared_client", lambda timeout: _Client())
@@ -332,7 +360,7 @@ def _mcp_span_for(monkeypatch, post, arguments):
     )
 
     class _Client:
-        async def post(self, url, json=None, headers=None):
+        async def post(self, url, json=None, headers=None, timeout=None):
             return await post()
 
     monkeypatch.setattr("src.tools.mcp_client.get_shared_client", lambda timeout: _Client())
