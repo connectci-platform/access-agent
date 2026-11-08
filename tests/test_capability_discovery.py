@@ -20,16 +20,28 @@ from langgraph.checkpoint.memory import InMemorySaver
 import src.agent.domains.capabilities as caps_mod
 import src.agent.graph as g
 from src.agent.context import AgentContext
+from src.agent.domains.capability_areas import AREA_BY_CAPABILITY
 from src.agent.nodes.capability_discovery import (
+    OVERVIEW_INTRO,
+    SIGN_IN_NOTE,
+    area_overview,
     capability_categories,
-    capability_overview,
     is_capability_question,
+    widget_capability_overview,
 )
 from src.api.identity import CLAIM_KEY_HEADER
 from src.main import app
 
 SIGNED_IN = AgentContext(acting_user="user@access-ci.org", scopes=frozenset({"agent:read"}))
 LOCKED_EXAMPLE = '*"Create a GPU training event for next month"*'
+FULL_SUGGESTIONS = [
+    "Which ACCESS resources have GPUs?",
+    "Where can I run GROMACS?",
+    "How do I transfer large files to Bridges-2?",
+    "What allocations are available for new researchers?",
+    "Sign me up for an upcoming GPU training",
+    "Are there any outages right now?",
+]
 
 
 @pytest.fixture(autouse=True)
@@ -97,7 +109,7 @@ def test_other_questions_do_not_match(text):
 
 
 async def test_anonymous_overview_marks_sign_in_capabilities():
-    answer = capability_overview(await capability_categories(False), False)
+    answer = widget_capability_overview(await capability_categories(False), False)
 
     assert answer.startswith("Here are some things you can try:")
     assert f"{LOCKED_EXAMPLE} 🔒 (login required)" in answer
@@ -107,7 +119,7 @@ async def test_anonymous_overview_marks_sign_in_capabilities():
 
 
 async def test_signed_in_overview_has_no_locks():
-    answer = capability_overview(await capability_categories(True), True)
+    answer = widget_capability_overview(await capability_categories(True), True)
 
     assert LOCKED_EXAMPLE in answer
     assert "🔒" not in answer
@@ -118,7 +130,7 @@ async def test_disabled_capability_is_absent():
     from src.config import settings
 
     with patch.object(settings, "DISABLED_CAPABILITIES", "search_software"):
-        answer = capability_overview(await capability_categories(True), True)
+        answer = widget_capability_overview(await capability_categories(True), True)
 
     assert "Is Python available on Delta?" not in answer
     assert "Are there any system outages right now?" in answer
@@ -130,7 +142,7 @@ async def test_general_category_is_skipped():
         {"id": "explore", "label": "Explore", "capabilities": [{"description": "Find things"}]},
     ]
 
-    answer = capability_overview(categories, True)
+    answer = widget_capability_overview(categories, True)
 
     assert "General" not in answer
     assert '**Explore**\n- *"Find things"*' in answer
@@ -155,6 +167,96 @@ async def test_unknown_resource_context_falls_back_to_all_categories():
 
     with patch.object(registry, "get_by_category_scoped", _unknown):
         assert await capability_categories(True, "nope") == registry.get_by_category(True)
+
+
+# ---------------------------------------------------------------------------
+# The full-screen area overview
+# ---------------------------------------------------------------------------
+
+
+def _enabled(disabled: str = "") -> set[str]:
+    from src.config import settings
+
+    caps_mod._registry = None
+    with patch.object(settings, "DISABLED_CAPABILITIES", disabled):
+        return {c.id for c in caps_mod.get_capability_registry().get_all()}
+
+
+def test_every_capability_has_an_area_tag():
+    every = {c.id for c in caps_mod._build_registry().get_all()}
+    assert every <= set(AREA_BY_CAPABILITY)
+
+
+def test_area_overview_reads_as_approved():
+    answer, suggestions = area_overview(_enabled(), False)
+
+    assert answer == (
+        "I can help you find and use ACCESS resources and services.\n\n"
+        "**Find the right resource**  \n"
+        "Compare systems by hardware, GPUs, storage and software, "
+        "and see which ones fit your work.\n\n"
+        "**Get started and get unstuck**  \n"
+        "Answers from ACCESS and resource provider documentation: "
+        "logging in, moving data, running jobs.\n\n"
+        "**Allocations**  \n"
+        "How to get an allocation, what kinds exist, and, once you sign in, "
+        "your own balances and usage.\n\n"
+        "**Training, events and community**  \n"
+        "Upcoming workshops and office hours (I can register you), "
+        "plus affinity groups to join.\n\n"
+        "**System status**  \n"
+        "Current outages and scheduled maintenance.\n\n"
+        "**Talk to a person**  \n"
+        "If I can't solve it, I can open a support ticket for you.\n\n"
+        "Sign in to see your own allocations and usage, and to register for events."
+    )
+    assert suggestions == FULL_SUGGESTIONS
+    for example in suggestions:
+        assert example not in answer
+
+
+def test_sign_in_note_only_when_anonymous():
+    signed_in, _ = area_overview(_enabled(), True)
+
+    assert SIGN_IN_NOTE not in signed_in
+    assert signed_in.endswith("I can open a support ticket for you.")
+
+
+def test_staff_tools_never_appear():
+    answer, suggestions = area_overview(_enabled(), True)
+
+    for staff in ("announcement", "Create a GPU training event", "XDMoD", "security"):
+        assert staff not in answer
+        assert not any(staff in s for s in suggestions)
+
+
+def test_disabled_capabilities_drop_their_areas_and_examples():
+    answer, suggestions = area_overview(
+        _enabled("check_system_status,search_software,open_ticket,report_login_problem"), True
+    )
+
+    assert "**System status**" not in answer
+    assert "**Talk to a person**" not in answer
+    assert "**Find the right resource**" in answer
+    assert "Are there any outages right now?" not in suggestions
+    assert "Where can I run GROMACS?" not in suggestions
+    assert "Which ACCESS resources have GPUs?" in suggestions
+
+
+def test_an_area_shows_while_any_of_its_capabilities_is_enabled():
+    answer, suggestions = area_overview(_enabled("check_allocations"), True)
+
+    assert "**Allocations**" in answer
+    assert "What allocations are available for new researchers?" not in suggestions
+
+
+def test_your_resources_go_above_the_areas():
+    answer, _ = area_overview(_enabled(), True, your_resources="**Your resources**  \nDelta")
+
+    intro, resources, first_area = answer.split("\n\n")[:3]
+    assert intro == OVERVIEW_INTRO
+    assert resources == "**Your resources**  \nDelta"
+    assert first_area.startswith("**Find the right resource**")
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +288,12 @@ async def test_capability_question_lands_in_thread_state(_loop_must_not_run):
     assert isinstance(human, HumanMessage)
     assert isinstance(reply, AIMessage)
     assert reply.id
-    assert "🔒 (login required)" in reply.content
+    assert reply.content.startswith(OVERVIEW_INTRO)
+    assert reply.content.endswith(SIGN_IN_NOTE)
+    assert reply.additional_kwargs == {
+        "capability_overview": True,
+        "suggestions": FULL_SUGGESTIONS,
+    }
     assert state.values["final_answer"] == reply.content
     assert state.values["tools_used"] == []
     assert _loop_must_not_run == []
@@ -204,7 +311,8 @@ async def test_capability_answer_is_history_for_the_next_turn(_loop_must_not_run
     )
     kinds = [m.type for m in state.values["messages"]]
     assert kinds == ["human", "ai", "human", "ai", "human", "ai"]
-    assert "🔒" not in state.values["messages"][3].content
+    assert SIGN_IN_NOTE not in state.values["messages"][3].content
+    assert state.values["messages"][3].additional_kwargs["capability_overview"] is True
     assert _loop_must_not_run == ["Is Delta up?", "what can you do about my quota?"]
 
 
@@ -264,11 +372,17 @@ async def test_fullscreen_run_answers_and_persists(thread_client, _loop_must_not
     messages = _values_event(r.text)["messages"]
     assert [m["type"] for m in messages] == ["human", "ai"]
     answer = messages[1]
-    assert answer["content"].startswith("Here are some things you can try:")
+    assert answer["content"].startswith(OVERVIEW_INTRO)
+    assert answer["additional_kwargs"] == {
+        "capability_overview": True,
+        "suggestions": FULL_SUGGESTIONS,
+    }
     assert _loop_must_not_run == []
 
     history = await thread_client.post("/api/v1/threads/t-caps/history", headers=key, json={})
-    assert history.json()[0]["values"]["messages"][1]["content"] == answer["content"]
+    reloaded = history.json()[0]["values"]["messages"][1]
+    assert reloaded["content"] == answer["content"]
+    assert reloaded["additional_kwargs"] == answer["additional_kwargs"]
 
     session = get_turn_reporter()._session_factory()
     try:

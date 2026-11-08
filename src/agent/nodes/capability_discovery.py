@@ -1,9 +1,13 @@
-"""Answer "what can you do?" from the capability registry, without the model.
+"""Answer "what can you do?" without the model.
 
-The widget's /query route and the full-screen client's thread runs both use
-this. On /query it short-circuits the route; on a thread run it is a graph node
-that START routes to, so the answer is an ordinary AIMessage in the thread and
-streams, checkpoints, reports and rates like any other.
+The widget's /query route and the full-screen client's thread runs share the
+matcher. /query short-circuits with a per-capability list
+(``widget_capability_overview``). A thread run goes to
+``capability_discovery_node``, which START routes to, and answers with the
+hand-written areas in ``domains/capability_areas.py``. That answer is an
+ordinary AIMessage in the thread, so it checkpoints, reports and rates like any
+other, and it carries its example questions as ``suggestions`` in
+``additional_kwargs`` for the client to show as buttons.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ from langgraph.runtime import Runtime  # noqa: TC002 - LangGraph reads node anno
 
 from ..context import AgentContext, require_context
 from ..domains.capabilities import get_capability_registry
+from ..domains.capability_areas import AREA_BY_CAPABILITY, CAPABILITY_AREAS
 
 # Whole-message phrasings only. "What can you do about my quota?" is a real
 # question for the model, so this is an exact match after normalizing.
@@ -58,8 +63,8 @@ async def capability_categories(
     return registry.get_by_category(authenticated)
 
 
-def capability_overview(categories: list[dict[str, Any]], authenticated: bool) -> str:
-    """Markdown list of categories with an example question per capability.
+def widget_capability_overview(categories: list[dict[str, Any]], authenticated: bool) -> str:
+    """The widget's answer: categories with an example question per capability.
 
     Sign-in-required capabilities are marked with 🔒 for an anonymous caller.
     The "general" category is skipped, since asking anything is the default.
@@ -79,10 +84,39 @@ def capability_overview(categories: list[dict[str, Any]], authenticated: bool) -
     return "\n".join(lines).rstrip()
 
 
+OVERVIEW_INTRO = "I can help you find and use ACCESS resources and services."
+SIGN_IN_NOTE = "Sign in to see your own allocations and usage, and to register for events."
+
+
+def area_overview(
+    enabled: set[str], authenticated: bool, *, your_resources: str | None = None
+) -> tuple[str, list[str]]:
+    """The full-screen answer's markdown and its suggested questions, in area order.
+
+    ``enabled`` is the registry's enabled capability ids. ``your_resources`` is
+    the seam for D8-3028: a markdown section about the signed-in user's own
+    resources, placed above the areas. Nothing passes it yet.
+    """
+    shown = {AREA_BY_CAPABILITY.get(cap_id) for cap_id in enabled}
+    blocks = [OVERVIEW_INTRO]
+    if your_resources:
+        blocks.append(your_resources)
+    suggestions: list[str] = []
+    for area in CAPABILITY_AREAS:
+        if area.id not in shown:
+            continue
+        # Two trailing spaces are a hard line break; GFM joins plain newlines.
+        blocks.append(f"**{area.title}**  \n{area.description}")
+        suggestions.extend(ex.text for ex in area.examples if ex.capability in enabled)
+    if not authenticated:
+        blocks.append(SIGN_IN_NOTE)
+    return "\n\n".join(blocks), suggestions
+
+
 async def capability_discovery_node(
     state: dict[str, Any], runtime: Runtime[AgentContext]
 ) -> dict[str, Any]:
-    """Reply to a capability question with the registry's overview.
+    """Reply to a capability question with the area overview.
 
     Returns the whole thread plus the reply, as tool_calling_loop does, because
     the run stream sends the node's messages to the client as the thread. The
@@ -90,11 +124,16 @@ async def capability_discovery_node(
     previous turn's tools into this turn's report.
     """
     authenticated = require_context(runtime.context).acting_user is not None
-    categories = await capability_categories(authenticated, state.get("resource_context"))
-    answer = capability_overview(categories, authenticated)
+    enabled = {cap.id for cap in get_capability_registry().get_all()}
+    answer, suggestions = area_overview(enabled, authenticated)
+    reply = AIMessage(
+        content=answer,
+        id=str(uuid.uuid4()),
+        additional_kwargs={"capability_overview": True, "suggestions": suggestions},
+    )
     return {
         "final_answer": answer,
-        "messages": [*state.get("messages", []), AIMessage(content=answer, id=str(uuid.uuid4()))],
+        "messages": [*state.get("messages", []), reply],
         "tools_used": [],
         "tool_results": [],
         "tool_refusals": [],

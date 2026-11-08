@@ -163,14 +163,14 @@ async def _check_capability_discovery(
     """
     from ..agent.nodes.capability_discovery import (
         capability_categories,
-        capability_overview,
         is_capability_question,
+        widget_capability_overview,
     )
 
     if is_capability_question(query):
         categories = await capability_categories(authenticated, resource_context)
         answer = (
-            capability_overview(categories, authenticated)
+            widget_capability_overview(categories, authenticated)
             + "\n\nJust type a question like one of these, or ask anything else!"
         )
         return QueryResponse(
