@@ -4,8 +4,10 @@ Wraps MCP tools as LangChain BaseTool instances so they can be used
 with create_react_agent's function-calling loop.
 """
 
+import asyncio
 import json
 import logging
+import time
 from typing import Annotated, Any, Literal
 
 from langchain_core.tools import BaseTool
@@ -14,6 +16,7 @@ from pydantic import BaseModel, BeforeValidator, Field, create_model
 from ...tools.mcp_client import MCPClient
 from ..auth_tools import ToolIdentityClass, tool_identity_class
 from ..middleware.requires_auth import CoarseReason, refusal_artifact, refusal_text
+from ..middleware.turn_budget import TIMED_OUT_ARTIFACT
 from ..turn_capture import record_tool_timing
 
 logger = logging.getLogger(__name__)
@@ -104,11 +107,17 @@ class MCPToolWrapper(BaseTool):
     read_only: bool | None = None
     """The server's readOnlyHint for this tool, or None when it published none."""
 
-    # The artifact carries a refusal's reason, as the identity gate's does.
+    # The artifact carries a refusal's reason, as the identity gate's does, or
+    # marks a timeout.
     response_format: Literal["content", "content_and_artifact"] = "content_and_artifact"
 
     class Config:
         arbitrary_types_allowed = True
+
+    @property
+    def call_timeout(self) -> float:
+        """The timeout a call to this tool gets, in seconds."""
+        return self.mcp_client.timeout_for(self.tool_server)
 
     def _run(self, **kwargs: Any) -> tuple[str, Any]:
         raise NotImplementedError("Use async _arun")
@@ -136,18 +145,24 @@ class MCPToolWrapper(BaseTool):
 
         logger.info(f"Domain agent calling {self.tool_server}/{self.name} with {arguments}")
 
-        result = await self.mcp_client.call_tool(
-            server=self.tool_server,
-            tool_name=self.name,
-            arguments=arguments,
-            acting_user=self.acting_user,
-        )
+        started = time.monotonic()
+        try:
+            result = await self.mcp_client.call_tool(
+                server=self.tool_server,
+                tool_name=self.name,
+                arguments=arguments,
+                acting_user=self.acting_user,
+            )
+        except asyncio.CancelledError:
+            # Cut off at the turn's deadline. It still ran, so it still counts.
+            record_tool_timing(self.name, (time.monotonic() - started) * 1000)
+            raise
 
         record_tool_timing(self.name, result.duration_ms)
 
         if result.success:
             return json.dumps(result.data, default=str), None
-        return json.dumps({"error": result.error}), None
+        return json.dumps({"error": result.error}), TIMED_OUT_ARTIFACT if result.timed_out else None
 
 
 def create_mcp_tools_from_catalog(

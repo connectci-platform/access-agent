@@ -67,7 +67,7 @@ class ToolResult(BaseModel):
     refused: bool = Field(
         default=False,
         description=(
-            "True when the identity gate refused the call, so it never ran. "
+            "True when the identity gate or the turn budget refused the call, so it never ran. "
             "Refused results are excluded from tool counts, write and failure "
             "flags, capabilities and report_tool_calls rows."
         ),

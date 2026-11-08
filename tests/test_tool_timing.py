@@ -1,11 +1,14 @@
 """Per-tool-call timing: capture at the call site, pairing in the loop."""
 
 import asyncio
+import json
 
+import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
 from src.agent.context import AgentContext
 from src.agent.domains.tools import MCPToolWrapper
+from src.agent.middleware.turn_budget import TIMED_OUT_ARTIFACT
 from src.agent.nodes.tool_calling_loop import _build_tool_results
 from src.agent.turn_capture import (
     get_turn_capture,
@@ -270,3 +273,34 @@ def test_stream_agent_records_trace_id(monkeypatch):
 
     asyncio.run(_consume())
     assert get_turn_capture()["trace_id"] is not None
+
+
+def test_a_timed_out_mcp_call_says_so_in_its_artifact(monkeypatch):
+    client = MCPClient()
+
+    async def fake_call_tool(**kwargs):
+        return MCPToolResult(success=False, error="Timeout calling s/t", timed_out=True)
+
+    monkeypatch.setattr(client, "call_tool", fake_call_tool)
+    wrapper = MCPToolWrapper(name="t", description="d", tool_server="s", mcp_client=client)
+
+    content, artifact = asyncio.run(wrapper._arun())
+
+    assert json.loads(content) == {"error": "Timeout calling s/t"}
+    assert artifact == TIMED_OUT_ARTIFACT
+
+
+async def test_a_cut_off_mcp_call_records_its_timing_once(monkeypatch):
+    reset_turn_capture()
+    client = MCPClient()
+
+    async def hangs(**kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(client, "call_tool", hangs)
+    wrapper = MCPToolWrapper(name="t", description="d", tool_server="s", mcp_client=client)
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(wrapper._arun(), 0.01)
+
+    assert [t["tool_name"] for t in get_turn_capture()["tool_timings"]] == ["t"]

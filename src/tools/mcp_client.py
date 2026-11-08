@@ -1,5 +1,6 @@
 """HTTP client for MCP (Model Context Protocol) server communication."""
 
+import asyncio
 import json
 import logging
 import time
@@ -14,10 +15,6 @@ from ..telemetry import create_async_client
 from ..telemetry.spans import trace_mcp_call
 
 logger = logging.getLogger(__name__)
-
-# Some XDMoD chart queries take over 45 seconds. A limit has to leave the model
-# time to answer inside AGENT_TURN_TIMEOUT_S after a call times out.
-SERVER_TIMEOUTS_S = {"xdmod": 60.0}
 
 # Global shared HTTP client for connection pooling
 _shared_client: httpx.AsyncClient | None = None
@@ -58,6 +55,7 @@ class MCPToolResult(BaseModel):
     data: Any = None
     error: str | None = None
     duration_ms: int = 0
+    timed_out: bool = False
 
 
 class MCPClient:
@@ -79,6 +77,10 @@ class MCPClient:
         """
         self.timeout = timeout
         self._server_urls = settings.mcp_server_urls
+
+    def timeout_for(self, server: str) -> float:
+        """The timeout a call to ``server`` gets, in seconds."""
+        return settings.mcp_server_timeouts.get(server, self.timeout)
 
     def get_server_url(self, server_name: str) -> str:
         """Get the URL for an MCP server.
@@ -149,7 +151,9 @@ class MCPClient:
                     url,
                     json={"arguments": arguments},
                     headers=headers,
-                    timeout=SERVER_TIMEOUTS_S.get(server, self.timeout),
+                    # Per request: the shared client keeps whichever timeout it
+                    # was first built with, which can be health_check's.
+                    timeout=self.timeout_for(server),
                 )
                 response.raise_for_status()
 
@@ -182,7 +186,14 @@ class MCPClient:
                     success=False,
                     error=span_error,
                     duration_ms=int(time.time() * 1000) - start_ms,
+                    timed_out=True,
                 )
+            except asyncio.CancelledError:
+                # Cut off at the turn's deadline, or the turn itself was stopped.
+                span.set_attribute("mcp.success", False)
+                span.set_attribute("mcp.error", "cancelled")
+                span.set_status(Status(StatusCode.ERROR, "cancelled"))
+                raise
             except Exception as e:
                 span_error = type(e).__name__
                 result = MCPToolResult(

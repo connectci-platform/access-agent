@@ -242,6 +242,20 @@ class Settings(BaseSettings):
     # Per-thread run turn bound (src/api/thread_runs.py run_with_timeout)
     # Bounded by check_agent_token_config (src/agent_token.py).
     AGENT_TURN_TIMEOUT_S: int = 120
+    # Tools stop this long before the turn limit, so the model can answer from
+    # what it has (src/agent/middleware/turn_budget.py). It has to cover the
+    # answer, plus the round the model may already be in when time runs out.
+    AGENT_ANSWER_RESERVE_S: int = 30
+
+    # Cold XDMoD queries can outlast the 30-second default. At 60, a call started
+    # in the turn's first 30 seconds gets all of it inside the 90 seconds tools
+    # have, and one that hangs from the start still leaves time for a second query.
+    XDMOD_TOOL_TIMEOUT_S: float = 60.0
+
+    @property
+    def mcp_server_timeouts(self) -> dict[str, float]:
+        """Tool-call timeouts for servers that don't use the client's default."""
+        return {"xdmod": self.XDMOD_TOOL_TIMEOUT_S, "xdmod-data": self.XDMOD_TOOL_TIMEOUT_S}
 
     # MCP Server port mappings
     @property

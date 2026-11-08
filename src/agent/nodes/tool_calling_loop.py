@@ -45,6 +45,7 @@ from ..domains.capabilities import WRITE_MCP_TOOL_NAMES
 from ..domains.tools import create_mcp_tools_from_catalog
 from ..middleware.preview_first import PreviewFirstMiddleware
 from ..middleware.requires_auth import RequiresAuthMiddleware
+from ..middleware.turn_budget import TurnBudgetMiddleware
 from ..profile import UserProfile
 from ..prompts.system_prompt import build_system_prompt
 from ..state import ToolResult
@@ -362,7 +363,16 @@ class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
     Relies on SummarizationMiddleware.before_model / abefore_model returning None when no compaction occurred — re-verify this invariant on LangChain upgrades.
     """
 
+    def __init__(
+        self, *args: Any, out_of_time: Callable[[], bool] = lambda: False, **kwargs: Any
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self._out_of_time = out_of_time
+
     def before_model(self, state: Any, runtime: Any) -> Any:
+        # Compacting is a model call of its own, and the turn's time is for the answer.
+        if self._out_of_time():
+            return None
         result = super().before_model(state, runtime)
         if result is not None:
             mark_summarized()
@@ -370,6 +380,8 @@ class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
         return result
 
     async def abefore_model(self, state: Any, runtime: Any) -> Any:
+        if self._out_of_time():
+            return None
         result = await super().abefore_model(state, runtime)
         if result is not None:
             mark_summarized()
@@ -630,6 +642,12 @@ async def tool_calling_loop_node(  # noqa: PLR0915
         # create_agent inherits. One gate per turn, so its refusals are this
         # turn's record.
         gate = RequiresAuthMiddleware()
+        # From the route's limit, since the turn started before this node. With
+        # no route around it (the eval CLIs), the turn starts here.
+        turn_deadline = get_turn_capture()["turn_deadline"] or (
+            time.monotonic() + settings.AGENT_TURN_TIMEOUT_S
+        )
+        budget = TurnBudgetMiddleware(turn_deadline - settings.AGENT_ANSWER_RESERVE_S)
         # Same list feeds create_agent and the limit (#295).
         middleware = [
             # These hook different points — context editing wraps the model
@@ -642,11 +660,15 @@ async def tool_calling_loop_node(  # noqa: PLR0915
                 token_counter=_edit_aware_token_counter(),
                 trigger=("tokens", settings.SUMMARIZATION_TRIGGER_TOKENS),
                 keep=("tokens", settings.SUMMARIZATION_KEEP_TOKENS),
+                out_of_time=budget.out_of_time,
             ),
             gate,
             # After the gate, so a caller who may not register is refused
             # rather than shown a preview.
             PreviewFirstMiddleware(),
+            # Innermost, so only a call that would really run is timed, and the
+            # model's last view of the thread is the one that says time is up.
+            budget,
         ]
         agent = create_agent(
             model=llm,
@@ -733,6 +755,9 @@ async def tool_calling_loop_node(  # noqa: PLR0915
         tool_refusals = list(gate.refusals)
         if tool_refusals:
             span.set_attribute("agent.tool_refusals", len(tool_refusals))
+
+        span.set_attribute("agent.turn_deadline_hit", budget.deadline_hit)
+        answer_unavailable = answer_unavailable or budget.gave_up
 
         answer_length = len(final_answer) if final_answer else 0
         span.set_attribute("agent.answer_length", answer_length)
@@ -866,8 +891,10 @@ def _build_tool_results(
         tool_name, tool_args = calls.popleft()
         server = tool_server_lookup.get(tool_name, "")
         duration_ms = 0
+        # A refused call never ran, so a timing here belongs to a sibling.
+        refused = isinstance(msg.artifact, dict) and "refusal" in msg.artifact
         queue = timing_queues.get(tool_name)
-        if queue:
+        if queue and not refused:
             duration_ms = queue.popleft()
         result = _parse_tool_message(
             msg,

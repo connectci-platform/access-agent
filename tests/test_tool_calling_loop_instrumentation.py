@@ -33,7 +33,9 @@ def test_token_accumulator_ignores_missing_usage():
 def _instance():
     # Bypass the real constructor (it wants a model); we only exercise the
     # override, whose super() call we patch below.
-    return _FlaggingSummarizationMiddleware.__new__(_FlaggingSummarizationMiddleware)
+    middleware = _FlaggingSummarizationMiddleware.__new__(_FlaggingSummarizationMiddleware)
+    middleware._out_of_time = lambda: False
+    return middleware
 
 
 def test_marks_summarized_when_base_summarizes(monkeypatch):

@@ -491,6 +491,20 @@ def test_turn_timeout_of_120_is_allowed():
     check_agent_token_config(_settings(ENVIRONMENT="local", AGENT_TURN_TIMEOUT_S=120))
 
 
+@pytest.mark.parametrize("reserve", [-1, 0, 30, 31])
+def test_an_answer_reserve_outside_the_turn_is_refused(reserve):
+    with pytest.raises(RuntimeError, match="AGENT_ANSWER_RESERVE_S"):
+        check_agent_token_config(
+            _settings(ENVIRONMENT="local", AGENT_TURN_TIMEOUT_S=30, AGENT_ANSWER_RESERVE_S=reserve)
+        )
+
+
+@pytest.mark.parametrize("timeout", [-1.0, 0.0])
+def test_an_xdmod_timeout_that_is_not_positive_is_refused(timeout):
+    with pytest.raises(RuntimeError, match="XDMOD_TOOL_TIMEOUT_S"):
+        check_agent_token_config(_settings(ENVIRONMENT="local", XDMOD_TOOL_TIMEOUT_S=timeout))
+
+
 @pytest.mark.parametrize("missing", ["AGENT_TOKEN_ISSUER", "AGENT_TOKEN_JWKS_URL"])
 def test_production_refuses_to_start_without_issuer_settings(missing):
     with pytest.raises(RuntimeError, match=missing):

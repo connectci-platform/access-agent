@@ -8,10 +8,13 @@
 # 409 is a real HTTP status; a 409 raised inside the streaming generator would land
 # after Starlette flushed 200. release runs in the generator's finally.
 import asyncio
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import HTTPException
+
+from ..agent.turn_capture import record_turn_deadline
 
 _active_by_thread: dict[str, str] = {}  # thread_id -> run_id
 _task_by_run: dict[str, "asyncio.Task[object]"] = {}  # run_id -> running task
@@ -72,5 +75,6 @@ async def run_with_timeout(seconds: int) -> AsyncIterator[None]:
     timeout binds stream CONSUMPTION (not just creation). On expiry asyncio.timeout
     raises TimeoutError; the generator's finally (via held_run) still releases the lock.
     """
+    record_turn_deadline(time.monotonic() + seconds)
     async with asyncio.timeout(seconds):
         yield
