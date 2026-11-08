@@ -292,3 +292,27 @@ async def test_widget_query_keeps_its_closing_line():
         await _check_capability_discovery("what can you do about my quota?", False, "s", "q")
         is None
     )
+
+
+async def test_anonymous_capability_question_is_free(thread_client, _loop_must_not_run):
+    from src.turnstile import get_turnstile_guard
+
+    key = {CLAIM_KEY_HEADER: "k" * 43}
+
+    async def _ask(text: str) -> None:
+        r = await thread_client.post(
+            "/api/v1/threads/t-free/runs/stream",
+            headers=key,
+            json={"input": {"messages": [{"type": "human", "content": text}]}},
+        )
+        assert r.status_code == 200
+        _ = r.text
+
+    def _count() -> int:
+        session = get_turnstile_guard()._sessions.get("t-free")
+        return session.query_count if session else 0
+
+    await _ask("What can you do?")
+    assert _count() == 0
+    await _ask("Is Delta up?")
+    assert _count() == 1
