@@ -25,6 +25,10 @@ class CapabilityArea:
     title: str
     description: str
     examples: tuple[AreaExample, ...] = ()
+    # For a signed-in user, when the area reads differently once they are:
+    # it can speak about their own data instead of inviting them to sign in.
+    signed_in_description: str | None = None
+    signed_in_examples: tuple[AreaExample, ...] | None = None
 
 
 CAPABILITY_AREAS: tuple[CapabilityArea, ...] = (
@@ -51,6 +55,11 @@ CAPABILITY_AREAS: tuple[CapabilityArea, ...] = (
         "How to get an allocation, what kinds exist, and, once you sign in, "
         "your own balances and usage.",
         (AreaExample("What allocations are available for new researchers?", "check_allocations"),),
+        signed_in_description=(
+            "How to get an allocation and what kinds exist, plus your own "
+            "allocations, balances and usage."
+        ),
+        signed_in_examples=(AreaExample("What allocations do I have?", "check_allocations"),),
     ),
     CapabilityArea(
         "training",

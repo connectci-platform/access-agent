@@ -106,8 +106,10 @@ def area_overview(
         if area.id not in shown:
             continue
         # Two trailing spaces are a hard line break; GFM joins plain newlines.
-        blocks.append(f"**{area.title}**  \n{area.description}")
-        suggestions.extend(ex.text for ex in area.examples if ex.capability in enabled)
+        description = (authenticated and area.signed_in_description) or area.description
+        examples = (authenticated and area.signed_in_examples) or area.examples
+        blocks.append(f"**{area.title}**  \n{description}")
+        suggestions.extend(ex.text for ex in examples if ex.capability in enabled)
     if not authenticated:
         blocks.append(SIGN_IN_NOTE)
     return "\n\n".join(blocks), suggestions
