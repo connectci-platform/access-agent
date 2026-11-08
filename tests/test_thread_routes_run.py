@@ -17,6 +17,7 @@ from httpx import ASGITransport, AsyncClient
 from langchain_core.messages import AIMessageChunk
 
 from src.api import thread_routes
+from src.api.identity import CLAIM_KEY_HEADER
 from src.main import app
 from src.thread_owners import get_thread_owner_store
 
@@ -880,6 +881,9 @@ def _deferred_turnstile(monkeypatch, free_queries: int = 3) -> None:
 
 
 async def _ask(client, thread_id: str, *, headers=None, **body):
+    # The client sends its claim key on every run, and an anonymous run on a
+    # thread without one is refused.
+    headers = {CLAIM_KEY_HEADER: CLAIM_KEY, **(headers or {})}
     return await client.post(
         f"/api/v1/threads/{thread_id}/runs/stream",
         headers=headers,
