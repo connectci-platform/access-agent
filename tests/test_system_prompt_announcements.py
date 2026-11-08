@@ -71,3 +71,15 @@ def test_create_passes_fields_exactly_as_confirmed_preview():
 def test_style_exception_for_preview_lines():
     section = _normalize(ANNOUNCEMENTS_WORKFLOWS_SECTION)
     assert "except the preview's affiliation and sharing lines" in section
+
+
+def test_create_leaves_published_date_out_unless_asked():
+    section = _normalize(ANNOUNCEMENTS_WORKFLOWS_SECTION)
+    assert "Leave `published_date` out unless the user asks for a specific publish date" in section
+    assert "never the date of an event the announcement describes" in section
+
+
+def test_preview_shows_non_today_publish_date_and_digest_effect():
+    section = _normalize(ANNOUNCEMENTS_WORKFLOWS_SECTION)
+    assert "publish date other than today is set" in section
+    assert "future date keeps the announcement out of the Bi-Weekly Digest until then" in section
