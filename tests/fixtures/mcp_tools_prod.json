@@ -1,0 +1,2380 @@
+{
+ "servers": [
+  {
+   "server": "system-status",
+   "tools": [
+    {
+     "name": "get_infrastructure_news",
+     "description": "Get ACCESS-CI infrastructure status including outages, maint",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "time": {
+        "type": "string",
+        "enum": [
+         "current",
+         "scheduled",
+         "past",
+         "all"
+        ],
+        "description": "Time period: 'current' (active now), 'scheduled' (planned/future), 'past' (historical), 'all' (combined view)",
+        "default": "current"
+       },
+       "resource": {
+        "type": "string",
+        "description": "Filter to a specific resource by name (e.g., 'delta', 'bridges2', 'anvil')"
+       },
+       "outage_type": {
+        "type": "string",
+        "enum": [
+         "Full",
+         "Partial",
+         "Degraded",
+         "Reconfiguration"
+        ],
+        "description": "Filter by severity: 'Full' (complete outage), 'Partial' (some services affected), 'Degraded' (reduced performance), 'Reconfiguration' (system changes)"
+       },
+       "ids": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Check operational status for specific resources. Returns 'operational' or 'affected' for each. Accepts names ('Anvil') or IDs ('anvil.purdue.access-ci.org')"
+       },
+       "limit": {
+        "type": "number",
+        "description": "Max results to return",
+        "default": 50
+       },
+       "offset": {
+        "type": "number",
+        "description": "Number of results to skip, for paging past the first `limit`. Applies to all time values."
+       },
+       "fields": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Project the response down to only these fields. Dotted path syntax: 'total', 'items[].name', 'metadata.pagination.has_more', etc. Use to reduce payload size when you only need specific fields. Omit to receive the full response."
+       }
+      }
+     },
+     "_meta": {
+      "supportsFieldProjection": true
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    }
+   ]
+  },
+  {
+   "server": "compute-resources",
+   "tools": [
+    {
+     "name": "search_resources",
+     "description": "Search ACCESS-CI compute resources by name, type, or feature",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "id": {
+        "type": "string",
+        "description": "Get specific resource (e.g., 'delta.ncsa.access-ci.org')"
+       },
+       "query": {
+        "type": "string",
+        "description": "Search names, descriptions, organizations, and features. For specific hardware models (e.g., 'A100'), use get_resource_hardware instead."
+       },
+       "type": {
+        "type": "string",
+        "enum": [
+         "Cloud",
+         "GPU Compute",
+         "Innovative / Novel Compute",
+         "CPU Compute",
+         "Service / Other",
+         "Storage",
+         "Commercial Cloud",
+         "Sensors / Instruments"
+        ],
+        "description": "Filter by resource type"
+       },
+       "has_gpu": {
+        "type": "boolean",
+        "description": "Filter by GPU: true = only GPU resources, false = only non-GPU resources. Omit to include all resources."
+       },
+       "organization": {
+        "type": "string",
+        "description": "Filter by org (NCSA, PSC, Purdue, SDSC, TACC)"
+       },
+       "include_ids": {
+        "type": "boolean",
+        "description": "Include resource IDs for other services",
+        "default": true
+       },
+       "fields": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Project the response down to only these fields. Dotted path syntax: 'total', 'items[].name', 'items[].resource_ids', 'metadata.pagination.has_more', etc. Use to reduce payload size when you only need specific fields. Omit to receive the full response. Only applies to listing results, not single-resource lookups."
+       }
+      }
+     },
+     "_meta": {
+      "supportsFieldProjection": true
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    },
+    {
+     "name": "get_resource_hardware",
+     "description": "Get a resource's hardware description from CiDeR (CPU, GPU, ",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "id": {
+        "type": "string",
+        "description": "Resource name (e.g., 'Anvil', 'Delta') or full ID (e.g., 'anvil.purdue.access-ci.org')"
+       }
+      },
+      "required": [
+       "id"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    },
+    {
+     "name": "get_resource",
+     "description": "Get a resource's documented details from https://support.acc",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "resource": {
+        "type": "string",
+        "description": "Resource name (e.g., 'ACES', 'Delta GPU') or global resource ID (e.g., 'delta-gpu.ncsa.access-ci.org')"
+       },
+       "fields": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Project the response down to only these fields. Dotted path syntax: 'name', 'citation_url', 'queues[].name', 'login.ssh_hosts'. Use to reduce payload size when you only need specific sections. Omit to receive the full response."
+       }
+      },
+      "required": [
+       "resource"
+      ]
+     },
+     "_meta": {
+      "supportsFieldProjection": true
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    },
+    {
+     "name": "compare_resources",
+     "description": "Compare two or three resources from their documentation: acc",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "resources": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "minItems": 2,
+        "maxItems": 3,
+        "description": "Two or three resource names or global resource IDs"
+       }
+      },
+      "required": [
+       "resources"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    }
+   ]
+  },
+  {
+   "server": "software-discovery",
+   "tools": [
+    {
+     "name": "search_software",
+     "description": "Search software packages on ACCESS-CI HPC resources with fuz",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "Software name to search (e.g., 'python', 'tensorflow', 'gromacs'). Fuzzy matching finds partial matches."
+       },
+       "resource": {
+        "type": "string",
+        "description": "Filter to resource (e.g., 'anvil', 'deltaai', 'expanse', 'bridges-2'). Note: not all resources are fully indexed \u2014 use compare_software_availability to check coverage."
+       },
+       "fuzzy": {
+        "type": "boolean",
+        "description": "Enable fuzzy/partial matching (default: true)",
+        "default": true
+       },
+       "include_ai_metadata": {
+        "type": "boolean",
+        "description": "Include AI metadata (tags, research area, software type)",
+        "default": false
+       },
+       "limit": {
+        "type": "number",
+        "description": "Max results (default: 100)",
+        "default": 100
+       },
+       "offset": {
+        "type": "number",
+        "description": "Number of results to skip, for paging past the first `limit`. Default 0."
+       },
+       "fields": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Project the response down to only these fields. Dotted path syntax: 'total', 'items[].software_name', 'items[].rps', 'metadata.pagination.has_more', etc. Use to reduce payload size when you only need specific fields. Omit to receive the full response."
+       }
+      },
+      "examples": [
+       {
+        "name": "Search for Python",
+        "arguments": {
+         "query": "python",
+         "limit": 10
+        }
+       },
+       {
+        "name": "Find TensorFlow on Anvil",
+        "arguments": {
+         "query": "tensorflow",
+         "resource": "anvil"
+        }
+       },
+       {
+        "name": "Search MPI libraries on DeltaAI",
+        "arguments": {
+         "query": "mpi",
+         "resource": "deltaai",
+         "limit": 20
+        }
+       }
+      ]
+     },
+     "_meta": {
+      "supportsFieldProjection": true
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    },
+    {
+     "name": "list_all_software",
+     "description": "List all available software packages on ACCESS-CI resources.",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "resource": {
+        "type": "string",
+        "description": "Filter to resource (e.g., 'anvil', 'deltaai', 'expanse', 'bridges-2'). Note: not all resources are fully indexed \u2014 use compare_software_availability to check coverage."
+       },
+       "include_ai_metadata": {
+        "type": "boolean",
+        "description": "Include AI metadata (default: false for compact output)",
+        "default": false
+       },
+       "limit": {
+        "type": "number",
+        "description": "Max results (default: 100)",
+        "default": 100
+       },
+       "offset": {
+        "type": "number",
+        "description": "Number of results to skip, for paging past the first `limit`. Default 0."
+       },
+       "fields": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Project the response down to only these fields. Dotted path syntax: 'total', 'items[].software_name', 'metadata.pagination.has_more', etc. Use to reduce payload size when you only need specific fields. Omit to receive the full response."
+       }
+      },
+      "examples": [
+       {
+        "name": "List all software",
+        "arguments": {
+         "limit": 50
+        }
+       },
+       {
+        "name": "List software on DeltaAI",
+        "arguments": {
+         "resource": "deltaai",
+         "limit": 100
+        }
+       }
+      ]
+     },
+     "_meta": {
+      "supportsFieldProjection": true
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    },
+    {
+     "name": "get_software_details",
+     "description": "Get detailed info about a specific software package includin",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "software_name": {
+        "type": "string",
+        "description": "Software name (e.g., 'tensorflow', 'gromacs', 'python')"
+       },
+       "resource": {
+        "type": "string",
+        "description": "Filter to resource (e.g., 'anvil', 'deltaai', 'expanse', 'bridges-2'). Note: not all resources are fully indexed \u2014 use compare_software_availability to check coverage."
+       },
+       "fuzzy": {
+        "type": "boolean",
+        "description": "Enable fuzzy matching (default: true)",
+        "default": true
+       }
+      },
+      "required": [
+       "software_name"
+      ],
+      "examples": [
+       {
+        "name": "Get TensorFlow details",
+        "arguments": {
+         "software_name": "tensorflow"
+        }
+       },
+       {
+        "name": "Get GROMACS on Expanse",
+        "arguments": {
+         "software_name": "gromacs",
+         "resource": "expanse"
+        }
+       }
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    },
+    {
+     "name": "compare_software_availability",
+     "description": "Compare availability of multiple software packages across re",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "software_names": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Software packages to compare (e.g., ['tensorflow', 'pytorch'])"
+       },
+       "resources": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Resources to check (optional). If omitted, compares across all currently indexed resources only (not all ACCESS resources are indexed)."
+       }
+      },
+      "required": [
+       "software_names"
+      ],
+      "examples": [
+       {
+        "name": "Compare ML frameworks",
+        "arguments": {
+         "software_names": [
+          "tensorflow",
+          "pytorch",
+          "cuda"
+         ]
+        }
+       },
+       {
+        "name": "Check compilers on specific resources",
+        "arguments": {
+         "software_names": [
+          "gcc",
+          "intel",
+          "nvhpc"
+         ],
+         "resources": [
+          "anvil",
+          "deltaai",
+          "expanse"
+         ]
+        }
+       }
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    }
+   ]
+  },
+  {
+   "server": "announcements",
+   "tools": [
+    {
+     "name": "search_announcements",
+     "description": "Search ACCESS announcements (news, updates, notifications). ",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "Full-text search across title, body, and summary"
+       },
+       "tags": {
+        "type": "string",
+        "description": "Filter by tag name. Examples: gpu, ml, hpc, open-ondemand, ACCESS-allocations, ACCESS-account, ai, pegasus. Use suggest_tags to discover tags from announcement content."
+       },
+       "date": {
+        "type": "string",
+        "description": "Time period filter: today, this_week (last 7 days), this_month (last 30 days), past (last year)",
+        "enum": [
+         "today",
+         "this_week",
+         "this_month",
+         "past"
+        ]
+       },
+       "limit": {
+        "type": "number",
+        "description": "Max results (default: 25). Values above 500 are clamped to 500 and the response is marked `capped`; `total` always reflects the true corpus size regardless of the clamp.",
+        "default": 25
+       },
+       "offset": {
+        "type": "number",
+        "description": "Number of results to skip, for paging past the first `limit`. Default 0. The full corpus is fetched, so any offset within `total` is reachable."
+       },
+       "fields": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Project the response down to only these fields. Dotted path syntax: 'total', 'items[].title', 'items[].published_date', 'metadata.pagination.has_more', etc. Use to reduce payload size when you only need specific fields. Omit to receive the full response."
+       }
+      }
+     },
+     "_meta": {
+      "supportsFieldProjection": true
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    },
+    {
+     "name": "create_announcement",
+     "description": "Create a new ACCESS announcement (saved as draft for staff r",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "title": {
+        "type": "string",
+        "description": "Announcement title - clear and specific, under 100 characters"
+       },
+       "body": {
+        "type": "string",
+        "description": "Full announcement content. HTML allowed (basic_html format: <p>, <a>, <strong>, <em>, <ul>, <li>)"
+       },
+       "summary": {
+        "type": "string",
+        "description": "Brief teaser (1-2 sentences) shown in announcement listings. Required."
+       },
+       "published_date": {
+        "type": "string",
+        "description": "When to display (YYYY-MM-DD). Defaults to today."
+       },
+       "tags": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "English tag NAMES as strings, e.g. [\"ai\", \"machine-learning\", \"gpu\"]. Take these verbatim from the \"name\" field of the suggest_tags response. Pass names only \u2014 never ids or any other identifier."
+       },
+       "affiliation": {
+        "type": "string",
+        "description": "Source of announcement. Defaults to Community when omitted.",
+        "enum": [
+         "ACCESS Collaboration",
+         "Community"
+        ]
+       },
+       "affinity_group": {
+        "type": "string",
+        "description": "Affinity group name or UUID. User must be allowed to post to the group (a coordinator of it, or an administrator or news manager). Use get_announcement_context to see the groups you coordinate; an administrator or news manager names the group directly."
+       },
+       "external_link": {
+        "type": "object",
+        "description": "External link related to this announcement. An object with exactly the keys uri (required, the URL) and title (optional, the link text), not url or text.",
+        "properties": {
+         "uri": {
+          "type": "string",
+          "description": "URL (must include https://)"
+         },
+         "title": {
+          "type": "string",
+          "description": "Link text to display"
+         }
+        },
+        "required": [
+         "uri"
+        ]
+       },
+       "where_to_share": {
+        "type": "array",
+        "items": {
+         "type": "string",
+         "enum": [
+          "Announcements page",
+          "Bi-Weekly Digest",
+          "Affinity Group page",
+          "Email to Affinity Group"
+         ]
+        },
+        "description": "Where to share the announcement. Omit for the defaults 'Announcements page' + 'Bi-Weekly Digest'; an empty array is rejected. 'Affinity Group page' and 'Email to Affinity Group' require affinity_group."
+       }
+      },
+      "required": [
+       "title",
+       "body",
+       "summary"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": false
+     }
+    },
+    {
+     "name": "update_announcement",
+     "description": "Update an existing announcement. User must own the announcem",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "uuid": {
+        "type": "string",
+        "description": "UUID of the announcement (get from get_my_announcements)"
+       },
+       "title": {
+        "type": "string",
+        "description": "New title (only if changing)"
+       },
+       "body": {
+        "type": "string",
+        "description": "New body content (only if changing)"
+       },
+       "summary": {
+        "type": "string",
+        "description": "New summary (only if changing)"
+       },
+       "published_date": {
+        "type": "string",
+        "description": "New publication date YYYY-MM-DD (only if changing)"
+       },
+       "tags": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "New tags \u2014 replaces ALL existing tags (only if changing). English tag NAMES as strings, taken verbatim from the \"name\" field of suggest_tags. Never pass ids or uuids."
+       },
+       "affiliation": {
+        "type": "string",
+        "description": "New affiliation (only if changing)",
+        "enum": [
+         "ACCESS Collaboration",
+         "Community"
+        ]
+       },
+       "affinity_group": {
+        "type": "string",
+        "description": "Affinity group name or UUID. User must be allowed to post to the group (a coordinator of it, or an administrator or news manager). Replaces all of the announcement's affinity groups (only if changing). get_announcement_context lists only coordinated groups; an administrator or news manager names the group directly."
+       },
+       "external_link": {
+        "type": "object",
+        "description": "External link related to this announcement. An object with exactly the keys uri (required, the URL) and title (optional, the link text), not url or text.",
+        "properties": {
+         "uri": {
+          "type": "string",
+          "description": "URL (must include https://)"
+         },
+         "title": {
+          "type": "string",
+          "description": "Link text to display"
+         }
+        },
+        "required": [
+         "uri"
+        ]
+       },
+       "where_to_share": {
+        "type": "array",
+        "items": {
+         "type": "string",
+         "enum": [
+          "Announcements page",
+          "Bi-Weekly Digest",
+          "Affinity Group page",
+          "Email to Affinity Group"
+         ]
+        },
+        "description": "Where to share the announcement (only if changing). Replaces the whole set of sharing options, so list every option to keep. When get_my_announcements returns where_to_share for this announcement, the known labels in it can be reused, but values it shows as unknown are shown as is and cannot be sent back; they are rejected here. Show the user the full resulting list before updating; an empty array is rejected. 'Affinity Group page' and 'Email to Affinity Group' only take effect if the announcement has an affinity group; this tool does not check that."
+       }
+      },
+      "required": [
+       "uuid"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": false
+     }
+    },
+    {
+     "name": "delete_announcement",
+     "description": "Permanently delete an announcement. User must own the announ",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "uuid": {
+        "type": "string",
+        "description": "UUID of the announcement to delete"
+       },
+       "confirmed": {
+        "type": "boolean",
+        "description": "Set to true only after user has explicitly confirmed deletion of THIS specific announcement. Required."
+       }
+      },
+      "required": [
+       "uuid",
+       "confirmed"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": false
+     }
+    },
+    {
+     "name": "get_my_announcements",
+     "description": "List all announcements created by the authenticated user.\n\nR",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "limit": {
+        "type": "number",
+        "description": "Max results (default: 25)",
+        "default": 25
+       },
+       "fields": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Project the response down to only these fields. Dotted path syntax: 'total', 'items[].uuid', 'items[].title', 'items[].status', 'metadata.pagination.has_more', etc. Use to reduce payload size when you only need specific fields. Omit to receive the full response."
+       }
+      }
+     },
+     "_meta": {
+      "supportsFieldProjection": true
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    },
+    {
+     "name": "get_announcement_context",
+     "description": "Get user context and options BEFORE creating an announcement",
+     "inputSchema": {
+      "type": "object",
+      "properties": {}
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    },
+    {
+     "name": "suggest_tags",
+     "description": "Suggest relevant tags for announcement content. Call this AF",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "text": {
+        "type": "string",
+        "description": "The announcement body text to analyze for tag suggestions. Must be at least 100 characters."
+       },
+       "limit": {
+        "type": "number",
+        "description": "Maximum number of tags to suggest (default: 6)"
+       }
+      },
+      "required": [
+       "text"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    },
+    {
+     "name": "suggest_summary",
+     "description": "Generate a concise summary for announcement content. Call th",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "text": {
+        "type": "string",
+        "description": "The announcement body text to summarize. Must be at least 100 characters."
+       }
+      },
+      "required": [
+       "text"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    }
+   ]
+  },
+  {
+   "server": "allocations",
+   "tools": [
+    {
+     "name": "search_projects",
+     "description": "Search ACCESS-CI research projects. Returns {total, items}.",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "Search query supporting operators: 'term1 AND term2', 'term1 OR term2', 'term1 NOT term2', exact phrases with quotes. Omit when using project_id or similar_to parameters."
+       },
+       "project_id": {
+        "type": "number",
+        "description": "Get detailed information for a specific project ID. When provided, returns full project details including complete abstract."
+       },
+       "field_of_science": {
+        "type": "string",
+        "description": "Filter by field of science (e.g., 'Computer Science', 'Physics')"
+       },
+       "resource_name": {
+        "type": "string",
+        "description": "Filter projects using specific computational resources (e.g., 'NCSA Delta GPU', 'Purdue Anvil', 'ACCESS Credits')"
+       },
+       "allocation_type": {
+        "type": "string",
+        "description": "Filter by allocation type. Valid values: 'Explore', 'Discover', 'Accelerate', 'Maximize', 'Ramp-Up'"
+       },
+       "date_range": {
+        "type": "object",
+        "description": "Filter by project date range",
+        "properties": {
+         "start_date": {
+          "type": "string",
+          "description": "Start date in YYYY-MM-DD format",
+          "format": "date"
+         },
+         "end_date": {
+          "type": "string",
+          "description": "End date in YYYY-MM-DD format",
+          "format": "date"
+         }
+        }
+       },
+       "min_allocation": {
+        "type": "number",
+        "description": "Minimum allocation amount filter"
+       },
+       "similar_to": {
+        "type": "number",
+        "description": "Find projects similar to this project ID using semantic matching. Omit query parameter when using this."
+       },
+       "similarity_keywords": {
+        "type": "string",
+        "description": "Find projects similar to these keywords/research terms. Alternative to similar_to parameter."
+       },
+       "similarity_threshold": {
+        "type": "number",
+        "description": "Minimum similarity score (0.0-1.0) when using similar_to or similarity_keywords. Default: 0.3",
+        "default": 0.3,
+        "minimum": 0,
+        "maximum": 1
+       },
+       "include_same_field": {
+        "type": "boolean",
+        "description": "Whether to prioritize projects in the same field of science for similarity search (default: true)",
+        "default": true
+       },
+       "sort_by": {
+        "type": "string",
+        "description": "Sort results by: 'relevance', 'date_desc', 'date_asc', 'allocation_desc', 'allocation_asc', 'pi_name'",
+        "enum": [
+         "relevance",
+         "date_desc",
+         "date_asc",
+         "allocation_desc",
+         "allocation_asc",
+         "pi_name"
+        ],
+        "default": "relevance"
+       },
+       "limit": {
+        "type": "number",
+        "description": "Maximum number of results to return (default: 20, max: 500)",
+        "default": 20
+       },
+       "offset": {
+        "type": "number",
+        "description": "Number of results to skip, for paging past the first `limit`. Default 0.",
+        "default": 0
+       },
+       "fields": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Project the response down to only these fields. Dotted path syntax: 'total', 'items[].requestTitle', 'items[].pi', 'metadata.pagination.has_more', etc. Use to reduce payload size when you only need specific fields. Omit to receive the full response. Only applies to listing results, not single-project lookups."
+       }
+      },
+      "required": [],
+      "examples": [
+       {
+        "name": "Search for machine learning projects",
+        "arguments": {
+         "query": "machine learning",
+         "limit": 10
+        }
+       },
+       {
+        "name": "Get specific project details",
+        "arguments": {
+         "project_id": 12345
+        }
+       },
+       {
+        "name": "List projects by field of science",
+        "arguments": {
+         "field_of_science": "Computer Science",
+         "limit": 20
+        }
+       },
+       {
+        "name": "Find projects using specific resource",
+        "arguments": {
+         "resource_name": "NCSA Delta GPU",
+         "limit": 15
+        }
+       },
+       {
+        "name": "Find similar projects",
+        "arguments": {
+         "similar_to": 12345,
+         "similarity_threshold": 0.7,
+         "limit": 10
+        }
+       }
+      ]
+     },
+     "_meta": {
+      "supportsFieldProjection": true
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    },
+    {
+     "name": "analyze_funding",
+     "description": "Analyze NSF funding for ACCESS projects/institutions. Return",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "project_id": {
+        "type": "number",
+        "description": "Analyze funding for a specific ACCESS project ID. Returns NSF awards connected to the project's PI and institution."
+       },
+       "institution": {
+        "type": "string",
+        "description": "Generate a comprehensive funding profile for an institution (ACCESS allocations, NSF awards, top researchers, funding trends). Use the institution's full name. If the name is ambiguous \u2014 a system with several campuses (e.g. \"University of California\") or a shared word (e.g. \"Washington\") \u2014 the tool returns a list of candidate institutions; re-call with one specific name from that list."
+       },
+       "pi_name": {
+        "type": "string",
+        "description": "Find funded projects by principal investigator name. Cross-references ACCESS and NSF data."
+       },
+       "field_of_science": {
+        "type": "string",
+        "description": "Filter funded projects by field of science."
+       },
+       "limit": {
+        "type": "number",
+        "description": "Maximum number of projects/awards to return (default: 20 for institution analysis, 10 for others)",
+        "default": 10
+       }
+      },
+      "required": [],
+      "examples": [
+       {
+        "name": "Analyze funding for specific project",
+        "arguments": {
+         "project_id": 12345
+        }
+       },
+       {
+        "name": "Generate institutional funding profile",
+        "arguments": {
+         "institution": "University of Illinois at Urbana-Champaign",
+         "limit": 20
+        }
+       },
+       {
+        "name": "Find funded projects by PI",
+        "arguments": {
+         "pi_name": "John Smith"
+        }
+       },
+       {
+        "name": "Find funded projects in a field",
+        "arguments": {
+         "field_of_science": "Computer Science",
+         "limit": 15
+        }
+       }
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    },
+    {
+     "name": "get_allocation_statistics",
+     "description": "Get allocation statistics (top fields of science, resources,",
+     "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "examples": [
+       {
+        "name": "Get allocation statistics",
+        "arguments": {}
+       }
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    },
+    {
+     "name": "get_rp_account",
+     "description": "Get the authenticated user's account and live balance on ONE",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "resource_id": {
+        "type": "string",
+        "description": "The ACCESS Global Resource ID of the resource provider (e.g. delta-gpu.ncsa.access-ci.org). Get it from the search_resources tool \u2014 each result carries its resource ids."
+       },
+       "live": {
+        "type": "boolean",
+        "description": "When true, overlay a real-time balance (slower, more current) instead of the default last-synced snapshot.",
+        "default": false
+       }
+      },
+      "required": [
+       "resource_id"
+      ],
+      "examples": [
+       {
+        "name": "Get my account on an RP",
+        "arguments": {
+         "resource_id": "delta-gpu.ncsa.access-ci.org"
+        }
+       },
+       {
+        "name": "Get my live balance on an RP",
+        "arguments": {
+         "resource_id": "delta-gpu.ncsa.access-ci.org",
+         "live": true
+        }
+       }
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    },
+    {
+     "name": "get_my_rp_accounts",
+     "description": "List all resource-provider (RP) accounts for the authenticat",
+     "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    }
+   ]
+  },
+  {
+   "server": "nsf-awards",
+   "tools": [
+    {
+     "name": "search_nsf_awards",
+     "description": "Search NSF awards and funding. Returns {total, items}.",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "id": {
+        "type": "string",
+        "description": "Award number (e.g., '2138259')"
+       },
+       "query": {
+        "type": "string",
+        "description": "Search keywords in titles/abstracts"
+       },
+       "pi": {
+        "type": "string",
+        "description": "Principal investigator name"
+       },
+       "institution": {
+        "type": "string",
+        "description": "Institution name"
+       },
+       "primary_only": {
+        "type": "boolean",
+        "description": "When searching by institution, only return awards where the institution is the PRIMARY recipient (excludes collaborative/co-PI awards from other institutions). Default: false",
+        "default": false
+       },
+       "limit": {
+        "type": "number",
+        "description": "Max results (default: 10)",
+        "default": 10
+       },
+       "offset": {
+        "type": "number",
+        "description": "Number of results to skip, for paging past the first `limit`. Default 0.",
+        "default": 0
+       },
+       "fields": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Project the response down to only these fields. Dotted path syntax: 'total', 'items[].title', 'items[].principalInvestigator', 'metadata.pagination.has_more', etc. Use to reduce payload size when you only need specific fields. Omit to receive the full response. Only applies to listing results, not single-award lookups."
+       }
+      }
+     },
+     "_meta": {
+      "supportsFieldProjection": true
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    }
+   ]
+  },
+  {
+   "server": "events",
+   "tools": [
+    {
+     "name": "search_events",
+     "description": "Search ACCESS-CI events (workshops, webinars, training). Ret",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "Search titles, descriptions, speakers, tags"
+       },
+       "type": {
+        "type": "string",
+        "description": "Filter by event type. The type facet indexes the option LABELS, so current events carry \"Conference\", \"Training\", \"Office Hours\", or \"Other\" (never the internal zz_other key). Events created before the option list existed may carry legacy raw values (training, webinar, workshop)."
+       },
+       "tags": {
+        "type": "string",
+        "description": "Filter by tag name. Examples: python, gpu, hpc, ml, open-ondemand, NAIRR-pilot, mpi, quantum-computing, data-analysis, visualization. Tags are case-sensitive as entered by event organizers."
+       },
+       "date": {
+        "type": "string",
+        "description": "Quick date filter. Use 'past' for historical events, most recent first. Defaults to 'upcoming' if omitted.",
+        "enum": [
+         "today",
+         "upcoming",
+         "past",
+         "this_week",
+         "this_month"
+        ],
+        "default": "upcoming"
+       },
+       "date_range": {
+        "type": "object",
+        "description": "Filter to events within an absolute date window (ISO-8601, YYYY-MM-DD). Use this when the user gives explicit dates (e.g. 'events in March 2026'). For relative windows ('this week', 'upcoming', 'past'), use the `date` parameter instead. When set, overrides `date`.",
+        "properties": {
+         "start_date": {
+          "type": "string",
+          "description": "Start date (YYYY-MM-DD)."
+         },
+         "end_date": {
+          "type": "string",
+          "description": "End date (YYYY-MM-DD)."
+         }
+        }
+       },
+       "skill": {
+        "type": "string",
+        "description": "Skill level filter",
+        "enum": [
+         "beginner",
+         "intermediate",
+         "advanced"
+        ]
+       },
+       "has_video": {
+        "type": "boolean",
+        "description": "Filter to events with recorded video available. Implies past events (video is only available for past events)."
+       },
+       "limit": {
+        "type": "number",
+        "description": "Max results (default: 50)",
+        "default": 50
+       },
+       "offset": {
+        "type": "number",
+        "description": "Number of results to skip, for paging past the first `limit`. Default 0. Upcoming searches reach roughly the first 500 records, and past or date_range searches reach the full history. Past a ceiling, the response is `capped` with `total_lower_bound` instead of more records."
+       },
+       "full_description": {
+        "type": "boolean",
+        "description": "When true, return the full event description (with HTML) instead of the default 250-char plain-text compact form. Use when you need the registration URL embedded in the description, or want to summarize a workshop in detail. Pair with a small limit to stay within context.",
+        "default": false
+       },
+       "fields": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Project the response down to only these fields. Dotted path syntax: 'total', 'items[].title', 'items[].start_date', 'metadata.pagination.has_more', etc. Use to reduce payload size when you only need specific fields. Omit to receive the full response."
+       }
+      }
+     },
+     "_meta": {
+      "supportsFieldProjection": true
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    },
+    {
+     "name": "get_my_events",
+     "description": "Events the acting user CREATED or organized \u2014 NOT events the",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "limit": {
+        "type": "number",
+        "description": "Max results (default: 50)",
+        "default": 50
+       },
+       "fields": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Project the response down to only these fields. Dotted path syntax: 'total', 'items[].title', 'items[].status', 'metadata.pagination.has_more', etc. Use to reduce payload size when you only need specific fields. Omit to receive the full response."
+       }
+      }
+     },
+     "_meta": {
+      "supportsFieldProjection": true
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    },
+    {
+     "name": "get_my_registrations",
+     "description": "List the events the authenticated user has registered to att",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "when": {
+        "type": "string",
+        "enum": [
+         "upcoming",
+         "past",
+         "all"
+        ],
+        "description": "Which registrations to return (default: upcoming)."
+       }
+      },
+      "required": []
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    },
+    {
+     "name": "get_event",
+     "description": "Fetch one ACCESS event's full detail and LIVE registration s",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "eventinstance_id": {
+        "type": "string",
+        "description": "The eventinstance id (from search_events `id`)."
+       }
+      },
+      "required": [
+       "eventinstance_id"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    },
+    {
+     "name": "register_for_event",
+     "description": "Register the acting user for an ACCESS event via native ACCE",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "eventinstance_id": {
+        "type": "string",
+        "description": "The eventinstance id (from search_events/get_event `id`)."
+       },
+       "confirmed": {
+        "type": "boolean",
+        "description": "Omit or false for a no-write preview (status:\"preview\", executed:false \u2014 seat vs. waitlist); true to actually register (status:\"registered\"/\"waitlisted\", executed:true)."
+       }
+      },
+      "required": [
+       "eventinstance_id"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": false
+     }
+    },
+    {
+     "name": "cancel_registration",
+     "description": "Permanently cancel one of the authenticated user's OWN event",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "registrant_id": {
+        "type": "string",
+        "description": "The registration id from get_my_registrations."
+       },
+       "confirmed": {
+        "type": "boolean",
+        "description": "Set to true only after the user has explicitly confirmed cancellation of THIS specific registration. Required."
+       }
+      },
+      "required": [
+       "registrant_id",
+       "confirmed"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": false
+     }
+    },
+    {
+     "name": "create_event",
+     "description": "Create a new event series as a DRAFT (organizer write; actin",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "title": {
+        "type": "string",
+        "description": "Event title. Required."
+       },
+       "recur_type": {
+        "type": "string",
+        "enum": [
+         "custom"
+        ],
+        "description": "Set to \"custom\" for one-off or irregular dates, supplied via custom_dates. For a repeating event, use the recurrence object instead (it builds the rule internally)."
+       },
+       "recurrence": {
+        "type": "object",
+        "description": "A high-level recurrence pattern for a REPEATING event, translated to the native Drupal rule-field columns server-side. Use this for any repeating pattern. Mutually exclusive with recur_type and with custom_dates (supplying more than one is refused with validation_error). Examples: daily (freq:daily, start_date:2025-01-01, end_date:2025-02-28, start_time:10:00, duration_minutes:90); weekly (freq:weekly, start_date:2025-01-06, end_date:2025-03-31, days:[mon,wed], start_time:14:00, duration_minutes:60); monthly weekday (freq:monthly, monthly_mode:weekday, start_date:2025-01-06, end_date:2025-06-30, days:[mon], week_positions:[first], start_time:15:00, ends_at:16:30); monthly monthday (freq:monthly, monthly_mode:monthday, start_date:2025-01-15, end_date:2025-12-31, days_of_month:[15], start_time:10:00, duration_minutes:120); yearly (freq:yearly, start_date:2025-06-21, end_date:2027-06-21, monthly_mode:monthday, months:[jun], days_of_month:[21], year_interval:1, start_time:12:00, ends_at:13:00); consecutive (freq:consecutive, start_date:2025-01-13, end_date:2025-01-17, window_start:2025-01-13, window_end:2025-01-17, session_minutes:180, gap_minutes:30). Invalid combinations are refused with code validation_error, over_fill, or out_of_vocab naming the problem field.",
+        "properties": {
+         "frequency": {
+          "type": "string",
+          "enum": [
+           "daily",
+           "weekly",
+           "monthly",
+           "yearly",
+           "consecutive"
+          ],
+          "description": "Recurrence frequency type."
+         },
+         "start_date": {
+          "type": "string",
+          "description": "Start date (YYYY-MM-DD). Required."
+         },
+         "end_date": {
+          "type": "string",
+          "description": "End date (YYYY-MM-DD). Required; recurring events cannot create an open-ended series."
+         },
+         "start_time": {
+          "type": "string",
+          "description": "Start time (24h HH:MM), interpreted in the acting user's profile timezone. Required for daily/weekly/monthly/yearly."
+         },
+         "duration_minutes": {
+          "type": "number",
+          "description": "Event duration in minutes. Pick one: duration_minutes OR ends_at (not both). For daily/weekly/monthly/yearly."
+         },
+         "ends_at": {
+          "type": "string",
+          "description": "End time (24h HH:MM), interpreted in the acting user's profile timezone. Pick one: duration_minutes OR ends_at (not both). For daily/weekly/monthly/yearly."
+         },
+         "days": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          },
+          "description": "Day abbreviations ([\"mon\",\"tue\",\"wed\",\"thu\",\"fri\",\"sat\",\"sun\"]). Required for weekly and weekday-mode monthly."
+         },
+         "monthly_mode": {
+          "type": "string",
+          "enum": [
+           "weekday",
+           "monthday"
+          ],
+          "description": "Monthly recurrence mode. Use weekday for patterns like 'first Monday' or 'last Friday' (pair with days + week_positions). Use monthday for 'the 15th' or 'the last day' (pair with days_of_month, where -1 = last day)."
+         },
+         "week_positions": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          },
+          "description": "Week positions for weekday-mode monthly ([\"first\",\"second\",\"third\",\"fourth\",\"last\"]). Required for weekday-mode monthly."
+         },
+         "days_of_month": {
+          "type": "array",
+          "items": {
+           "type": "number"
+          },
+          "description": "Day numbers (1-31) or -1 for last day. Required for monthday mode (monthly or yearly)."
+         },
+         "year_interval": {
+          "type": "number",
+          "description": "Years between recurrences. Required for yearly."
+         },
+         "months": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          },
+          "description": "Short lowercase month abbreviations ([\"jan\",\"feb\",\"mar\",\u2026,\"dec\"]). Required for yearly."
+         },
+         "window_start": {
+          "type": "string",
+          "description": "Window start date (YYYY-MM-DD). Required for consecutive."
+         },
+         "window_end": {
+          "type": "string",
+          "description": "Window end date (YYYY-MM-DD). Required for consecutive."
+         },
+         "session_minutes": {
+          "type": "number",
+          "description": "Duration of each session in minutes (consecutive only)."
+         },
+         "gap_minutes": {
+          "type": "number",
+          "description": "Minutes between consecutive sessions (consecutive only)."
+         }
+        }
+       },
+       "field_affinity_group_node": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Optional. Affinity-group node UUID(s) to publish this event to. Supply only if you want the event published to those groups; the acting user must coordinate ALL supplied groups or creation is refused (code: not_coordinator). An unresolvable UUID is also refused. Omit to create an event not published to any group."
+       },
+       "custom_dates": {
+        "type": "array",
+        "items": {
+         "type": "object",
+         "properties": {
+          "start_date": {
+           "type": "string"
+          },
+          "end_date": {
+           "type": "string"
+          }
+         }
+        },
+        "description": "One-off occurrence dates. Required when recur_type is \"custom\"."
+       },
+       "body": {
+        "type": "string",
+        "description": "Event description (HTML/basic_html allowed)."
+       },
+       "field_summary": {
+        "type": "string"
+       },
+       "field_location": {
+        "type": "string",
+        "description": "Event location. Required by site validation."
+       },
+       "field_event_type": {
+        "type": "string",
+        "description": "Event type. Required by site validation; allowed values: \"Conference\", \"Training\", \"Office Hours\", \"Other\" (case-insensitive; the API stores canonical keys, so the legacy internal key zz_other is also still accepted for Other). Any other value is refused (code: validation_error)."
+       },
+       "field_skill_level": {
+        "type": "string",
+        "description": "Optional. Allowed values: \"Beginner\", \"Intermediate\", \"Advanced\" (case-insensitive); any other value is refused (code: validation_error)."
+       },
+       "field_tags": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       },
+       "field_event_speakers": {
+        "type": "string"
+       },
+       "field_event_virtual_meeting_link": {
+        "type": "string"
+       },
+       "field_event_timezone": {
+        "type": "string",
+        "description": "IANA timezone name (e.g. America/Los_Angeles) for the event's local time. Set this ONLY when the user names a timezone different from their own; otherwise omit it and the event uses the acting user's account timezone. An invalid name is refused with validation_error."
+       },
+       "field_event_in_person": {
+        "type": "boolean",
+        "description": "True if the event happens at a physical venue, false if it is online/virtual. For an in-person event with a timezone, times display in the venue's timezone for all viewers; an online event displays in each viewer's local timezone."
+       },
+       "confirmed": {
+        "type": "boolean",
+        "description": "Omit or false for a no-write PREVIEW of the occurrence dates this recurrence would produce (status:\"preview\", executed:false, with occurrence_count/total_occurrence_count/truncated/occurrences); true to actually create the series."
+       }
+      },
+      "required": [
+       "title",
+       "field_event_type",
+       "field_location"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": false
+     }
+    },
+    {
+     "name": "update_event",
+     "description": "Edit an existing event series' CONTENT fields ONLY (title, b",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "eventseries_id": {
+        "type": "string",
+        "description": "The event series id (the get_event `series_id`, or the eventinstance id \u2014 either resolves to its series)."
+       },
+       "title": {
+        "type": "string"
+       },
+       "body": {
+        "type": "string"
+       },
+       "field_summary": {
+        "type": "string"
+       },
+       "field_location": {
+        "type": "string"
+       },
+       "field_event_type": {
+        "type": "string",
+        "description": "Allowed values: \"Conference\", \"Training\", \"Office Hours\", \"Other\" (case-insensitive; legacy key zz_other also accepted). Any other value is refused (code: validation_error). Also the field to supply when repairing a draft created without it."
+       },
+       "field_skill_level": {
+        "type": "string",
+        "description": "Allowed values: \"Beginner\", \"Intermediate\", \"Advanced\" (case-insensitive); any other value is refused (code: validation_error)."
+       },
+       "field_tags": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       },
+       "field_event_speakers": {
+        "type": "string"
+       },
+       "field_event_virtual_meeting_link": {
+        "type": "string"
+       },
+       "field_event_timezone": {
+        "type": "string",
+        "description": "IANA timezone name (e.g. America/Los_Angeles) for the event's local time. An invalid name is refused with validation_error. Note: changing an event's timezone reschedules it."
+       },
+       "field_event_in_person": {
+        "type": "boolean",
+        "description": "True if the event happens at a physical venue, false if online/virtual. Controls whether times display in the venue's timezone (in-person) or each viewer's local timezone (online)."
+       }
+      },
+      "required": [
+       "eventseries_id"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": false
+     }
+    },
+    {
+     "name": "delete_event",
+     "description": "Cancel (archive) an event series \u2014 organizer write, acting-u",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "eventseries_id": {
+        "type": "string",
+        "description": "The event series id (get_event `series_id`, or an eventinstance id \u2014 either resolves to its series)."
+       },
+       "confirmed": {
+        "type": "boolean",
+        "description": "Omit or false for a no-write preview; true to execute the cancel/delete."
+       }
+      },
+      "required": [
+       "eventseries_id"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": false
+     }
+    },
+    {
+     "name": "restore_event",
+     "description": "Un-cancel a previously archived event series \u2014 the inverse o",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "eventseries_id": {
+        "type": "string",
+        "description": "The event series id (get_event `series_id`, or an eventinstance id \u2014 either resolves to its series)."
+       }
+      },
+      "required": [
+       "eventseries_id"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": false
+     }
+    },
+    {
+     "name": "send_for_review",
+     "description": "Route a draft (or needs_adjustment) event series to an edito",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "eventseries_id": {
+        "type": "string",
+        "description": "The event series id (get_event `series_id`, or an eventinstance id \u2014 either resolves to its series)."
+       }
+      },
+      "required": [
+       "eventseries_id"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": false
+     }
+    },
+    {
+     "name": "cancel_occurrence",
+     "description": "Cancel ONE occurrence of an event series without touching th",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "eventinstance_id": {
+        "type": "string",
+        "description": "The eventinstance id (from search_events/get_event `id`, or get_my_events)."
+       },
+       "confirmed": {
+        "type": "boolean",
+        "description": "Omit or false for a no-write preview; true to execute the cancel."
+       }
+      },
+      "required": [
+       "eventinstance_id"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": false
+     }
+    },
+    {
+     "name": "restore_occurrence",
+     "description": "Un-cancel ONE previously cancelled (archived) occurrence \u2014 t",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "eventinstance_id": {
+        "type": "string",
+        "description": "The eventinstance id to restore."
+       }
+      },
+      "required": [
+       "eventinstance_id"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": false
+     }
+    },
+    {
+     "name": "edit_occurrence",
+     "description": "Edit ONE occurrence's own date or location \u2014 a content edit ",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "eventinstance_id": {
+        "type": "string",
+        "description": "The eventinstance id to edit."
+       },
+       "confirmed": {
+        "type": "boolean",
+        "description": "Required true to commit a date change on a live occurrence with registrants; otherwise optional."
+       },
+       "date": {
+        "type": "object",
+        "properties": {
+         "value": {
+          "type": "string",
+          "description": "New start date/time (naive UTC, e.g. 2026-09-01T14:00:00)."
+         },
+         "end_value": {
+          "type": "string",
+          "description": "New end date/time (naive UTC)."
+         }
+        },
+        "description": "New date range for this occurrence. Omit to leave the date unchanged."
+       },
+       "field_location": {
+        "type": "string",
+        "description": "New location for this occurrence. Omit to leave unchanged."
+       }
+      },
+      "required": [
+       "eventinstance_id"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": false
+     }
+    },
+    {
+     "name": "add_occurrence",
+     "description": "Add ONE new occurrence directly to an event series \u2014 an unre",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "eventseries_id": {
+        "type": "string",
+        "description": "The event series id to add an occurrence to (get_event `series_id`, or an eventinstance id \u2014 either resolves to its series)."
+       },
+       "date": {
+        "type": "object",
+        "properties": {
+         "value": {
+          "type": "string",
+          "description": "Start date/time (naive UTC). Required."
+         },
+         "end_value": {
+          "type": "string",
+          "description": "End date/time (naive UTC). Required."
+         }
+        },
+        "description": "The new occurrence's date range. Required."
+       }
+      },
+      "required": [
+       "eventseries_id",
+       "date"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": false
+     }
+    }
+   ]
+  },
+  {
+   "server": "affinity-groups",
+   "tools": [
+    {
+     "name": "search_affinity_groups",
+     "description": "Search ACCESS-CI affinity groups. Returns {total, items}.",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "id": {
+        "type": "string",
+        "description": "Group ID (omit to list all)"
+       },
+       "include": {
+        "type": "string",
+        "enum": [
+         "events",
+         "kb",
+         "all"
+        ],
+        "description": "What to include with each group result. events = upcoming events for each group; kb = knowledge base articles; all = both events and KB articles"
+       },
+       "query": {
+        "type": "string",
+        "description": "Filter groups by name, description, and category. Only applies when retrieving a list of affinity groups (when id is omitted)."
+       },
+       "limit": {
+        "type": "number",
+        "description": "Max results (default: 20)",
+        "default": 20
+       },
+       "fields": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Project the response down to only these fields. Dotted path syntax: 'total', 'items[].name', 'items[].description', 'metadata.pagination.has_more', etc. Use to reduce payload size when you only need specific fields. Omit to receive the full response. Only applies to listing/search results, not single-group lookups."
+       }
+      }
+     },
+     "_meta": {
+      "supportsFieldProjection": true
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    }
+   ]
+  },
+  {
+   "server": "xdmod",
+   "tools": [
+    {
+     "name": "get_chart_data",
+     "description": "The go-to tool for ACCESS-wide usage statistics, counts, and",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "realm": {
+        "type": "string",
+        "description": "Data realm. Jobs=job counts/CPU hours/SUs/active users; Allocations=ACEs/SUs allocated+used/active allocations/PIs; Accounts=user account counts; Gateways=gateway job counts/active gateways; SUPREMM=GPU time/CPU perf/FLOPS/short jobs/memory; Cloud=VM sessions/core hours; ResourceSpecifications=GPU+CPU node counts/capacity; Requests=proposals/projects submitted.",
+        "enum": [
+         "Accounts",
+         "Allocations",
+         "Cloud",
+         "Gateways",
+         "Jobs",
+         "Requests",
+         "ResourceSpecifications",
+         "SUPREMM"
+        ]
+       },
+       "group_by": {
+        "type": "string",
+        "description": "Dimension to group by. Use \"none\" for overall totals, or a dimension like \"resource\", \"person\", \"pi\", \"institution\", \"gateway\", \"fieldofscience\". Call describe_fields to see all dimensions for a realm."
+       },
+       "statistic": {
+        "type": "string",
+        "description": "Exact statistic ID \u2014 must match the realm. Use describe_fields to discover all options. Jobs: job_count, total_cpu_hours, total_su, active_person_count, gateway_job_count. Allocations: allocated_ace, used_ace, active_allocation_count, active_pi_count. SUPREMM: gpu_time, short_job_count, wall_time_accuracy, avg_flops_per_core, avg_percent_gpu_usage. Requests: project_count, request_count. Accounts: unique_account_count."
+       },
+       "start_date": {
+        "type": "string",
+        "description": "Start date in YYYY-MM-DD format",
+        "format": "date"
+       },
+       "end_date": {
+        "type": "string",
+        "description": "End date in YYYY-MM-DD format",
+        "format": "date"
+       },
+       "dataset_type": {
+        "type": "string",
+        "description": "Dataset type (default: \"timeseries\")",
+        "enum": [
+         "timeseries",
+         "aggregate"
+        ],
+        "default": "timeseries"
+       },
+       "display_type": {
+        "type": "string",
+        "description": "Display type (default: \"line\")",
+        "enum": [
+         "line",
+         "bar",
+         "pie",
+         "scatter"
+        ],
+        "default": "line"
+       },
+       "combine_type": {
+        "type": "string",
+        "description": "How to combine data (default: \"side\")",
+        "enum": [
+         "side",
+         "stack",
+         "percent"
+        ],
+        "default": "side"
+       },
+       "limit": {
+        "type": "number",
+        "description": "Maximum number of data series to return (default: 10)",
+        "default": 10
+       },
+       "offset": {
+        "type": "number",
+        "description": "Offset for pagination (default: 0)",
+        "default": 0
+       },
+       "log_scale": {
+        "type": "string",
+        "description": "Use logarithmic scale (default: \"n\")",
+        "enum": [
+         "y",
+         "n"
+        ],
+        "default": "n"
+       },
+       "filters": {
+        "type": "object",
+        "description": "Filter by dimension. Keys are dimension names (e.g., \"resource\", \"pi\", \"fieldofscience\"). Values can be names (e.g., {\"resource\": \"Delta\"}) or numeric IDs \u2014 names are auto-resolved.",
+        "additionalProperties": {
+         "type": "string"
+        }
+       }
+      },
+      "required": [
+       "realm",
+       "group_by",
+       "statistic",
+       "start_date",
+       "end_date"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    },
+    {
+     "name": "get_chart_image",
+     "description": "Get chart image (SVG, PNG, or PDF) for a specific statistic.",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "realm": {
+        "type": "string",
+        "description": "The data realm. Use describe_realms to see all.",
+        "enum": [
+         "Accounts",
+         "Allocations",
+         "Cloud",
+         "Gateways",
+         "Jobs",
+         "Requests",
+         "ResourceSpecifications",
+         "SUPREMM"
+        ]
+       },
+       "group_by": {
+        "type": "string",
+        "description": "Dimension to group by. Use describe_fields for options."
+       },
+       "statistic": {
+        "type": "string",
+        "description": "The statistic. Use describe_fields for available statistics per realm."
+       },
+       "start_date": {
+        "type": "string",
+        "description": "Start date in YYYY-MM-DD format",
+        "format": "date"
+       },
+       "end_date": {
+        "type": "string",
+        "description": "End date in YYYY-MM-DD format",
+        "format": "date"
+       },
+       "format": {
+        "type": "string",
+        "description": "Image format (svg, png, pdf)",
+        "enum": [
+         "svg",
+         "png",
+         "pdf"
+        ],
+        "default": "svg"
+       },
+       "width": {
+        "type": "number",
+        "description": "Image width in pixels",
+        "default": 916
+       },
+       "height": {
+        "type": "number",
+        "description": "Image height in pixels",
+        "default": 484
+       },
+       "dataset_type": {
+        "type": "string",
+        "description": "Dataset type (default: \"timeseries\")",
+        "enum": [
+         "timeseries",
+         "aggregate"
+        ],
+        "default": "timeseries"
+       },
+       "display_type": {
+        "type": "string",
+        "description": "Display type (default: \"line\")",
+        "enum": [
+         "line",
+         "bar",
+         "pie",
+         "scatter"
+        ],
+        "default": "line"
+       },
+       "combine_type": {
+        "type": "string",
+        "description": "How to combine data (default: \"side\")",
+        "enum": [
+         "side",
+         "stack",
+         "percent"
+        ],
+        "default": "side"
+       },
+       "limit": {
+        "type": "number",
+        "description": "Maximum number of data series to return (default: 10)",
+        "default": 10
+       },
+       "offset": {
+        "type": "number",
+        "description": "Offset for pagination (default: 0)",
+        "default": 0
+       },
+       "log_scale": {
+        "type": "string",
+        "description": "Use logarithmic scale (default: \"n\")",
+        "enum": [
+         "y",
+         "n"
+        ],
+        "default": "n"
+       },
+       "filters": {
+        "type": "object",
+        "description": "Filter by dimension. Keys are dimension names (e.g., \"resource\", \"pi\", \"fieldofscience\"). Values can be names (e.g., \"Delta\") or numeric IDs \u2014 names are auto-resolved.",
+        "additionalProperties": {
+         "type": "string"
+        }
+       }
+      },
+      "required": [
+       "realm",
+       "group_by",
+       "statistic",
+       "start_date",
+       "end_date"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    },
+    {
+     "name": "get_chart_link",
+     "description": "Generate a direct URL to view an interactive chart in the XD",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "realm": {
+        "type": "string",
+        "description": "The data realm. Use describe_realms to see all.",
+        "enum": [
+         "Accounts",
+         "Allocations",
+         "Cloud",
+         "Gateways",
+         "Jobs",
+         "Requests",
+         "ResourceSpecifications",
+         "SUPREMM"
+        ]
+       },
+       "group_by": {
+        "type": "string",
+        "description": "Dimension to group by. Use describe_fields for options."
+       },
+       "statistic": {
+        "type": "string",
+        "description": "The statistic. Use describe_fields for available statistics per realm."
+       }
+      },
+      "required": [
+       "realm",
+       "group_by",
+       "statistic"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    },
+    {
+     "name": "describe_realms",
+     "description": "List all available XDMoD data realms (Jobs, SUPREMM, Cloud, ",
+     "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    },
+    {
+     "name": "describe_fields",
+     "description": "List all dimensions and statistics for a realm. Use this onl",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "realm": {
+        "type": "string",
+        "description": "XDMoD realm to describe.",
+        "enum": [
+         "Accounts",
+         "Allocations",
+         "Cloud",
+         "Gateways",
+         "Jobs",
+         "Requests",
+         "ResourceSpecifications",
+         "SUPREMM"
+        ],
+        "default": "Jobs"
+       }
+      },
+      "required": [
+       "realm"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    },
+    {
+     "name": "get_dimension_values",
+     "description": "Get the list of filter values for a dimension in a realm. Fo",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "realm": {
+        "type": "string",
+        "description": "XDMoD realm (e.g., \"Jobs\", \"SUPREMM\")"
+       },
+       "dimension": {
+        "type": "string",
+        "description": "Dimension to get values for (e.g., \"resource\", \"person\", \"institution\", \"fieldofscience\", \"jobsize\", \"queue\")"
+       },
+       "limit": {
+        "type": "number",
+        "description": "Maximum number of values to return (default: 200)",
+        "default": 200
+       }
+      },
+      "required": [
+       "realm",
+       "dimension"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    }
+   ]
+  },
+  {
+   "server": "jsm",
+   "tools": [
+    {
+     "name": "create_support_ticket",
+     "description": "Create a general support ticket in ACCESS JSM. Use this when",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "summary": {
+        "type": "string",
+        "description": "Brief title for the ticket (1-2 sentences)"
+       },
+       "description": {
+        "type": "string",
+        "description": "Detailed description of the issue, including what the user has already tried. Write this as a clean summary - do not include raw conversation transcript."
+       },
+       "user_email": {
+        "type": "string",
+        "description": "User's email address"
+       },
+       "user_name": {
+        "type": "string",
+        "description": "User's full name"
+       },
+       "access_id": {
+        "type": "string",
+        "description": "User's ACCESS ID (optional)"
+       },
+       "category": {
+        "type": "string",
+        "enum": [
+         "User Account Question",
+         "Allocation Question",
+         "User Support Question",
+         "CSSN/CCEP Question",
+         "Training Question",
+         "Metrics Question",
+         "OnDemand Question",
+         "Pegasus Question",
+         "XDMoD Question",
+         "Some Other Question"
+        ],
+        "description": "Issue category"
+       },
+       "priority": {
+        "type": "string",
+        "enum": [
+         "lowest",
+         "low",
+         "medium",
+         "high",
+         "highest"
+        ],
+        "default": "medium",
+        "description": "Ticket priority"
+       },
+       "resource": {
+        "type": "string",
+        "enum": [
+         "ACES",
+         "Anvil",
+         "Bridges-2",
+         "DARWIN",
+         "Delta",
+         "DeltaAI",
+         "Derecho",
+         "Expanse",
+         "FASTER",
+         "Granite",
+         "Jetstream2",
+         "KyRIC",
+         "Launch",
+         "Neocortex",
+         "Ookami",
+         "Open Science Grid",
+         "Open Storage Network",
+         "Ranch",
+         "Stampede3"
+        ],
+        "description": "ACCESS resource involved (if applicable)"
+       },
+       "user_id_at_resource": {
+        "type": "string",
+        "description": "User's username at the resource (if applicable)"
+       }
+      },
+      "required": [
+       "summary",
+       "description",
+       "user_email",
+       "user_name"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": false
+     }
+    },
+    {
+     "name": "create_login_ticket",
+     "description": "Create a ticket for login issues - either for the ACCESS por",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "summary": {
+        "type": "string",
+        "description": "Brief description of the login issue"
+       },
+       "description": {
+        "type": "string",
+        "description": "Detailed description including error messages and what was tried"
+       },
+       "user_email": {
+        "type": "string",
+        "description": "User's email address"
+       },
+       "user_name": {
+        "type": "string",
+        "description": "User's full name"
+       },
+       "access_id": {
+        "type": "string",
+        "description": "User's ACCESS ID (optional)"
+       },
+       "login_type": {
+        "type": "string",
+        "enum": [
+         "access_portal",
+         "resource_provider"
+        ],
+        "description": "Whether the issue is with ACCESS portal login or a resource provider"
+       },
+       "identity_provider": {
+        "type": "string",
+        "enum": [
+         "ACCESS",
+         "Github",
+         "Google",
+         "Institution",
+         "Microsoft",
+         "ORCID",
+         "Other"
+        ],
+        "description": "Identity provider used (for ACCESS portal login issues)"
+       },
+       "browser": {
+        "type": "string",
+        "description": "Browser being used (for ACCESS portal login issues)"
+       },
+       "resource": {
+        "type": "string",
+        "enum": [
+         "ACES",
+         "Anvil",
+         "Bridges-2",
+         "DARWIN",
+         "Delta",
+         "DeltaAI",
+         "Derecho",
+         "Expanse",
+         "FASTER",
+         "Granite",
+         "Jetstream2",
+         "KyRIC",
+         "Launch",
+         "Neocortex",
+         "Ookami",
+         "Open Science Grid",
+         "Open Storage Network",
+         "Ranch",
+         "Stampede3"
+        ],
+        "description": "Resource provider (for resource provider login issues)"
+       },
+       "user_id_at_resource": {
+        "type": "string",
+        "description": "Username at the resource provider"
+       }
+      },
+      "required": [
+       "summary",
+       "description",
+       "user_email",
+       "user_name",
+       "login_type"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": false
+     }
+    },
+    {
+     "name": "report_security_incident",
+     "description": "Report a security vulnerability or incident. Use this for se",
+     "inputSchema": {
+      "type": "object",
+      "properties": {
+       "summary": {
+        "type": "string",
+        "description": "Brief description of the security concern"
+       },
+       "description": {
+        "type": "string",
+        "description": "Detailed description of the security issue"
+       },
+       "user_email": {
+        "type": "string",
+        "description": "User's email address"
+       },
+       "user_name": {
+        "type": "string",
+        "description": "User's full name"
+       },
+       "access_id": {
+        "type": "string",
+        "description": "User's ACCESS ID (optional)"
+       },
+       "priority": {
+        "type": "string",
+        "enum": [
+         "low",
+         "medium",
+         "high",
+         "critical"
+        ],
+        "default": "medium",
+        "description": "Severity of the security concern"
+       }
+      },
+      "required": [
+       "summary",
+       "description",
+       "user_email",
+       "user_name"
+      ]
+     },
+     "annotations": {
+      "readOnlyHint": false
+     }
+    },
+    {
+     "name": "get_ticket_types",
+     "description": "Get information about available ticket types. Use this to un",
+     "inputSchema": {
+      "type": "object",
+      "properties": {}
+     },
+     "annotations": {
+      "readOnlyHint": true
+     }
+    }
+   ]
+  }
+ ]
+}

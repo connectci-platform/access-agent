@@ -187,6 +187,7 @@ class TestCatalogAggregator:
         query_param = next(p for p in processed["parameters"] if p["name"] == "query")
         assert query_param["required"] is True
         assert query_param["type"] == "string"
+        assert query_param["json_schema"] == {"type": "string"}
 
         limit_param = next(p for p in processed["parameters"] if p["name"] == "limit")
         assert limit_param["required"] is False
