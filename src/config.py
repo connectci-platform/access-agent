@@ -128,6 +128,10 @@ class Settings(BaseSettings):
     # removed from UI discovery, system prompt, MCP tool catalog, RAG
     # routing, domain agent routing, and usage attribution.
     DISABLED_CAPABILITIES: str = ""
+    # LIVE_DATA_TOOLS: comma-separated tool names whose results go out of date
+    # between turns, for a program whose tools differ. Replaces the default list,
+    # LIVE_DATA_MCP_TOOL_NAMES in src/agent/domains/capabilities.py. Empty uses it.
+    LIVE_DATA_TOOLS: str = ""
     # READ_ONLY: when True, force-disables all write-capable capabilities
     # (manage_announcements, open_ticket, report_login_problem, report_security)
     # by adding them to the disabled set at registry build time. Intended for

@@ -33,6 +33,8 @@ capabilities from the section-to-question mapping and the RPSectionCache.
 """
 
 import logging
+import re
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -186,6 +188,69 @@ COMPOSITIONAL_MCP_TOOL_NAMES: frozenset[str] = frozenset(
         "get_ticket_types",
     }
 )
+
+# Read-only MCP tools whose results can change between turns: usage, allocations,
+# system status, events and news. A result from one of these in an earlier turn
+# is shown to the model as old (src/agent/middleware/earlier_results.py), so it
+# calls the tool again rather than repeating it. Hardware, software and awards
+# aren't here because they change too slowly to be worth a repeat call.
+# A deployment replaces this list with LIVE_DATA_TOOLS; use live_data_tool_names().
+LIVE_DATA_MCP_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        # allocations
+        "get_allocation_statistics",
+        "get_my_rp_accounts",
+        "get_rp_account",
+        "search_projects",
+        # announcements
+        "get_my_announcements",
+        "search_announcements",
+        # events
+        "get_event",
+        "get_my_events",
+        "get_my_registrations",
+        "search_events",
+        # system status
+        "get_infrastructure_news",
+        # usage
+        "get_chart_data",
+        "get_chart_image",
+        "get_chart_link",
+        "get_raw_data",
+        "get_user_data",
+    }
+)
+
+
+@lru_cache(maxsize=4)
+def _parse_live_data_tools(configured: str) -> frozenset[str]:
+    """The usable names in ``LIVE_DATA_TOOLS``, warning about any that aren't.
+
+    A write's result isn't data to look up again, and telling the model to do so
+    would repeat the write, so those are dropped however the list is set.
+    """
+    names = {name.strip() for name in configured.split(",") if name.strip()}
+    usable = {
+        name
+        for name in names
+        if re.fullmatch(r"[a-z][a-z0-9_]*", name) and name not in WRITE_MCP_TOOL_NAMES
+    }
+    if names - usable:
+        logger.warning("LIVE_DATA_TOOLS: ignoring %s", sorted(names - usable))
+    unknown = usable - LIVE_DATA_MCP_TOOL_NAMES
+    if unknown:
+        logger.warning(
+            "LIVE_DATA_TOOLS: not default live tools, check spelling: %s", sorted(unknown)
+        )
+    return frozenset(usable)
+
+
+def live_data_tool_names() -> frozenset[str]:
+    """The tools treated as live: ``LIVE_DATA_TOOLS`` when set, else the defaults."""
+    from ...config import settings
+
+    return _parse_live_data_tools(settings.LIVE_DATA_TOOLS) or LIVE_DATA_MCP_TOOL_NAMES
+
 
 # ── Categories ────────────────────────────────────────────────────────────
 
