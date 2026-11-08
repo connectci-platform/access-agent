@@ -377,14 +377,15 @@ async def test_graph_registers_tool_calling_loop_node():
 
 
 @pytest.mark.asyncio
-async def test_graph_routes_start_directly_to_loop():
-    """START → tool_calling_loop is the only edge from __start__."""
+async def test_graph_routes_start_to_loop_or_capability_discovery():
+    """START branches to the loop, or to capability_discovery, and both end."""
     from src.agent.graph import create_agent_graph
 
     graph = create_agent_graph().get_graph()
-    start_edges = [e for e in graph.edges if e.source == "__start__"]
-    assert len(start_edges) == 1
-    assert start_edges[0].target == "tool_calling_loop"
+    start_targets = {e.target for e in graph.edges if e.source == "__start__"}
+    assert start_targets == {"tool_calling_loop", "capability_discovery"}
+    discovery_edges = [e for e in graph.edges if e.source == "capability_discovery"]
+    assert [e.target for e in discovery_edges] == ["__end__"]
 
 
 @pytest.mark.asyncio
