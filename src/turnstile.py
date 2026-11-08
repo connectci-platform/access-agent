@@ -9,9 +9,10 @@ See: access-qa-planning/turnstile-bot-protection-spec.md
 
 from __future__ import annotations
 
+import heapq
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 from starlette.responses import JSONResponse
@@ -30,6 +31,7 @@ class SessionState:
     query_count: int = 0
     verified: bool = False
     verified_at: float = 0.0
+    last_seen: float = field(default_factory=time.time)
 
 
 MAX_SESSIONS = 10_000
@@ -49,32 +51,43 @@ class TurnstileGuard:
         self._last_eviction: float = time.time()
 
     def _get_session(self, session_id: str) -> SessionState:
-        if session_id not in self._sessions:
+        session = self._sessions.get(session_id)
+        if session is None:
             self._evict_expired()
-            self._sessions[session_id] = SessionState()
-        return self._sessions[session_id]
+            session = self._sessions[session_id] = SessionState()
+        session.last_seen = time.time()
+        return session
 
     def _evict_expired(self) -> None:
-        """Remove sessions whose verification has expired and that have
-        exhausted their free queries. Runs at most once per EVICTION_INTERVAL
-        or when the session count exceeds MAX_SESSIONS."""
+        """Remove sessions idle for longer than TURNSTILE_SESSION_TTL. Runs at
+        most once per EVICTION_INTERVAL or when the session count reaches
+        MAX_SESSIONS.
+
+        Idle time is the test because it can't reset a count someone is still
+        using: every request, challenged or not, refreshes last_seen. The TTL is
+        the window a verified session gets, so an hour of silence (by default)
+        earns the same fresh allowance as an expired verification.
+
+        Thread ids are free to mint, so a full table of active sessions drops
+        its oldest as well. A batch, so that the next new session doesn't sweep
+        the whole table again.
+        """
         now = time.time()
         if now - self._last_eviction < EVICTION_INTERVAL and len(self._sessions) < MAX_SESSIONS:
             return
 
         ttl = settings.TURNSTILE_SESSION_TTL
-        stale = [
-            sid
-            for sid, s in self._sessions.items()
-            if (s.verified and now - s.verified_at > ttl)
-            or (
-                not s.verified
-                and s.query_count >= settings.TURNSTILE_FREE_QUERIES
-                and now - s.verified_at > ttl
-            )
-        ]
+        stale = [sid for sid, s in self._sessions.items() if now - s.last_seen > ttl]
         for sid in stale:
             del self._sessions[sid]
+        if len(self._sessions) >= MAX_SESSIONS:
+            excess = len(self._sessions) - MAX_SESSIONS + 1 + MAX_SESSIONS // 10
+            oldest = heapq.nsmallest(
+                excess, self._sessions, key=lambda sid: self._sessions[sid].last_seen
+            )
+            for sid in oldest:
+                del self._sessions[sid]
+            logger.warning("Turnstile session table full, dropped the %d oldest", len(oldest))
         if stale:
             logger.info(
                 "Evicted %d expired Turnstile sessions (%d remaining)",
@@ -115,9 +128,16 @@ class TurnstileGuard:
         )
 
     def record_query(self, session_id: str) -> None:
-        """Increment the query count for a session (called after a successful query)."""
+        """Increment the query count for a session. Use charge_query, not this."""
         session = self._get_session(session_id)
         session.query_count += 1
+
+    def refund_query(self, session_id: str) -> None:
+        """Give one query back, never below zero. A session evicted since the
+        charge stays gone."""
+        session = self._sessions.get(session_id)
+        if session is not None and session.query_count > 0:
+            session.query_count -= 1
 
     def mark_verified(self, session_id: str) -> None:
         """Mark a session as Turnstile-verified."""
@@ -166,6 +186,46 @@ def get_turnstile_guard() -> TurnstileGuard:
     if _guard is None:
         _guard = TurnstileGuard()
     return _guard
+
+
+class QueryCharge:
+    """One question counted against an anonymous session, refundable once."""
+
+    def __init__(self, session_id: str | None) -> None:
+        self._session_id = session_id
+
+    def refund(self) -> None:
+        """Give the question back because the agent failed to answer it. Safe to
+        call twice, and never raises into the stream."""
+        session_id, self._session_id = self._session_id, None
+        if session_id is None:
+            return
+        try:
+            get_turnstile_guard().refund_query(session_id)
+        except Exception:
+            logger.exception("Turnstile query refund failed")
+
+
+NOT_CHARGED = QueryCharge(None)
+
+
+def charge_query(acting_user: str | None, session_id: str) -> QueryCharge:
+    """Count a question for every route that runs the agent.
+
+    Call it once the run lock is held. Counting up front means leaving early
+    (Stop, or a disconnect) still uses the question, so the caller refunds only
+    when the agent failed. The lock also makes this exact: a second request on
+    the session gets a 409 and is never charged. A failed count lets the
+    question through, because the limit must not take the agent down.
+    """
+    if acting_user:
+        return NOT_CHARGED
+    try:
+        get_turnstile_guard().record_query(session_id)
+    except Exception:
+        logger.exception("Turnstile query count failed")
+        return NOT_CHARGED
+    return QueryCharge(session_id)
 
 
 def turnstile_challenge_response() -> JSONResponse:

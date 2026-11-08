@@ -16,6 +16,8 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from langchain_core.messages import AIMessageChunk
 
+from src.api import thread_routes
+from src.api.identity import CLAIM_KEY_HEADER
 from src.main import app
 from src.thread_owners import get_thread_owner_store
 
@@ -861,6 +863,307 @@ async def test_run_anon_caller_not_challenged_when_turnstile_disabled(client, mo
     )
     assert r.status_code == 200
     assert "event: metadata" in r.text
+
+
+def thread_routes_runs():
+    import src.api.thread_runs as tr
+
+    return tr
+
+
+def _deferred_turnstile(monkeypatch, free_queries: int = 3) -> None:
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "TURNSTILE_SECRET_KEY", "test-secret", raising=False)
+    monkeypatch.setattr(settings, "TURNSTILE_SITE_KEY", "test-site-key", raising=False)
+    monkeypatch.setattr(settings, "TURNSTILE_MODE", "deferred", raising=False)
+    monkeypatch.setattr(settings, "TURNSTILE_FREE_QUERIES", free_queries, raising=False)
+
+
+async def _ask(client, thread_id: str, *, headers=None, **body):
+    # The client sends its claim key on every run, and an anonymous run on a
+    # thread without one is refused.
+    headers = {CLAIM_KEY_HEADER: CLAIM_KEY, **(headers or {})}
+    return await client.post(
+        f"/api/v1/threads/{thread_id}/runs/stream",
+        headers=headers,
+        json={"input": {"messages": [{"role": "user", "content": "hi"}]}, **body},
+    )
+
+
+def _challenged(response) -> bool:
+    return response.headers["content-type"].startswith("application/json") and (
+        response.json().get("requires_turnstile") is True
+    )
+
+
+async def test_run_anon_caller_is_challenged_after_the_free_questions(client, monkeypatch):
+    """D8-2978: the count has to grow on this route, or deferred mode never fires."""
+    _deferred_turnstile(monkeypatch)
+    _mock_stream_agent(monkeypatch)
+
+    for _ in range(3):
+        r = await _ask(client, "t-free")
+        assert "event: metadata" in r.text
+
+    r = await _ask(client, "t-free")
+    assert _challenged(r)
+    assert r.json()["site_key"] == "test-site-key"
+
+
+async def test_run_free_question_count_follows_the_setting(client, monkeypatch):
+    _deferred_turnstile(monkeypatch, free_queries=1)
+    _mock_stream_agent(monkeypatch)
+
+    assert not _challenged(await _ask(client, "t-one-free"))
+    assert _challenged(await _ask(client, "t-one-free"))
+
+
+async def test_run_failed_turn_does_not_use_a_free_question(client, monkeypatch):
+    _deferred_turnstile(monkeypatch, free_queries=1)
+
+    async def _boom(**_kwargs):
+        raise RuntimeError("model down")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _boom)
+    r = await _ask(client, "t-failed")
+    assert "event: error" in r.text
+
+    _mock_stream_agent(monkeypatch)
+    assert not _challenged(await _ask(client, "t-failed"))
+
+
+async def test_run_count_is_shared_with_the_widget_session(client, monkeypatch):
+    """A handed-off conversation keeps its count: session_id == thread_id."""
+    from src.turnstile import get_turnstile_guard
+
+    _deferred_turnstile(monkeypatch)
+    _mock_stream_agent(monkeypatch)
+    for _ in range(3):
+        get_turnstile_guard().record_query("t-handed-off")
+
+    assert _challenged(await _ask(client, "t-handed-off"))
+
+
+async def test_run_signing_in_continues_a_thread_at_the_limit(client, bearer, monkeypatch):
+    _deferred_turnstile(monkeypatch, free_queries=1)
+    _mock_stream_agent(monkeypatch)
+    await _ask(client, "t-sign-in")
+    assert _challenged(await _ask(client, "t-sign-in"))
+
+    r = await _ask(client, "t-sign-in", headers=bearer)
+
+    assert "event: metadata" in r.text
+    assert get_thread_owner_store().resolve_owner("t-sign-in").was_authenticated
+
+
+async def test_run_signed_in_turns_are_not_counted(client, bearer, monkeypatch):
+    from src.turnstile import get_turnstile_guard
+
+    _deferred_turnstile(monkeypatch, free_queries=1)
+    _mock_stream_agent(monkeypatch)
+
+    for _ in range(3):
+        assert not _challenged(await _ask(client, "t-authed-count", headers=bearer))
+
+    assert "t-authed-count" not in get_turnstile_guard()._sessions
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"turnstile_token": "tok"}, {"context": {"turnstile_token": "tok"}}],
+    ids=["top-level", "context"],
+)
+async def test_run_passing_the_challenge_answers_the_question(client, monkeypatch, body):
+    """The SDK's submit can only send the token in ``context``."""
+    _deferred_turnstile(monkeypatch, free_queries=1)
+    _mock_stream_agent(monkeypatch)
+    verify = MagicMock(return_value=True)
+
+    async def _verify(token):
+        return verify(token)
+
+    monkeypatch.setattr("src.turnstile.verify_turnstile_token", _verify)
+    await _ask(client, "t-verify")
+    assert _challenged(await _ask(client, "t-verify"))
+
+    r = await _ask(client, "t-verify", **body)
+
+    assert "event: metadata" in r.text
+    verify.assert_called_once_with("tok")
+    assert not _challenged(await _ask(client, "t-verify"))  # verified for the TTL
+
+
+async def test_run_rejected_token_is_challenged_again(client, monkeypatch):
+    _deferred_turnstile(monkeypatch, free_queries=1)
+    _mock_stream_agent(monkeypatch)
+
+    async def _reject(_token):
+        return False
+
+    monkeypatch.setattr("src.turnstile.verify_turnstile_token", _reject)
+    await _ask(client, "t-bad-token")
+
+    assert _challenged(await _ask(client, "t-bad-token", context={"turnstile_token": "bad"}))
+
+
+async def test_run_count_failure_does_not_fail_the_turn(client, monkeypatch):
+    _deferred_turnstile(monkeypatch)
+    _mock_stream_agent(monkeypatch)
+    monkeypatch.setattr(
+        "src.turnstile.TurnstileGuard.record_query",
+        MagicMock(side_effect=RuntimeError("count failed")),
+    )
+
+    r = await _ask(client, "t-count-fails")
+
+    assert "event: values" in r.text
+    assert "event: error" not in r.text
+
+
+def _anon_count(thread_id: str) -> int:
+    from src.turnstile import get_turnstile_guard
+
+    return get_turnstile_guard()._sessions[thread_id].query_count
+
+
+async def test_run_is_counted_before_the_answer_starts(client, monkeypatch):
+    """Stop can't be a way to read an answer for free."""
+    _deferred_turnstile(monkeypatch)
+    seen: list[int] = []
+
+    async def _fake(**_kwargs):
+        seen.append(_anon_count("t-early"))
+        yield "updates", {"tool_calling_loop": {"final_answer": "hi"}}
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _fake)
+    await _ask(client, "t-early")
+
+    assert seen == [1]
+    assert _anon_count("t-early") == 1  # and only once
+
+
+async def test_run_cancelled_turn_uses_a_question(monkeypatch):
+    from types import SimpleNamespace
+
+    import src.api.thread_runs as tr
+    from src.api.thread_routes import RunRequest, thread_run_stream
+
+    _deferred_turnstile(monkeypatch)
+    started = asyncio.Event()
+
+    async def _long_stream(**_kwargs):
+        started.set()
+        await asyncio.sleep(10)
+        yield "updates", {}
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _long_stream)
+    raw_request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(checkpointer=None)))
+    body = RunRequest.model_validate({"input": {"messages": [{"role": "user", "content": "hi"}]}})
+
+    async def _consume() -> None:
+        response = await thread_run_stream("t-stop", body, raw_request, None)
+        async for _ in response.body_iterator:
+            pass
+
+    task = asyncio.ensure_future(_consume())
+    await started.wait()
+    assert tr.cancel_run("t-stop", tr._active_by_thread["t-stop"]) is True
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert _anon_count("t-stop") == 1
+
+
+async def test_run_timed_out_turn_refunds_the_question(client, monkeypatch):
+    _deferred_turnstile(monkeypatch)
+
+    async def _times_out(**_kwargs):
+        raise TimeoutError
+        yield  # pragma: no cover
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _times_out)
+
+    r = await _ask(client, "t-timeout")
+
+    assert '"error": "timeout"' in r.text
+    assert _anon_count("t-timeout") == 0
+
+
+async def test_run_refund_is_in_place_before_the_error_event_is_sent(client, monkeypatch):
+    """The client may leave as soon as it reads the error."""
+    _deferred_turnstile(monkeypatch)
+
+    async def _boom(**_kwargs):
+        raise RuntimeError("model down")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _boom)
+    real_format = thread_routes.format_sse_event
+    seen: list[int] = []
+
+    def _format(event, data):
+        if event == "error":
+            seen.append(_anon_count("t-refund-first"))
+        return real_format(event, data)
+
+    monkeypatch.setattr(thread_routes, "format_sse_event", _format)
+
+    await _ask(client, "t-refund-first")
+
+    assert seen == [0]
+
+
+async def test_run_refused_as_busy_does_not_use_a_question(client, monkeypatch):
+    import src.api.thread_runs as tr
+
+    _deferred_turnstile(monkeypatch)
+    _mock_stream_agent(monkeypatch)
+    await _ask(client, "t-busy")
+    tr.acquire_thread_run("t-busy", "other-run")
+
+    r = await _ask(client, "t-busy")
+
+    assert r.status_code == 409
+    assert _anon_count("t-busy") == 1
+
+
+async def test_run_concurrent_questions_cannot_exceed_the_limit(client, monkeypatch):
+    """Only the run that holds the thread is counted, so a burst can't share
+    one free question or spend extra ones."""
+    _deferred_turnstile(monkeypatch, free_queries=1)
+    release = asyncio.Event()
+
+    async def _waits(**_kwargs):
+        await release.wait()
+        yield "updates", {"tool_calling_loop": {"final_answer": "hi"}}
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _waits)
+
+    first = asyncio.ensure_future(_ask(client, "t-burst"))
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if "t-burst" in thread_routes_runs()._active_by_thread:
+            break
+    second = await _ask(client, "t-burst")
+    release.set()
+    await first
+
+    assert _challenged(second)
+    assert _anon_count("t-burst") == 1
+
+
+async def test_run_failure_before_hand_off_refunds_the_question(client, monkeypatch):
+    _deferred_turnstile(monkeypatch)
+
+    with (
+        patch("src.api.thread_routes.StreamingResponse", side_effect=RuntimeError("boom")),
+        pytest.raises(RuntimeError, match="boom"),
+    ):
+        await _ask(client, "t-no-hand-off")
+
+    assert _anon_count("t-no-hand-off") == 0
 
 
 def _sse(body: str) -> list[tuple[str, Any]]:

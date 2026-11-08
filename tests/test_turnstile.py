@@ -1,13 +1,16 @@
 """Tests for Turnstile bot protection."""
 
 import time
+from unittest.mock import MagicMock
 
 import pytest
 from pytest_httpx import HTTPXMock
 
 from src.config import settings
 from src.turnstile import (
+    NOT_CHARGED,
     TurnstileGuard,
+    charge_query,
     check_turnstile,
     get_turnstile_guard,
     verify_turnstile_token,
@@ -130,7 +133,7 @@ class TestTurnstileGuard:
 
         # Create a session and verify it
         guard.mark_verified("old-session")
-        guard._sessions["old-session"].verified_at = time.time() - 100
+        guard._sessions["old-session"].last_seen = time.time() - 100
 
         # Force eviction by setting last_eviction in the past
         guard._last_eviction = time.time() - 600
@@ -150,7 +153,7 @@ class TestTurnstileGuard:
             sid = f"bulk-{i}"
             guard._sessions[sid] = guard._get_session(sid)
             guard._sessions[sid].verified = True
-            guard._sessions[sid].verified_at = time.time() - 100
+            guard._sessions[sid].last_seen = time.time() - 100
 
         # Set last_eviction recent so only MAX_SESSIONS triggers it
         guard._last_eviction = time.time()
@@ -161,6 +164,75 @@ class TestTurnstileGuard:
         # This should trigger eviction
         guard._get_session("trigger-session")
         assert len(guard._sessions) < 52  # Some should be evicted
+
+    def _exhaust(self, guard, monkeypatch, session_id):
+        monkeypatch.setattr(settings, "TURNSTILE_MODE", "deferred")
+        monkeypatch.setattr(settings, "TURNSTILE_FREE_QUERIES", 1)
+        guard.record_query(session_id)
+        assert guard.requires_challenge(session_id) is True
+
+    def test_eviction_keeps_an_exhausted_session_that_is_still_active(self, guard, monkeypatch):
+        """D8-2978: a sweep used to reset the count, because an unverified
+        session's verified_at is always 0."""
+        monkeypatch.setattr(settings, "TURNSTILE_SESSION_TTL", 3600)
+        self._exhaust(guard, monkeypatch, "exhausted")
+
+        guard._last_eviction = time.time() - 600
+        guard._get_session("new-session")
+
+        assert guard.requires_challenge("exhausted") is True
+
+    def test_eviction_expires_an_exhausted_session_after_the_idle_ttl(self, guard, monkeypatch):
+        monkeypatch.setattr(settings, "TURNSTILE_SESSION_TTL", 3600)
+        self._exhaust(guard, monkeypatch, "idle")
+        guard._sessions["idle"].last_seen = time.time() - 3601
+
+        guard._last_eviction = time.time() - 600
+        guard._get_session("new-session")
+
+        assert "idle" not in guard._sessions
+
+    def test_a_challenged_request_keeps_the_session_alive(self, guard, monkeypatch):
+        monkeypatch.setattr(settings, "TURNSTILE_SESSION_TTL", 3600)
+        self._exhaust(guard, monkeypatch, "retrying")
+        guard._sessions["retrying"].last_seen = time.time() - 3601
+
+        assert guard.requires_challenge("retrying") is True
+
+        guard._last_eviction = time.time() - 600
+        guard._get_session("new-session")
+        assert "retrying" in guard._sessions
+
+    def test_session_count_stays_bounded_when_every_session_is_active(self, guard, monkeypatch):
+        """Thread ids are free to mint, so the TTL alone can't bound memory."""
+        monkeypatch.setattr("src.turnstile.MAX_SESSIONS", 20)
+        guard._last_eviction = time.time()
+        for i in range(200):
+            guard._get_session(f"flood-{i}")
+            guard._sessions[f"flood-{i}"].last_seen = 1_000_000_000_000.0 + i
+
+        assert len(guard._sessions) <= 20
+        assert "flood-199" in guard._sessions
+        assert "flood-0" not in guard._sessions
+
+    def test_refund_gives_a_question_back(self, guard, monkeypatch):
+        self._exhaust(guard, monkeypatch, "refunded")
+
+        guard.refund_query("refunded")
+
+        assert guard.requires_challenge("refunded") is False
+
+    def test_refund_stops_at_zero(self, guard):
+        guard._get_session("empty")
+
+        guard.refund_query("empty")
+
+        assert guard._sessions["empty"].query_count == 0
+
+    def test_refund_of_an_evicted_session_does_not_bring_it_back(self, guard):
+        guard.refund_query("gone")
+
+        assert "gone" not in guard._sessions
 
 
 @pytest.fixture(autouse=True)
@@ -173,6 +245,62 @@ def _reset_global_guard():
     ts._guard = None
     yield
     ts._guard = None
+
+
+class TestChargeQuery:
+    """charge_query counts an anonymous question; its charge refunds it once."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_guard(self, monkeypatch):
+        monkeypatch.setattr("src.turnstile._guard", None)
+
+    @staticmethod
+    def _count(session_id: str) -> int:
+        return get_turnstile_guard()._sessions[session_id].query_count
+
+    def test_anonymous_question_is_counted_immediately(self):
+        charge_query(None, "sess")
+
+        assert self._count("sess") == 1
+
+    def test_signed_in_question_is_not_counted(self):
+        charge_query("user@x", "sess").refund()
+
+        assert "sess" not in get_turnstile_guard()._sessions
+
+    def test_refund_only_happens_once(self):
+        charge_query(None, "sess")
+        charge = charge_query(None, "sess")
+
+        charge.refund()
+        charge.refund()
+
+        assert self._count("sess") == 1
+
+    def test_failed_count_fails_open_and_has_nothing_to_refund(self, monkeypatch):
+        guard = get_turnstile_guard()
+        monkeypatch.setattr(guard, "record_query", MagicMock(side_effect=RuntimeError("full")))
+        refund = MagicMock()
+        monkeypatch.setattr(guard, "refund_query", refund)
+
+        charge_query(None, "sess").refund()
+
+        refund.assert_not_called()
+
+    def test_failed_refund_does_not_raise(self, monkeypatch):
+        charge = charge_query(None, "sess")
+        monkeypatch.setattr(
+            get_turnstile_guard(), "refund_query", MagicMock(side_effect=RuntimeError("gone"))
+        )
+
+        charge.refund()
+
+    def test_not_charged_refunds_nothing(self):
+        charge_query(None, "sess")
+
+        NOT_CHARGED.refund()
+
+        assert self._count("sess") == 1
 
 
 class TestCheckTurnstile:

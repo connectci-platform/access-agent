@@ -20,7 +20,7 @@ from ..agent.profile import UserProfile
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..config import settings
 from ..tools import ToolRegistry, get_catalog_aggregator
-from ..turnstile import check_turnstile, get_turnstile_guard
+from ..turnstile import NOT_CHARGED, QueryCharge, charge_query, check_turnstile
 from ..usage_logger import get_usage_logger
 from .answer_tokens import is_answer_token
 from .identity import ClaimKey, Identity
@@ -286,6 +286,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
     raw_request: Request,
     report_context: dict[str, Any] | None = None,
     run_id: str | None = None,
+    charge: QueryCharge = NOT_CHARGED,
 ) -> AsyncGenerator[str, None]:
     """Translate LangGraph stream chunks into SSE events.
 
@@ -380,6 +381,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                 # Turn bound expired (TimeoutError in 3.11, not CancelledError).
                 # Emit the widget's error+done and return; do not synthesize a
                 # CancelledError. held_run's finally releases the lock.
+                charge.refund()
                 yield _format_sse_event("error", {"message": "Query timed out", "code": "timeout"})
                 yield _format_sse_event("done", {"success": False, "error": "timeout"})
                 timed_out = True
@@ -507,19 +509,13 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
 
         await _report(success=True, duration_ms=duration_ms)
 
-        # Track query for Turnstile free-query counting
-        if not acting_user:
-            try:
-                get_turnstile_guard().record_query(session_id)
-            except Exception:
-                logger.exception("Turnstile query count failed")
-
     except asyncio.CancelledError:
         # Client disconnect / cancel. held_run's finally already released the
         # per-thread lock; propagate so the task truly cancels (never swallow).
         raise
     except Exception as e:
         logger.exception(f"Stream failed: {e}")
+        charge.refund()
         # A success=False row lets the dashboard tell a failed query apart from
         # one that never happened.
         await _report(success=False)
@@ -618,6 +614,7 @@ async def query_agent(
     # A 409 on the widget is new (rare same-user cross-surface race), acceptable.
     run_id = str(uuid.uuid4())
     acquire_thread_run(session_id, run_id)
+    charge = charge_query(acting_user, session_id)
 
     # The lock is released by held_run's finally inside _stream_events, but ONLY
     # once that generator is actually started. An async generator that is never
@@ -638,6 +635,7 @@ async def query_agent(
                 raw_request,
                 report_context,
                 run_id,
+                charge,
             ),
             media_type="text/event-stream",
             headers={
@@ -647,6 +645,7 @@ async def query_agent(
         )
     except BaseException:
         release_thread_run(session_id, run_id)
+        charge.refund()
         raise
 
 
