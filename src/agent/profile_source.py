@@ -246,7 +246,10 @@ async def allocated_profile_for(acting_user: str | None) -> UserProfile | None:
     resources = await _resources_for(acting_user)
     if resources is None:
         return None
-    return UserProfile(allocated_resources=with_slugs(resources, rp_cache.slugs_for_resource_id))
+    return UserProfile(
+        allocated_resources=with_slugs(resources, rp_cache.slugs_for_resource_id),
+        groups_known=bool(rp_cache.list_slugs()),
+    )
 
 
 def _reset_cache_for_test() -> None:

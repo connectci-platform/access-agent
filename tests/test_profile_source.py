@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from src.agent import profile_source
-from src.agent.profile import AllocatedResource, UserProfile
+from src.agent.profile import AllocatedResource, UserProfile, render_profile_section
 from src.agent.profile_source import allocated_profile_for, resources_from_accounts, with_slugs
 from src.tools.mcp_client import MCPToolResult
 
@@ -320,11 +320,7 @@ async def test_every_failure_falls_back_to_no_profile(mcp, result):
 async def test_without_the_group_vocabulary_the_profile_has_no_slugs(mcp, rp_cache):
     rp_cache.slugs = []
     rp_cache.slugs_for_resource_id = lambda _rid: []
-    assert await allocated_profile_for("alice@x") == UserProfile(
-        allocated_resources=[
-            AllocatedResource(name="NCSA Delta GPU", resource_id="delta-gpu.ncsa.access-ci.org")
-        ]
-    )
+    assert await allocated_profile_for("alice@x") == UNSLUGGED_DELTA
 
 
 async def test_a_failure_is_retried_after_a_short_pause_not_every_message(mcp, clock):
@@ -397,7 +393,8 @@ def real_rp_cache(monkeypatch):
 UNSLUGGED_DELTA = UserProfile(
     allocated_resources=[
         AllocatedResource(name="NCSA Delta GPU", resource_id="delta-gpu.ncsa.access-ci.org")
-    ]
+    ],
+    groups_known=False,
 )
 
 
@@ -471,3 +468,18 @@ async def test_eviction_drops_the_least_recently_used_user(mcp, monkeypatch):
     await allocated_profile_for("b@x")
 
     assert [c[3] for c in mcp.calls] == ["a@x", "b@x", "c@x", "b@x"]
+
+
+async def test_the_profile_says_whether_the_group_list_was_loaded(mcp, real_rp_cache):
+    before = await allocated_profile_for("alice@x")
+    assert before.groups_known is False
+    assert "No scoped documentation" not in render_profile_section(before)
+
+    real_rp_cache.release.set()
+    await real_rp_cache._task
+    mcp.result = MCPToolResult(
+        success=True, data=_payload([_account("Delta Storage", "ungrouped.example.org")])
+    )
+    after = await allocated_profile_for("bob@x")
+    assert after.groups_known is True
+    assert "No scoped documentation exists for Delta Storage" in render_profile_section(after)
