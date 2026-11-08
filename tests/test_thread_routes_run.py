@@ -1587,7 +1587,9 @@ async def test_metadata_goes_out_before_the_profile_lookup_finishes(seed_owner, 
     first = await asyncio.wait_for(chunks.__anext__(), timeout=1)
 
     assert first.startswith("event: metadata")
-    assert started.is_set()
+    # The lookup is a task scheduled alongside the metadata event, so it may
+    # start on the loop's next tick rather than before the first chunk.
+    await asyncio.wait_for(started.wait(), timeout=1)
     assert not release.is_set()
 
     release.set()
