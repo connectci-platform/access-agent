@@ -14,7 +14,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import ValidationError
 
 from src.agent.domains.tools import MCPToolWrapper, _build_args_schema
-from src.agent.nodes.tool_calling_loop import _build_tool_results
+from src.agent.nodes.tool_calling_loop import _build_tool_results, _friendly_tool_status
 from src.tools.mcp_client import MCPClient, MCPToolResult
 
 PARAMETERS = [
@@ -140,3 +140,7 @@ def test_the_schema_shown_to_the_model_still_asks_for_an_object():
     properties = _build_args_schema("t", PARAMETERS).model_json_schema()["properties"]
 
     assert {"type": "object", "additionalProperties": True} in properties["filters"]["anyOf"]
+
+
+def test_registration_has_a_plain_status_line():
+    assert _friendly_tool_status("register_for_event") == "Working on your event registration..."

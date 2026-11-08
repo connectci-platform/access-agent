@@ -20,7 +20,12 @@ from langchain_core.tools import StructuredTool
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.runtime import Runtime
 
-from src.agent.middleware.requires_auth import RequiresAuthMiddleware, refusal_text
+from src.agent.middleware.requires_auth import (
+    RequiresAuthMiddleware,
+    refusal_artifact,
+    refusal_text,
+    signed_in_since,
+)
 from src.config import settings
 from tests.agent_runtime import context_for, run_loop
 
@@ -265,3 +270,117 @@ class TestLoopNode:
         # one is left out.
         assert result["tools_used"] == []
         assert result["tool_call_count"] == 0
+
+
+def _refused(reason: str = "write_action") -> ToolMessage:
+    return ToolMessage(
+        content=refusal_text(reason),
+        tool_call_id="c1",
+        status="error",
+        artifact=refusal_artifact(reason),
+    )
+
+
+def _after_sign_in(messages: list, context: object = WRITE_TOKEN) -> list:
+    return signed_in_since(messages, context)
+
+
+def test_a_refusal_from_before_sign_in_no_longer_tells_the_model_to_ask_for_it():
+    messages = _after_sign_in(
+        [HumanMessage(content="Sign me up."), _refused(), HumanMessage(content="Sign me up.")]
+    )
+
+    assert "has signed in since" in messages[1].content
+    assert "sign in with their ACCESS account" not in messages[1].content
+
+
+def test_the_latest_request_carries_a_note_that_the_user_is_signed_in():
+    messages = _after_sign_in([_refused(), HumanMessage(content="Sign me up.")])
+
+    assert messages[1].content.startswith("Sign me up.")
+    assert "is signed in now" in messages[1].content
+
+
+def test_an_earlier_request_is_not_changed():
+    first = HumanMessage(content="Sign me up.")
+
+    messages = _after_sign_in([first, _refused(), HumanMessage(content="Again.")])
+
+    assert messages[0].content == "Sign me up."
+
+
+def test_the_stored_messages_are_not_changed():
+    refused = _refused()
+    latest = HumanMessage(content="Again.")
+
+    _after_sign_in([refused, latest])
+
+    assert refused.content == refusal_text("write_action")
+    assert latest.content == "Again."
+
+
+def test_an_anonymous_caller_keeps_the_refusal():
+    messages = [_refused(), HumanMessage(content="Again.")]
+
+    assert _after_sign_in(messages, ANON) == messages
+
+
+def test_a_write_scope_refusal_is_kept():
+    messages = [_refused("write_scope"), HumanMessage(content="Again.")]
+
+    assert _after_sign_in(messages, READ_ONLY_TOKEN) == messages
+
+
+def test_a_write_refusal_stands_for_a_caller_who_still_cannot_write():
+    messages = [_refused("write_action"), HumanMessage(content="Again.")]
+
+    assert _after_sign_in(messages, READ_ONLY_TOKEN) == messages
+
+
+def test_a_private_data_refusal_clears_for_a_read_only_caller():
+    messages = _after_sign_in(
+        [_refused("private_data"), HumanMessage(content="Again.")], READ_ONLY_TOKEN
+    )
+
+    assert "has signed in since" in messages[0].content
+
+
+def test_a_conversation_with_no_refusal_is_unchanged():
+    messages = [HumanMessage(content="Hello."), ToolMessage(content="{}", tool_call_id="c1")]
+
+    assert _after_sign_in(messages) == messages
+
+
+def test_a_refusal_after_the_latest_request_adds_no_note():
+    latest = HumanMessage(content="Again.")
+
+    messages = _after_sign_in([latest, _refused()])
+
+    assert messages[0].content == "Again."
+
+
+def test_a_request_with_block_content_is_left_alone():
+    latest = HumanMessage(content=[{"type": "text", "text": "Again."}])
+
+    messages = _after_sign_in([_refused(), latest])
+
+    assert messages[1].content == latest.content
+
+
+async def test_the_model_call_gets_the_rewritten_messages():
+    seen: list = []
+
+    async def handler(request):
+        seen.extend(request.messages)
+        return MagicMock()
+
+    request = ModelRequest(
+        model=MagicMock(),
+        messages=[_refused(), HumanMessage(content="Again.")],
+        tools=[],
+        runtime=Runtime(context=WRITE_TOKEN),
+    )
+
+    await RequiresAuthMiddleware().awrap_model_call(request, handler)
+
+    assert "is signed in now" in seen[1].content

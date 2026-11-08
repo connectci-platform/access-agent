@@ -43,6 +43,7 @@ from ...telemetry import get_tracer
 from ..context import AgentContext, require_context
 from ..domains.capabilities import WRITE_MCP_TOOL_NAMES
 from ..domains.tools import create_mcp_tools_from_catalog
+from ..middleware.preview_first import PreviewFirstMiddleware
 from ..middleware.requires_auth import RequiresAuthMiddleware
 from ..profile import UserProfile
 from ..prompts.system_prompt import build_system_prompt
@@ -194,6 +195,7 @@ _STATUS_VERB_PHRASES = {
 _STATUS_TOOL_OVERRIDES = {
     "search_access_documents": "Searching ACCESS documentation...",
     "search_nsf_awards": "Searching NSF awards...",
+    "register_for_event": "Working on your event registration...",
 }
 
 
@@ -642,6 +644,9 @@ async def tool_calling_loop_node(  # noqa: PLR0915
                 keep=("tokens", settings.SUMMARIZATION_KEEP_TOKENS),
             ),
             gate,
+            # After the gate, so a caller who may not register is refused
+            # rather than shown a preview.
+            PreviewFirstMiddleware(),
         ]
         agent = create_agent(
             model=llm,

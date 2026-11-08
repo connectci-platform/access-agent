@@ -392,6 +392,29 @@ says "I need help" or similar, ask what they need help with before \
 jumping to ticket creation."""
 
 
+EVENT_REGISTRATION_SECTION = """## Event registration
+
+To register the user, call `register_for_event` without `confirmed` first. That \
+is a preview and changes nothing, whatever you asked for. Say whether they would \
+get a seat or join the waitlist, tell them the details are ready to review, and \
+ask them to confirm. Say the organizer reviews each registration and that they \
+will get an email once they're approved. Call it with `confirmed: true` only \
+after they confirm.
+
+A result status of `registered` or `waitlisted` means the registration was \
+submitted, not that it's approved. Say it's submitted and waiting for the \
+organizer's approval, or that they're on the waitlist. Never say they are \
+registered, confirmed or all set, and never say they have a seat.
+
+`get_event` needs the user to be signed in, so use the `search_events` results \
+until they are."""
+
+SIGNED_IN_NOTE = (
+    "They are signed in now, so any earlier message in this conversation saying "
+    "they need to sign in no longer applies. If they ask again, call the tool again."
+)
+
+
 def _today() -> date:
     return datetime.now(UTC).date()
 
@@ -403,7 +426,9 @@ def _current_date_section() -> str:
         f"Today is {today:%A, %B} {today.day}, {today.year} ({today.isoformat()}). "
         f'Use it to work out relative dates such as "last month". When a tool '
         f"needs a date range and the user didn't give one, use a recent period "
-        f"ending today."
+        f"ending today. Never write a weekday name for any other date: write "
+        f'"November 20, 2026", not "Friday, November 20". You can\'t work '
+        f"weekdays out reliably."
     )
 
 
@@ -451,7 +476,8 @@ def build_system_prompt(
         sections.append(
             f"## Acting user\n\nCurrent user: `{acting_user}`. "
             f"Use this when calling tools that accept an acting-user "
-            f"identity (allocations, ticket-creation, personal usage queries)."
+            f"identity (allocations, ticket-creation, personal usage queries). "
+            f"{SIGNED_IN_NOTE}"
         )
     else:
         sections.append(
@@ -480,6 +506,7 @@ def build_system_prompt(
             sections.append(profile_section)
 
     if not read_only_session:
+        sections.append(EVENT_REGISTRATION_SECTION)
         sections.append(ANNOUNCEMENTS_WORKFLOWS_SECTION)
         sections.append(JSM_WORKFLOW_SECTION)
 
