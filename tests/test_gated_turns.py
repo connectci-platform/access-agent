@@ -26,6 +26,7 @@ from pydantic import Field
 
 from src.agent.nodes import tool_calling_loop as loop_mod
 from src.api import routes
+from src.api.identity import CLAIM_KEY_HEADER
 from src.main import app
 
 WRITE, PRIVATE, PUBLIC = "register_for_event", "get_my_rp_accounts", "search_events"
@@ -168,7 +169,7 @@ def _events(body: str) -> list[tuple[str, Any]]:
 async def _run(client, thread_id: str, text: str, headers: dict | None = None):
     r = await client.post(
         f"/api/v1/threads/{thread_id}/runs/stream",
-        headers=headers or {},
+        headers={CLAIM_KEY_HEADER: "k" * 43, **(headers or {})},
         json={"input": {"messages": [{"role": "user", "content": text}]}},
     )
     assert r.status_code == 200

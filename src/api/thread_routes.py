@@ -1,12 +1,8 @@
 """LangGraph thread/run protocol endpoints: create + history (resume) + run.
 
 The Bearer agent token is optional, not required: a caller without one is
-anonymous, not rejected. Every route still passes through the
-thread-ownership gate from src/thread_owners.py, which is where access is
-actually decided — an anon caller can create/resume an anon-owned thread, an
-authed caller resuming an anon-owned thread upgrades it to authed ownership,
-and a non-owner (authed or anon) hitting someone else's authed-owned thread
-gets an identical 404, indistinguishable from an unknown thread.
+anonymous, not rejected. Every route goes through require_thread_access in
+src/api/thread_access.py, which is where access is decided.
 """
 
 import asyncio
@@ -27,7 +23,6 @@ from ..agent.context import AgentContext
 from ..agent.graph import create_checkpointed_graph, stream_agent
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..config import settings
-from ..thread_owners import get_thread_owner_store
 from ..turn_reporter import _hash_user, get_turn_reporter
 from ..turnstile import check_turnstile
 from .answer_tokens import ANSWER_MODEL_NODE, is_answer_token
@@ -36,8 +31,9 @@ from .handoff_tokens import (
     exchange_handoff_token,
     mint_handoff_token,
 )
-from .identity import Identity, require_identity
+from .identity import ClaimKey, Identity, require_identity
 from .sse import format_sse_event
+from .thread_access import require_thread_access
 from .thread_runs import (
     acquire_thread_run,
     cancel_run,
@@ -49,42 +45,6 @@ from .thread_runs import (
 logger = logging.getLogger(__name__)
 
 thread_router = APIRouter()
-
-
-def _require_access(thread_id: str, caller: str | None) -> None:
-    if not get_thread_owner_store().check_access(thread_id, caller):
-        raise HTTPException(status_code=404, detail="Thread not found")  # never 403
-
-
-def _resolve_first_ownership_gate(thread_id: str, caller: str | None) -> None:
-    """Resolve-first ownership gate with the anon->authed upgrade flip.
-
-    Mirrors routes.py's /query gate in logic and ORDER — resolve/upgrade,
-    THEN claim. The anon->authed upgrade decision must be made against the
-    pre-claim owner state, which the old claim-then-check gate couldn't see.
-    Raises 404 (never 403) on an authed-owned/wrong-caller mismatch; thread
-    existence stays unobservable.
-    """
-    owner_store = get_thread_owner_store()
-    owner = owner_store.resolve_owner(thread_id)
-    if owner is not None and owner.was_authenticated:
-        # Authed-owned: the token's caller must match. This is the ONLY
-        # check_access call in the run path.
-        if not owner_store.check_access(thread_id, caller):
-            raise HTTPException(status_code=404, detail="Thread not found")
-        if caller:
-            get_turn_reporter().backfill_user_hash(thread_id, caller)  # idempotent sweep
-    elif owner is not None and not owner.was_authenticated and caller is not None:
-        # Anon-owned + authed caller → flip ownership, then backfill (Task
-        # 3a's turn_reports rows) so the thread surfaces in the caller's
-        # sidebar. Gating backfill on upgrade_owner's return is load-bearing:
-        # two authed callers can both read anon-owned, but only the
-        # flip-winner may backfill, else a cross-tenant label leak (see
-        # routes.py:640-663).
-        if owner_store.upgrade_owner(thread_id, caller):
-            get_turn_reporter().backfill_user_hash(thread_id, caller)
-    # anon-owned + anon caller, or unknown → fall through to claim_thread.
-    owner_store.claim_thread(thread_id, caller)  # lazy-create / no-op for existing
 
 
 class HistoryRequest(BaseModel):
@@ -339,8 +299,9 @@ async def thread_history(
     body: HistoryRequest,
     raw_request: Request,
     identity: Identity,
+    claim_key: ClaimKey = None,
 ) -> list[dict[str, Any]]:
-    _require_access(thread_id, identity.sub if identity else None)
+    require_thread_access(thread_id, identity.sub if identity else None, claim_key)
     checkpointer = getattr(raw_request.app.state, "checkpointer", None)
     if checkpointer is None:
         return []
@@ -367,29 +328,27 @@ def _serialize_values(values: dict[str, Any] | None) -> dict[str, Any]:
     return {"messages": [m.model_dump() if hasattr(m, "model_dump") else m for m in msgs]}
 
 
+@thread_router.post("/threads/{thread_id}/claim")
+async def claim_thread_on_sign_in(
+    thread_id: str, identity: Identity, claim_key: ClaimKey = None
+) -> dict[str, str]:
+    """Link a conversation started signed out to the caller who just signed in.
+
+    Repeating this as the owner succeeds, which also retries a failed backfill.
+    """
+    require_thread_access(thread_id, require_identity(identity), claim_key, write=True)
+    return {"thread_id": thread_id}
+
+
 @thread_router.post("/threads/{thread_id}/handoff")
 async def mint_handoff(thread_id: str, identity: Identity) -> dict[str, Any]:
     """Mint a single-use cross-surface handoff token for an authed-owned thread.
 
-    Authed-owned-threads ONLY: anon-owned threads are rejected with their own
-    404 before any owner-match check. thread_id IS the session_id, and for an
-    anon-owned thread the id itself is the access credential (see
-    src/thread_owners.py) — handing it over via a token that a client then
-    carries into URLs would leak that credential. Restricting mint to
-    authed-owned threads is what keeps "session_id never in a URL" true.
-
-    The `not owner.was_authenticated` clause is fail-closed defense-in-depth, not
-    dead code: today it is redundant with the owner-match below (an anon row has
-    user_hash=None, so the hash compare would also 404), because no write path
-    produces was_authenticated=False with a non-null hash. Keep it — it makes the
-    authed-only intent explicit and stays correct if that invariant ever changes.
+    Owners only: a handoff carries the thread into a URL, and an unclaimed
+    thread has no owner for the exchange to bind to.
     """
     caller = require_identity(identity)
-    owner = get_thread_owner_store().resolve_owner(thread_id)
-    if owner is None or not owner.was_authenticated:
-        raise HTTPException(status_code=404, detail="Thread not found")  # never 403
-    if _hash_user(caller) != owner.user_hash:
-        raise HTTPException(status_code=404, detail="Thread not found")  # never 403
+    require_thread_access(thread_id, caller, None)  # no key, so only the owner passes
     token = mint_handoff_token(thread_id, _hash_user(caller))  # type: ignore[arg-type]
     return {"token": token, "expires_in": DEFAULT_TTL_SECONDS}
 
@@ -419,12 +378,13 @@ async def thread_run_stream(
     body: RunRequest,
     raw_request: Request,
     identity: Identity,
+    claim_key: ClaimKey = None,
 ) -> StreamingResponse | JSONResponse:
     """Stream one agent turn on a thread as the LangGraph run protocol SSE.
 
-    Ownership is atomic on the first run: ``claim_thread`` writes the ownership
-    row transactionally (UNIQUE(thread_id)); a genuinely new thread's caller wins
-    it, an existing thread must pass the ownership check. All status-code-bearing
+    Ownership is atomic on the first run: ``require_thread_access`` writes the
+    ownership row transactionally (UNIQUE(thread_id)), so one caller wins a new
+    thread and an existing thread must pass the check. All status-code-bearing
     checks run before StreamingResponse is returned: the token's 401/503 in
     ``request_identity``, and 404/409 HERE. A status raised inside the generator
     would land after Starlette flushed 200.
@@ -432,14 +392,13 @@ async def thread_run_stream(
     # 1. Anon-accept: caller may be None; ownership below still fails closed.
     caller = identity.sub if identity else None
 
-    # 2. Resolve-first ownership gate (replaces the old claim-then-check):
-    # resolve/upgrade, THEN claim. See _resolve_first_ownership_gate.
-    _resolve_first_ownership_gate(thread_id, caller)
+    # 2. Check access. For a new thread this also writes the ownership row.
+    require_thread_access(thread_id, caller, claim_key, write=True, create=True)
 
     # Turnstile gate — ported from routes.py's /query (see src/turnstile.py).
-    # Authed callers skip immediately inside check_turnstile. The thread_id IS
-    # the anon session credential here (same role session_id plays on /query),
-    # so it is the key the guard tracks free-query/verification state under.
+    # Authed callers skip immediately inside check_turnstile. The thread_id is
+    # the key the guard tracks free-query/verification state under, as
+    # session_id is on /query.
     # Unlike /query, there is no "session_id required" 400 to mirror: thread_id
     # always exists (it's in the URL path), so the guard always has a key to
     # track. Placed AFTER the ownership gate and BEFORE acquire_thread_run so a
@@ -536,10 +495,10 @@ async def thread_run_stream(
 
 
 @thread_router.post("/threads/{thread_id}/runs/{run_id}/cancel")
-async def cancel_thread_run(thread_id: str, run_id: str, identity: Identity) -> dict[str, str]:
-    _require_access(
-        thread_id, identity.sub if identity else None
-    )  # 404 if not the owner (never 403)
+async def cancel_thread_run(
+    thread_id: str, run_id: str, identity: Identity, claim_key: ClaimKey = None
+) -> dict[str, str]:
+    require_thread_access(thread_id, identity.sub if identity else None, claim_key)
     if not cancel_run(thread_id, run_id):  # no such in-flight run ON THIS THREAD
         raise HTTPException(status_code=404, detail="Run not found")
     return {"status": "cancelled"}

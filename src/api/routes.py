@@ -19,13 +19,13 @@ from ..agent.graph import stream_agent
 from ..agent.profile import UserProfile
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..config import settings
-from ..thread_owners import get_thread_owner_store
 from ..tools import ToolRegistry, get_catalog_aggregator
 from ..turnstile import check_turnstile, get_turnstile_guard
 from ..usage_logger import get_usage_logger
 from .answer_tokens import is_answer_token
-from .identity import Identity
+from .identity import ClaimKey, Identity
 from .sse import format_sse_event as _format_sse_event
+from .thread_access import require_thread_access
 from .thread_runs import acquire_thread_run, held_run, release_thread_run, run_with_timeout
 
 logger = logging.getLogger(__name__)
@@ -535,6 +535,7 @@ async def query_agent(
     request: QueryRequest,
     raw_request: Request,
     identity: Identity,
+    claim_key: ClaimKey = None,
     include_trace: bool = Query(False, description="Include node_trace in response metadata"),
 ) -> QueryResponse | JSONResponse | StreamingResponse:
     """Execute a query against the ACCESS Documentation Agent.
@@ -566,11 +567,11 @@ async def query_agent(
             status_code=400,
             detail="session_id is required for anonymous queries",
         )
-    # A server-minted session_id is the credential for an anon thread (thread
-    # access is granted to whoever presents the id — see thread_owners.check_access).
-    # It MUST be unguessable: a `sess_{timestamp}` fallback let anyone who knew
-    # the approximate request time reconstruct another user's anon thread id and
-    # read/continue their conversation. token_urlsafe(24) is 192 bits of entropy.
+    # A server-minted session_id is the credential for an anon /query session
+    # (see _query_may_continue in thread_access.py). It MUST be unguessable: a
+    # `sess_{timestamp}` fallback let anyone who knew the approximate request
+    # time reconstruct another user's anon thread id and read/continue their
+    # conversation. token_urlsafe(24) is 192 bits of entropy.
     session_id = request.session_id or f"sess_{secrets.token_urlsafe(24)}"
     question_id = request.question_id or f"q_{timestamp}"  # not a security id
 
@@ -605,71 +606,11 @@ async def query_agent(
     # polluting real-traffic views.
     report_context = redteam_report_context(raw_request.headers)
 
-    # Ownership gate: a caller cannot resume/append to a thread they don't own.
-    # Resolve the owner once and branch — call check_access for any non-None
-    # owner (don't pre-guard on user_hash; check_access itself fails closed on
-    # a NULL-hash authed row). `user` and `acting_user` are the same
-    # token-verified identity — there is no body-supplied identity anymore.
-    owner_store = get_thread_owner_store()
-    owner = owner_store.resolve_owner(session_id)
-    if owner is not None and owner.was_authenticated:
-        # Authed-owned: require the token's caller to match. 404 (not 403) on
-        # mismatch — identical to the unknown-thread case, so thread existence
-        # is not observable to a caller who doesn't own it (mirrors
-        # src/api/thread_routes.py's runs/stream gate).
-        if not owner_store.check_access(session_id, user):
-            raise HTTPException(status_code=404, detail="Thread not found")
-        # Idempotent backfill sweep: repairs turn_reports rows a prior turn's
-        # flip-then-failed-backfill left NULL-hashed (upgrade_owner and
-        # backfill_user_hash write via separate DB engines with no shared
-        # txn, so the flip can land while the backfill fails). Deliberately
-        # NOT gated on `not owner.was_authenticated` — that would stop firing
-        # the instant the flip succeeds, and any backfill failure on that
-        # same turn would never be retried. This runs on every authed-owner
-        # turn and is a no-op once no NULL rows remain (the guarded
-        # `WHERE user_hash IS NULL` matches zero).
-        # check_access having passed for an authed-owned thread guarantees a
-        # non-empty caller identity (a NULL/empty acting_user can never match
-        # a truthy owner.user_hash), so `user` is narrowed to str here.
-        if user:
-            from ..turn_reporter import get_turn_reporter
-
-            get_turn_reporter().backfill_user_hash(session_id, user)
-    elif owner is not None and not owner.was_authenticated and user is not None:
-        # Anon-owned + authed caller → upgrade ownership then backfill the
-        # historical turn_reports rows onto the same hash, so the thread
-        # appears in the caller's sidebar (list_threads_for_user).
-        #
-        # Only the caller who actually wins the flip may backfill. Two
-        # different authed users can both read the owner as anon-owned and
-        # both reach this branch (resolve_owner above and upgrade_owner's
-        # conditional UPDATE are not in the same transaction). upgrade_owner
-        # is safe to call unconditionally — a losing caller just gets False
-        # back with no race window — but backfill_user_hash is NOT: it sweeps
-        # every NULL-hash turn_reports row for the session onto whichever
-        # hash calls it, with no ownership check of its own. If the loser
-        # also called it, and the winner's own backfill for this turn hadn't
-        # landed yet, the loser would tag the winner's still-NULL historical
-        # rows with the loser's hash — a cross-tenant label leak in the
-        # loser's sidebar. Gating on upgrade_owner's return value confines
-        # backfill to the winner; the winner's un-backfilled rows (if this
-        # call fails or races) are retried by the authed-owner sweep above on
-        # their next turn.
-        from ..turn_reporter import get_turn_reporter
-
-        if owner_store.upgrade_owner(session_id, user):
-            get_turn_reporter().backfill_user_hash(session_id, user)
-    # anon-owned + anon caller, or unknown thread → proceed (claim_thread below
-    # lazy-creates).
-
-    # Claim thread ownership on the widget path too. Every thread must be owned
-    # by its creator from turn one; otherwise a fullscreen runs/stream caller
-    # could claim_thread a pre-existing widget conversation and take it over.
-    # Ignore the bool — the widget doesn't gate on it; the row just has to exist.
-    #
-    # Ownership comes from token-verified identity only (`user`). An
-    # anonymous caller claims an anon-owned thread (was_authenticated=False).
-    owner_store.claim_thread(session_id, user)
+    # The same check as the thread routes, plus /query's exception for the
+    # widget and non-browser callers. It creates a new thread's ownership row, so
+    # every thread is owned from turn one. `user` and `acting_user` are the same
+    # token-verified identity; there is no body-supplied identity.
+    require_thread_access(session_id, user, claim_key, write=True, create=True, via_query=True)
 
     # Share the per-thread run lock with the runs/stream endpoint (they collide on
     # session_id == thread_id and both do the read-modify-write resume). Acquire in
@@ -814,8 +755,9 @@ class RatingRequest(BaseModel):
 async def submit_rating(request: RatingRequest, identity: Identity) -> dict[str, Any]:
     """Submit a rating for an agent response.
 
-    Anti-spoofing: authenticated users must own the query (user_hash match);
-    anonymous users must match session_id. One rating per query. 24h window.
+    Anti-spoofing: the caller must be the turn's signed-in owner or send its
+    session_id, or gets the same 404 as an unknown query. One rating per query.
+    24h window.
     """
     if request.rating not in ("helpful", "not_helpful"):
         raise HTTPException(status_code=400, detail="rating must be 'helpful' or 'not_helpful'")
@@ -848,8 +790,6 @@ async def submit_rating(request: RatingRequest, identity: Identity) -> dict[str,
         raise HTTPException(status_code=404, detail="query_id not found")
     if result == "already_rated":
         raise HTTPException(status_code=409, detail="query already rated")
-    if result == "forbidden":
-        raise HTTPException(status_code=403, detail="not authorized to rate this query")
     if result == "expired":
         raise HTTPException(status_code=410, detail="rating window expired (24h)")
     raise HTTPException(status_code=500, detail="rating failed")

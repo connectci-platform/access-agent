@@ -113,6 +113,9 @@ def seed_owner():
     return _seed
 
 
+CLAIM_KEY = "k" * 43
+
+
 def _mock_stream_agent(monkeypatch, *, content: str = "hi", msg_id: str = "m1"):
     """Patch thread_routes.stream_agent to yield a canned messages chunk + updates."""
 
@@ -389,7 +392,7 @@ async def test_widget_thread_owned_by_creator(client, bearer_for, monkeypatch):
     assert widget.status_code == 200
     _ = widget.text  # drain the stream so the generator's finally releases the lock
 
-    assert get_thread_owner_store().check_access("widget-sess", "alice@x") is True
+    assert get_thread_owner_store().owned_by("widget-sess", "alice@x") is True
 
     # Bob can't run Alice's widget-born thread.
     bob = await client.post(
@@ -568,16 +571,16 @@ async def test_run_stream_generic_exception_emits_agent_error(client, bearer, mo
 async def test_run_anon_thread_resumed_by_authed_caller_upgrades_ownership(
     client, bearer_for, seed_owner, monkeypatch
 ):
-    """An anon-owned thread resumed by an authed caller flips ownership: the
-    anon owner later signs in and resolve_owner reports was_authenticated=True.
+    """An anon thread resumed by a signed-in caller with its key flips ownership:
+    the anon owner later signs in and resolve_owner reports was_authenticated=True.
     Mirrors /query's upgrade test in tests/test_query_ownership.py, minus the
     sidebar assertion (turn_reports writes are Task 3a's job)."""
     _mock_stream_agent(monkeypatch)
-    seed_owner("t-upgrade", None)  # anon-owned
+    get_thread_owner_store().claim_thread("t-upgrade", None, CLAIM_KEY)
 
     r = await client.post(
         "/api/v1/threads/t-upgrade/runs/stream",
-        headers=bearer_for("me@access-ci.org"),
+        headers={**bearer_for("me@access-ci.org"), "X-Thread-Claim-Key": CLAIM_KEY},
         json={"input": {"messages": [{"role": "user", "content": "hi again"}]}},
     )
     assert r.status_code == 200
@@ -595,15 +598,15 @@ async def test_run_anon_thread_resumed_by_authed_caller_upgrades_ownership(
 async def test_run_anon_owned_thread_resumed_by_anon_caller_stays_anon(
     client, seed_owner, monkeypatch
 ):
-    """Existing anon-owned thread + the anon owner resuming (no token) ->
-    allowed, ownership stays anon-owned. Neither gate branch fires (owner is
-    anon-owned and caller is None), so this falls through to the final
-    unconditional claim_thread, which must be a harmless no-op here."""
+    """Existing anon thread + its key holder resuming (no token) -> allowed,
+    ownership stays anon-owned, and the final unconditional claim_thread is a
+    harmless no-op."""
     _mock_stream_agent(monkeypatch)
-    seed_owner("t-anon-resume", None)  # anon-owned
+    get_thread_owner_store().claim_thread("t-anon-resume", None, CLAIM_KEY)
 
     r = await client.post(
         "/api/v1/threads/t-anon-resume/runs/stream",
+        headers={"X-Thread-Claim-Key": CLAIM_KEY},
         json={"input": {"messages": [{"role": "user", "content": "hi again"}]}},
     )
     assert r.status_code == 200
@@ -618,7 +621,7 @@ async def test_run_authed_owned_thread_wrong_caller_404(
     client, bearer_for, seed_owner, monkeypatch
 ):
     """Authed-owned thread + wrong authed caller -> 404 (never 403), via the
-    single check_access call in the resolve-first gate."""
+    single access check."""
     _mock_stream_agent(monkeypatch)
     seed_owner("t-owned-wrong-caller", "alice@x")
 
@@ -630,19 +633,17 @@ async def test_run_authed_owned_thread_wrong_caller_404(
     assert r.status_code == 404
 
 
-async def test_run_authed_owned_path_calls_check_access_exactly_once(
+async def test_run_authed_owned_path_checks_access_exactly_once(
     client, bearer_for, seed_owner, monkeypatch
 ):
-    """Guard against the double-gate regression: Task 2's claim-then-check
-    fallback (`if owned is False: _require_access(...)`) must be gone. The
-    resolve-first gate has exactly ONE check_access call on the authed-owned
-    path, inside the branch that mirrors routes.py's /query gate."""
+    """Guard against the double-gate regression: the run path decides access
+    exactly once, in require_thread_access."""
     _mock_stream_agent(monkeypatch)
     seed_owner("t-single-check", "alice@x")
 
     with patch(
-        "src.thread_owners.ThreadOwnerStore.check_access",
-        wraps=get_thread_owner_store().check_access,
+        "src.thread_owners.ThreadOwnerStore.access",
+        wraps=get_thread_owner_store().access,
     ) as spy:
         r = await client.post(
             "/api/v1/threads/t-single-check/runs/stream",
@@ -656,9 +657,9 @@ async def test_run_authed_owned_path_calls_check_access_exactly_once(
 async def test_run_losing_concurrent_upgrade_caller_does_not_backfill(
     client, bearer_for, seed_owner, monkeypatch
 ):
-    """Two authed callers race their first post-login turn on the same
-    anon-owned thread. The loser's resolve_owner read is stale (pre-dates the
-    winner's flip); the loser's own upgrade_owner call must lose the race
+    """Two authed callers holding the key race their first post-login turn on
+    the same anon thread. The loser's resolve_owner read is stale (pre-dates the
+    winner's flip); the loser's own claim_with_key call must lose the race
     (returns False) and therefore must NOT call backfill_user_hash — mirrors
     tests/test_query_ownership.py::test_losing_race_caller_does_not_backfill_winners_thread,
     adapted: this path doesn't write turn_reports rows (Task 3a), so the
@@ -668,30 +669,29 @@ async def test_run_losing_concurrent_upgrade_caller_does_not_backfill(
     from src.thread_owners import ThreadOwner
 
     _mock_stream_agent(monkeypatch)
-    seed_owner("t-race", None)  # anon-owned
-
     owner_store = get_thread_owner_store()
-    # Alice's upgrade_owner call has already won the race and committed.
-    assert owner_store.upgrade_owner("t-race", "alice@access-ci.org") is True
+    owner_store.claim_thread("t-race", None, CLAIM_KEY)
+    # Alice's flip has already won the race and committed.
+    assert owner_store.claim_with_key("t-race", "alice@access-ci.org", CLAIM_KEY) is True
 
     # Bob's request resolved the owner as anon-owned (a stale read taken
     # before alice's flip committed) — fake only the read; the real
-    # upgrade_owner call below still hits the live (already-flipped) row.
+    # claim_with_key call below still hits the live (already-flipped) row.
     stale_anon_owner = ThreadOwner(False, None)
     with (
         patch.object(owner_store, "resolve_owner", return_value=stale_anon_owner),
-        patch("src.api.thread_routes.get_turn_reporter") as mock_get_reporter,
+        patch("src.turn_reporter.get_turn_reporter") as mock_get_reporter,
     ):
         mock_reporter = mock_get_reporter.return_value
         r = await client.post(
             "/api/v1/threads/t-race/runs/stream",
-            headers=bearer_for("bob@access-ci.org"),
+            headers={**bearer_for("bob@access-ci.org"), "X-Thread-Claim-Key": CLAIM_KEY},
             json={"input": {"messages": [{"role": "user", "content": "hi again"}]}},
         )
-        assert r.status_code == 200
+        assert r.status_code == 404  # the thread is alice's now
         mock_reporter.backfill_user_hash.assert_not_called()
 
-    # Ownership must remain alice's — bob's upgrade_owner call lost the race.
+    # Ownership must remain alice's — bob's flip lost the race.
     owner = owner_store.resolve_owner("t-race")
     assert owner is not None
     assert owner.was_authenticated is True
