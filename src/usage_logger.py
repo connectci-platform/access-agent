@@ -197,6 +197,20 @@ class UsageLogger:
         finally:
             session.close()
 
+    def session_of(self, question_id: str) -> str | None:
+        """The session a logged query belongs to, or None if unknown."""
+        if not self._ensure_initialized() or self._session_factory is None:
+            return None
+        session = self._session_factory()
+        try:
+            entry = session.query(UsageLog).filter_by(question_id=question_id).first()
+            return None if entry is None else str(entry.session_id)
+        except Exception as e:
+            logger.error(f"Failed to look up query session: {e}")
+            return None
+        finally:
+            session.close()
+
     def log_rating(
         self,
         question_id: str,

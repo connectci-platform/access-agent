@@ -173,3 +173,32 @@ class TestLogRating:
         ul, _ = _make_logger()
         self._seed(ul, age_hours=25)
         assert ul.log_rating(question_id="q-1", rating="helpful", session_id="s-1") == "expired"
+
+
+class TestSessionOf:
+    def test_returns_the_rows_session(self):
+        ul, sf = _make_logger()
+        s = sf()
+        s.execute(
+            text(
+                "INSERT INTO usage_logs (session_id, question_id, query_text) "
+                "VALUES ('s-1', 'q-1', 'hi')"
+            )
+        )
+        s.commit()
+        s.close()
+
+        assert ul.session_of("q-1") == "s-1"
+        assert ul.session_of("q-unknown") is None
+
+    def test_uninitialized_is_none(self):
+        ul = UsageLogger()
+        ul._ensure_initialized = lambda: False  # type: ignore[method-assign]
+        assert ul.session_of("q-1") is None
+
+    def test_db_error_is_none(self):
+        ul = UsageLogger()
+        ul._engine = create_engine("sqlite:///:memory:")
+        ul._session_factory = sessionmaker(bind=ul._engine)  # no table: the query raises
+        ul._initialized = True
+        assert ul.session_of("q-1") is None

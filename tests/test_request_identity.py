@@ -42,6 +42,8 @@ ENDPOINTS = {
         {"input": {"messages": [{"role": "user", "content": "hi"}]}},
     ),
     "cancel": ("POST", "/api/v1/threads/t-1/runs/r-1/cancel", None),
+    "rate_answer": ("PUT", "/api/v1/threads/t-1/messages/m-1/rating", {"rating": "helpful"}),
+    "ratings": ("GET", "/api/v1/threads/t-1/ratings", None),
 }
 
 
