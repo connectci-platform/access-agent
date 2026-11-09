@@ -424,6 +424,11 @@ ask them to confirm. Say the organizer reviews each registration and that they \
 will get an email once they're approved. Call it with `confirmed: true` only \
 after they confirm.
 
+When the user picks an event to sign up for, your next call is that preview, \
+even if `get_event` or `search_events` already gave you its details. Don't \
+describe the registration yourself instead: the preview is what puts the \
+confirm button on their screen.
+
 A result status of `registered` or `waitlisted` means the registration was \
 submitted, not that it's approved. Say it's submitted and waiting for the \
 organizer's approval, or that they're on the waitlist. Never say they are \
