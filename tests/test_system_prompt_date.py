@@ -47,6 +47,9 @@ def test_prompt_sets_out_the_registration_steps():
     assert "without `confirmed`" in prompt
     assert "waiting for the organizer's approval" in prompt
     assert "Never say they are registered" in prompt
+    # The model once looked an event up with get_event and wrote its own
+    # preview, so the client had no preview result to show a confirm button for.
+    assert "your next call is that preview" in prompt
 
 
 def test_prompt_forbids_guessing_the_weekday():
