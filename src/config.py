@@ -255,11 +255,20 @@ class Settings(BaseSettings):
     # in the turn's first 30 seconds gets all of it inside the 90 seconds tools
     # have, and one that hangs from the start still leaves time for a second query.
     XDMOD_TOOL_TIMEOUT_S: float = 60.0
+    # integrate_nsf_xdmod (xdmod-data) waits on NSF's award API as well as XDMoD,
+    # and a hang there took the turn with it. It gets less than the server's 60,
+    # so the model has time to answer from its other results.
+    NSF_XDMOD_TOOL_TIMEOUT_S: float = 30.0
 
     @property
     def mcp_server_timeouts(self) -> dict[str, float]:
         """Tool-call timeouts for servers that don't use the client's default."""
         return {"xdmod": self.XDMOD_TOOL_TIMEOUT_S, "xdmod-data": self.XDMOD_TOOL_TIMEOUT_S}
+
+    @property
+    def mcp_tool_timeouts(self) -> dict[str, float]:
+        """Tool-call timeouts for single tools, ahead of their server's."""
+        return {"integrate_nsf_xdmod": self.NSF_XDMOD_TOOL_TIMEOUT_S}
 
     # MCP Server port mappings
     @property

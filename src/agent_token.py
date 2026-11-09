@@ -285,6 +285,8 @@ def check_agent_token_config(settings: Settings) -> None:
         )
     if settings.XDMOD_TOOL_TIMEOUT_S <= 0:
         raise RuntimeError("XDMOD_TOOL_TIMEOUT_S must be positive")
+    if settings.NSF_XDMOD_TOOL_TIMEOUT_S <= 0:
+        raise RuntimeError("NSF_XDMOD_TOOL_TIMEOUT_S must be positive")
     if settings.ENVIRONMENT != "production":
         return
     missing = [

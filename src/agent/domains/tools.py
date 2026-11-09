@@ -123,7 +123,7 @@ class MCPToolWrapper(BaseTool):
     @property
     def call_timeout(self) -> float:
         """The timeout a call to this tool gets, in seconds."""
-        return self.mcp_client.timeout_for(self.tool_server)
+        return self.mcp_client.timeout_for(self.tool_server, self.name)
 
     def _run(self, **kwargs: Any) -> tuple[str, Any]:
         raise NotImplementedError("Use async _arun")

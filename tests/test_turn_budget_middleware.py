@@ -769,6 +769,18 @@ async def test_a_write_is_judged_by_the_timeout_its_server_would_really_get(monk
     assert result.status == "error"
 
 
+def test_a_tool_with_its_own_timeout_reports_it(monkeypatch):
+    monkeypatch.setattr("src.tools.mcp_client.settings.NSF_XDMOD_TOOL_TIMEOUT_S", 12.0)
+    registered = MCPToolWrapper(
+        name="integrate_nsf_xdmod",
+        description="d",
+        tool_server="xdmod-data",
+        mcp_client=MCPClient(),
+    )
+
+    assert registered.call_timeout == 12.0
+
+
 async def test_a_read_may_still_start_inside_the_window_closed_to_writes(monkeypatch):
     client = MCPClient(timeout=5.0)
     registered = MCPToolWrapper(
