@@ -135,8 +135,13 @@ class MCPClient:
 
         logger.info(f"MCP call: {tool_name} with args: {arguments}")
 
-        # Build headers
-        headers = {"Content-Type": "application/json"}
+        # Build headers. The agent keeps structuredContent out of the model's
+        # context (it becomes the tool message's artifact), so it asks for it;
+        # servers leave it out for callers that don't.
+        headers = {
+            "Content-Type": "application/json",
+            "X-Include-Structured-Content": "1",
+        }
         if acting_user:
             headers["X-Acting-User"] = acting_user
         if server in settings.mcp_servers_requiring_api_key and settings.MCP_API_KEY:
