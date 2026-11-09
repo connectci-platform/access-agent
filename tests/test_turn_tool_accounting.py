@@ -290,8 +290,8 @@ async def test_exhausted_budget_reports_counts_but_no_results():
 
 
 @pytest.mark.asyncio
-async def test_compaction_partway_through_a_turn_keeps_counts_from_timings(monkeypatch):
-    """Known limit: calls summarized away mid-turn still count, but have no result."""
+async def test_a_long_turn_is_not_compacted_so_every_call_keeps_its_result(monkeypatch):
+    """Compaction only takes earlier turns, so no call is summarized away mid-turn."""
     monkeypatch.setattr(loop_mod.settings, "SUMMARIZATION_TRIGGER_TOKENS", 700)
     monkeypatch.setattr(loop_mod.settings, "SUMMARIZATION_KEEP_TOKENS", 300)
     pad = "x" * 400
@@ -301,9 +301,9 @@ async def test_compaction_partway_through_a_turn_keeps_counts_from_timings(monke
 
     (state,), (capture,) = await _run_thread(model, [_tool("search_events", "events")], turns=1)
 
-    assert capture.get("summarized") is True
+    assert not capture.get("summarized")
     assert state["tool_call_count"] == 4
-    assert 0 < len(state["tool_results"]) < 4
+    assert len(state["tool_results"]) == 4
 
 
 @pytest.mark.asyncio
