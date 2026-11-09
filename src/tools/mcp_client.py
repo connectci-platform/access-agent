@@ -78,8 +78,10 @@ class MCPClient:
         self.timeout = timeout
         self._server_urls = settings.mcp_server_urls
 
-    def timeout_for(self, server: str) -> float:
-        """The timeout a call to ``server`` gets, in seconds."""
+    def timeout_for(self, server: str, tool_name: str | None = None) -> float:
+        """The timeout a call to ``tool_name`` on ``server`` gets, in seconds."""
+        if tool_name in settings.mcp_tool_timeouts:
+            return settings.mcp_tool_timeouts[tool_name]
         return settings.mcp_server_timeouts.get(server, self.timeout)
 
     def get_server_url(self, server_name: str) -> str:
@@ -153,7 +155,7 @@ class MCPClient:
                     headers=headers,
                     # Per request: the shared client keeps whichever timeout it
                     # was first built with, which can be health_check's.
-                    timeout=self.timeout_for(server),
+                    timeout=self.timeout_for(server, tool_name),
                 )
                 response.raise_for_status()
 

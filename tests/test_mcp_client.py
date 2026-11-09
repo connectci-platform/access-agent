@@ -452,7 +452,9 @@ def test_trace_mcp_call_records_only_the_exception_type(monkeypatch):
     assert SECRET not in _exported(span)
 
 
-async def _timeout_sent_for(monkeypatch, server: str, client: MCPClient) -> float:
+async def _timeout_sent_for(
+    monkeypatch, server: str, client: MCPClient, tool_name: str = "t"
+) -> float:
     """The timeout call_tool puts on the request to ``server``."""
     seen: list[float] = []
 
@@ -470,8 +472,29 @@ async def _timeout_sent_for(monkeypatch, server: str, client: MCPClient) -> floa
 
     monkeypatch.setattr("src.tools.mcp_client.get_shared_client", lambda timeout: _Client())
     monkeypatch.setattr(MCPClient, "get_server_url", lambda self, s: "http://x")
-    await client.call_tool(server=server, tool_name="t", arguments={})
+    await client.call_tool(server=server, tool_name=tool_name, arguments={})
     return seen[0]
+
+
+async def test_integrate_nsf_xdmod_gets_its_own_shorter_timeout(monkeypatch):
+    # It waits on NSF's award API as well as XDMoD, and a hang took the turn.
+    monkeypatch.setattr("src.tools.mcp_client.settings.NSF_XDMOD_TOOL_TIMEOUT_S", 20.0)
+
+    sent = await _timeout_sent_for(monkeypatch, "xdmod-data", MCPClient(), "integrate_nsf_xdmod")
+
+    assert sent == 20.0
+
+
+async def test_other_xdmod_data_tools_keep_the_server_timeout(monkeypatch):
+    sent = await _timeout_sent_for(monkeypatch, "xdmod-data", MCPClient(), "get_raw_data")
+
+    assert sent == settings.XDMOD_TOOL_TIMEOUT_S
+
+
+def test_integrate_nsf_xdmod_is_bounded_below_its_server_timeout():
+    timeout = MCPClient().timeout_for("xdmod-data", "integrate_nsf_xdmod")
+
+    assert 0 < timeout < settings.XDMOD_TOOL_TIMEOUT_S
 
 
 @pytest.mark.parametrize("server", ["xdmod", "xdmod-data"])
