@@ -29,3 +29,9 @@ def test_fields_of_science_mapping():
 def test_xdmod_links_only_as_a_tool_returned_them():
     for prompt in _prompts():
         assert "exactly as a tool returned it" in prompt
+
+
+def test_usage_by_group_routes_to_chart_data_not_xdmod_data():
+    for prompt in _prompts():
+        assert "goes through `get_chart_data`" in prompt
+        assert "only for what `get_chart_data` can't" in prompt
