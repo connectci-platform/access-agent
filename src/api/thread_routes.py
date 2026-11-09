@@ -9,14 +9,15 @@ import asyncio
 import logging
 import time
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable, Coroutine
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from langchain_core.messages import AIMessage, AIMessageChunk
+from langgraph.graph.message import add_messages
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 
@@ -164,25 +165,40 @@ async def _write_turn_report(
         logger.exception("Turn report write failed")
 
 
-def _message_id(message: Any) -> Any:
-    return message.get("id") if isinstance(message, dict) else getattr(message, "id", None)
+def _answer_delivered(final_state: dict[str, Any]) -> bool:
+    """Whether the turn's answer is complete: a node has returned it, with its id.
 
-
-def _merge_by_id(thread: list[Any], update: list[Any]) -> list[Any]:
-    """The thread after a node's ``messages`` update.
-
-    A node that returns the whole thread (tool_calling_loop,
-    capability_discovery) replaces it. One that returns only messages already
-    in it, by id (suggest_follow_ups re-sending the answer with suggestions),
-    replaces those in place, as ``add_messages`` does in the checkpoint.
+    By then it has streamed and is in the checkpoint, so a cancel after this
+    point (a Stop or a closed tab while follow-ups are suggested) is not a lost
+    turn.
     """
-    positions = {_message_id(m): i for i, m in enumerate(thread)}
-    if not thread or any(_message_id(m) is None or _message_id(m) not in positions for m in update):
-        return list(update)
-    merged = list(thread)
-    for message in update:
-        merged[positions[_message_id(message)]] = message
-    return merged
+    messages = final_state.get("messages") or []
+    return (
+        bool(final_state.get("final_answer"))
+        and bool(messages)
+        and isinstance(messages[-1], AIMessage)
+        and bool(messages[-1].id)
+    )
+
+
+# Reports written after a cancel, held so the loop doesn't drop them mid-write.
+_detached_reports: set[asyncio.Task[None]] = set()
+
+
+def _report_if_delivered(
+    final_state: dict[str, Any], report: Callable[..., Coroutine[Any, Any, None]]
+) -> bool:
+    """On a cancel, report the turn as a success if its answer was delivered.
+
+    The write runs in its own task, so the cancel that ended the run can't cut
+    it short. Returns whether it was started.
+    """
+    if not _answer_delivered(final_state):
+        return False
+    task = asyncio.ensure_future(report(state=final_state, ok=True))
+    _detached_reports.add(task)
+    task.add_done_callback(_detached_reports.discard)
+    return True
 
 
 async def _stream_run_events(
@@ -251,7 +267,9 @@ async def _stream_run_events(
                     final_state.update(node_output)
                     msgs = node_output.get("messages")
                     if msgs:
-                        thread = _merge_by_id(thread, msgs)
+                        # As the checkpoint applies it: a whole thread replaces by
+                        # id, and suggest_follow_ups' single answer replaces its own.
+                        thread = cast("list[Any]", add_messages(thread, msgs))
                         final_state["messages"] = thread
                         final_messages = [
                             m.model_dump() if hasattr(m, "model_dump") else m for m in thread
@@ -462,8 +480,9 @@ async def thread_run_stream(
     # always exists (it's in the URL path), so the guard always has a key to
     # track. Placed AFTER the ownership gate and BEFORE acquire_thread_run so a
     # challenged request never acquires the run lock.
-    turnstile_token = body.turnstile_token or (body.context or {}).get("turnstile_token")
-    turnstile_response = await check_turnstile(caller, thread_id, turnstile_token)
+    turnstile_response = await check_turnstile(
+        caller, thread_id, body.turnstile_token or (body.context or {}).get("turnstile_token")
+    )
     if turnstile_response is not None:
         return turnstile_response
 
@@ -527,11 +546,14 @@ async def thread_run_stream(
                         yield event
                     success = True
             except asyncio.CancelledError:
-                # Real cancel (client disconnect / cancel_run). Emit, then propagate
-                # so the task truly cancels; held_run's finally still releases. No
-                # turn-report write here — mirrors /query, which also re-raises on
-                # cancel without writing a failed-turn row.
-                yield format_sse_event("error", {"error": "cancelled"})
+                # Real cancel (client disconnect / cancel_run). Propagate so the
+                # task truly cancels; held_run's finally still releases.
+                # Cancelled after the answer, while follow-ups were being
+                # suggested, the turn succeeded: it is reported as one and no
+                # error is sent. Before the answer there is no report, as on
+                # /query, which also re-raises on cancel without a failed-turn row.
+                if not _report_if_delivered(final_state, _report):
+                    yield format_sse_event("error", {"error": "cancelled"})
                 raise
             except TimeoutError:
                 # asyncio.timeout expiry (a TimeoutError in 3.11, NOT CancelledError).

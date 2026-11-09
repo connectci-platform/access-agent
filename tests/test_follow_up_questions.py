@@ -21,7 +21,6 @@ import src.agent.nodes.follow_up_questions as fu
 from src.agent.context import AgentContext
 from src.agent.turn_capture import record_turn_deadline, reset_turn_capture
 from src.api.identity import CLAIM_KEY_HEADER
-from src.api.thread_routes import _merge_by_id
 from src.llm import EMPTY_ANSWER_SENTINEL
 from src.main import app
 
@@ -176,6 +175,58 @@ def test_duplicates_the_original_and_long_ones_are_dropped():
     ]
 
 
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Yes, cancel my registration",
+        "Now delete my announcement",
+        "Unenroll me from the workshop",
+        "Drop my registration for Friday",
+        "Go ahead with the registration",
+        "Please proceed with the cancellation",
+        "Yes, please confirm",
+        "Proceed",
+        "Ok, so mark it as attended",
+        "Sure, approve the request",
+    ],
+)
+def test_confirmations_and_marked_imperatives_are_dropped(question):
+    assert fu.asks_to_act(question)
+    assert fu.asks_to_act(question + "?")
+    assert fu.filter_suggestions([question, question + "?"], QUESTION) == []
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["So what GPUs does Delta have?", "And which events are next week?", "Now, is Expanse up?"],
+)
+def test_a_leading_discourse_marker_alone_does_not_drop_a_question(question):
+    assert fu.filter_suggestions([question], QUESTION) == [question]
+
+
+def test_only_questions_are_kept():
+    assert fu.filter_suggestions(["Delta has A100s.", "Tell me about Delta"], QUESTION) == []
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Is https://delta.ncsa.illinois.edu up?",
+        "What is on www.access-ci.org?",
+        "Can help@access-ci.org answer this?",
+    ],
+)
+def test_links_and_emails_are_dropped(question):
+    assert fu.filter_suggestions([question], QUESTION) == []
+
+
+def test_the_length_limit_is_the_one_the_prompt_asks_for():
+    assert fu.MAX_QUESTION_CHARS == 100
+    assert "under 100 characters" in fu._SYSTEM_PROMPT
+    at_limit = "Q" * 99 + "?"
+    assert fu.filter_suggestions([at_limit, "R" * 100 + "?"], QUESTION) == [at_limit]
+
+
 def test_at_most_three_are_kept():
     candidates = [f"Question number {n}?" for n in range(5)]
     assert fu.filter_suggestions(candidates, QUESTION) == candidates[:3]
@@ -223,10 +274,24 @@ def test_tool_summaries_include_sign_in_tools_when_signed_in():
     assert "register_for_event" not in names
 
 
+def test_tool_list_puts_this_turns_tools_first_and_stops_at_25():
+    tools = [{"name": f"tool_{n}", "description": "d"} for n in range(40)]
+    catalog = {"servers": [{"server": "s", "tools": tools}]}
+
+    lines = fu.tool_summaries(
+        catalog, signed_in=False, used=["tool_30", "tool_30", "register_for_event", "tool_5"]
+    )
+    names = [line.split(":", 1)[0] for line in lines]
+
+    assert len(names) == fu.MAX_TOOLS_LISTED == 25
+    assert names[:4] == ["tool_30", "tool_5", "search_access_documents", "tool_0"]
+    assert "register_for_event" not in names
+
+
 def test_tool_descriptions_are_one_short_line():
     catalog = {"servers": [{"server": "s", "tools": [{"name": "t", "description": "x" * 500}]}]}
     line = fu.tool_summaries(catalog, signed_in=False)[-1]
-    assert line == "t: " + "x" * 120
+    assert line == "t: " + "x" * 60
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +338,7 @@ async def test_the_call_is_small_unstreamed_and_sees_the_turn(fake_llm):
     assert "A" * 1501 not in prompt
     assert "- search_events: d" in prompt
     assert "- search_access_documents:" in prompt
+    assert fu.SUGGESTION_TIMEOUT_S == 4.0
 
 
 async def test_list_content_answers_are_read_as_text(fake_llm):
@@ -334,6 +400,27 @@ async def test_too_little_time_left_skips_the_call(fake_llm):
     assert await _node(_state()) == {}
     assert fake_llm.calls == []
     reset_turn_capture()
+
+
+@pytest.mark.parametrize(
+    "tool_results",
+    [
+        [SimpleNamespace(tool_name="register_for_event", data=None)],
+        [{"tool_name": "cancel_registration", "data": None}],
+        [{"tool_name": "some_tool", "data": {"status": "preview", "event": "x"}}],
+    ],
+)
+async def test_turns_that_wrote_or_previewed_are_skipped(fake_llm, tool_results):
+    assert await _node(_state(tool_results=tool_results)) == {}
+    assert fake_llm.calls == []
+
+
+async def test_read_only_tool_results_do_not_block_suggestions(fake_llm):
+    results = [
+        SimpleNamespace(tool_name="search_events", data={"status": "ok"}),
+        {"tool_name": None, "data": "text"},
+    ]
+    assert (await _node(_state(tool_results=results)))["messages"]
 
 
 @pytest.mark.parametrize(
@@ -468,20 +555,6 @@ async def test_widget_run_never_calls_the_model_for_suggestions(stub_loop, fake_
 # ---------------------------------------------------------------------------
 # The full-screen route
 # ---------------------------------------------------------------------------
-
-
-def test_merge_by_id():
-    a, b = AIMessage("a", id="1"), AIMessage("b", id="2")
-    b2 = AIMessage("b2", id="2")
-
-    assert _merge_by_id([], [a, b]) == [a, b]
-    assert _merge_by_id([a, b], [b2]) == [a, b2]
-    assert _merge_by_id([a], [a, b]) == [a, b]
-    assert _merge_by_id([{"id": "1"}, {"id": "2"}], [{"id": "2", "x": 1}]) == [
-        {"id": "1"},
-        {"id": "2", "x": 1},
-    ]
-    assert _merge_by_id([a, b], [{"content": "no id"}]) == [{"content": "no id"}]
 
 
 @pytest.fixture
