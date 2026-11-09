@@ -390,13 +390,14 @@ async def test_graph_routes_start_to_loop_or_capability_discovery():
 
 @pytest.mark.asyncio
 async def test_graph_loop_ends():
-    """tool_calling_loop → END is the only edge from the loop."""
+    """tool_calling_loop → suggest_follow_ups → END: one edge out of each."""
     from src.agent.graph import create_agent_graph
 
     graph = create_agent_graph().get_graph()
     loop_edges = [e for e in graph.edges if e.source == "tool_calling_loop"]
-    assert len(loop_edges) == 1
-    assert loop_edges[0].target == "__end__"
+    assert [e.target for e in loop_edges] == ["suggest_follow_ups"]
+    follow_up_edges = [e for e in graph.edges if e.source == "suggest_follow_ups"]
+    assert [e.target for e in follow_up_edges] == ["__end__"]
 
 
 # ---------------------------------------------------------------------------
