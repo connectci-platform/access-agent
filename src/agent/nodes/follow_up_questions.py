@@ -40,8 +40,8 @@ logger = logging.getLogger(__name__)
 
 SUGGESTED_QUESTIONS_KEY = "suggested_questions"
 MAX_SUGGESTIONS = 3
-MAX_QUESTION_CHARS = 120
-SUGGESTION_TIMEOUT_S = 8.0
+MAX_QUESTION_CHARS = 100  # The prompt asks for the same.
+SUGGESTION_TIMEOUT_S = 4.0
 # Left between the end of this call and the route's turn deadline, so the
 # values event still goes out before the route gives up on the turn.
 _DEADLINE_MARGIN_S = 2.0
@@ -51,7 +51,8 @@ _MAX_TOKENS = 200
 _TEMPERATURE = 0.2
 _ANSWER_CHARS = 1500
 _QUESTION_CHARS = 500
-_TOOL_DESCRIPTION_CHARS = 120
+_TOOL_DESCRIPTION_CHARS = 60
+MAX_TOOLS_LISTED = 25
 
 _SYSTEM_PROMPT = """\
 You suggest follow-up questions for the ACCESS Assistant, which helps researchers \
@@ -61,7 +62,7 @@ Given a person's question, the assistant's answer, and the tools the assistant c
 use, suggest 1 to 3 short questions the person is likely to ask next.
 
 Rules:
-- Write each one as the person would ask it, in the first person, under 100 characters.
+- Write each one as the person would ask it, in the first person, under 100 characters, ending with "?".
 - Make them specific to this conversation, naming the resource, software, or topic.
 - Do not repeat the question or ask for something the answer already covers.
 - Only suggest questions the listed tools or ACCESS documentation can answer.
@@ -75,9 +76,10 @@ Reply with [] if there is no good follow-up."""
 # assistant to act would be a request they never made. The prompt says so,
 # and this enforces it.
 _ACTION_VERBS = (
-    r"(?:register|unregister|sign|enroll|cancel|delete|remove|submit|create|update|edit"
-    r"|change|modify|post|publish|open|file|book|reserve|rsvp|send|add|approve|request"
-    r"|schedule|restore|renew|extend|make|set|join|leave|withdraw)"
+    r"(?:register|unregister|sign|enroll|unenroll|cancel|delete|remove|drop|submit|create"
+    r"|update|edit|change|modify|mark|post|publish|open|file|book|reserve|rsvp|send|add"
+    r"|approve|confirm|proceed|go\s+ahead|request|schedule|restore|renew|extend|make|set"
+    r"|join|leave|withdraw)"
 )
 _REQUEST_LEAD = (
     r"(?:(?:can|could|would|will) you(?: please)?|please|help me|go ahead and"
@@ -95,6 +97,12 @@ _ACTION_PATTERNS = (
         re.IGNORECASE,
     ),
 )
+
+# Leading words that don't change what is asked: "Yes, cancel it" is "cancel it".
+_DISCOURSE_MARKERS = re.compile(
+    r"^\s*(?:(?:yes|ok|okay|sure|now|then|and|so|please)\b[\s,.!:;-]*)+", re.IGNORECASE
+)
+_LINK = re.compile(r"https?://|www\.|@\w", re.IGNORECASE)
 
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 _WHITESPACE = re.compile(r"\s+")
@@ -126,12 +134,21 @@ def _normalize(text: str) -> str:
 
 
 def asks_to_act(question: str) -> bool:
-    """Whether a suggestion asks the assistant to do or change something."""
-    return any(p.search(question) for p in _ACTION_PATTERNS)
+    """Whether a suggestion asks the assistant to do or change something.
+
+    A confirmation counts: after a preview, "Yes, go ahead" is the person's
+    consent, so a suggestion must never be one.
+    """
+    core = _DISCOURSE_MARKERS.sub("", question)
+    return any(p.search(core) or p.search(question) for p in _ACTION_PATTERNS)
 
 
 def filter_suggestions(candidates: list[str], original_question: str) -> list[str]:
-    """Keep at most three clean, distinct, information-only questions."""
+    """Keep at most three clean, distinct, information-only questions.
+
+    A question ends with "?", which also rules out bare commands; links and
+    email addresses are dropped rather than put in the person's mouth.
+    """
     seen = {_normalize(original_question)}
     kept: list[str] = []
     for candidate in candidates:
@@ -139,7 +156,7 @@ def filter_suggestions(candidates: list[str], original_question: str) -> list[st
         key = _normalize(question)
         if not key or key in seen or len(question) > MAX_QUESTION_CHARS:
             continue
-        if asks_to_act(question):
+        if not question.endswith("?") or _LINK.search(question) or asks_to_act(question):
             continue
         seen.add(key)
         kept.append(question)
@@ -154,14 +171,19 @@ def _one_line(description: Any) -> str:
     return line[:_TOOL_DESCRIPTION_CHARS]
 
 
-def tool_summaries(tool_catalog: dict[str, Any], *, signed_in: bool) -> list[str]:
-    """``name: description`` for each tool this caller could use to answer.
+def tool_summaries(
+    tool_catalog: dict[str, Any], *, signed_in: bool, used: list[str] | None = None
+) -> list[str]:
+    """``name: description`` for up to 25 tools this caller could use to answer.
 
-    Write tools are left out, since a suggestion only asks for information,
-    and so are sign-in tools for an anonymous caller, whose question would
-    only be refused.
+    The tools this turn used come first, then documentation search, then the
+    rest in catalog order. Write tools are left out, since a suggestion only
+    asks for information, and so are sign-in tools for an anonymous caller,
+    whose question would only be refused.
     """
-    lines = [f"{search_access_documents.name}: {_one_line(search_access_documents.description)}"]
+    lines = {
+        search_access_documents.name: _one_line(search_access_documents.description),
+    }
     for server in tool_catalog.get("servers", []) or []:
         if server.get("status", "available") != "available":
             continue
@@ -174,8 +196,10 @@ def tool_summaries(tool_catalog: dict[str, Any], *, signed_in: bool) -> list[str
                 continue
             if identity is ToolIdentityClass.AUTH_READ and not signed_in:
                 continue
-            lines.append(f"{name}: {_one_line(tool.get('description'))}")
-    return lines
+            lines[name] = _one_line(tool.get("description"))
+    first = [name for name in dict.fromkeys(used or []) if name in lines]
+    order = [*first, *(name for name in lines if name not in first)]
+    return [f"{name}: {lines[name]}" for name in order[:MAX_TOOLS_LISTED]]
 
 
 def _text(content: Any) -> str:
@@ -190,13 +214,36 @@ def _text(content: Any) -> str:
     return ""
 
 
+def _field(value: Any, name: str) -> Any:
+    return value.get(name) if isinstance(value, dict) else getattr(value, name, None)
+
+
+def _turn_wrote_or_previewed(tool_results: list[Any]) -> bool:
+    """Whether this turn called a write tool or got a preview back.
+
+    Such an answer usually ends by asking the person to confirm, and any
+    suggestion under it reads as their reply.
+    """
+    for result in tool_results:
+        name = _field(result, "tool_name")
+        if name and tool_identity_class(name) is ToolIdentityClass.WRITE:
+            return True
+        data = _field(result, "data")
+        if isinstance(data, dict) and data.get("status") == "preview":
+            return True
+    return False
+
+
 def _answer_to_follow(state: dict[str, Any]) -> AIMessage | None:
     """The turn's answer when it is one worth following up, else None.
 
     Not an apology for a missing answer, not a turn the identity gate refused
-    (its answer is a sign-in prompt), and not a message still asking for tools.
+    (its answer is a sign-in prompt), not a turn that wrote or previewed a
+    change, and not a message still asking for tools.
     """
     if state.get("answer_unavailable") or state.get("tool_refusals"):
+        return None
+    if _turn_wrote_or_previewed(state.get("tool_results") or []):
         return None
     messages = state.get("messages") or []
     if not messages:
@@ -273,7 +320,9 @@ async def suggest_follow_ups_node(
         attributes={"agent.node": "suggest_follow_ups"},
     ) as span:
         tools = tool_summaries(
-            state.get("tool_catalog") or {}, signed_in=context.acting_user is not None
+            state.get("tool_catalog") or {},
+            signed_in=context.acting_user is not None,
+            used=state.get("tools_used") or [],
         )
         started = time.monotonic()
         outcome = "ok"

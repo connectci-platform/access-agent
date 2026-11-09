@@ -454,7 +454,35 @@ async def test_run_stream_builds_final_messages_from_updates_chunk(client, beare
         json={"input": {"messages": [{"role": "user", "content": "hi"}]}},
     )
     assert r.status_code == 200
-    assert 'event: values\ndata: {"messages": [{"type": "human", "content": "hi"}]}' in r.text
+    values = r.text.split("event: values\ndata: ", 1)[1].split("\n", 1)[0]
+    (message,) = json.loads(values)["messages"]
+    # Applied as the checkpoint applies it, so the dict comes back a full message.
+    assert (message["type"], message["content"]) == ("human", "hi")
+    assert message["id"]
+
+
+async def test_run_stream_appends_a_new_message_from_a_later_node(client, bearer, monkeypatch):
+    """A node returning only a new message appends it rather than replacing the thread."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    async def _fake(**_kwargs):
+        yield (
+            "updates",
+            {"loop": {"messages": [HumanMessage("hi", id="h"), AIMessage("a", id="a")]}},
+        )
+        yield "updates", {"later": {"messages": [AIMessage("more", id="b")]}}
+        yield "updates", {"again": {"messages": [AIMessage("a2", id="a")]}}
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _fake)
+
+    r = await client.post(
+        "/api/v1/threads/t-append/runs/stream",
+        headers=bearer,
+        json={"input": {"messages": [{"role": "user", "content": "hi"}]}},
+    )
+    values = r.text.split("event: values\ndata: ", 1)[1].split("\n", 1)[0]
+    messages = json.loads(values)["messages"]
+    assert [(m["id"], m["content"]) for m in messages] == [("h", "hi"), ("a", "a2"), ("b", "more")]
 
 
 async def test_run_stream_cancelled_mid_turn_emits_error_and_propagates(bearer_for, seed_owner):
@@ -522,6 +550,84 @@ async def test_run_stream_cancelled_mid_turn_emits_error_and_propagates(bearer_f
     assert saw_cancelled.is_set()
     assert any('event: error\ndata: {"error": "cancelled"}' in c for c in collected)
     assert "t-cancel-mid" not in tr._active_by_thread
+
+
+async def test_cancel_after_the_answer_reports_the_turn_and_sends_no_error(bearer_for, seed_owner):
+    """A Stop or closed tab while follow-ups are being suggested: the answer was
+    delivered and checkpointed, so the turn is reported as a success and the
+    client gets no error event."""
+    from types import SimpleNamespace
+
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from src.agent_token import AgentIdentity
+    from src.api.thread_routes import RunRequest, _detached_reports, thread_run_stream
+    from src.turn_reporter import TurnReport, get_turn_reporter
+
+    seed_owner("t-cancel-late", "canceller@x")
+    import src.api.thread_runs as tr
+
+    answered = asyncio.Event()
+
+    async def _answer_then_wait(**_kwargs):
+        yield (
+            "updates",
+            {
+                "tool_calling_loop": {
+                    "final_answer": "the answer",
+                    "messages": [HumanMessage("hi", id="h"), AIMessage("the answer", id="ans")],
+                }
+            },
+        )
+        answered.set()
+        await asyncio.sleep(10)
+
+    identity = AgentIdentity(
+        sub="canceller@x", scopes=frozenset({"agent:read"}), exp=int(time.time()) + 900
+    )
+    raw_request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(checkpointer=None)))
+    body = RunRequest.model_validate({"input": {"messages": [{"role": "user", "content": "hi"}]}})
+    collected: list[str] = []
+
+    async def _consume() -> None:
+        with patch("src.api.thread_routes.stream_agent", _answer_then_wait):
+            response = await thread_run_stream("t-cancel-late", body, raw_request, identity)
+            async for chunk in response.body_iterator:
+                collected.append(chunk)
+
+    task = asyncio.ensure_future(_consume())
+    await answered.wait()
+    await asyncio.sleep(0.01)
+    assert tr.cancel_run("t-cancel-late", tr._active_by_thread["t-cancel-late"]) is True
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.gather(*list(_detached_reports))
+
+    assert not any("event: error" in c for c in collected)
+    session = get_turn_reporter()._session_factory()
+    try:
+        row = session.query(TurnReport).filter_by(session_id="t-cancel-late").one()
+    finally:
+        session.close()
+    assert row.success is True
+    assert row.message_id == "ans"
+    assert not _detached_reports
+
+
+def test_answer_delivered_needs_an_answer_and_its_message():
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from src.api.thread_routes import _answer_delivered
+
+    answer = AIMessage("a", id="ans")
+    assert _answer_delivered({"final_answer": "a", "messages": [answer]})
+    assert not _answer_delivered({})
+    assert not _answer_delivered({"final_answer": "a", "messages": []})
+    assert not _answer_delivered({"final_answer": "", "messages": [answer]})
+    assert not _answer_delivered({"final_answer": "a", "messages": [HumanMessage("q", id="h")]})
+    no_id = AIMessage("a")
+    no_id.id = None
+    assert not _answer_delivered({"final_answer": "a", "messages": [no_id]})
 
 
 async def test_run_stream_timeout_emits_error_and_returns(client, bearer, monkeypatch):
