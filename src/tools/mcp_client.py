@@ -82,8 +82,9 @@ class MCPClient:
 
     def timeout_for(self, server: str, tool_name: str | None = None) -> float:
         """The timeout a call to ``tool_name`` on ``server`` gets, in seconds."""
-        if tool_name in settings.mcp_tool_timeouts:
-            return settings.mcp_tool_timeouts[tool_name]
+        tool_timeout = settings.mcp_tool_timeouts.get((server, tool_name or ""))
+        if tool_timeout is not None:
+            return tool_timeout
         return settings.mcp_server_timeouts.get(server, self.timeout)
 
     def get_server_url(self, server_name: str) -> str:

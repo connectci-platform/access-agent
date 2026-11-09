@@ -508,6 +508,14 @@ async def test_other_xdmod_data_tools_keep_the_server_timeout(monkeypatch):
     assert sent == settings.XDMOD_TOOL_TIMEOUT_S
 
 
+async def test_a_per_tool_timeout_applies_only_on_its_own_server(monkeypatch):
+    sent = await _timeout_sent_for(
+        monkeypatch, "compute-resources", MCPClient(), "integrate_nsf_xdmod"
+    )
+
+    assert sent == 30.0
+
+
 def test_integrate_nsf_xdmod_is_bounded_below_its_server_timeout():
     timeout = MCPClient().timeout_for("xdmod-data", "integrate_nsf_xdmod")
 

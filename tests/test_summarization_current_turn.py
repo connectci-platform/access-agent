@@ -110,3 +110,50 @@ def test_the_summary_is_marked_for_clients_not_to_render():
     assert DO_NOT_RENDER_ID_PREFIX == "do-not-render-"
     assert message.id.startswith(DO_NOT_RENDER_ID_PREFIX)
     assert message.additional_kwargs == {"lc_source": "summarization"}
+
+
+def test_a_single_turn_too_big_for_the_window_is_compacted_as_a_last_resort():
+    # Six ~25k-token results: context editing keeps four whole, ~100k, which with
+    # the request's fixed overhead would overflow the model's window.
+    messages: list[Any] = [HumanMessage("list everything on Anvil", id="q")]
+    for i in range(6):
+        call = {"name": "list_all_software", "args": {"page": i}, "id": f"c{i}"}
+        messages.append(AIMessage("", id=f"ai-{i}", tool_calls=[call]))
+        messages.append(ToolMessage("X" * 100_000, tool_call_id=f"c{i}", id=f"t-{i}"))
+    counter = _edit_aware_token_counter()
+    assert counter(messages) > settings.SUMMARIZATION_TURN_CEILING_TOKENS
+
+    result = _middleware().before_model({"messages": messages}, None)
+
+    assert result is not None
+    after = result["messages"][1:]
+    assert counter(after) < settings.SUMMARIZATION_TURN_CEILING_TOKENS
+    assert [m.content for m in after if isinstance(m, HumanMessage)] == ["list everything on Anvil"]
+
+
+def test_a_follow_up_keeps_a_summary_of_the_earlier_answer():
+    """One ordinary tool result in the last earlier turn used to leave upstream's
+    4,000-token trim empty, so its placeholder replaced every earlier answer."""
+    earlier = [
+        HumanMessage("what GPUs does Jetstream2 have?", id="q-0"),
+        AIMessage("", id="ai-0", tool_calls=[{"name": "s", "args": {}, "id": "c0"}]),
+        ToolMessage("Y" * 20_000, tool_call_id="c0", id="t-0"),
+        AIMessage("Jetstream2's g3.xl flavor has one A100.", id="ans-0"),
+    ]
+    middleware = _FlaggingSummarizationMiddleware(
+        model=GenericFakeChatModel(messages=iter([AIMessage("g3.xl has one A100")])),
+        token_counter=_edit_aware_token_counter(),
+        trigger=("tokens", 1000),
+        keep=("tokens", 100),
+    )
+
+    trimmed = middleware._trim_messages_for_summary(earlier)
+    result = middleware.before_model(
+        {"messages": [*earlier, HumanMessage("and its price?", id="q-1")]}, None
+    )
+
+    assert any(m.id == "ans-0" for m in trimmed)
+    assert result is not None
+    summaries = [m for m in result["messages"] if m.id and m.id.startswith(DO_NOT_RENDER_ID_PREFIX)]
+    assert len(summaries) == 1
+    assert "g3.xl has one A100" in summaries[0].text

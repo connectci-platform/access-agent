@@ -169,6 +169,15 @@ class Settings(BaseSettings):
     # With keep=("tokens", N) the window itself is bounded — giant tool
     # results either fit within the budget or get summarized too.
     #
+    # Only earlier turns are compacted (tool_calling_loop
+    # _FlaggingSummarizationMiddleware), so a long single turn is left whole and
+    # context editing alone keeps it small. A turn that by itself outgrows
+    # SUMMARIZATION_TURN_CEILING_TOKENS would overflow the window on its next
+    # request, so it is compacted as a last resort, giving a degraded answer
+    # instead of a failed request. 95,000 leaves ~7,000 of the 102,044 below.
+    # The summary is written from at most SUMMARIZATION_INPUT_TOKENS of the
+    # compacted messages, tool bodies cut short.
+    #
     # Sizing: trigger should be ~2-3x keep so there's room to grow between
     # compactions. Total post-compaction state ≈ SUMMARIZATION_KEEP_TOKENS
     # + ~500 token summary; budget the rest of the model context for
@@ -190,6 +199,13 @@ class Settings(BaseSettings):
     # often than the context required.
     SUMMARIZATION_TRIGGER_TOKENS: int = 70000
     SUMMARIZATION_KEEP_TOKENS: int = 25000
+    SUMMARIZATION_TURN_CEILING_TOKENS: int = 95000
+    SUMMARIZATION_INPUT_TOKENS: int = 60000
+
+    # One tool result's longest stored form (src/agent/middleware/turn_budget.py).
+    # About 50,000 tokens: list_all_software for Anvil (30k+ tokens) still fits
+    # whole, and one result alone can't fill the window.
+    TOOL_RESULT_MAX_CHARS: int = 200000
 
     # ContextEditingMiddleware — the FIRST line of defence against tool-result
     # bloat, sized to fire BEFORE summarization.
@@ -266,9 +282,9 @@ class Settings(BaseSettings):
         return {"xdmod": self.XDMOD_TOOL_TIMEOUT_S, "xdmod-data": self.XDMOD_TOOL_TIMEOUT_S}
 
     @property
-    def mcp_tool_timeouts(self) -> dict[str, float]:
-        """Tool-call timeouts for single tools, ahead of their server's."""
-        return {"integrate_nsf_xdmod": self.NSF_XDMOD_TOOL_TIMEOUT_S}
+    def mcp_tool_timeouts(self) -> dict[tuple[str, str], float]:
+        """Tool-call timeouts for single (server, tool) pairs, ahead of their server's."""
+        return {("xdmod-data", "integrate_nsf_xdmod"): self.NSF_XDMOD_TOOL_TIMEOUT_S}
 
     # MCP Server port mappings
     @property

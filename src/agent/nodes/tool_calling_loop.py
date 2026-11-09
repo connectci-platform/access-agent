@@ -27,7 +27,7 @@ from langchain.agents.middleware import (
 )
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, ToolMessage
-from langchain_core.messages.utils import count_tokens_approximately
+from langchain_core.messages.utils import count_tokens_approximately, trim_messages
 from langgraph.config import get_stream_writer
 from langgraph.errors import GraphRecursionError
 from langgraph.runtime import Runtime  # noqa: TC002 - LangGraph reads node annotations at runtime
@@ -48,7 +48,7 @@ from ..middleware.earlier_results import EarlierResultsMiddleware, earlier_resul
 from ..middleware.local_times import LocalTimesMiddleware
 from ..middleware.preview_first import PreviewFirstMiddleware
 from ..middleware.requires_auth import RequiresAuthMiddleware
-from ..middleware.turn_budget import TurnBudgetMiddleware
+from ..middleware.turn_budget import TurnBudgetMiddleware, truncated
 from ..profile import UserProfile
 from ..prompts.system_prompt import build_system_prompt
 from ..state import ToolResult
@@ -372,6 +372,10 @@ _EMPTY_SUMMARIES = frozenset(
 )
 
 
+# How much of each tool result the summary model is shown.
+_SUMMARY_TOOL_RESULT_CHARS = 8000
+
+
 def _is_summary(message: Any) -> bool:
     return (
         isinstance(message, AIMessage)
@@ -423,16 +427,49 @@ class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
         answer. So the cutoff stops at the current question. With nothing but
         questions and an earlier summary before it, there is nothing to compact,
         and a summary of a summary would cost a model call on every step.
+
+        The exception is a turn that alone outgrows
+        ``SUMMARIZATION_TURN_CEILING_TOKENS``. The next request would overflow
+        the model's window and fail, so upstream's cutoff applies: a degraded
+        answer rather than none.
         """
+        upstream = super()._determine_cutoff_index(messages)
         current = len(messages) - 1
         while current >= 0 and not isinstance(messages[current], HumanMessage):
             current -= 1
-        cutoff = min(super()._determine_cutoff_index(messages), max(current, 0))
+        current = max(current, 0)
+        if self.token_counter(messages[current:]) > settings.SUMMARIZATION_TURN_CEILING_TOKENS:
+            return upstream
+        cutoff = min(upstream, current)
         if not any(
             not isinstance(m, HumanMessage) and not _is_summary(m) for m in messages[:cutoff]
         ):
             return 0
         return cutoff
+
+    def _trim_messages_for_summary(self, messages: list[Any]) -> list[Any]:
+        """What the summary is written from: the newest of ``messages`` that fit.
+
+        Upstream keeps 4,000 tokens and starts on a question, so one ordinary
+        tool result in the last earlier turn leaves nothing, and its placeholder
+        stands in for every earlier answer. Tool bodies are cut down instead,
+        since the summary needs their gist, and counted as sent.
+        """
+        clipped = [
+            m.model_copy(update={"content": truncated(m.content, _SUMMARY_TOOL_RESULT_CHARS)})
+            if isinstance(m, ToolMessage) and isinstance(m.content, str)
+            else m
+            for m in messages
+        ]
+        return list(
+            trim_messages(
+                clipped,
+                max_tokens=settings.SUMMARIZATION_INPUT_TOKENS,
+                token_counter=count_tokens_approximately,
+                strategy="last",
+                allow_partial=True,
+            )
+        )
 
     @staticmethod
     def _build_new_messages(summary: str) -> list[Any]:
@@ -821,6 +858,7 @@ async def tool_calling_loop_node(  # noqa: PLR0915
             span.set_attribute("agent.tool_refusals", len(tool_refusals))
 
         span.set_attribute("agent.turn_deadline_hit", budget.deadline_hit)
+        span.set_attribute("agent.repeat_calls_served", budget.repeats_served)
         answer_unavailable = answer_unavailable or budget.gave_up
 
         answer_length = len(final_answer) if final_answer else 0

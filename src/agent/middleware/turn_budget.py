@@ -10,8 +10,8 @@ see it, and for this model a tool result outweighs prompt text.
 
 A call that timed out isn't run again with the same arguments this turn, since
 a retry costs a full timeout and fails the same way. A read that already ran
-twice with the same arguments isn't run a third time: the model gets the last
-result again, with a note, since the model can loop on one search. Those records
+twice with the same arguments isn't run a third time: the model gets its last
+successful result again, with a note, since the model can loop on one search. Those records
 live here rather than in the messages, which compaction can rewrite. One
 instance per turn.
 """
@@ -23,12 +23,13 @@ import json
 import re
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from langchain.agents.middleware.types import AgentMiddleware, ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel, ValidationError
 
+from ...config import settings
 from ..auth_tools import ToolIdentityClass, tool_identity_class
 
 if TYPE_CHECKING:
@@ -72,6 +73,8 @@ REPEATED_CALL_NOTE = (
     "earlier result. Don't call it again with these arguments. Answer from this, or "
     "try different arguments.)"
 )
+# On a result served again rather than run, read as not run by turn accounting.
+REPEAT_CALL_REASON = "repeat_call"
 # Identical reads that really run in one turn. A first repeat can be a retry
 # worth making, so it runs too.
 MAX_IDENTICAL_RUNS = 2
@@ -93,6 +96,8 @@ OUT_OF_TIME_ANSWER = (
     "a smaller part of your question."
 )
 
+_Result = TypeVar("_Result")
+
 # With tools=[] vLLM has nothing to parse a call against, so it can arrive as text.
 _RAW_TOOL_CALL_RE = re.compile(r"<tool_call>.*?(?:</tool_call>|\Z)", re.DOTALL)
 
@@ -106,6 +111,43 @@ def _not_run(call: Any, text: str, reason: str) -> ToolMessage:
         status="error",
         artifact={"refusal": {"reason": reason}},
     )
+
+
+def truncated(text: str, limit: int) -> str:
+    """``text`` cut to ``limit`` characters, saying so, or ``text`` if it fits."""
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}\n\n[result truncated: {limit} of {len(text)} characters]"
+
+
+def _capped(result: _Result) -> _Result:
+    """A result short enough that a few of them still fit the model's window."""
+    limit = settings.TOOL_RESULT_MAX_CHARS
+    if (
+        isinstance(result, ToolMessage)
+        and isinstance(result.content, str)
+        and len(result.content) > limit
+    ):
+        return result.model_copy(update={"content": truncated(result.content, limit)})
+    return result
+
+
+def _succeeded(result: ToolMessage) -> bool:
+    """Not an error, nor the ``{"error": ...}`` body an MCP failure returns."""
+    if result.status == "error":
+        return False
+    try:
+        body = json.loads(result.text)
+    except json.JSONDecodeError:
+        return True
+    return not (isinstance(body, dict) and "error" in body)
+
+
+def is_served_repeat(message: Any) -> bool:
+    """Whether this result is an earlier one served again, not a run of its own."""
+    artifact = getattr(message, "artifact", None)
+    refusal = artifact.get("refusal") if isinstance(artifact, dict) else None
+    return isinstance(refusal, dict) and refusal.get("reason") == REPEAT_CALL_REASON
 
 
 def _timed_out(result: Any) -> bool:
@@ -134,6 +176,7 @@ class TurnBudgetMiddleware(AgentMiddleware):
         self._timed_out_calls: set[str] = set()
         self._runs: dict[str, int] = {}
         self._last_results: dict[str, ToolMessage] = {}
+        self.repeats_served = 0
 
     def out_of_time(self) -> bool:
         """Whether a model call starting now is expected to end past the deadline."""
@@ -190,6 +233,7 @@ class TurnBudgetMiddleware(AgentMiddleware):
             return _not_run(call, text, "repeat_timeout")
         earlier = self._last_results.get(key)
         if earlier is not None and self._runs[key] >= MAX_IDENTICAL_RUNS:
+            self.repeats_served += 1
             return self._served_again(call, earlier)
         # A change is left to finish: cutting it off would leave it unknown whether
         # it happened. So one starts only if its own timeout ends by the deadline.
@@ -199,13 +243,14 @@ class TurnBudgetMiddleware(AgentMiddleware):
         if remaining <= lead:
             return _not_run(call, PAST_DEADLINE_TEXT, "turn_deadline")
         if is_write:
-            result = await handler(request)
+            result = _capped(await handler(request))
         else:
-            result = await self._run_read(request, handler, remaining)
+            result = _capped(await self._run_read(request, handler, remaining))
         if not _timed_out(result):
             if not is_write and isinstance(result, ToolMessage):
                 self._runs[key] = self._runs.get(key, 0) + 1
-                self._last_results[key] = result
+                if _succeeded(result):
+                    self._last_results[key] = result
             return result
         self._timed_out_calls.add(key)
         if is_write and isinstance(result, ToolMessage):
@@ -219,8 +264,7 @@ class TurnBudgetMiddleware(AgentMiddleware):
             content=f"{REPEATED_CALL_NOTE}\n\n{earlier.text}",
             name=call["name"],
             tool_call_id=call["id"],
-            status=earlier.status,
-            artifact={"refusal": {"reason": "repeat_call"}},
+            artifact={"refusal": {"reason": REPEAT_CALL_REASON}},
         )
 
     def _answer_only(self, message: AIMessage) -> AIMessage:

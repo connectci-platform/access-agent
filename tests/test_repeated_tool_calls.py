@@ -13,6 +13,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
+from src.agent.middleware.earlier_results import EARLIER_RESULT_PREFIX, earlier_results_view
 from src.agent.middleware.turn_budget import (
     MAX_IDENTICAL_RUNS,
     REPEATED_CALL_NOTE,
@@ -65,16 +66,40 @@ async def test_one_repeat_runs_and_the_next_gets_the_earlier_result():
     assert served.name == "search_access_documents"
     assert served.artifact == {"refusal": {"reason": "repeat_call"}}
     assert all(r.content == served.content for r in results[3:])
+    assert budget.repeats_served == 3
 
 
-async def test_a_served_failure_keeps_its_status():
+async def test_a_call_that_only_failed_is_never_served():
     budget, handler = _budget(), _Handler(status="error")
     request = _Request("search_access_documents", {"query": "x"})
 
-    results = [await budget.awrap_tool_call(request, handler) for _ in range(3)]
+    for _ in range(3):
+        await budget.awrap_tool_call(request, handler)
 
-    assert handler.calls == 2
-    assert results[2].status == "error"
+    assert handler.calls == 3
+    assert budget.repeats_served == 0
+
+
+async def test_the_last_successful_result_is_served_not_a_later_failure():
+    budget = _budget()
+    request = _Request("get_infrastructure_news", {"resource": "bridges2"})
+    replies = iter(
+        [
+            ToolMessage('{"outage": "Full"}', tool_call_id="c", name="get_infrastructure_news"),
+            ToolMessage('{"error": "HTTP 502"}', tool_call_id="c", name="get_infrastructure_news"),
+        ]
+    )
+
+    async def handler(request: Any) -> ToolMessage:
+        return next(replies)
+
+    await budget.awrap_tool_call(request, handler)
+    await budget.awrap_tool_call(request, handler)
+    served = await budget.awrap_tool_call(request, handler)
+
+    assert served.content.endswith('{"outage": "Full"}')
+    assert served.status == "success"
+    assert budget.repeats_served == 1
 
 
 async def test_different_arguments_or_tools_still_run():
@@ -146,3 +171,63 @@ async def test_a_real_agent_stops_running_a_search_it_keeps_repeating():
     assert len(tool_results) == 5
     assert all(REPEATED_CALL_NOTE in m.content for m in tool_results[2:])
     assert "still being set up" in tool_results[-1].content
+
+
+def _served(name: str, body: str) -> ToolMessage:
+    call = {"name": name, "args": {}, "id": "c1"}
+    return TurnBudgetMiddleware._served_again(
+        call, ToolMessage(content=body, tool_call_id="c0", name=name)
+    )
+
+
+def test_a_served_live_result_from_an_earlier_turn_is_marked_earlier():
+    thread = [
+        HumanMessage("is bridges-2 up?"),
+        _served("get_infrastructure_news", '{"outage": "Full"}'),
+        AIMessage("Bridges-2 is down."),
+        HumanMessage("and now?"),
+    ]
+
+    seen = earlier_results_view(thread)[1].content
+
+    assert seen.startswith(EARLIER_RESULT_PREFIX)
+    assert REPEATED_CALL_NOTE not in seen
+    assert seen.endswith('{"outage": "Full"}')
+
+
+def test_a_served_reference_result_from_an_earlier_turn_loses_only_its_note():
+    thread = [
+        HumanMessage("pending?"),
+        _served("search_access_documents", "New accounts can take a few days."),
+        AIMessage("It's being set up."),
+        HumanMessage("thanks"),
+    ]
+
+    assert earlier_results_view(thread)[1].content == "New accounts can take a few days."
+
+
+def test_a_served_result_in_the_current_turn_keeps_its_note():
+    served = _served("search_access_documents", "x")
+    thread = [HumanMessage("pending?"), served]
+
+    assert earlier_results_view(thread)[1].content == served.content
+
+
+async def test_an_oversized_result_is_cut_and_says_so(monkeypatch):
+    monkeypatch.setattr("src.agent.middleware.turn_budget.settings.TOOL_RESULT_MAX_CHARS", 10)
+    budget = _budget()
+
+    async def handler(request: Any) -> ToolMessage:
+        return ToolMessage("A" * 25, tool_call_id="c", name="list_all_software")
+
+    result = await budget.awrap_tool_call(_Request("list_all_software", {}), handler)
+
+    assert result.content == "A" * 10 + "\n\n[result truncated: 10 of 25 characters]"
+
+
+async def test_a_result_that_fits_is_left_whole():
+    budget, handler = _budget(), _Handler()
+
+    result = await budget.awrap_tool_call(_Request("search_software", {}), handler)
+
+    assert result.content == '{"hits": 1}'
