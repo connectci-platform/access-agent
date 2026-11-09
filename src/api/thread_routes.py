@@ -164,6 +164,27 @@ async def _write_turn_report(
         logger.exception("Turn report write failed")
 
 
+def _message_id(message: Any) -> Any:
+    return message.get("id") if isinstance(message, dict) else getattr(message, "id", None)
+
+
+def _merge_by_id(thread: list[Any], update: list[Any]) -> list[Any]:
+    """The thread after a node's ``messages`` update.
+
+    A node that returns the whole thread (tool_calling_loop,
+    capability_discovery) replaces it. One that returns only messages already
+    in it, by id (suggest_follow_ups re-sending the answer with suggestions),
+    replaces those in place, as ``add_messages`` does in the checkpoint.
+    """
+    positions = {_message_id(m): i for i, m in enumerate(thread)}
+    if not thread or any(_message_id(m) is None or _message_id(m) not in positions for m in update):
+        return list(update)
+    merged = list(thread)
+    for message in update:
+        merged[positions[_message_id(message)]] = message
+    return merged
+
+
 async def _stream_run_events(
     *,
     thread_id: str,
@@ -189,6 +210,8 @@ async def _stream_run_events(
     # Answer chunks by message id, in arrival order, for the values fallback below.
     streamed: dict[str, AIMessageChunk] = {}
     final_messages: list[dict[str, Any]] = []
+    # The thread as the latest node update leaves it, for the values event.
+    thread: list[Any] = []
 
     async for stream_type, chunk in stream_agent(
         query=query,
@@ -228,8 +251,10 @@ async def _stream_run_events(
                     final_state.update(node_output)
                     msgs = node_output.get("messages")
                     if msgs:
+                        thread = _merge_by_id(thread, msgs)
+                        final_state["messages"] = thread
                         final_messages = [
-                            m.model_dump() if hasattr(m, "model_dump") else m for m in msgs
+                            m.model_dump() if hasattr(m, "model_dump") else m for m in thread
                         ]
 
     refusals = final_state.get("tool_refusals") or []
@@ -491,7 +516,7 @@ async def thread_run_stream(
                         thread_id=thread_id,
                         run_id=run_id,
                         query=query,
-                        context=AgentContext.from_identity(identity),
+                        context=AgentContext.from_identity(identity, thread_run=True),
                         resource_context=resource_context,
                         profile=profile,
                         # The browser's zone, for event times. See _time_zone_from.

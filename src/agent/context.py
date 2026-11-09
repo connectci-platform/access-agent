@@ -27,6 +27,10 @@ class AgentContext:
 
     acting_user: str | None
     scopes: frozenset[str] = frozenset()
+    # A run on the full-screen client's thread route, which shows follow-up
+    # suggestions under each answer. The widget's /query and the eval leave it
+    # False, so their runs are unchanged.
+    thread_run: bool = False
 
     def __post_init__(self) -> None:
         # LangGraph builds the dataclass from a dict context without checking
@@ -38,6 +42,8 @@ class AgentContext:
             isinstance(s, str) for s in self.scopes
         ):
             raise TypeError("AgentContext.scopes must be a frozenset of str")
+        if not isinstance(self.thread_run, bool):
+            raise TypeError("AgentContext.thread_run must be a bool")
 
     @property
     def can_write(self) -> bool:
@@ -48,11 +54,13 @@ class AgentContext:
         )
 
     @classmethod
-    def from_identity(cls, identity: AgentIdentity | None) -> AgentContext:
+    def from_identity(
+        cls, identity: AgentIdentity | None, *, thread_run: bool = False
+    ) -> AgentContext:
         """The context for a request, from its verified token only."""
         if identity is None:
-            return cls.anonymous()
-        return cls(acting_user=identity.sub, scopes=identity.scopes)
+            return cls(acting_user=None, thread_run=thread_run)
+        return cls(acting_user=identity.sub, scopes=identity.scopes, thread_run=thread_run)
 
     @classmethod
     def anonymous(cls) -> AgentContext:
