@@ -97,7 +97,9 @@ def _earlier_tool_text(
 
 def _earlier_text(
     message: Any, live_tools: frozenset[str], read_only_hints: dict[str, bool | None]
-) -> str | None:
+) -> tuple[str | None, bool]:
+    """The model's text for this earlier message, or None to leave it, and
+    whether it is marked as earlier."""
     if isinstance(message, ToolMessage):
         served = is_served_repeat(message)
         if served:
@@ -106,13 +108,15 @@ def _earlier_text(
             body = message.text.removeprefix(REPEATED_CALL_NOTE).lstrip("\n")
             message = message.model_copy(update={"content": body, "artifact": None})
         text = _earlier_tool_text(message, live_tools, read_only_hints.get(message.name or ""))
-        return message.text if text is None and served else text
+        if text is None and served:
+            return message.text, False
+        return text, text is not None
     if (
         isinstance(message, AIMessage)
         and message.additional_kwargs.get("lc_source") == "summarization"
     ):
-        return f"{EARLIER_NOTES_PREFIX}\n\n{message.text}"
-    return None
+        return f"{EARLIER_NOTES_PREFIX}\n\n{message.text}", True
+    return None, False
 
 
 def earlier_results_view(
@@ -130,14 +134,17 @@ def earlier_results_view(
 
     live_tools = live_data_tool_names()
     view = list(messages)
-    marked = False
+    changed = marked = False
     for index, message in enumerate(messages[: max(latest, 0)]):
-        text = _earlier_text(message, live_tools, read_only_hints or {})
+        text, is_marked = _earlier_text(message, live_tools, read_only_hints or {})
         if text is not None:
             view[index] = message.model_copy(update={"content": text})
-            marked = True
-    if not marked:
+            changed = True
+            marked = marked or is_marked
+    if not changed:
         return messages
+    if not marked:
+        return view
     if isinstance(view[latest].content, str):
         note = f"{view[latest].content}\n\n{EARLIER_TURN_NOTE}"
         view[latest] = view[latest].model_copy(update={"content": note})

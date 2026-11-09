@@ -10,10 +10,13 @@ see it, and for this model a tool result outweighs prompt text.
 
 A call that timed out isn't run again with the same arguments this turn, since
 a retry costs a full timeout and fails the same way. A read that already ran
-twice with the same arguments isn't run a third time: the model gets its last
-successful result again, with a note, since the model can loop on one search. Those records
-live here rather than in the messages, which compaction can rewrite. One
-instance per turn.
+twice with the same arguments isn't run a third time, since the model can loop
+on one search: it gets its last successful result again, with a note, or a
+refusal if every run failed. Those records live here rather than in the
+messages, which compaction can rewrite. One instance per turn.
+
+The model also sees each step's results cut to a shared budget, so a step of
+large parallel results can't overflow its window (``step_capped_view``).
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ import json
 import re
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any
 
 from langchain.agents.middleware.types import AgentMiddleware, ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -73,6 +76,11 @@ REPEATED_CALL_NOTE = (
     "earlier result. Don't call it again with these arguments. Answer from this, or "
     "try different arguments.)"
 )
+REPEAT_FAILED_TEXT = (
+    "Not run. This same call already failed twice during this request. Don't call it "
+    "again with these arguments. Answer from the results you have, try different "
+    "arguments, or tell the user this part couldn't be retrieved."
+)
 # On a result served again rather than run, read as not run by turn accounting.
 REPEAT_CALL_REASON = "repeat_call"
 # Identical reads that really run in one turn. A first repeat can be a retry
@@ -96,8 +104,6 @@ OUT_OF_TIME_ANSWER = (
     "a smaller part of your question."
 )
 
-_Result = TypeVar("_Result")
-
 # With tools=[] vLLM has nothing to parse a call against, so it can arrive as text.
 _RAW_TOOL_CALL_RE = re.compile(r"<tool_call>.*?(?:</tool_call>|\Z)", re.DOTALL)
 
@@ -120,16 +126,52 @@ def truncated(text: str, limit: int) -> str:
     return f"{text[:limit]}\n\n[result truncated: {limit} of {len(text)} characters]"
 
 
-def _capped(result: _Result) -> _Result:
-    """A result short enough that a few of them still fit the model's window."""
-    limit = settings.TOOL_RESULT_MAX_CHARS
-    if (
-        isinstance(result, ToolMessage)
-        and isinstance(result.content, str)
-        and len(result.content) > limit
-    ):
-        return result.model_copy(update={"content": truncated(result.content, limit)})
-    return result
+def _shares(lengths: list[int], budget: int) -> list[int]:
+    """Split ``budget`` among results of these lengths, smallest first.
+
+    A result shorter than an even share keeps all of it and leaves the rest to
+    the others, so a lone result can use the whole budget.
+    """
+    shares = [0] * len(lengths)
+    remaining = budget
+    order = sorted(range(len(lengths)), key=lengths.__getitem__)
+    for position, index in enumerate(order):
+        shares[index] = min(lengths[index], remaining // (len(order) - position))
+        remaining -= shares[index]
+    return shares
+
+
+def step_capped_view(messages: list[Any]) -> list[Any]:
+    """The model's view with each step's results cut to ``TOOL_STEP_MAX_CHARS`` together.
+
+    A step is one model response's calls, whose results arrive as one run of
+    tool messages. Parallel results share the budget, so no single step can
+    fill the model's window. The stored thread keeps every result whole, for
+    turn reports and the eval. Returns ``messages`` itself when nothing is cut.
+    """
+    view = list(messages)
+    cut = False
+    index = 0
+    while index < len(messages):
+        end = index
+        while end < len(messages) and isinstance(messages[end], ToolMessage):
+            end += 1
+        if end == index:
+            index += 1
+            continue
+        step = [i for i in range(index, end) if isinstance(messages[i].content, str)]
+        lengths = [len(messages[i].content) for i in step]
+        for position, share in zip(
+            step, _shares(lengths, settings.TOOL_STEP_MAX_CHARS), strict=True
+        ):
+            message = messages[position]
+            if share < len(message.content):
+                view[position] = message.model_copy(
+                    update={"content": truncated(message.content, share)}
+                )
+                cut = True
+        index = end
+    return view if cut else messages
 
 
 def _succeeded(result: ToolMessage) -> bool:
@@ -231,8 +273,10 @@ class TurnBudgetMiddleware(AgentMiddleware):
         if key in self._timed_out_calls:
             text = WRITE_REPEAT_TEXT if is_write else REPEAT_TEXT
             return _not_run(call, text, "repeat_timeout")
-        earlier = self._last_results.get(key)
-        if earlier is not None and self._runs[key] >= MAX_IDENTICAL_RUNS:
+        if self._runs.get(key, 0) >= MAX_IDENTICAL_RUNS:
+            earlier = self._last_results.get(key)
+            if earlier is None:
+                return _not_run(call, REPEAT_FAILED_TEXT, "repeat_failure")
             self.repeats_served += 1
             return self._served_again(call, earlier)
         # A change is left to finish: cutting it off would leave it unknown whether
@@ -243,9 +287,9 @@ class TurnBudgetMiddleware(AgentMiddleware):
         if remaining <= lead:
             return _not_run(call, PAST_DEADLINE_TEXT, "turn_deadline")
         if is_write:
-            result = _capped(await handler(request))
+            result = await handler(request)
         else:
-            result = _capped(await self._run_read(request, handler, remaining))
+            result = await self._run_read(request, handler, remaining)
         if not _timed_out(result):
             if not is_write and isinstance(result, ToolMessage):
                 self._runs[key] = self._runs.get(key, 0) + 1
@@ -294,9 +338,12 @@ class TurnBudgetMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
         last_call = self.out_of_time()
+        capped = step_capped_view(request.messages)
         if last_call:
             self.deadline_hit = True
-            request = request.override(tools=[], messages=_with_answer_note(request.messages))
+            request = request.override(tools=[], messages=_with_answer_note(capped))
+        elif capped is not request.messages:
+            request = request.override(messages=capped)
         started = time.monotonic()
         response = await handler(request)
         self._longest_model_call_s = max(self._longest_model_call_s, time.monotonic() - started)

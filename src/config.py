@@ -174,9 +174,16 @@ class Settings(BaseSettings):
     # context editing alone keeps it small. A turn that by itself outgrows
     # SUMMARIZATION_TURN_CEILING_TOKENS would overflow the window on its next
     # request, so it is compacted as a last resort, giving a degraded answer
-    # instead of a failed request. 95,000 leaves ~7,000 of the 102,044 below.
-    # The summary is written from at most SUMMARIZATION_INPUT_TOKENS of the
-    # compacted messages, tool bodies cut short.
+    # instead of a failed request. The summary is written from at most
+    # SUMMARIZATION_INPUT_TOKENS of the compacted messages, tool bodies cut short.
+    #
+    # Sizing the ceiling and TOOL_STEP_MAX_CHARS: these counts are approximate
+    # (4 characters a token), but the 102,044 below is real tokens, and Qwen
+    # tokenizes tool JSON at about 3 characters a token, so a real count can be
+    # 4/3 of the approximate one. A current turn kept whole is at most 65,000
+    # approximate, about 87,000 real, plus a summary: under 102,044. After the
+    # fallback the tail is at least the last step, cut to 240,000 characters,
+    # about 80,000 real, which with the question and summary fits the same way.
     #
     # Sizing: trigger should be ~2-3x keep so there's room to grow between
     # compactions. Total post-compaction state ≈ SUMMARIZATION_KEEP_TOKENS
@@ -199,13 +206,14 @@ class Settings(BaseSettings):
     # often than the context required.
     SUMMARIZATION_TRIGGER_TOKENS: int = 70000
     SUMMARIZATION_KEEP_TOKENS: int = 25000
-    SUMMARIZATION_TURN_CEILING_TOKENS: int = 95000
+    SUMMARIZATION_TURN_CEILING_TOKENS: int = 65000
     SUMMARIZATION_INPUT_TOKENS: int = 60000
 
-    # One tool result's longest stored form (src/agent/middleware/turn_budget.py).
-    # About 50,000 tokens: list_all_software for Anvil (30k+ tokens) still fits
-    # whole, and one result alone can't fill the window.
-    TOOL_RESULT_MAX_CHARS: int = 200000
+    # What the model is shown of one step's tool results together, in characters
+    # (step_capped_view in src/agent/middleware/turn_budget.py). Parallel results
+    # share it; the stored results stay whole. A lone list_all_software for Anvil
+    # (30k+ tokens) fits whole, and two such results in one step about do.
+    TOOL_STEP_MAX_CHARS: int = 240000
 
     # ContextEditingMiddleware — the FIRST line of defence against tool-result
     # bloat, sized to fire BEFORE summarization.
