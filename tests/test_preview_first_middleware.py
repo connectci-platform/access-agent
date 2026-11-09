@@ -316,3 +316,25 @@ async def test_a_downgraded_call_with_an_error_result_is_left_alone():
     result = await _result(_call({"eventinstance_id": "9372", "confirmed": True}), [], "not json")
 
     assert result.content == "not json"
+
+
+async def test_a_downgraded_call_that_returns_a_command_is_left_alone():
+    from langgraph.types import Command
+
+    command = Command(update={})
+
+    async def handler(request: Any) -> Command:
+        return command
+
+    call = _call({"eventinstance_id": "9372", "confirmed": True})
+    result = await PreviewFirstMiddleware().awrap_tool_call(_Request(call, []), handler)
+
+    assert result is command
+
+
+async def test_a_downgraded_call_with_a_refusal_gets_no_note():
+    refused = json.dumps({"status": "error", "error": "login_required"})
+
+    result = await _result(_call({"eventinstance_id": "9372", "confirmed": True}), [], refused)
+
+    assert json.loads(result.content) == {"status": "error", "error": "login_required"}
