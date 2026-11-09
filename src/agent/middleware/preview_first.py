@@ -48,6 +48,28 @@ def _is_preview(message: ToolMessage) -> bool:
     return isinstance(result, dict) and result.get("status") == "preview"
 
 
+# Added to the result of a confirmed call that was sent as a preview. The model
+# asked to register and got a preview back; without a reason it reads that as a
+# fault and tells the user the registration system is broken.
+DOWNGRADE_NOTE = (
+    "Not submitted, and this is not an error. The user hasn't confirmed this "
+    "registration yet, so it ran as a preview. Show them these details and ask "
+    "them to confirm. Call again with confirmed: true only after they reply."
+)
+
+
+def _with_note(result: ToolMessage | Command[Any]) -> ToolMessage | Command[Any]:
+    if not isinstance(result, ToolMessage):
+        return result
+    try:
+        body = json.loads(str(result.content))
+    except json.JSONDecodeError:
+        return result
+    if not isinstance(body, dict) or body.get("status") != "preview":
+        return result
+    return result.model_copy(update={"content": json.dumps({**body, "note": DOWNGRADE_NOTE})})
+
+
 class PreviewFirstMiddleware(AgentMiddleware):
     """Send a confirmed registration as a preview until the user has answered one."""
 
@@ -97,4 +119,5 @@ class PreviewFirstMiddleware(AgentMiddleware):
             and not self._may_confirm(self._messages(request), args.get(EVENT_ARG))
         ):
             request = request.override(tool_call={**call, "args": {**args, "confirmed": False}})
+            return _with_note(await handler(request))
         return await handler(request)
