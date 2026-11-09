@@ -9,8 +9,11 @@ and cost a second model call. The model isn't asked to watch the time. It can't
 see it, and for this model a tool result outweighs prompt text.
 
 A call that timed out isn't run again with the same arguments this turn, since
-a retry costs a full timeout and fails the same way. That record lives here
-rather than in the messages, which compaction can rewrite. One instance per turn.
+a retry costs a full timeout and fails the same way. A read that already ran
+twice with the same arguments isn't run a third time: the model gets the last
+result again, with a note, since the model can loop on one search. Those records
+live here rather than in the messages, which compaction can rewrite. One
+instance per turn.
 """
 
 from __future__ import annotations
@@ -64,6 +67,14 @@ WRITE_REPEAT_TEXT = (
     "may not have gone through. Don't try it again during this request. Tell the user "
     "you can't confirm it either way, and to check before trying again."
 )
+REPEATED_CALL_NOTE = (
+    "(Not run again. This same call already ran during this request, so this is its "
+    "earlier result. Don't call it again with these arguments. Answer from this, or "
+    "try different arguments.)"
+)
+# Identical reads that really run in one turn. A first repeat can be a retry
+# worth making, so it runs too.
+MAX_IDENTICAL_RUNS = 2
 ANSWER_NOW_NOTE = (
     "(This request is out of time, so no more tools are available. Answer now from "
     "the tool results you already have, and tell the user plainly what you couldn't "
@@ -121,6 +132,8 @@ class TurnBudgetMiddleware(AgentMiddleware):
         self.gave_up = False
         self._longest_model_call_s = 0.0
         self._timed_out_calls: set[str] = set()
+        self._runs: dict[str, int] = {}
+        self._last_results: dict[str, ToolMessage] = {}
 
     def out_of_time(self) -> bool:
         """Whether a model call starting now is expected to end past the deadline."""
@@ -175,6 +188,9 @@ class TurnBudgetMiddleware(AgentMiddleware):
         if key in self._timed_out_calls:
             text = WRITE_REPEAT_TEXT if is_write else REPEAT_TEXT
             return _not_run(call, text, "repeat_timeout")
+        earlier = self._last_results.get(key)
+        if earlier is not None and self._runs[key] >= MAX_IDENTICAL_RUNS:
+            return self._served_again(call, earlier)
         # A change is left to finish: cutting it off would leave it unknown whether
         # it happened. So one starts only if its own timeout ends by the deadline.
         # Every write is an MCP tool, which is what has a call_timeout.
@@ -187,11 +203,25 @@ class TurnBudgetMiddleware(AgentMiddleware):
         else:
             result = await self._run_read(request, handler, remaining)
         if not _timed_out(result):
+            if not is_write and isinstance(result, ToolMessage):
+                self._runs[key] = self._runs.get(key, 0) + 1
+                self._last_results[key] = result
             return result
         self._timed_out_calls.add(key)
         if is_write and isinstance(result, ToolMessage):
             return result.model_copy(update={"content": WRITE_TIMED_OUT_TEXT, "status": "error"})
         return result
+
+    @staticmethod
+    def _served_again(call: Any, earlier: ToolMessage) -> ToolMessage:
+        """The earlier result for a call that isn't run again, marked as not run."""
+        return ToolMessage(
+            content=f"{REPEATED_CALL_NOTE}\n\n{earlier.text}",
+            name=call["name"],
+            tool_call_id=call["id"],
+            status=earlier.status,
+            artifact={"refusal": {"reason": "repeat_call"}},
+        )
 
     def _answer_only(self, message: AIMessage) -> AIMessage:
         """The last response as an answer, so the turn ends here.
