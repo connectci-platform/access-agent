@@ -139,3 +139,15 @@ async def test_an_unknown_time_zone_falls_back_to_utc():
     data = await _rewritten({"start_date": "2026-11-20T18:00:00Z"}, time_zone="Mars/Olympus")
 
     assert data["start_local"] == "Fri, Nov 20, 2026, 6:00 PM UTC"
+
+
+async def test_content_blocks_pass_through():
+    message = ToolMessage(content=[{"type": "text", "text": "hi"}], tool_call_id="c1")
+
+    assert await _through(message) is message
+
+
+async def test_a_json_value_that_is_not_an_object_or_list_passes_through():
+    message = ToolMessage(content="42", tool_call_id="c1")
+
+    assert await _through(message) is message
