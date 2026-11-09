@@ -144,6 +144,23 @@ class TestMCPClient:
         assert "X-Acting-User" not in request.headers
 
     @pytest.mark.asyncio
+    async def test_call_tool_asks_for_structured_content(self, httpx_mock: HTTPXMock):
+        """Every tool call asks the server to include structuredContent."""
+        httpx_mock.add_response(
+            method="POST",
+            url="http://localhost:3002/tools/get_chart_data",
+            json={"content": [{"type": "text", "text": "Chart Data"}]},
+        )
+
+        client = MCPClient()
+        client._server_urls["xdmod"] = "http://localhost:3002"
+
+        await client.call_tool(server="xdmod", tool_name="get_chart_data", arguments={})
+
+        request = httpx_mock.get_request()
+        assert request.headers.get("X-Include-Structured-Content") == "1"
+
+    @pytest.mark.asyncio
     async def test_call_tool_http_error(self, httpx_mock: HTTPXMock):
         """Test tool call with HTTP error."""
         httpx_mock.add_response(
