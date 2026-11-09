@@ -23,6 +23,12 @@ RUN uv sync --locked --no-dev
 
 # Make the venv's executables findable so CMD can call uvicorn directly.
 ENV PATH="/app/.venv/bin:$PATH"
+
+# The agent counts tokens with tiktoken's cl100k_base (src/agent/token_estimate.py),
+# which tiktoken otherwise downloads on first use into a temp dir each new
+# container loses. Fetched here, so the running agent never needs to.
+ENV TIKTOKEN_CACHE_DIR=/app/.tiktoken
+RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
 ENV PYTHONPATH=/app
 ENV ENVIRONMENT=docker
 # Build-time code-provenance stamps. CI passes these (deploy-production.yml);

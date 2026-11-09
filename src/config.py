@@ -177,22 +177,25 @@ class Settings(BaseSettings):
     # instead of a failed request. The summary is written from at most
     # SUMMARIZATION_INPUT_TOKENS of the compacted messages, tool bodies cut short.
     #
-    # Units: these counts come from src/agent/token_estimate.py, a conservative
-    # estimate measured as an upper bound on Qwen's real counts (1.7x real for
-    # tool JSON, 1.1x for XDMoD chart text, which costs a token a digit). The
-    # 102,044 below is real tokens. A current turn kept whole is at most
-    # SUMMARIZATION_TURN_CEILING_TOKENS, so at most 80,000 real, plus a summary:
-    # under 102,044, and two Anvil-sized software lists (34k each) stay whole.
-    # A turn over it keeps as much as fits under it, from its earliest step that
-    # allows. Whatever gets through, TurnBudgetMiddleware cuts every model
-    # request, the last out-of-time one included, to MODEL_CONTEXT_TOKENS less
-    # MAX_TOKENS_LOOP and the estimated system prompt and tool schemas.
+    # Units: these counts come from src/agent/token_estimate.py, an upper bound
+    # on Qwen's real counts measured at 1.04-1.25 times real, so they read as
+    # real tokens with a margin. The 102,044 below is real tokens.
+    #
+    # A current turn kept whole is at most SUMMARIZATION_TURN_CEILING_TOKENS,
+    # 85,000, plus the question and a summary of earlier turns. With the window
+    # guard's fixed costs (about 23,000 of schemas, 5,500 of system prompt and
+    # the 6,000 reply budget, all estimated) that leaves about 10,000 spare
+    # before the guard has to cut. Four Anvil-sized software lists (about 24,500
+    # each) cross it; three stay whole. A turn over it keeps as much as fits
+    # under it, from its earliest step that allows. Whatever gets through,
+    # TurnBudgetMiddleware cuts every model request, the last out-of-time one
+    # included, to MODEL_CONTEXT_TOKENS less MAX_TOKENS_LOOP and the estimated
+    # system prompt and tool schemas.
     #
     # Upstream also fires on the last response's reported total_tokens, which
-    # is real tokens and includes the ~29,000 fixed overhead, so in practice the
-    # trigger is reached at about 41,000 of conversation, earlier than the
-    # figures below suggest. Since only earlier turns are compacted below the
-    # ceiling, that compacts earlier turns sooner, not the current one.
+    # covers the whole request, about 29,000 more than the conversation, so it
+    # fired at about 41,000 of conversation. _FlaggingSummarizationMiddleware
+    # turns that off and relies on the thread's own count.
     #
     # Sizing: trigger should be ~2-3x keep so there's room to grow between
     # compactions. Total post-compaction state ≈ SUMMARIZATION_KEEP_TOKENS
@@ -215,7 +218,7 @@ class Settings(BaseSettings):
     # often than the context required.
     SUMMARIZATION_TRIGGER_TOKENS: int = 70000
     SUMMARIZATION_KEEP_TOKENS: int = 25000
-    SUMMARIZATION_TURN_CEILING_TOKENS: int = 80000
+    SUMMARIZATION_TURN_CEILING_TOKENS: int = 85000
     SUMMARIZATION_INPUT_TOKENS: int = 60000
 
     # The endpoint's Max Input Tokens, read off vLLM's own overflow error.
@@ -224,7 +227,8 @@ class Settings(BaseSettings):
     # What the model is shown of one step's tool results together, in estimated
     # tokens (step_capped_view in src/agent/middleware/turn_budget.py). Parallel
     # results share it; the stored results stay whole. Two Anvil-sized software
-    # lists in one step fit whole.
+    # lists in one step fit whole, and a step leaves room under the ceiling for
+    # the question and an earlier step.
     TOOL_STEP_MAX_TOKENS: int = 70000
     # A tool result's longest stored form, which every later turn replays. The
     # model is shown far less; this keeps the eval and turn reports their data.

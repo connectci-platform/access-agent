@@ -24,7 +24,7 @@ def _fanout(calls: int, result_chars: int) -> list:
     msgs: list = [HumanMessage("who is eligible to use ACCESS?")]
     for i in range(calls):
         msgs.append(AIMessage("", tool_calls=[{"name": "search", "args": {}, "id": f"c{i}"}]))
-        msgs.append(ToolMessage("X" * result_chars, tool_call_id=f"c{i}"))
+        msgs.append(ToolMessage("Y" * result_chars, tool_call_id=f"c{i}"))
     return msgs
 
 
