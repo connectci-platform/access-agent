@@ -1767,3 +1767,140 @@ async def test_a_missing_or_bad_time_zone_becomes_none(client, monkeypatch, cont
 
     assert r.status_code == 200
     assert captured["time_zone"] is None
+
+
+async def test_stop_mid_answer_saves_the_partial_answer_as_stopped(bearer_for, seed_owner):
+    """D8-3047: a stop before the answer was delivered saves the text that had
+    streamed after the question, marked stopped, so the next run doesn't find
+    the question unanswered and answer it again."""
+    from types import SimpleNamespace
+
+    from langchain_core.messages import HumanMessage
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from src.agent.graph import create_checkpointed_graph
+    from src.agent_token import AgentIdentity
+    from src.api.stopped_turns import is_stopped, stopped_turn_saved
+    from src.api.thread_routes import RunRequest, thread_run_stream
+
+    seed_owner("t-stop", "canceller@x")
+    import src.api.thread_runs as tr
+
+    saver = InMemorySaver()
+    graph = create_checkpointed_graph(saver)
+    config = {"configurable": {"thread_id": "t-stop"}}
+    # As the graph saves it when the run starts.
+    await graph.aupdate_state(
+        config, {"messages": [HumanMessage("hi", id="h")]}, as_node="suggest_follow_ups"
+    )
+    streaming = asyncio.Event()
+
+    async def _part_then_wait(**_kwargs):
+        yield (
+            "messages",
+            (AIMessageChunk(content="Half an", id="r1"), {"langgraph_node": "model"}),
+        )
+        streaming.set()
+        await asyncio.sleep(10)
+
+    identity = AgentIdentity(
+        sub="canceller@x", scopes=frozenset({"agent:read"}), exp=int(time.time()) + 900
+    )
+    raw_request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(checkpointer=saver)))
+    body = RunRequest.model_validate({"input": {"messages": [{"role": "user", "content": "hi"}]}})
+    collected: list[str] = []
+
+    async def _consume() -> None:
+        with patch("src.api.thread_routes.stream_agent", _part_then_wait):
+            response = await thread_run_stream("t-stop", body, raw_request, identity)
+            async for chunk in response.body_iterator:
+                collected.append(chunk)
+
+    task = asyncio.ensure_future(_consume())
+    await streaming.wait()
+    await asyncio.sleep(0.01)
+    assert tr.cancel_run("t-stop", tr._active_by_thread["t-stop"]) is True
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await stopped_turn_saved("t-stop")
+
+    assert any('event: error\ndata: {"error": "cancelled"}' in c for c in collected)
+    messages = (await graph.aget_state(config)).values["messages"]
+    assert [(m.id, m.content) for m in messages] == [("h", "hi"), ("r1", "Half an")]
+    assert is_stopped(messages[-1])
+
+
+async def test_retry_replaces_the_stopped_turn(client, bearer, monkeypatch):
+    """Retry and Edit send replace_stopped_turn: the stopped question and its
+    partial answer leave the thread before the run asks it again."""
+    from langchain_core.messages import AIMessage, HumanMessage
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from src.agent.graph import create_checkpointed_graph
+
+    saver = InMemorySaver()
+    graph = create_checkpointed_graph(saver)
+    config = {"configurable": {"thread_id": "t-retry"}}
+    stopped = AIMessage("Half", id="r1", response_metadata={"stopped": True})
+    await graph.aupdate_state(
+        config,
+        {"messages": [HumanMessage("q0", id="h0"), AIMessage("a0", id="a0")]},
+        as_node="suggest_follow_ups",
+    )
+    await graph.aupdate_state(
+        config, {"messages": [HumanMessage("q1", id="h1"), stopped]}, as_node="suggest_follow_ups"
+    )
+    seen: list[list[str]] = []
+
+    async def _fake(**_kwargs):
+        state = await graph.aget_state(config)
+        seen.append([m.id for m in state.values["messages"]])
+        yield "updates", {"tool_calling_loop": {"final_answer": "ok"}}
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _fake)
+    app.state.checkpointer = saver
+    try:
+        for flag in (False, True):
+            await client.post(
+                "/api/v1/threads/t-retry/runs/stream",
+                json={
+                    "input": {"messages": [{"type": "human", "content": "q1"}]},
+                    "context": {"replace_stopped_turn": flag},
+                },
+                headers=bearer,
+            )
+    finally:
+        app.state.checkpointer = None
+
+    # A new question keeps the stopped turn; Retry removes it first.
+    assert seen == [["h0", "a0", "h1", "r1"], ["h0", "a0"]]
+
+
+async def test_history_waits_for_a_stopped_turn_being_saved(client, bearer_for, monkeypatch):
+    from src.api import stopped_turns
+
+    get_thread_owner_store().claim_thread("t-wait", "userA@x")
+    order: list[str] = []
+
+    async def _save():
+        await asyncio.sleep(0.05)
+        order.append("saved")
+
+    class _Graph:
+        async def aget_state_history(self, _config, limit):
+            order.append("read")
+            return
+            yield
+
+    stopped_turns._pending["t-wait"] = asyncio.ensure_future(_save())
+    monkeypatch.setattr("src.api.thread_routes.create_checkpointed_graph", lambda _cp: _Graph())
+    app.state.checkpointer = object()
+    try:
+        r = await client.post(
+            "/api/v1/threads/t-wait/history", json={"limit": 1}, headers=bearer_for("userA@x")
+        )
+    finally:
+        app.state.checkpointer = None
+        stopped_turns._pending.clear()
+    assert r.status_code == 200
+    assert order == ["saved", "read"]

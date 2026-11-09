@@ -38,6 +38,7 @@ from .handoff_tokens import (
 )
 from .identity import ClaimKey, Identity, require_identity
 from .sse import format_sse_event
+from .stopped_turns import drop_unanswered_turn, keep_stopped_turn, stopped_turn_saved
 from .thread_access import require_thread_access
 from .thread_runs import (
     acquire_thread_run,
@@ -78,7 +79,8 @@ class RunRequest(BaseModel):
     """SDK run body. The route reads ``input.messages``, ``turnstile_token`` (top
     level, or in ``context`` because the SDK's submit can't add a top-level field),
     ``resource_context`` from ``config.configurable`` or ``context``, and
-    ``time_zone`` (the browser's IANA zone, e.g. "America/New_York") from
+    ``time_zone`` (the browser's IANA zone, e.g. "America/New_York") and
+    ``replace_stopped_turn`` (true from Retry or Edit on a stopped turn) from
     ``context``; everything else is accepted for protocol compatibility and
     ignored. The body's ``context`` never reaches the agent's runtime context,
     which comes from the verified token only, so a body claiming a user or
@@ -204,6 +206,43 @@ def _report_if_delivered(
 async def _stream_run_events(
     *,
     thread_id: str,
+    query: str,
+    checkpointer: Any,
+    final_state: dict[str, Any],
+    replace_stopped_turn: bool = False,
+    **run: Any,
+) -> AsyncGenerator[str, None]:
+    """``_run_events`` for one run, keeping the turn in the thread when the
+    person stops it before its answer was delivered (see stopped_turns).
+
+    A stop lands here as a CancelledError, or as GeneratorExit when it came
+    while the event was being sent and the generator is closed afterwards.
+    """
+    # A stop just before this run may still be saving the turn it stopped.
+    await stopped_turn_saved(thread_id)
+    if replace_stopped_turn:
+        # Retry or Edit: the question asked again replaces its stopped turn.
+        await drop_unanswered_turn(checkpointer, thread_id)
+    streamed: dict[str, AIMessageChunk] = {}
+    try:
+        async for event in _run_events(
+            thread_id=thread_id,
+            query=query,
+            checkpointer=checkpointer,
+            final_state=final_state,
+            streamed=streamed,
+            **run,
+        ):
+            yield event
+    except (asyncio.CancelledError, GeneratorExit):
+        if not _answer_delivered(final_state):
+            keep_stopped_turn(checkpointer, thread_id, query, streamed)
+        raise
+
+
+async def _run_events(
+    *,
+    thread_id: str,
     run_id: str,
     query: str,
     context: AgentContext,
@@ -212,6 +251,7 @@ async def _stream_run_events(
     time_zone: str | None,
     checkpointer: Any,
     final_state: dict[str, Any],
+    streamed: dict[str, AIMessageChunk],
 ) -> AsyncGenerator[str, None]:
     """The messages/custom/values SSE sequence for one run, mutating
     ``final_state`` in place (mirrors turn_capture's in-place-mutation pattern)
@@ -223,8 +263,8 @@ async def _stream_run_events(
     from .routes import get_registry
 
     registry = await get_registry()
-    # Answer chunks by message id, in arrival order, for the values fallback below.
-    streamed: dict[str, AIMessageChunk] = {}
+    # ``streamed``: answer chunks by message id, in arrival order, for the
+    # values fallback below and for the stopped answer a stop saves.
     final_messages: list[dict[str, Any]] = []
     # The thread as the latest node update leaves it, for the values event.
     thread: list[Any] = []
@@ -382,6 +422,8 @@ async def thread_history(
     checkpointer = getattr(raw_request.app.state, "checkpointer", None)
     if checkpointer is None:
         return []
+    # The read after a Stop shows the stopped turn, not the question alone.
+    await stopped_turn_saved(thread_id)
     graph = create_checkpointed_graph(checkpointer)
     config = {"configurable": {"thread_id": thread_id}}
     states = []
@@ -542,6 +584,8 @@ async def thread_run_stream(
                         time_zone=_time_zone_from(body.context),
                         checkpointer=getattr(raw_request.app.state, "checkpointer", None),
                         final_state=final_state,
+                        replace_stopped_turn=(body.context or {}).get("replace_stopped_turn")
+                        is True,
                     ):
                         yield event
                     success = True
@@ -551,7 +595,8 @@ async def thread_run_stream(
                 # Cancelled after the answer, while follow-ups were being
                 # suggested, the turn succeeded: it is reported as one and no
                 # error is sent. Before the answer there is no report, as on
-                # /query, which also re-raises on cancel without a failed-turn row.
+                # /query, which also re-raises on cancel without a failed-turn row;
+                # _stream_run_events saves what had streamed as a stopped answer.
                 if not _report_if_delivered(final_state, _report):
                     yield format_sse_event("error", {"error": "cancelled"})
                 raise
