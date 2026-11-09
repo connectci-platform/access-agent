@@ -129,7 +129,7 @@ class MCPToolWrapper(BaseTool):
         raise NotImplementedError("Use async _arun")
 
     async def _arun(self, **kwargs: Any) -> tuple[str, Any]:
-        """Call the MCP tool; return its result as a JSON string, with no artifact.
+        """Call the MCP tool; return its result as a JSON string, plus any structured content as the artifact.
 
         The MCP servers trust ``X-Acting-User``, so the agent is the only place
         a write is stopped. The identity gate refuses first; this checks again
@@ -167,7 +167,8 @@ class MCPToolWrapper(BaseTool):
         record_tool_timing(self.name, result.duration_ms)
 
         if result.success:
-            return json.dumps(result.data, default=str), None
+            artifact = {"structured_content": result.structured} if result.structured else None
+            return json.dumps(result.data, default=str), artifact
         return json.dumps({"error": result.error}), TIMED_OUT_ARTIFACT if result.timed_out else None
 
 

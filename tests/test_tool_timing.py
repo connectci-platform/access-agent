@@ -304,3 +304,33 @@ async def test_a_cut_off_mcp_call_records_its_timing_once(monkeypatch):
         await asyncio.wait_for(wrapper._arun(), 0.01)
 
     assert [t["tool_name"] for t in get_turn_capture()["tool_timings"]] == ["t"]
+
+
+def _wrapper_returning(result: MCPToolResult) -> MCPToolWrapper:
+    client = MCPClient()
+
+    async def fake_call_tool(**kwargs):
+        return result
+
+    client.call_tool = fake_call_tool
+    return MCPToolWrapper(name="t", description="d", tool_server="s", mcp_client=client)
+
+
+def test_wrapper_puts_structured_content_in_the_artifact():
+    wrapper = _wrapper_returning(
+        MCPToolResult(success=True, data="hi", structured={"chart": {"a": 1}})
+    )
+
+    content, artifact = asyncio.run(wrapper._arun())
+
+    assert content == json.dumps("hi")
+    assert artifact == {"structured_content": {"chart": {"a": 1}}}
+
+
+def test_wrapper_keeps_no_artifact_without_structured_content():
+    wrapper = _wrapper_returning(MCPToolResult(success=True, data="hi"))
+
+    content, artifact = asyncio.run(wrapper._arun())
+
+    assert content == json.dumps("hi")
+    assert artifact is None

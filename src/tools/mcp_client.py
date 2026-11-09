@@ -53,6 +53,8 @@ class MCPToolResult(BaseModel):
 
     success: bool
     data: Any = None
+    # The result's top-level structuredContent, kept apart so the model never sees it.
+    structured: dict[str, Any] | None = None
     error: str | None = None
     duration_ms: int = 0
     timed_out: bool = False
@@ -158,6 +160,7 @@ class MCPClient:
                 response.raise_for_status()
 
                 data = response.json()
+                structured = data.get("structuredContent") if isinstance(data, dict) else None
 
                 # Parse MCP response format
                 # Response: {"content": [{"type": "text", "text": "{...json...}"}]}
@@ -170,6 +173,7 @@ class MCPClient:
                 result = MCPToolResult(
                     success=True,
                     data=parsed_data,
+                    structured=structured if isinstance(structured, dict) else None,
                     duration_ms=int(time.time() * 1000) - start_ms,
                 )
 
