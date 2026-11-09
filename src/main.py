@@ -1,5 +1,6 @@
 """FastAPI application entry point for ACCESS Documentation Agent."""
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -12,7 +13,8 @@ from .agent.graph import create_pooled_checkpointer
 from .agent_token import AgentTokenVerifier, check_agent_token_config
 from .api import router
 from .api.rating_routes import rating_router
-from .api.thread_routes import thread_router
+from .api.stopped_turns import drain_stopped_turns
+from .api.thread_routes import _detached_reports, thread_router
 from .config import settings
 from .services.rp_cache import get_rp_cache
 from .telemetry import init_telemetry, shutdown_telemetry
@@ -90,6 +92,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # First, so a retry in flight doesn't race the clients closed below.
     await get_catalog_aggregator().stop_recovery()
     await get_rp_cache().stop_background_refresh()
+    # Turns cut off as the server stops are still being saved, and reports of
+    # stopped turns written: a moment for them before the checkpointer closes.
+    await drain_stopped_turns()
+    if _detached_reports:
+        await asyncio.wait(list(_detached_reports), timeout=5)
     if getattr(app.state, "_checkpointer_cm", None) is not None:
         await app.state._checkpointer_cm.__aexit__(None, None, None)  # noqa: SLF001
     await app.state.agent_token_verifier.aclose()

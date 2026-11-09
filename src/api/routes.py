@@ -6,7 +6,7 @@ import secrets
 import time
 import uuid
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -26,8 +26,12 @@ from .answer_tokens import is_answer_token
 from .identity import ClaimKey, Identity
 from .rating_routes import MAX_FEEDBACK_BODY_CHARS, clean_feedback
 from .sse import format_sse_event as _format_sse_event
+from .stopped_turns import keeping_cut_off_turn
 from .thread_access import require_thread_access
 from .thread_runs import acquire_thread_run, held_run, release_thread_run, run_with_timeout
+
+if TYPE_CHECKING:
+    from langchain_core.messages import AIMessageChunk
 
 logger = logging.getLogger(__name__)
 
@@ -281,6 +285,8 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
     # what is streamed has to read as the whole answer.
     streamed = ""
     last_chunk_id: str | None = None
+    # The same tokens by message id, which a cut-off turn saves as its answer.
+    chunks: dict[str, AIMessageChunk] = {}
 
     async def _report(*, success: bool, duration_ms: float | None = None) -> None:
         await _write_query_turn_report(
@@ -304,18 +310,29 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                 # finally and releases the lock the handler acquired — otherwise the
                 # session_id is permanently 409-locked until restart.
                 registry = await get_registry()
+                checkpointer = getattr(raw_request.app.state, "checkpointer", None)
+                events = stream_agent(
+                    query=request.query,
+                    session_id=session_id,
+                    question_id=question_id,
+                    tool_catalog=registry.catalog,
+                    context=context,
+                    resource_context=request.resource_context,
+                    profile=request.profile,
+                    checkpointer=checkpointer,
+                    use_checkpointing=USE_CHECKPOINTING,
+                    db_uri=settings.DATABASE_URL if USE_CHECKPOINTING else None,
+                )
                 async with run_with_timeout(settings.AGENT_TURN_TIMEOUT_S):
-                    async for stream_type, chunk in stream_agent(
+                    # The same thread as the full-screen client's, so a turn
+                    # cut off here is kept the same way (see stopped_turns).
+                    async for stream_type, chunk in keeping_cut_off_turn(
+                        events,
+                        checkpointer=checkpointer,
+                        thread_id=session_id,
                         query=request.query,
-                        session_id=session_id,
-                        question_id=question_id,
-                        tool_catalog=registry.catalog,
-                        context=context,
-                        resource_context=request.resource_context,
-                        profile=request.profile,
-                        checkpointer=getattr(raw_request.app.state, "checkpointer", None),
-                        use_checkpointing=USE_CHECKPOINTING,
-                        db_uri=settings.DATABASE_URL if USE_CHECKPOINTING else None,
+                        final_state=final_state,
+                        streamed=chunks,
                     ):
                         if stream_type == "custom":
                             # Status messages from nodes via get_stream_writer()
@@ -338,6 +355,8 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                                     yield _format_sse_event("token", {"content": "\n\n"})
                                 if chunk_id:
                                     last_chunk_id = chunk_id
+                                key = last_chunk_id or ""
+                                chunks[key] = chunks[key] + msg if key in chunks else msg
                                 streamed += msg.content
                                 yield _format_sse_event("token", {"content": msg.content})
 
