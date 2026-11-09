@@ -23,11 +23,12 @@ since tiktoken fetches it on first use (the image caches it at build time).
 
 from __future__ import annotations
 
-import functools
 import json
 import logging
 import math
 import re
+import time
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
 
 import tiktoken
@@ -49,17 +50,32 @@ _CHUNK = 1000
 _PER_MESSAGE = 8
 
 
-@functools.cache
+# A failed load is retried after this long, so one network blip on first use
+# doesn't leave the process on the fallback until it restarts.
+_RETRY_AFTER_S = 300.0
+_loaded: tiktoken.Encoding | None = None
+_failed_at: float | None = None
+
+
 def _encoding() -> tiktoken.Encoding | None:
+    global _loaded, _failed_at
+    if _loaded is not None:
+        return _loaded
+    if _failed_at is not None and time.monotonic() - _failed_at < _RETRY_AFTER_S:
+        return None
     try:
-        return tiktoken.get_encoding("cl100k_base")
+        _loaded = tiktoken.get_encoding("cl100k_base")
     except Exception:
+        _failed_at = time.monotonic()
         logger.warning(
             "cl100k_base couldn't be loaded, so token counts use the per-character "
-            "fallback, which over-counts most text about twice",
+            "fallback, which over-counts most text about twice. Retrying in %.0f s",
+            _RETRY_AFTER_S,
             exc_info=True,
         )
         return None
+    _failed_at = None
+    return _loaded
 
 
 def _by_character(text: str) -> int:
@@ -68,25 +84,53 @@ def _by_character(text: str) -> int:
     return len(text) - letters + -(-letters // 4)
 
 
-@functools.lru_cache(maxsize=256)
-def estimate_text(text: str) -> int:
-    """Tokens ``text`` is at most expected to cost.
-
-    Cached, since every model call and every compaction check counts the same
-    tool results again.
-    """
+def _estimate(text: str) -> int:
     encoding = _encoding()
     if encoding is None:
         return _by_character(text)
-    without_digits = _DIGITS.sub("", text)
-    digits = len(text) - len(without_digits)
-    # In chunks, since BPE on one long run with no spaces is quadratic. A cut can
-    # only split a token, so the count can only rise.
+    # Each run between numbers is encoded on its own. Qwen splits letters from
+    # digits before merging, so text joined across a removed number (the "aa"
+    # of "a1a") would merge into tokens Qwen never makes, and undercount.
+    pieces = _DIGITS.split(text)
+    digits = len(text) - sum(len(piece) for piece in pieces)
+    # Long pieces in chunks, since BPE on one long run with no spaces is
+    # quadratic. A cut changes a piece's count by rarely more than one either way.
     counted = sum(
-        len(encoding.encode_ordinary(without_digits[start : start + _CHUNK]))
-        for start in range(0, len(without_digits), _CHUNK)
+        len(encoding.encode_ordinary(piece[start : start + _CHUNK]))
+        for piece in pieces
+        for start in range(0, len(piece), _CHUNK)
     )
     return math.ceil(_MARGIN * (counted + digits))
+
+
+# Counts of whole texts, by hash and length so the cache holds no text. Every
+# model call and every compaction check counts the same tool results again.
+_counts: OrderedDict[tuple[int, int], int] = OrderedDict()
+_CACHED_COUNTS = 4096
+
+
+def estimate_text(text: str) -> int:
+    """Tokens ``text`` is at most expected to cost."""
+    if _encoding() is None:
+        # Not cached, so the encoding's count replaces it once a retry loads it.
+        return _by_character(text)
+    key = (hash(text), len(text))
+    count = _counts.get(key)
+    if count is None:
+        count = _estimate(text)
+        _counts[key] = count
+        if len(_counts) > _CACHED_COUNTS:
+            _counts.popitem(last=False)
+    else:
+        _counts.move_to_end(key)
+    return count
+
+
+def clear_cache() -> None:
+    """Forget cached counts and the encoding, so the next count loads it again."""
+    global _loaded, _failed_at
+    _counts.clear()
+    _loaded = _failed_at = None
 
 
 def estimate_messages(messages: Iterable[BaseMessage]) -> int:
@@ -117,7 +161,7 @@ def prefix_within(text: str, tokens: int) -> str:
     until it fits, which usually takes one or two counts.
     """
     length = len(text) * max(tokens, 0) // max(estimate_text(text), 1)
-    while length > 0 and estimate_text(text[:length]) > tokens:
+    while length > 0 and _estimate(text[:length]) > tokens:
         length = length * 9 // 10
     return text[:length]
 
