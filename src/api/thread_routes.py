@@ -12,6 +12,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -75,10 +76,12 @@ class RunInput(BaseModel):
 class RunRequest(BaseModel):
     """SDK run body. The route reads ``input.messages``, ``turnstile_token`` (top
     level, or in ``context`` because the SDK's submit can't add a top-level field),
-    and ``resource_context`` from ``config.configurable`` or ``context``; everything
-    else is accepted for protocol compatibility and ignored. The body's
-    ``context`` never reaches the agent's runtime context, which comes from the
-    verified token only, so a body claiming a user or scopes has no effect. A
+    ``resource_context`` from ``config.configurable`` or ``context``, and
+    ``time_zone`` (the browser's IANA zone, e.g. "America/New_York") from
+    ``context``; everything else is accepted for protocol compatibility and
+    ignored. The body's ``context`` never reaches the agent's runtime context,
+    which comes from the verified token only, so a body claiming a user or
+    scopes has no effect. A
     run always creates-and-owns a non-existent thread, so ``if_not_exists`` is
     accepted and ignored rather than honored."""
 
@@ -89,6 +92,31 @@ class RunRequest(BaseModel):
     context: dict[str, Any] | None = None
     if_not_exists: str | None = None
     turnstile_token: str | None = None
+
+
+# Longest IANA names are ~30 characters; anything far past that isn't one.
+_MAX_TIME_ZONE_LEN = 64
+
+
+def _time_zone_from(context: dict[str, Any] | None) -> str | None:
+    """The run body's ``context.time_zone`` if it names a real IANA zone, else None.
+
+    A display preference, not identity: it only changes how times are written
+    for the user, so taking it from the body is fine. A bad value is dropped,
+    never an error, and the turn falls back to UTC.
+    """
+    value = (context or {}).get("time_zone")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value or len(value) > _MAX_TIME_ZONE_LEN:
+        logger.debug("Ignoring time_zone that isn't a short string: %r", value)
+        return None
+    try:
+        ZoneInfo(value)
+    except (ValueError, ZoneInfoNotFoundError):
+        logger.debug("Ignoring unknown time_zone %r", value)
+        return None
+    return value
 
 
 async def _write_turn_report(
@@ -144,6 +172,7 @@ async def _stream_run_events(
     context: AgentContext,
     resource_context: str | None,
     profile: UserProfile | None,
+    time_zone: str | None,
     checkpointer: Any,
     final_state: dict[str, Any],
 ) -> AsyncGenerator[str, None]:
@@ -169,6 +198,7 @@ async def _stream_run_events(
         context=context,
         resource_context=resource_context,
         profile=profile,
+        time_zone=time_zone,
         checkpointer=checkpointer,
     ):
         if stream_type == "custom":
@@ -464,6 +494,8 @@ async def thread_run_stream(
                         context=AgentContext.from_identity(identity),
                         resource_context=resource_context,
                         profile=profile,
+                        # The browser's zone, for event times. See _time_zone_from.
+                        time_zone=_time_zone_from(body.context),
                         checkpointer=getattr(raw_request.app.state, "checkpointer", None),
                         final_state=final_state,
                     ):

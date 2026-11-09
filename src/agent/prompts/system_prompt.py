@@ -460,12 +460,29 @@ def _current_date_section() -> str:
     )
 
 
+def _event_times_section(time_zone: str | None) -> str:
+    zone = (
+        f"The user's time zone is {time_zone}, and those are already in it."
+        if time_zone
+        else "The user's time zone isn't known, so those are in UTC."
+    )
+    return (
+        f"## Event times\n\n"
+        f"Event results carry `start_local` and `end_local` beside `start_date` "
+        f"and `end_date`. {zone} Whenever you give an event's time, quote "
+        f"`start_local` and `end_local` exactly, zone included. Never give "
+        f"`start_date` or `end_date`, and never convert a time yourself. They "
+        f"already name the weekday, so you may use it."
+    )
+
+
 def build_system_prompt(
     acting_user: str | None = None,
     *,
     can_write: bool = False,
     resource_context: str | None = None,
     profile: UserProfile | None = None,
+    time_zone: str | None = None,
 ) -> str:
     """Assemble the tool-calling loop's system prompt.
 
@@ -486,11 +503,18 @@ def build_system_prompt(
             Rendered as a `## User profile` section when it contributes at
             least one fact or instruction; holds no per-field knowledge
             itself — see render_profile_section.
+        time_zone: The user's IANA time zone, if the client sent a valid one.
+            Named in the `## Event times` section, which says to quote the
+            ``start_local`` / ``end_local`` fields LocalTimesMiddleware adds.
 
     Returns:
         Complete system prompt string for the tool-calling loop.
     """
-    sections: list[str] = [SYSTEM_IDENTITY, _current_date_section()]
+    sections: list[str] = [
+        SYSTEM_IDENTITY,
+        _current_date_section(),
+        _event_times_section(time_zone),
+    ]
 
     read_only_session = acting_user is not None and not can_write
     if read_only_session:

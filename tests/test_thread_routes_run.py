@@ -1631,3 +1631,33 @@ async def test_a_disconnect_during_the_lookup_cancels_it(seed_owner, monkeypatch
 
     await asyncio.sleep(0)
     assert cancelled.is_set()
+
+
+async def test_a_valid_time_zone_reaches_the_agent(client, monkeypatch):
+    captured = _capture_stream_agent(monkeypatch)
+
+    r = await _run(client, context={"time_zone": "America/New_York"})
+
+    assert r.status_code == 200
+    assert captured["time_zone"] == "America/New_York"
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        None,
+        {},
+        {"time_zone": "Mars/Olympus"},
+        {"time_zone": 5},
+        {"time_zone": ""},
+        {"time_zone": "America/" + "X" * 100},
+        {"time_zone": "../../etc/passwd"},
+    ],
+)
+async def test_a_missing_or_bad_time_zone_becomes_none(client, monkeypatch, context):
+    captured = _capture_stream_agent(monkeypatch)
+
+    r = await _run(client, context=context)
+
+    assert r.status_code == 200
+    assert captured["time_zone"] is None

@@ -189,6 +189,12 @@ class AgentState(TypedDict):
         "run's profile (None included), so a stale one is never read, and /history "
         "returns only messages, so it never reaches the client.",
     ]
+    time_zone: Annotated[
+        str | None,
+        "The user's IANA time zone (e.g. 'America/New_York'), already validated by "
+        "the route; tool results give event times in it. Each run overwrites it, "
+        "None included, like profile.",
+    ]
 
     # Read by api/routes.py for response metadata; not written on the current path.
     query_classification: Annotated[QueryClassification | None, "Query type classification"]
@@ -251,6 +257,7 @@ def create_initial_state(
     tool_catalog: ToolCatalog,
     resource_context: str | None = None,
     profile: UserProfile | None = None,
+    time_zone: str | None = None,
 ) -> AgentState:
     """Create the initial state for a new query.
 
@@ -262,6 +269,7 @@ def create_initial_state(
         resource_context: RP slug for resource-scoped queries (e.g. 'delta').
         profile: Optional per-request user profile hint (allocated resources).
             Stored as a plain dict (model_dump()) — see AgentState.profile.
+        time_zone: Optional IANA zone the user's times are given in.
 
     Returns:
         An initialized AgentState ready for the graph.
@@ -277,6 +285,7 @@ def create_initial_state(
         tool_catalog=tool_catalog,
         resource_context=resource_context,
         profile=profile.model_dump() if profile else None,
+        time_zone=time_zone,
         # Read by consumers but not written on the current path — initialize empty/None.
         query_classification=None,
         rag_matches=[],

@@ -161,6 +161,7 @@ async def run_agent(
     context: AgentContext,
     resource_context: str | None = None,
     profile: UserProfile | None = None,
+    time_zone: str | None = None,
     checkpointer: Any | None = None,
     use_checkpointing: bool = False,
     db_uri: str | None = None,
@@ -190,6 +191,7 @@ async def run_agent(
             tool_catalog=tool_catalog,
             resource_context=resource_context,
             profile=profile,
+            time_zone=time_zone,
         )
 
         logger.info(f"Running agent for query: {query[:50]}...")
@@ -268,6 +270,7 @@ async def stream_agent(
     context: AgentContext,
     resource_context: str | None = None,
     profile: UserProfile | None = None,
+    time_zone: str | None = None,
     checkpointer: Any | None = None,
     use_checkpointing: bool = False,
     db_uri: str | None = None,
@@ -300,6 +303,7 @@ async def stream_agent(
             tool_catalog=tool_catalog,
             resource_context=resource_context,
             profile=profile,
+            time_zone=time_zone,
         )
 
         stream_mode = ["custom", "messages", "updates"]
