@@ -537,3 +537,27 @@ async def test_a_cancelled_call_marks_its_span_as_an_error(monkeypatch):
     assert span.set_status.call_args.args[0].status_code == StatusCode.ERROR
     span.set_attribute.assert_any_call("mcp.success", False)
     span.set_attribute.assert_any_call("mcp.error", "cancelled")
+
+
+@pytest.mark.asyncio
+async def test_structured_content_is_kept_beside_the_text(httpx_mock: HTTPXMock):
+    httpx_mock.add_response(
+        json={
+            "content": [{"type": "text", "text": "hi"}],
+            "structuredContent": {"chart": {"a": 1}},
+        }
+    )
+
+    result = await MCPClient().call_tool("xdmod", "get_chart_data", {})
+
+    assert result.data == "hi"
+    assert result.structured == {"chart": {"a": 1}}
+
+
+@pytest.mark.asyncio
+async def test_no_structured_content_is_none(httpx_mock: HTTPXMock):
+    httpx_mock.add_response(json={"content": [{"type": "text", "text": "hi"}]})
+
+    result = await MCPClient().call_tool("xdmod", "get_chart_data", {})
+
+    assert result.structured is None

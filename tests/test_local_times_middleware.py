@@ -151,3 +151,17 @@ async def test_a_json_value_that_is_not_an_object_or_list_passes_through():
     message = ToolMessage(content="42", tool_call_id="c1")
 
     assert await _through(message) is message
+
+
+async def test_an_artifact_survives_the_rewrite():
+    message = ToolMessage(
+        content=json.dumps({"start_date": "2026-11-20T18:00:00Z"}),
+        tool_call_id="c1",
+        name="search_events",
+        artifact={"structured_content": {"chart": {"a": 1}}},
+    )
+
+    result = await _through(message)
+
+    assert "start_local" in result.content
+    assert result.artifact == {"structured_content": {"chart": {"a": 1}}}
