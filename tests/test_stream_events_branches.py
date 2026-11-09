@@ -117,3 +117,53 @@ def test_cancelled_error_propagates_not_swallowed():
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(_collect_events(fake_stream))
+
+
+# ---------------------------------------------------------------------------
+# A widget turn cut off before its answer is kept in the thread (D8-3047)
+# ---------------------------------------------------------------------------
+
+
+async def test_a_widget_turn_that_fails_keeps_its_partial_answer():
+    from langchain_core.messages import AIMessageChunk, HumanMessage
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from src.agent.graph import create_checkpointed_graph
+    from src.api.answer_tokens import ANSWER_MODEL_NODE
+    from src.api.stopped_turns import stopped_turn_saved
+
+    saver = InMemorySaver()
+    graph = create_checkpointed_graph(saver)
+    config = {"configurable": {"thread_id": "s-cut"}}
+    await graph.aupdate_state(
+        config, {"messages": [HumanMessage("q", id="h")]}, as_node="suggest_follow_ups"
+    )
+    meta = {"langgraph_node": ANSWER_MODEL_NODE}
+
+    async def fake_stream(**_kwargs):
+        yield "messages", (AIMessageChunk(content="Half ", id="r1"), meta)
+        yield "messages", (AIMessageChunk(content="an answer", id="r1"), meta)
+        raise RuntimeError("vLLM 500")
+
+    raw_request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(checkpointer=saver)))
+    with (
+        patch.object(routes, "stream_agent", fake_stream),
+        patch.object(routes, "get_registry", _fake_registry),
+    ):
+        lines = [
+            line
+            async for line in routes._stream_events(
+                routes.QueryRequest(query="q", session_id="s-cut"),
+                context=AgentContext.anonymous(),
+                session_id="s-cut",
+                question_id="q1",
+                include_trace=False,
+                raw_request=raw_request,
+            )
+        ]
+    await stopped_turn_saved("s-cut")
+
+    assert any("agent_error" in line for line in lines)
+    messages = (await graph.aget_state(config)).values["messages"]
+    assert [(m.id, m.content) for m in messages] == [("h", "q"), ("r1", "Half an answer")]
+    assert messages[-1].response_metadata == {"stopped": True, "reason": "error"}

@@ -27,6 +27,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ..auth_tools import ToolIdentityClass, tool_identity_class
 from ..domains.capabilities import live_data_tool_names
+from ..stopped_replies import stopped_replies_view
 from .turn_budget import REPEATED_CALL_NOTE, is_served_repeat
 
 if TYPE_CHECKING:
@@ -165,6 +166,7 @@ class EarlierResultsMiddleware(AgentMiddleware):
             for tool in tools
             if isinstance(getattr(tool, "read_only", None), bool)
         }
-        return await handler(
-            request.override(messages=earlier_results_view(request.messages, hints))
-        )
+        # A reply cut off by a stop, a timeout or a failure is an earlier turn
+        # too, and the model is told it didn't finish.
+        view = stopped_replies_view(earlier_results_view(request.messages, hints))
+        return await handler(request.override(messages=view))

@@ -500,3 +500,19 @@ def test_live_tool_config_warns_about_a_likely_typo(caplog):
 def test_live_tool_config_falls_back_when_nothing_is_usable():
     with patch("src.config.settings.LIVE_DATA_TOOLS", "register_for_event"):
         assert live_data_tool_names() == LIVE_DATA_MCP_TOOL_NAMES
+
+
+async def test_a_real_agent_tells_the_model_a_reply_was_cut_off():
+    from src.agent.stopped_replies import CUT_OFF_NOTE
+
+    seen: list[list[Any]] = []
+    model = _recording_model([AIMessage(content="Delta is a GPU system.")], seen)
+    agent = create_agent(model=model, tools=[], middleware=[EarlierResultsMiddleware()])
+    cut = AIMessage(content="Anvil is", id="a1", response_metadata={"stopped": True})
+
+    result = await agent.ainvoke(
+        {"messages": [HumanMessage("Anvil?", id="h1"), cut, HumanMessage("Delta?", id="h2")]}
+    )
+
+    assert seen[0][1].content == f"Anvil is\n\n{CUT_OFF_NOTE}"
+    assert result["messages"][1].content == "Anvil is"

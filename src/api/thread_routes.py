@@ -38,7 +38,8 @@ from .handoff_tokens import (
 )
 from .identity import ClaimKey, Identity, require_identity
 from .sse import format_sse_event
-from .stopped_turns import drop_unanswered_turn, keep_stopped_turn, stopped_turn_saved
+from .stopped_turns import answer_delivered as _answer_delivered
+from .stopped_turns import keeping_cut_off_turn, stopped_turn_saved
 from .thread_access import require_thread_access
 from .thread_runs import (
     acquire_thread_run,
@@ -167,22 +168,6 @@ async def _write_turn_report(
         logger.exception("Turn report write failed")
 
 
-def _answer_delivered(final_state: dict[str, Any]) -> bool:
-    """Whether the turn's answer is complete: a node has returned it, with its id.
-
-    By then it has streamed and is in the checkpoint, so a cancel after this
-    point (a Stop or a closed tab while follow-ups are suggested) is not a lost
-    turn.
-    """
-    messages = final_state.get("messages") or []
-    return (
-        bool(final_state.get("final_answer"))
-        and bool(messages)
-        and isinstance(messages[-1], AIMessage)
-        and bool(messages[-1].id)
-    )
-
-
 # Reports written after a cancel, held so the loop doesn't drop them mid-write.
 _detached_reports: set[asyncio.Task[None]] = set()
 
@@ -212,32 +197,27 @@ async def _stream_run_events(
     replace_stopped_turn: bool = False,
     **run: Any,
 ) -> AsyncGenerator[str, None]:
-    """``_run_events`` for one run, keeping the turn in the thread when the
-    person stops it before its answer was delivered (see stopped_turns).
-
-    A stop lands here as a CancelledError, or as GeneratorExit when it came
-    while the event was being sent and the generator is closed afterwards.
-    """
-    # A stop just before this run may still be saving the turn it stopped.
-    await stopped_turn_saved(thread_id)
-    if replace_stopped_turn:
-        # Retry or Edit: the question asked again replaces its stopped turn.
-        await drop_unanswered_turn(checkpointer, thread_id)
+    """``_run_events`` for one run, keeping the turn in the thread when it ends
+    before its answer was delivered (see stopped_turns.keeping_cut_off_turn)."""
     streamed: dict[str, AIMessageChunk] = {}
-    try:
-        async for event in _run_events(
-            thread_id=thread_id,
-            query=query,
-            checkpointer=checkpointer,
-            final_state=final_state,
-            streamed=streamed,
-            **run,
-        ):
-            yield event
-    except (asyncio.CancelledError, GeneratorExit):
-        if not _answer_delivered(final_state):
-            keep_stopped_turn(checkpointer, thread_id, query, streamed)
-        raise
+    events = _run_events(
+        thread_id=thread_id,
+        query=query,
+        checkpointer=checkpointer,
+        final_state=final_state,
+        streamed=streamed,
+        **run,
+    )
+    async for event in keeping_cut_off_turn(
+        events,
+        checkpointer=checkpointer,
+        thread_id=thread_id,
+        query=query,
+        final_state=final_state,
+        streamed=streamed,
+        replace_stopped_turn=replace_stopped_turn,
+    ):
+        yield event
 
 
 async def _run_events(

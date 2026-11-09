@@ -75,3 +75,25 @@ async def test_lifespan_warms_the_resource_groups_and_stops_the_refresh(monkeypa
     async with main_mod.lifespan(main_mod.app):
         assert calls == ["start"]
     assert calls == ["start", "stop"]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_waits_for_reports_of_stopped_turns():
+    """A turn report written after a cancel finishes before the app stops (D8-3047)."""
+    import asyncio
+
+    os.environ.pop("OTEL_EXPORTER_OTLP_ENDPOINT", None)
+    from src.api.thread_routes import _detached_reports
+    from src.main import app, lifespan
+
+    done: list[str] = []
+
+    async def _report():
+        await asyncio.sleep(0.01)
+        done.append("reported")
+
+    async with lifespan(app):
+        task = asyncio.ensure_future(_report())
+        _detached_reports.add(task)
+        task.add_done_callback(_detached_reports.discard)
+    assert done == ["reported"]
