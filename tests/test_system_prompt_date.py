@@ -55,3 +55,17 @@ def test_prompt_forbids_guessing_the_weekday():
 
 def test_a_caller_who_cannot_write_is_not_told_how_to_register():
     assert "## Event registration" not in build_system_prompt(acting_user="u@access-ci.org")
+
+
+def test_prompt_says_to_quote_the_local_event_times():
+    prompt = build_system_prompt()
+
+    assert "`start_local`" in prompt
+    assert "never convert a time yourself" in prompt
+    assert "time zone isn't known" in prompt
+
+
+def test_prompt_names_the_users_time_zone():
+    prompt = build_system_prompt(time_zone="America/New_York")
+
+    assert "The user's time zone is America/New_York" in prompt

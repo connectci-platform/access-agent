@@ -45,6 +45,7 @@ from ..context import AgentContext, require_context
 from ..domains.capabilities import WRITE_MCP_TOOL_NAMES
 from ..domains.tools import create_mcp_tools_from_catalog
 from ..middleware.earlier_results import EarlierResultsMiddleware, earlier_results_view
+from ..middleware.local_times import LocalTimesMiddleware
 from ..middleware.preview_first import PreviewFirstMiddleware
 from ..middleware.requires_auth import RequiresAuthMiddleware
 from ..middleware.turn_budget import TurnBudgetMiddleware
@@ -90,6 +91,7 @@ def _build_prompt_and_tools(
     can_write: bool,
     resource_context: str | None,
     profile: dict[str, Any] | None,
+    time_zone: str | None = None,
 ) -> tuple[str, list[BaseTool], bool]:
     """Assemble the loop's system prompt and tool list.
 
@@ -121,6 +123,7 @@ def _build_prompt_and_tools(
         can_write=can_write,
         resource_context=resource_context,
         profile=profile_model,
+        time_zone=time_zone,
     )
     return prompt, [*mcp_tools, search_access_documents], profile_used
 
@@ -614,6 +617,7 @@ async def tool_calling_loop_node(  # noqa: PLR0915
         state.tool_catalog: dict describing MCP tools available to this request
         state.resource_context: optional RP slug for resource-scoped queries
         state.profile: optional UserProfile.model_dump() (allocated resources)
+        state.time_zone: optional IANA zone event times are given in (UTC if None)
         runtime.context: the AgentContext — who the run acts for and whether
             they may make changes. Required; a run without one raises.
 
@@ -642,6 +646,7 @@ async def tool_calling_loop_node(  # noqa: PLR0915
             can_write=context.can_write,
             resource_context=state.get("resource_context"),
             profile=state.get("profile"),
+            time_zone=state.get("time_zone"),
         )
 
         span.set_attribute("agent.tool_count", len(tools))
@@ -679,6 +684,9 @@ async def tool_calling_loop_node(  # noqa: PLR0915
             # After the gate, so a caller who may not register is refused
             # rather than shown a preview.
             PreviewFirstMiddleware(),
+            # Outside the budget, so its timeout notes pass through; it only adds
+            # keys, so a preview it rewrites still reads as one.
+            LocalTimesMiddleware(state.get("time_zone")),
             # Innermost, so only a call that would really run is timed, and the
             # model's last view of the thread is the one that says time is up.
             budget,
