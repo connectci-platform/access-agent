@@ -48,7 +48,7 @@ from ..middleware.earlier_results import EarlierResultsMiddleware, earlier_resul
 from ..middleware.local_times import LocalTimesMiddleware
 from ..middleware.preview_first import PreviewFirstMiddleware
 from ..middleware.requires_auth import RequiresAuthMiddleware
-from ..middleware.turn_budget import TurnBudgetMiddleware, truncated
+from ..middleware.turn_budget import TurnBudgetMiddleware, step_capped_view, truncated
 from ..profile import UserProfile
 from ..prompts.system_prompt import build_system_prompt
 from ..state import ToolResult
@@ -374,6 +374,8 @@ _EMPTY_SUMMARIES = frozenset(
 
 # How much of each tool result the summary model is shown.
 _SUMMARY_TOOL_RESULT_CHARS = 8000
+# Upstream's _DEFAULT_FALLBACK_MESSAGE_COUNT, for a trim that fails.
+_SUMMARY_FALLBACK_MESSAGES = 15
 
 
 def _is_summary(message: Any) -> bool:
@@ -461,15 +463,19 @@ class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
             else m
             for m in messages
         ]
-        return list(
-            trim_messages(
-                clipped,
-                max_tokens=settings.SUMMARIZATION_INPUT_TOKENS,
-                token_counter=count_tokens_approximately,
-                strategy="last",
-                allow_partial=True,
+        try:
+            return list(
+                trim_messages(
+                    clipped,
+                    max_tokens=settings.SUMMARIZATION_INPUT_TOKENS,
+                    token_counter=count_tokens_approximately,
+                    strategy="last",
+                    allow_partial=True,
+                )
             )
-        )
+        except Exception:
+            # Upstream's fallback, so a trim error degrades the summary, not the turn.
+            return clipped[-_SUMMARY_FALLBACK_MESSAGES:]
 
     @staticmethod
     def _build_new_messages(summary: str) -> list[Any]:
@@ -623,7 +629,7 @@ def _edit_aware_token_counter() -> TokenCounter:
     def count(messages: Iterable[Any]) -> int:
         edited = deepcopy(list(messages))
         edit.apply(edited, count_tokens=count_tokens_approximately)
-        return int(count_tokens_approximately(earlier_results_view(edited)))
+        return int(count_tokens_approximately(earlier_results_view(step_capped_view(edited))))
 
     return count
 

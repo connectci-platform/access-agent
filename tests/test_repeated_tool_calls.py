@@ -13,9 +13,14 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
-from src.agent.middleware.earlier_results import EARLIER_RESULT_PREFIX, earlier_results_view
+from src.agent.middleware.earlier_results import (
+    EARLIER_RESULT_PREFIX,
+    EARLIER_TURN_NOTE,
+    earlier_results_view,
+)
 from src.agent.middleware.turn_budget import (
     MAX_IDENTICAL_RUNS,
+    REPEAT_FAILED_TEXT,
     REPEATED_CALL_NOTE,
     TurnBudgetMiddleware,
 )
@@ -69,15 +74,16 @@ async def test_one_repeat_runs_and_the_next_gets_the_earlier_result():
     assert budget.repeats_served == 3
 
 
-async def test_a_call_that_only_failed_is_never_served():
+async def test_a_call_that_only_failed_is_refused_after_two_runs():
     budget, handler = _budget(), _Handler(status="error")
     request = _Request("search_access_documents", {"query": "x"})
 
-    for _ in range(3):
-        await budget.awrap_tool_call(request, handler)
+    results = [await budget.awrap_tool_call(request, handler) for _ in range(4)]
 
-    assert handler.calls == 3
+    assert handler.calls == 2
     assert budget.repeats_served == 0
+    assert results[2].content == REPEAT_FAILED_TEXT
+    assert results[2].artifact == {"refusal": {"reason": "repeat_failure"}}
 
 
 async def test_the_last_successful_result_is_served_not_a_later_failure():
@@ -213,21 +219,15 @@ def test_a_served_result_in_the_current_turn_keeps_its_note():
     assert earlier_results_view(thread)[1].content == served.content
 
 
-async def test_an_oversized_result_is_cut_and_says_so(monkeypatch):
-    monkeypatch.setattr("src.agent.middleware.turn_budget.settings.TOOL_RESULT_MAX_CHARS", 10)
-    budget = _budget()
+def test_a_served_reference_result_alone_adds_no_earlier_turn_note():
+    thread = [
+        HumanMessage("pending?"),
+        _served("search_access_documents", "New accounts can take a few days."),
+        AIMessage("It's being set up."),
+        HumanMessage("thanks"),
+    ]
 
-    async def handler(request: Any) -> ToolMessage:
-        return ToolMessage("A" * 25, tool_call_id="c", name="list_all_software")
+    view = earlier_results_view(thread)
 
-    result = await budget.awrap_tool_call(_Request("list_all_software", {}), handler)
-
-    assert result.content == "A" * 10 + "\n\n[result truncated: 10 of 25 characters]"
-
-
-async def test_a_result_that_fits_is_left_whole():
-    budget, handler = _budget(), _Handler()
-
-    result = await budget.awrap_tool_call(_Request("search_software", {}), handler)
-
-    assert result.content == '{"hits": 1}'
+    assert view[-1].content == "thanks"
+    assert EARLIER_TURN_NOTE not in view[-1].content

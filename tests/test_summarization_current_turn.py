@@ -7,6 +7,7 @@ was too long to summarize." placeholder, reached the user as an answer bubble.
 
 from typing import Any
 
+from langchain.agents.middleware import SummarizationMiddleware
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
@@ -19,17 +20,25 @@ from src.config import settings
 
 
 def _turn(question: str, prefix: str) -> list[Any]:
-    """A turn big enough to trip summarization by itself, after context editing."""
-    keep = settings.CONTEXT_EDIT_KEEP_TOOL_RESULTS
-    per_result = (settings.SUMMARIZATION_TRIGGER_TOKENS * 4) // keep + 8000
+    """A turn of many searches whose four kept results come to ~40k tokens, under
+    the ceiling, so it is kept whole."""
     messages: list[Any] = [HumanMessage(question, id=f"{prefix}-q")]
-    for i in range(keep + 6):
+    for i in range(settings.CONTEXT_EDIT_KEEP_TOOL_RESULTS + 6):
         call = {"name": "search_access_documents", "args": {"query": "q"}, "id": f"{prefix}{i}"}
         messages.append(AIMessage("", id=f"{prefix}-ai-{i}", tool_calls=[call]))
         messages.append(
-            ToolMessage("X" * per_result, tool_call_id=f"{prefix}{i}", id=f"{prefix}-t-{i}")
+            ToolMessage("X" * 40_000, tool_call_id=f"{prefix}{i}", id=f"{prefix}-t-{i}")
         )
     return messages
+
+
+def _earlier(question: str, prefix: str) -> list[Any]:
+    """An earlier turn whose long answer, which context editing can't clear, takes
+    the thread over the trigger."""
+    return [
+        HumanMessage(question, id=f"{prefix}-q"),
+        AIMessage("Y" * 160_000, id=f"{prefix}-answer"),
+    ]
 
 
 def _middleware() -> _FlaggingSummarizationMiddleware:
@@ -47,19 +56,24 @@ def _summary(text: str = "earlier notes") -> AIMessage:
 
 def test_every_message_of_the_current_turn_is_kept():
     current = _turn("my username shows pending", "now")
-    thread = [*_turn("what is Expanse?", "before"), *current]
+    thread = [*_earlier("what is Expanse?", "before"), *current]
+    middleware = _middleware()
+    # Upstream would cut inside the current turn, which is what this guards.
+    assert SummarizationMiddleware._determine_cutoff_index(middleware, thread) > len(thread) - len(
+        current
+    )
 
-    result = _middleware().before_model({"messages": thread}, None)
+    result = middleware.before_model({"messages": thread}, None)
 
     assert result is not None, "summarization did not fire; fixture is undersized"
     kept = [m.id for m in result["messages"][1:]]
     assert kept[-len(current) :] == [m.id for m in current]
-    assert not any(m.id.startswith("before-t-") for m in result["messages"][1:])
+    assert "before-answer" not in kept
 
 
 async def test_the_async_path_keeps_the_current_turn_too():
     current = _turn("my username shows pending", "now")
-    thread = [*_turn("what is Expanse?", "before"), *current]
+    thread = [*_earlier("what is Expanse?", "before"), *current]
 
     result = await _middleware().abefore_model({"messages": thread}, None)
 
@@ -67,12 +81,8 @@ async def test_the_async_path_keeps_the_current_turn_too():
     assert [m.id for m in result["messages"][-len(current) :]] == [m.id for m in current]
 
 
-def test_a_single_long_turn_is_not_compacted():
-    assert _middleware().before_model({"messages": _turn("pending?", "now")}, None) is None
-
-
 def test_only_questions_and_an_earlier_summary_are_not_summarized_again():
-    thread = [HumanMessage("first", id="q-0"), _summary(), *_turn("pending?", "now")]
+    thread = [HumanMessage("first", id="q-0"), _summary("Y" * 160_000), *_turn("pending?", "now")]
 
     assert _middleware().before_model({"messages": thread}, None) is None
 
@@ -92,7 +102,7 @@ def test_a_compaction_with_no_summary_keeps_the_questions_and_adds_no_note(monke
         "_create_summary",
         lambda messages: "Previous conversation was too long to summarize.",
     )
-    thread = [*_turn("what is Expanse?", "before"), *_turn("pending?", "now")]
+    thread = [*_earlier("what is Expanse?", "before"), *_turn("pending?", "now")]
 
     result = middleware.before_model({"messages": thread}, None)
 
@@ -157,3 +167,15 @@ def test_a_follow_up_keeps_a_summary_of_the_earlier_answer():
     summaries = [m for m in result["messages"] if m.id and m.id.startswith(DO_NOT_RENDER_ID_PREFIX)]
     assert len(summaries) == 1
     assert "g3.xl has one A100" in summaries[0].text
+
+
+def test_a_trim_error_falls_back_to_the_newest_messages(monkeypatch):
+    def broken(*args: Any, **kwargs: Any) -> Any:
+        raise ValueError("cannot split")
+
+    monkeypatch.setattr("src.agent.nodes.tool_calling_loop.trim_messages", broken)
+    messages = [AIMessage(f"answer {i}", id=f"a{i}") for i in range(20)]
+
+    trimmed = _middleware()._trim_messages_for_summary(messages)
+
+    assert [m.id for m in trimmed] == [f"a{i}" for i in range(5, 20)]

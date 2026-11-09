@@ -72,11 +72,6 @@ def test_the_original_question_text_survives_compaction():
     assert humans == [question, "and on Expanse?"]
 
 
-def test_the_turn_being_answered_is_never_compacted():
-    """Only earlier turns are compacted, so a single long turn is left whole."""
-    assert _middleware().before_model({"messages": _oversized_thread()}, None) is None
-
-
 def test_every_question_survives_a_multi_turn_compaction():
     thread = _oversized_thread()
     thread.append(HumanMessage("and how much do they cost?", id="q-2"))
