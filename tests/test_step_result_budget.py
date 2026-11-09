@@ -35,7 +35,6 @@ from src.config import settings
 
 FIXTURES = Path(__file__).parent / "fixtures" / "tool_results"
 # Real Qwen counts, from vLLM's prompt_tokens (2026-11-09).
-ANVIL_REAL_TOKENS = 19_584
 XDMOD_REAL_TOKENS = 3_911
 
 
@@ -71,11 +70,10 @@ def _middleware(model: Any = None, **kwargs: Any) -> _FlaggingSummarizationMiddl
     )
 
 
-def test_the_estimate_is_an_upper_bound_on_both_measured_samples():
-    assert estimate_text(ANVIL) >= ANVIL_REAL_TOKENS
-    assert estimate_text(XDMOD) >= XDMOD_REAL_TOKENS
-    # The approximate counter undercounts chart text by about three times.
+def test_the_approximate_counter_undercounts_chart_text():
+    # Why the window is counted with token_estimate (tests/test_token_estimate.py).
     assert count_tokens_approximately([HumanMessage(XDMOD)]) < XDMOD_REAL_TOKENS / 2
+    assert estimate_text(XDMOD) >= XDMOD_REAL_TOKENS
 
 
 def test_a_lone_result_can_use_the_whole_budget():
@@ -144,16 +142,24 @@ def test_the_window_guard_does_what_it_can_when_nothing_would_fit(caplog):
 
 
 def test_a_turn_over_the_ceiling_keeps_as_many_steps_as_fit():
-    thread = [HumanMessage("compare Anvil, Delta and Expanse", id="q")]
-    for prefix in "abc":
+    thread = [HumanMessage("compare four resources", id="q")]
+    for prefix in "abcd":
         thread += _step([ANVIL], prefix)
 
     result = _middleware().before_model({"messages": thread}, None)
 
     assert result is not None
     kept = {m.id for m in result["messages"][1:]}
-    assert {"b0-t", "c0-t"} <= kept
+    assert {"b0-t", "c0-t", "d0-t"} <= kept
     assert "a0-t" not in kept
+
+
+def test_three_software_lists_in_a_turn_are_kept_whole():
+    thread = [HumanMessage("compare three resources", id="q")]
+    for prefix in "abc":
+        thread += _step([ANVIL], prefix)
+
+    assert _middleware().before_model({"messages": thread}, None) is None
 
 
 def test_with_no_step_under_the_ceiling_the_last_one_is_kept_for_the_guard():
@@ -178,24 +184,19 @@ def test_a_question_over_the_ceiling_falls_back_to_upstream_s_cutoff():
     assert result["messages"][-1].id == "q-1"
 
 
-def test_a_reported_total_over_the_trigger_compacts_only_earlier_turns():
-    """Production also triggers on the last response's reported total_tokens."""
+def test_a_reported_total_over_the_trigger_does_not_compact():
+    """The reported total includes ~29,000 of schemas and system prompt, so it
+    fired far below the conversation size the trigger is sized for."""
     model = GenericFakeChatModel(messages=iter([AIMessage("a summary")] * 5))
     usage = {"input_tokens": 99_000, "output_tokens": 1_000, "total_tokens": 100_000}
-    metadata = {"model_provider": "genericfakechatmodel"}
     answered = AIMessage("Y" * 120_000, id="earlier-answer")
     current = [HumanMessage("and Delta?", id="q-1"), *_step([XDMOD], "now")]
     current[1].usage_metadata = usage  # type: ignore[attr-defined]
-    current[1].response_metadata = metadata
+    current[1].response_metadata = {"model_provider": "genericfakechatmodel"}
     thread = [HumanMessage("Anvil?", id="q-0"), answered, *current]
     assert estimate_messages(thread) < settings.SUMMARIZATION_TRIGGER_TOKENS
 
-    result = _middleware(model).before_model({"messages": thread}, None)
-
-    assert result is not None
-    ids = [m.id for m in result["messages"][1:]]
-    assert ids[-len(current) :] == [m.id for m in current]
-    assert "earlier-answer" not in ids
+    assert _middleware(model).before_model({"messages": thread}, None) is None
 
 
 class _ScriptedModel(GenericFakeChatModel):

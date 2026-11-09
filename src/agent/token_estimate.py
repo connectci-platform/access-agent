@@ -1,25 +1,36 @@
-"""A conservative estimate of how many tokens Qwen counts, and cutting text to one.
+"""A close upper bound on how many tokens Qwen counts, and cutting text to one.
 
-Every digit and every character that isn't a letter or digit is counted as a
-token, and letters at four to a token. Measured against the deployment's
-tokenizer (prompt_tokens from UKY vLLM, 2026-11-09), it is an upper bound on
-both kinds of tool result the agent sees:
+The estimate is 1.25 times cl100k_base's count with digits counted one a token,
+as Qwen counts them. Measured against the deployment's tokenizer
+(prompt_tokens from UKY vLLM, max_tokens=1, 2026-11-09), it is an upper bound
+on every sample, 4-25% over:
 
-- list_all_software for Anvil, 74,376 chars of JSON: 19,584 real, 33,832 here.
-- get_chart_data, monthly wait times, 5,068 chars of text with dates and
-  numbers: 3,911 real, 4,297 here.
+    sample                          real    estimate / real
+    list_all_software, Anvil        19,584  1.23
+    get_infrastructure_news          1,047  1.14
+    search_resources, GPU            8,385  1.22
+    tool schemas, 5 servers   1,086-2,158  1.25
+    get_chart_data, wait time        3,911  1.04
+    system prompt                    3,767  1.24
 
-``count_tokens_approximately`` (four characters a token) counted that chart
-text as 1,267, a third of the real figure, since Qwen gives each digit its own
-token. Over-counting JSON costs some room; under-counting overflows the window.
+Per-character rules did worse. Four characters a token
+(``count_tokens_approximately``) counted the chart text at a third of its real
+cost, since Qwen gives each digit its own token, and digits plus punctuation
+plus letters/4, an upper bound, over-counted everything else 1.7-2.1 times.
+That rule is kept as the fallback for when the cl100k encoding can't load,
+since tiktoken fetches it on first use (the image caches it at build time).
 """
 
 from __future__ import annotations
 
+import functools
 import json
+import logging
+import math
 import re
 from typing import TYPE_CHECKING, Any
 
+import tiktoken
 from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
@@ -28,15 +39,54 @@ if TYPE_CHECKING:
 
     from langchain_core.messages import BaseMessage
 
+logger = logging.getLogger(__name__)
+
+_DIGITS = re.compile(r"\d+")
 _LETTERS = re.compile(r"[^\W\d_]+")
+_MARGIN = 1.25
+_CHUNK = 1000
 # Role and framing tokens each message carries in the chat template.
 _PER_MESSAGE = 8
 
 
-def estimate_text(text: str) -> int:
-    """Tokens ``text`` is at most expected to cost."""
+@functools.cache
+def _encoding() -> tiktoken.Encoding | None:
+    try:
+        return tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        logger.warning(
+            "cl100k_base couldn't be loaded, so token counts use the per-character "
+            "fallback, which over-counts most text about twice",
+            exc_info=True,
+        )
+        return None
+
+
+def _by_character(text: str) -> int:
+    """Digits and punctuation a token each, letters four to a token."""
     letters = len(text) - len(_LETTERS.sub("", text))
     return len(text) - letters + -(-letters // 4)
+
+
+@functools.lru_cache(maxsize=256)
+def estimate_text(text: str) -> int:
+    """Tokens ``text`` is at most expected to cost.
+
+    Cached, since every model call and every compaction check counts the same
+    tool results again.
+    """
+    encoding = _encoding()
+    if encoding is None:
+        return _by_character(text)
+    without_digits = _DIGITS.sub("", text)
+    digits = len(text) - len(without_digits)
+    # In chunks, since BPE on one long run with no spaces is quadratic. A cut can
+    # only split a token, so the count can only rise.
+    counted = sum(
+        len(encoding.encode_ordinary(without_digits[start : start + _CHUNK]))
+        for start in range(0, len(without_digits), _CHUNK)
+    )
+    return math.ceil(_MARGIN * (counted + digits))
 
 
 def estimate_messages(messages: Iterable[BaseMessage]) -> int:
@@ -61,15 +111,15 @@ def estimate_tools(tools: Iterable[Any]) -> int:
 
 
 def prefix_within(text: str, tokens: int) -> str:
-    """The longest start of ``text`` whose estimate is at most ``tokens``."""
-    low, high = 0, len(text)
-    while low < high:
-        middle = (low + high + 1) // 2
-        if estimate_text(text[:middle]) <= tokens:
-            low = middle
-        else:
-            high = middle - 1
-    return text[:low]
+    """A start of ``text`` whose estimate is at most ``tokens``, close to the longest.
+
+    Sized in proportion to the whole text's estimate, then shortened by a tenth
+    until it fits, which usually takes one or two counts.
+    """
+    length = len(text) * max(tokens, 0) // max(estimate_text(text), 1)
+    while length > 0 and estimate_text(text[:length]) > tokens:
+        length = length * 9 // 10
+    return text[:length]
 
 
 def truncated_note(kept: int, total: int) -> str:

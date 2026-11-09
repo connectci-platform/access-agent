@@ -27,7 +27,7 @@ def _turn(question: str, prefix: str) -> list[Any]:
         call = {"name": "search_access_documents", "args": {"query": "q"}, "id": f"{prefix}{i}"}
         messages.append(AIMessage("", id=f"{prefix}-ai-{i}", tool_calls=[call]))
         messages.append(
-            ToolMessage("X" * 40_000, tool_call_id=f"{prefix}{i}", id=f"{prefix}-t-{i}")
+            ToolMessage("Y" * 40_000, tool_call_id=f"{prefix}{i}", id=f"{prefix}-t-{i}")
         )
     return messages
 
@@ -129,7 +129,7 @@ def test_a_single_turn_too_big_for_the_window_is_compacted_as_a_last_resort():
     for i in range(6):
         call = {"name": "list_all_software", "args": {"page": i}, "id": f"c{i}"}
         messages.append(AIMessage("", id=f"ai-{i}", tool_calls=[call]))
-        messages.append(ToolMessage("X" * 100_000, tool_call_id=f"c{i}", id=f"t-{i}"))
+        messages.append(ToolMessage("Y" * 100_000, tool_call_id=f"c{i}", id=f"t-{i}"))
     counter = _edit_aware_token_counter()
     assert counter(messages) > settings.SUMMARIZATION_TURN_CEILING_TOKENS
 

@@ -38,7 +38,7 @@ def _oversized_thread(question: str = "who is eligible to use ACCESS?") -> list:
         messages.append(
             AIMessage("", id=f"ai-{i}", tool_calls=[{"name": "s", "args": {}, "id": f"c{i}"}])
         )
-        messages.append(ToolMessage("X" * per_result, tool_call_id=f"c{i}", id=f"t-{i}"))
+        messages.append(ToolMessage("Y" * per_result, tool_call_id=f"c{i}", id=f"t-{i}"))
     return messages
 
 

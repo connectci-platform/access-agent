@@ -422,6 +422,16 @@ class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
             _restore_questions(result, state)
         return result
 
+    def _should_summarize_based_on_reported_tokens(
+        self, messages: list[Any], threshold: float
+    ) -> bool:
+        """Never: the reported total is the whole request, tool schemas and system
+        prompt included, about 29,000 more than the conversation the trigger is
+        sized for, so it fired at about 41,000 of conversation. The thread's own
+        count, an upper bound on the real one, is what the trigger means."""
+        del messages, threshold
+        return False
+
     def _determine_cutoff_index(self, messages: list[Any]) -> int:
         """Compact earlier turns only, never the one being answered.
 
