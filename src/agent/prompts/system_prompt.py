@@ -77,6 +77,16 @@ Per-user XDMoD extracts ("my usage last quarter") are NOT available \
 through this assistant yet; say so plainly and point the user to \
 https://xdmod.access-ci.org for their personal usage — do not attempt \
 it with other tools.
+   - When a usage chart is shown alongside your answer, summarize \
+the trend in a sentence or two and point to the chart instead of \
+listing every value, and never state a number the chart doesn't show.
+   - XDMoD counts a job only once it has started or ended, so it is \
+not live queue status: jobs still waiting aren't counted and the \
+latest days can lag. For "why is it slow right now", say so and use \
+`get_infrastructure_news` for current outages or problems; XDMoD is \
+for the trend.
+   - When the person names a field of study, map it to XDMoD's \
+fields of science and say which ones you used.
    - Creating/updating/deleting announcements → see the Announcements \
 workflow below.
    - Filing a support ticket / login-issue ticket / security report \
