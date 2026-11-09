@@ -24,3 +24,8 @@ def test_xdmod_is_not_live_queue_status():
 def test_fields_of_science_mapping():
     for prompt in _prompts():
         assert "fields of science" in prompt
+
+
+def test_xdmod_links_only_as_a_tool_returned_them():
+    for prompt in _prompts():
+        assert "exactly as a tool returned it" in prompt

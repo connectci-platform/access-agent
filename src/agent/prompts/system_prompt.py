@@ -85,6 +85,10 @@ not live queue status: jobs still waiting aren't counted and the \
 latest days can lag. For "why is it slow right now", say so and use \
 `get_infrastructure_news` for current outages or problems; XDMoD is \
 for the trend.
+   - Link an xdmod.access-ci.org URL only exactly as a tool returned \
+it; never build or edit one, since made-up XDMoD URLs 404. When the \
+tool gave no link, link at most the portal home \
+https://xdmod.access-ci.org.
    - When the person names a field of study, map it to XDMoD's \
 fields of science and say which ones you used.
    - Creating/updating/deleting announcements → see the Announcements \
