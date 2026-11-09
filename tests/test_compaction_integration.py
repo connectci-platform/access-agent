@@ -53,7 +53,8 @@ def _middleware() -> _FlaggingSummarizationMiddleware:
 
 def test_a_compacted_request_still_carries_a_user_turn():
     """The end-to-end property vLLM actually requires."""
-    result = _middleware().before_model({"messages": _oversized_thread()}, None)
+    thread = [*_oversized_thread(), HumanMessage("and on Delta?", id="q-2")]
+    result = _middleware().before_model({"messages": thread}, None)
 
     # Guard against a vacuous pass: if compaction did not fire there is nothing
     # to assert, and the fixture needs resizing.
@@ -63,11 +64,17 @@ def test_a_compacted_request_still_carries_a_user_turn():
 
 def test_the_original_question_text_survives_compaction():
     question = "what are the different queues on Delta GPU?"
-    result = _middleware().before_model({"messages": _oversized_thread(question)}, None)
+    thread = [*_oversized_thread(question), HumanMessage("and on Expanse?", id="q-2")]
+    result = _middleware().before_model({"messages": thread}, None)
 
     assert result is not None
     humans = [m.content for m in result["messages"] if isinstance(m, HumanMessage)]
-    assert humans == [question]
+    assert humans == [question, "and on Expanse?"]
+
+
+def test_the_turn_being_answered_is_never_compacted():
+    """Only earlier turns are compacted, so a single long turn is left whole."""
+    assert _middleware().before_model({"messages": _oversized_thread()}, None) is None
 
 
 def test_every_question_survives_a_multi_turn_compaction():

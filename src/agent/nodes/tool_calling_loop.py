@@ -362,6 +362,23 @@ class _TokenUsageAccumulator(AsyncCallbackHandler):
         )
 
 
+# Clients don't render a message whose id starts with this, as agent-chat-ui's
+# DO_NOT_RENDER_ID_PREFIX.
+DO_NOT_RENDER_ID_PREFIX = "do-not-render-"
+
+# What upstream returns in place of a summary it couldn't write.
+_EMPTY_SUMMARIES = frozenset(
+    {"Previous conversation was too long to summarize.", "No previous conversation history."}
+)
+
+
+def _is_summary(message: Any) -> bool:
+    return (
+        isinstance(message, AIMessage)
+        and message.additional_kwargs.get("lc_source") == "summarization"
+    )
+
+
 class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
     """SummarizationMiddleware that records when it actually summarizes.
 
@@ -398,6 +415,25 @@ class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
             _restore_questions(result, state)
         return result
 
+    def _determine_cutoff_index(self, messages: list[Any]) -> int:
+        """Compact earlier turns only, never the one being answered.
+
+        Compacting mid-turn throws away results the model is still answering
+        from, and a summary written then reads to the model like part of its
+        answer. So the cutoff stops at the current question. With nothing but
+        questions and an earlier summary before it, there is nothing to compact,
+        and a summary of a summary would cost a model call on every step.
+        """
+        current = len(messages) - 1
+        while current >= 0 and not isinstance(messages[current], HumanMessage):
+            current -= 1
+        cutoff = min(super()._determine_cutoff_index(messages), max(current, 0))
+        if not any(
+            not isinstance(m, HumanMessage) and not _is_summary(m) for m in messages[:cutoff]
+        ):
+            return 0
+        return cutoff
+
     @staticmethod
     def _build_new_messages(summary: str) -> list[Any]:
         """Frame the summary as the agent's own recall, not a user turn.
@@ -409,7 +445,13 @@ class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
         have access to the previous conversation history" — which is a correct
         reading of that transcript. Anthropic's compaction API injects its
         summary as an assistant turn for exactly this reason.
+
+        Upstream's placeholder for a summary it couldn't write isn't one, so
+        nothing is added for it. The id prefix is the one clients skip when
+        rendering, so the summary never shows as an answer.
         """
+        if summary.strip() in _EMPTY_SUMMARIES:
+            return []
         return [
             AIMessage(
                 content=(
@@ -417,9 +459,8 @@ class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
                     f"(condensed to save context):\n\n{summary}"
                 ),
                 additional_kwargs={"lc_source": "summarization"},
-                # The id the checkpoint would give it, set here so node
-                # updates and the checkpoint agree on it.
-                id=str(uuid.uuid4()),
+                # Set here so node updates and the checkpoint agree on it.
+                id=f"{DO_NOT_RENDER_ID_PREFIX}{uuid.uuid4()}",
             )
         ]
 
@@ -864,11 +905,6 @@ def _build_tool_results(
     duration_ms is paired from tool_timings (recorded at the call sites) FIFO
     per tool name. Two parallel calls to the SAME tool may swap durations
     (records append in completion order).
-
-    Known limit: if compaction fires partway through the turn, the summarized
-    calls are gone from ``turn_messages`` but still in ``tool_timings``. The
-    turn's tool count can then exceed len(tool_results), and FIFO pairing can
-    give a surviving call another call's duration.
 
     Every entry carries ``message_id``, its source ToolMessage's LangChain id.
     ``add_messages`` (the reducer on both the inner and outer ``messages``
