@@ -27,6 +27,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ..auth_tools import ToolIdentityClass, tool_identity_class
 from ..domains.capabilities import live_data_tool_names
+from .turn_budget import REPEATED_CALL_NOTE, is_served_repeat
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -98,7 +99,14 @@ def _earlier_text(
     message: Any, live_tools: frozenset[str], read_only_hints: dict[str, bool | None]
 ) -> str | None:
     if isinstance(message, ToolMessage):
-        return _earlier_tool_text(message, live_tools, read_only_hints.get(message.name or ""))
+        served = is_served_repeat(message)
+        if served:
+            # An earlier result served again is read as that result. Its note
+            # applied only to the turn it was served in.
+            body = message.text.removeprefix(REPEATED_CALL_NOTE).lstrip("\n")
+            message = message.model_copy(update={"content": body, "artifact": None})
+        text = _earlier_tool_text(message, live_tools, read_only_hints.get(message.name or ""))
+        return message.text if text is None and served else text
     if (
         isinstance(message, AIMessage)
         and message.additional_kwargs.get("lc_source") == "summarization"
