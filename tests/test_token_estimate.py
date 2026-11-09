@@ -73,6 +73,24 @@ def test_without_the_encoding_the_per_character_rule_still_bounds_the_count(monk
     assert caplog.text.count("cl100k_base couldn't be loaded") == 1
 
 
+def test_without_the_encoding_a_cut_still_fits_its_budget(monkeypatch):
+    token_estimate.clear_cache()
+
+    def offline(name: str):
+        raise OSError("no network")
+
+    monkeypatch.setattr(token_estimate.tiktoken, "get_encoding", offline)
+    try:
+        text = sample("list_all_software_anvil.json")
+        cut = token_estimate.prefix_within(text, 500)
+        cost = token_estimate._by_character(cut)
+    finally:
+        token_estimate.clear_cache()
+
+    assert 0 < len(cut) < len(text)
+    assert cost <= 500
+
+
 def test_a_failed_load_is_retried_after_a_while(monkeypatch):
     token_estimate.clear_cache()
     real_load = token_estimate.tiktoken.get_encoding
