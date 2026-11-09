@@ -262,3 +262,57 @@ async def test_a_real_agent_lets_a_confirmed_call_through_after_a_reply():
     await agent.ainvoke({"messages": [*_previewed(), HumanMessage(content="Yes.")]})
 
     assert received == [True]
+
+
+async def _result(tool_call: dict[str, Any], messages: list[Any], content: str = PREVIEW) -> Any:
+    async def handler(request: Any) -> ToolMessage:
+        return ToolMessage(
+            content=content, tool_call_id=request.tool_call["id"], name="register_for_event"
+        )
+
+    return await PreviewFirstMiddleware().awrap_tool_call(_Request(tool_call, messages), handler)
+
+
+async def test_a_downgraded_call_tells_the_model_the_preview_is_expected():
+    """Without this the model reads a preview it didn't ask for as a backend fault."""
+    result = await _result(_call({"eventinstance_id": "9372", "confirmed": True}), [])
+
+    body = json.loads(result.content)
+    assert body["status"] == "preview"
+    assert "not an error" in body["note"]
+    assert "confirm" in body["note"]
+
+
+async def test_a_downgraded_preview_still_counts_as_a_preview():
+    result = await _result(_call({"eventinstance_id": "9372", "confirmed": True}, "c1"), [])
+    messages = [
+        HumanMessage(content="Sign me up."),
+        AIMessage(
+            content="", tool_calls=[_call({"eventinstance_id": "9372", "confirmed": True}, "c1")]
+        ),
+        result,
+        HumanMessage(content="Yes."),
+    ]
+
+    assert PreviewFirstMiddleware._may_confirm(messages, "9372")
+
+
+async def test_a_preview_the_model_asked_for_gets_no_note():
+    result = await _result(_call({"eventinstance_id": "9372"}), [])
+
+    assert "note" not in json.loads(result.content)
+
+
+async def test_a_confirmed_call_that_goes_through_gets_no_note():
+    done = json.dumps({"status": "registered", "approval": "pending"})
+    messages = [*_previewed(), HumanMessage(content="Yes, confirm.")]
+
+    result = await _result(_call({"eventinstance_id": "9372", "confirmed": True}), messages, done)
+
+    assert json.loads(result.content) == {"status": "registered", "approval": "pending"}
+
+
+async def test_a_downgraded_call_with_an_error_result_is_left_alone():
+    result = await _result(_call({"eventinstance_id": "9372", "confirmed": True}), [], "not json")
+
+    assert result.content == "not json"
