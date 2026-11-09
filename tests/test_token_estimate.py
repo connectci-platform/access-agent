@@ -56,8 +56,7 @@ def test_special_token_text_is_counted_as_text():
 
 
 def test_without_the_encoding_the_per_character_rule_still_bounds_the_count(monkeypatch, caplog):
-    token_estimate._encoding.cache_clear()
-    token_estimate.estimate_text.cache_clear()
+    token_estimate.clear_cache()
 
     def offline(name: str):
         raise OSError("no network")
@@ -68,11 +67,64 @@ def test_without_the_encoding_the_per_character_rule_still_bounds_the_count(monk
             estimates = {name: estimate_text(sample(name)) for name in REAL_TOKENS}
             estimate_text("again")
     finally:
-        token_estimate._encoding.cache_clear()
-        token_estimate.estimate_text.cache_clear()
+        token_estimate.clear_cache()
 
     assert all(estimates[name] >= real for name, real in REAL_TOKENS.items())
     assert caplog.text.count("cl100k_base couldn't be loaded") == 1
+
+
+def test_a_failed_load_is_retried_after_a_while(monkeypatch):
+    token_estimate.clear_cache()
+    real_load = token_estimate.tiktoken.get_encoding
+    now = [1000.0]
+    attempts: list[str] = []
+
+    def flaky(name: str):
+        attempts.append(name)
+        if len(attempts) == 1:
+            raise OSError("no network")
+        return real_load(name)
+
+    monkeypatch.setattr(token_estimate.tiktoken, "get_encoding", flaky)
+    monkeypatch.setattr(token_estimate.time, "monotonic", lambda: now[0])
+    try:
+        fallback = estimate_text("information " * 20)
+        assert estimate_text("information " * 20) == fallback
+        assert len(attempts) == 1
+        now[0] += token_estimate._RETRY_AFTER_S + 1
+        recounted = estimate_text("information " * 20)
+    finally:
+        token_estimate.clear_cache()
+
+    assert len(attempts) == 2
+    assert recounted < fallback
+
+
+def test_the_cache_keeps_counts_not_texts():
+    token_estimate.clear_cache()
+    for i in range(token_estimate._CACHED_COUNTS + 10):
+        estimate_text(f"text {i}")
+
+    assert len(token_estimate._counts) == token_estimate._CACHED_COUNTS
+    assert all(isinstance(key, tuple) for key in token_estimate._counts)
+    estimate_text(f"text {token_estimate._CACHED_COUNTS + 9}")
+    token_estimate.clear_cache()
+
+
+# Letters and digits interleaved, where removing the digits would glue letters
+# into tokens Qwen never makes. Real counts are from the Qwen3-8B tokenizer.json
+# (Hugging Face cache), the same BPE family as the deployment's Qwen, since
+# these strings weren't sent to vLLM.
+ADVERSARIAL = {
+    "a1" * 3000: 6_000,
+    "1e2e3e4e5e6e7e8e9e0" * 300: 5_700,
+    " ".join(f"{i}h{i % 60}m{i % 60}s" for i in range(1000)): 10_549,
+}
+
+
+@pytest.mark.parametrize("text", list(ADVERSARIAL), ids=["a1", "e_chain", "durations"])
+def test_letters_between_digits_are_not_undercounted(text):
+    assert estimate_text(text) >= ADVERSARIAL[text]
 
 
 def test_messages_count_their_text_calls_and_framing():

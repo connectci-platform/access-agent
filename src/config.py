@@ -182,9 +182,10 @@ class Settings(BaseSettings):
     # real tokens with a margin. The 102,044 below is real tokens.
     #
     # A current turn kept whole is at most SUMMARIZATION_TURN_CEILING_TOKENS,
-    # 85,000, plus the question and a summary of earlier turns. With the window
-    # guard's fixed costs (about 23,000 of schemas, 5,500 of system prompt and
-    # the 6,000 reply budget, all estimated) that leaves about 10,000 spare
+    # 85,000, plus the question and a summary of earlier turns. The window
+    # guard's fixed costs (about 24,000 of schemas, 4,700 of system prompt and
+    # the 6,000 reply budget, all estimated) leave about 96,400, so about 11,400
+    # past the ceiling, or about 5,000 once a full 6,000-token summary is in,
     # before the guard has to cut. Four Anvil-sized software lists (about 24,500
     # each) cross it; three stay whole. A turn over it keeps as much as fits
     # under it, from its earliest step that allows. Whatever gets through,
