@@ -48,10 +48,11 @@ from ..middleware.earlier_results import EarlierResultsMiddleware, earlier_resul
 from ..middleware.local_times import LocalTimesMiddleware
 from ..middleware.preview_first import PreviewFirstMiddleware
 from ..middleware.requires_auth import RequiresAuthMiddleware
-from ..middleware.turn_budget import TurnBudgetMiddleware, step_capped_view, truncated
+from ..middleware.turn_budget import TurnBudgetMiddleware, step_capped_view
 from ..profile import UserProfile
 from ..prompts.system_prompt import build_system_prompt
 from ..state import ToolResult
+from ..token_estimate import cut_to_tokens, estimate_messages
 from ..tools import search_access_documents
 from ..turn_capture import get_turn_capture, mark_summarized
 
@@ -372,8 +373,8 @@ _EMPTY_SUMMARIES = frozenset(
 )
 
 
-# How much of each tool result the summary model is shown.
-_SUMMARY_TOOL_RESULT_CHARS = 8000
+# How much of each tool result the summary model is shown, in estimated tokens.
+_SUMMARY_TOOL_RESULT_TOKENS = 2000
 # Upstream's _DEFAULT_FALLBACK_MESSAGE_COUNT, for a trim that fails.
 _SUMMARY_FALLBACK_MESSAGES = 15
 
@@ -431,17 +432,23 @@ class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
         and a summary of a summary would cost a model call on every step.
 
         The exception is a turn that alone outgrows
-        ``SUMMARIZATION_TURN_CEILING_TOKENS``. The next request would overflow
-        the model's window and fail, so upstream's cutoff applies: a degraded
-        answer rather than none.
+        ``SUMMARIZATION_TURN_CEILING_TOKENS``. Its next request would be cut
+        hard to fit the window, so as much of the turn as fits under the
+        ceiling is kept, from the earliest step that allows it, and the rest is
+        compacted: a degraded answer rather than a mangled one.
         """
         upstream = super()._determine_cutoff_index(messages)
         current = len(messages) - 1
         while current >= 0 and not isinstance(messages[current], HumanMessage):
             current -= 1
         current = max(current, 0)
-        if self.token_counter(messages[current:]) > settings.SUMMARIZATION_TURN_CEILING_TOKENS:
-            return upstream
+        ceiling = settings.SUMMARIZATION_TURN_CEILING_TOKENS
+        if self.token_counter(messages[current:]) > ceiling:
+            steps = [
+                i for i in range(current + 1, len(messages)) if isinstance(messages[i], AIMessage)
+            ]
+            fitting = (i for i in steps if self.token_counter(messages[i:]) <= ceiling)
+            return next(fitting, steps[-1] if steps else upstream)
         cutoff = min(upstream, current)
         if not any(
             not isinstance(m, HumanMessage) and not _is_summary(m) for m in messages[:cutoff]
@@ -458,7 +465,7 @@ class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
         since the summary needs their gist, and counted as sent.
         """
         clipped = [
-            m.model_copy(update={"content": truncated(m.content, _SUMMARY_TOOL_RESULT_CHARS)})
+            m.model_copy(update={"content": cut_to_tokens(m.content, _SUMMARY_TOOL_RESULT_TOKENS)})
             if isinstance(m, ToolMessage) and isinstance(m.content, str)
             else m
             for m in messages
@@ -468,7 +475,7 @@ class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
                 trim_messages(
                     clipped,
                     max_tokens=settings.SUMMARIZATION_INPUT_TOKENS,
-                    token_counter=count_tokens_approximately,
+                    token_counter=estimate_messages,
                     strategy="last",
                     allow_partial=True,
                 )
@@ -620,6 +627,10 @@ def _edit_aware_token_counter() -> TokenCounter:
     what the model actually sees, so summarization stays the long-conversation
     backstop the sizing comments in src/config.py describe.
     The earlier-results view is applied last, as it is on the way to the model.
+    Edits are triggered by the approximate count, as ContextEditingMiddleware's
+    are, but the result is counted with the conservative estimate the window
+    guard in TurnBudgetMiddleware uses, so the trigger, the ceiling and the
+    guard agree.
     """
     edit = ClearToolUsesEdit(
         trigger=settings.CONTEXT_EDIT_TRIGGER_TOKENS,
@@ -629,7 +640,7 @@ def _edit_aware_token_counter() -> TokenCounter:
     def count(messages: Iterable[Any]) -> int:
         edited = deepcopy(list(messages))
         edit.apply(edited, count_tokens=count_tokens_approximately)
-        return int(count_tokens_approximately(earlier_results_view(step_capped_view(edited))))
+        return estimate_messages(earlier_results_view(step_capped_view(edited)))
 
     return count
 

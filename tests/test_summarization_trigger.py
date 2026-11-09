@@ -15,6 +15,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
 
 from src.agent.nodes.tool_calling_loop import _edit_aware_token_counter
+from src.agent.token_estimate import estimate_messages
 from src.config import settings
 
 
@@ -67,6 +68,6 @@ def test_a_genuinely_long_thread_still_trips_summarization():
     assert _edit_aware_token_counter()(huge) > settings.SUMMARIZATION_TRIGGER_TOKENS
 
 
-def test_small_threads_are_unaffected():
+def test_small_threads_are_counted_whole():
     msgs = _fanout(2, 500)
-    assert _edit_aware_token_counter()(msgs) == count_tokens_approximately(msgs)
+    assert _edit_aware_token_counter()(msgs) == estimate_messages(msgs)
