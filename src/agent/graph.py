@@ -1,8 +1,9 @@
 """LangGraph definition for the ACCESS Documentation Agent.
 
-Single-loop design: every query flows START → tool_calling_loop → END, except
-a capability question ("What can you do?"), which START routes to
-capability_discovery to answer from the registry without the model.
+Single-loop design: every query flows START → tool_calling_loop →
+suggest_follow_ups → END, except a capability question ("What can you
+do?"), which START routes to capability_discovery to answer from the
+registry without the model.
 The loop's system prompt and tool list (full MCP catalog plus
 ``search_access_documents``) let the LLM decide when to look things up,
 when to call tools, and when to answer — no upstream classifier or
@@ -23,6 +24,7 @@ from langgraph.graph import END, START, StateGraph
 from ..telemetry import get_tracer
 from .context import AgentContext
 from .nodes.capability_discovery import capability_discovery_node, is_capability_question
+from .nodes.follow_up_questions import suggest_follow_ups_node
 from .nodes.tool_calling_loop import tool_calling_loop_node
 from .profile import UserProfile
 from .state import AgentState
@@ -59,7 +61,11 @@ def _route_turn(state: AgentState) -> str:
 
 
 def _build_graph_structure(builder: _Builder) -> _Builder:
-    """Wire the graph: START → (capability_discovery | tool_calling_loop) → END.
+    """Wire the graph: START → capability_discovery → END, or
+    START → tool_calling_loop → suggest_follow_ups → END.
+
+    suggest_follow_ups runs after the answer is complete and changes nothing
+    outside a full-screen thread run.
 
     The node signatures are ``(dict[str, Any], Runtime) -> dict[str, Any]``
     (accepts the react-agent messages dict shape); mypy can't match that to
@@ -67,8 +73,10 @@ def _build_graph_structure(builder: _Builder) -> _Builder:
     """
     builder.add_node("tool_calling_loop", tool_calling_loop_node)  # type: ignore[call-overload]
     builder.add_node("capability_discovery", capability_discovery_node)  # type: ignore[call-overload]
+    builder.add_node("suggest_follow_ups", suggest_follow_ups_node)  # type: ignore[call-overload]
     builder.add_conditional_edges(START, _route_turn, ["capability_discovery", "tool_calling_loop"])
-    builder.add_edge("tool_calling_loop", END)
+    builder.add_edge("tool_calling_loop", "suggest_follow_ups")
+    builder.add_edge("suggest_follow_ups", END)
     builder.add_edge("capability_discovery", END)
     return builder
 
