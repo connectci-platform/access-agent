@@ -16,17 +16,20 @@ refusal if every run failed. Those records live here rather than in the
 messages, which compaction can rewrite. One instance per turn.
 
 The model also sees each step's results cut to a shared budget, so a step of
-large parallel results can't overflow its window (``step_capped_view``).
+large parallel results can't crowd out the rest (``step_capped_view``), and
+every request it gets, the last one included, cut to fit its window
+(``fitted_view``). Both count with ``token_estimate``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from langchain.agents.middleware.types import AgentMiddleware, ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -34,6 +37,17 @@ from pydantic import BaseModel, ValidationError
 
 from ...config import settings
 from ..auth_tools import ToolIdentityClass, tool_identity_class
+from ..token_estimate import (
+    cut_to_tokens,
+    estimate_messages,
+    estimate_text,
+    estimate_tools,
+    truncated_note,
+)
+
+logger = logging.getLogger(__name__)
+
+_Result = TypeVar("_Result")
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -119,30 +133,27 @@ def _not_run(call: Any, text: str, reason: str) -> ToolMessage:
     )
 
 
-def truncated(text: str, limit: int) -> str:
-    """``text`` cut to ``limit`` characters, saying so, or ``text`` if it fits."""
-    if len(text) <= limit:
-        return text
-    return f"{text[:limit]}\n\n[result truncated: {limit} of {len(text)} characters]"
+def _shares(sizes: list[int], budget: int) -> list[int]:
+    """Split ``budget`` among results of these sizes, smallest first.
 
-
-def _shares(lengths: list[int], budget: int) -> list[int]:
-    """Split ``budget`` among results of these lengths, smallest first.
-
-    A result shorter than an even share keeps all of it and leaves the rest to
+    A result smaller than an even share keeps all of it and leaves the rest to
     the others, so a lone result can use the whole budget.
     """
-    shares = [0] * len(lengths)
+    shares = [0] * len(sizes)
     remaining = budget
-    order = sorted(range(len(lengths)), key=lengths.__getitem__)
+    order = sorted(range(len(sizes)), key=sizes.__getitem__)
     for position, index in enumerate(order):
-        shares[index] = min(lengths[index], remaining // (len(order) - position))
+        shares[index] = min(sizes[index], remaining // (len(order) - position))
         remaining -= shares[index]
     return shares
 
 
+def _with_content(message: Any, content: str) -> Any:
+    return message.model_copy(update={"content": content})
+
+
 def step_capped_view(messages: list[Any]) -> list[Any]:
-    """The model's view with each step's results cut to ``TOOL_STEP_MAX_CHARS`` together.
+    """The model's view with each step's results cut to ``TOOL_STEP_MAX_TOKENS`` together.
 
     A step is one model response's calls, whose results arrive as one run of
     tool messages. Parallel results share the budget, so no single step can
@@ -160,18 +171,53 @@ def step_capped_view(messages: list[Any]) -> list[Any]:
             index += 1
             continue
         step = [i for i in range(index, end) if isinstance(messages[i].content, str)]
-        lengths = [len(messages[i].content) for i in step]
-        for position, share in zip(
-            step, _shares(lengths, settings.TOOL_STEP_MAX_CHARS), strict=True
-        ):
-            message = messages[position]
-            if share < len(message.content):
-                view[position] = message.model_copy(
-                    update={"content": truncated(message.content, share)}
-                )
+        sizes = [estimate_text(messages[i].content) for i in step]
+        shares = _shares(sizes, settings.TOOL_STEP_MAX_TOKENS)
+        for position, size, share in zip(step, sizes, shares, strict=True):
+            if share < size:
+                message = messages[position]
+                view[position] = _with_content(message, cut_to_tokens(message.content, share))
                 cut = True
         index = end
     return view if cut else messages
+
+
+def fitted_view(messages: list[Any], limit: int) -> list[Any]:
+    """The model's view cut to ``limit`` estimated tokens, the last line of defence.
+
+    Tool results are cut, oldest first and the current turn's included, until
+    the messages fit. Nothing is dropped or reordered, so every call keeps its
+    result. Returns ``messages`` itself when they already fit.
+    """
+    over = estimate_messages(messages) - limit
+    if over <= 0:
+        return messages
+    view = list(messages)
+    for index, message in enumerate(messages):
+        if not (isinstance(message, ToolMessage) and isinstance(message.content, str)):
+            continue
+        size = estimate_text(message.content)
+        cut = cut_to_tokens(message.content, max(size - over, 0))
+        view[index] = _with_content(message, cut)
+        over -= size - estimate_text(cut)
+        if over <= 0:
+            return view
+    logger.warning("model request is still %d estimated tokens over the window", over)
+    return view
+
+
+def _stored(result: _Result) -> _Result:
+    """A result short enough to keep in the thread, which replays it every turn."""
+    limit = settings.TOOL_RESULT_STORE_MAX_CHARS
+    if (
+        isinstance(result, ToolMessage)
+        and isinstance(result.content, str)
+        and len(result.content) > limit
+    ):
+        text = result.content
+        stored: _Result = _with_content(result, f"{text[:limit]}{truncated_note(limit, len(text))}")
+        return stored
+    return result
 
 
 def _succeeded(result: ToolMessage) -> bool:
@@ -287,9 +333,9 @@ class TurnBudgetMiddleware(AgentMiddleware):
         if remaining <= lead:
             return _not_run(call, PAST_DEADLINE_TEXT, "turn_deadline")
         if is_write:
-            result = await handler(request)
+            result = _stored(await handler(request))
         else:
-            result = await self._run_read(request, handler, remaining)
+            result = _stored(await self._run_read(request, handler, remaining))
         if not _timed_out(result):
             if not is_write and isinstance(result, ToolMessage):
                 self._runs[key] = self._runs.get(key, 0) + 1
@@ -332,18 +378,31 @@ class TurnBudgetMiddleware(AgentMiddleware):
             }
         )
 
+    @staticmethod
+    def _room_for_messages(request: ModelRequest, tools: list[Any]) -> int:
+        """The window less the reply's budget, the system prompt and the tool schemas."""
+        system = getattr(request, "system_message", None)
+        fixed = estimate_text(system.text) if system is not None else 0
+        return (
+            settings.MODEL_CONTEXT_TOKENS - settings.MAX_TOKENS_LOOP - fixed - estimate_tools(tools)
+        )
+
     async def awrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
         last_call = self.out_of_time()
-        capped = step_capped_view(request.messages)
+        tools: list[Any] = [] if last_call else list(request.tools)
+        note = estimate_text(ANSWER_NOW_NOTE) + 8 if last_call else 0
+        messages = fitted_view(
+            step_capped_view(request.messages), self._room_for_messages(request, tools) - note
+        )
         if last_call:
             self.deadline_hit = True
-            request = request.override(tools=[], messages=_with_answer_note(capped))
-        elif capped is not request.messages:
-            request = request.override(messages=capped)
+            request = request.override(tools=[], messages=_with_answer_note(messages))
+        elif messages is not request.messages:
+            request = request.override(messages=messages)
         started = time.monotonic()
         response = await handler(request)
         self._longest_model_call_s = max(self._longest_model_call_s, time.monotonic() - started)

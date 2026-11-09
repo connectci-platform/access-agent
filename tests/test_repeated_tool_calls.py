@@ -231,3 +231,20 @@ def test_a_served_reference_result_alone_adds_no_earlier_turn_note():
 
     assert view[-1].content == "thanks"
     assert EARLIER_TURN_NOTE not in view[-1].content
+
+
+async def test_a_huge_result_is_stored_cut_and_says_so(monkeypatch):
+    monkeypatch.setattr("src.agent.middleware.turn_budget.settings.TOOL_RESULT_STORE_MAX_CHARS", 10)
+
+    async def handler(request: Any) -> ToolMessage:
+        return ToolMessage("A" * 25, tool_call_id="c", name="list_all_software")
+
+    result = await _budget().awrap_tool_call(_Request("list_all_software", {}), handler)
+
+    assert result.content == "A" * 10 + "\n\n[result truncated: 10 of 25 characters]"
+
+
+async def test_a_result_under_the_storage_cap_is_kept_whole():
+    result = await _budget().awrap_tool_call(_Request("search_software", {}), _Handler())
+
+    assert result.content == '{"hits": 1}'

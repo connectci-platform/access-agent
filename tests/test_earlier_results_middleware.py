@@ -46,6 +46,7 @@ from src.agent.nodes.tool_calling_loop import (
     _build_context_editing_middleware,
     _edit_aware_token_counter,
 )
+from src.agent.token_estimate import estimate_messages
 from src.config import settings
 from tests.agent_runtime import context_for, run_loop
 
@@ -294,15 +295,15 @@ def test_the_summarization_counter_measures_the_view_the_model_gets():
 
     counted = _edit_aware_token_counter()(thread)
 
-    assert counted == count_tokens_approximately(earlier_results_view(thread))
-    assert counted < count_tokens_approximately(thread)
+    assert counted == estimate_messages(earlier_results_view(thread))
+    assert counted < estimate_messages(thread)
 
 
 def test_the_summarization_counter_copes_with_a_tail_that_has_no_question():
     """Upstream searches for the cutoff by counting suffixes of the thread."""
     tail = [_ai_call(LIVE), _result(LIVE, TIMEOUT)]
 
-    assert _edit_aware_token_counter()(tail) == count_tokens_approximately(tail)
+    assert _edit_aware_token_counter()(tail) == estimate_messages(tail)
 
 
 def _recording_model(script: list[AIMessage], seen: list[list[Any]]) -> GenericFakeChatModel:
