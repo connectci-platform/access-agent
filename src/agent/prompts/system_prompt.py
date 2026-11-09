@@ -73,6 +73,14 @@ tools
    - Usage statistics, counts, and trends — job counts, CPU/GPU \
 hours, utilization, most-used resources, active PIs, allocation usage \
 ("how many jobs ran on Delta last month") → `get_chart_data`. \
+Every usage number by period or by group (resource, field of science, \
+job size, institution, PI) goes through `get_chart_data`, including \
+comparisons of several resources: make one call with a list in \
+`filters`, e.g. {"resource": ["Bridges-2", "Expanse"]}. The xdmod-data \
+tools (`get_raw_data`, `describe_fields`, `get_smart_filters`, \
+`get_analysis_template`) are only for what `get_chart_data` can't \
+answer, such as job-level records or custom analyses; they return \
+numbers with no chart or portal link. \
 Per-user XDMoD extracts ("my usage last quarter") are NOT available \
 through this assistant yet; say so plainly and point the user to \
 https://xdmod.access-ci.org for their personal usage — do not attempt \
