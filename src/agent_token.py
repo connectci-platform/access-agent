@@ -301,6 +301,16 @@ def check_agent_token_config(settings: Settings) -> None:
                 f"MCP_ACTING_USER_TOKEN={settings.MCP_ACTING_USER_TOKEN} requires "
                 + " and ".join(missing)
             )
+        if settings.ENVIRONMENT == "production":
+            # Explicit in production, so a default can't point the exchange or
+            # the servers' audience somewhere unintended.
+            if not settings.MCP_TOKEN_EXCHANGE_URL or not settings.MCP_TOKEN_AUDIENCE:
+                raise RuntimeError(
+                    "Production requires MCP_TOKEN_EXCHANGE_URL and MCP_TOKEN_AUDIENCE "
+                    "when MCP_ACTING_USER_TOKEN is not off"
+                )
+            if not settings.MCP_TOKEN_EXCHANGE_URL.startswith("https://"):
+                raise RuntimeError("Production requires MCP_TOKEN_EXCHANGE_URL to use https")
     if settings.ENVIRONMENT != "production":
         return
     missing = [

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import secrets
 import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs
@@ -26,10 +27,24 @@ if TYPE_CHECKING:
 EXCHANGE_URL = "https://portal.test/api/token-exchange"
 AUDIENCE = "https://mcp.access-ci.org"
 SUB = "jsmith@access-ci.org"
-AGENT_TOKEN = "agent.token.value"
 SECRET = "s3cret:with/odd+chars"
 
 _KEY = ec.generate_private_key(ec.SECP256R1())
+
+
+def agent_jwt(sub: str = SUB) -> str:
+    """An agent token for ``sub``; the agent verified it before any exchange."""
+    now = int(time.time())
+    payload = {
+        "sub": sub,
+        "aud": "http://localhost:8000",
+        "jti": secrets.token_hex(4),
+        "exp": now + 900,
+    }
+    return jwt.encode(payload, _KEY, algorithm="ES256")
+
+
+AGENT_TOKEN = agent_jwt()
 
 
 def mcp_jwt(**claims: Any) -> str:
@@ -117,7 +132,7 @@ class TestExchanger:
         now = [time.time()]
         ex = exchanger(portal, clock=lambda: now[0])
         first = await ex.token_for(SUB, AGENT_TOKEN)
-        assert await ex.token_for(SUB, "a.newer.agent-token") == first
+        assert await ex.token_for(SUB, agent_jwt()) == first
         assert len(portal.requests) == 1
 
         now[0] += 900 - mcp_token.REFRESH_MARGIN_S + 1
@@ -412,7 +427,8 @@ class TestEdges:
         monkeypatch.setattr(mcp_token, "MAX_CACHED", 1)
 
         def handler(request: httpx.Request) -> httpx.Response:
-            sub = "a@access-ci.org" if b"a.agent" in request.content else SUB
+            form = parse_qs(request.content.decode())
+            sub = jwt.decode(form["subject_token"][0], options={"verify_signature": False})["sub"]
             return httpx.Response(
                 200, json={"access_token": mcp_jwt(sub=sub), "token_type": "Bearer"}
             )
@@ -424,6 +440,126 @@ class TestEdges:
             audience=AUDIENCE,
             transport=httpx.MockTransport(handler),
         )
-        await ex.token_for("a@access-ci.org", "a.agent.token")
+        await ex.token_for("a@access-ci.org", agent_jwt("a@access-ci.org"))
         await ex.token_for(SUB, AGENT_TOKEN)
         assert list(ex._cache) == [SUB]
+
+    async def test_a_cache_hit_needs_an_agent_token_for_the_same_user(self):
+        portal = Portal()
+        ex = exchanger(portal)
+        await ex.token_for(SUB, AGENT_TOKEN)
+        with pytest.raises(McpTokenUnavailableError, match="another user"):
+            await ex.token_for(SUB, agent_jwt("someone-else@access-ci.org"))
+        with pytest.raises(McpTokenUnavailableError, match="another user"):
+            await ex.token_for(SUB, "not-a-jwt")
+        assert len(portal.requests) == 1
+
+    async def test_a_failed_exchange_is_not_retried_for_a_while(self):
+        portal = Portal(status=400)
+        now = [time.time()]
+        ex = exchanger(portal, clock=lambda: now[0])
+        for _ in range(3):
+            with pytest.raises(McpTokenUnavailableError, match="invalid_grant"):
+                await ex.token_for(SUB, AGENT_TOKEN)
+        assert len(portal.requests) == 1
+        now[0] += mcp_token.FAILURE_TTL_S + 1
+        portal.status, portal.token = 200, None
+        await ex.token_for(SUB, AGENT_TOKEN)
+        assert len(portal.requests) == 2
+
+    async def test_invalidate_drops_the_cached_token(self):
+        portal = Portal()
+        ex = exchanger(portal)
+        await ex.token_for(SUB, AGENT_TOKEN)
+        ex.invalidate(SUB)
+        await ex.token_for(SUB, AGENT_TOKEN)
+        assert len(portal.requests) == 2
+
+
+def refuse(httpx_mock: HTTPXMock, status: int) -> None:
+    headers = {"www-authenticate": 'Bearer error="invalid_token"'} if status == 401 else {}
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{EVENTS}/tools/register_for_event",
+        status_code=status,
+        headers=headers,
+        json={"error": "refused"},
+        match_headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+
+
+class TestServerRefusesTheToken:
+    @pytest.mark.parametrize("status", [401, 503])
+    async def test_send_drops_the_token_and_retries_once_with_the_header(
+        self, monkeypatch, portal, signed_in, httpx_mock: HTTPXMock, status: int
+    ):
+        monkeypatch.setattr(settings, "MCP_ACTING_USER_TOKEN", "send")
+        refuse(httpx_mock, status)
+        ok(httpx_mock, f"{EVENTS}/tools/register_for_event")
+        result = await client().call_tool("events", "register_for_event", {}, acting_user=SUB)
+        assert result.success
+        first, second = httpx_mock.get_requests()
+        assert first.headers["authorization"] == f"Bearer {TOKEN}"
+        assert "authorization" not in second.headers
+        assert second.headers["x-acting-user"] == SUB
+        assert SUB not in mcp_token._exchanger._cache
+
+    async def test_require_drops_the_token_and_fails_clearly(
+        self, monkeypatch, portal, signed_in, httpx_mock: HTTPXMock
+    ):
+        monkeypatch.setattr(settings, "MCP_ACTING_USER_TOKEN", "require")
+        refuse(httpx_mock, 401)
+        result = await client().call_tool("events", "register_for_event", {}, acting_user=SUB)
+        assert not result.success
+        assert "didn't accept the researcher's sign-in" in (result.error or "")
+        assert len(httpx_mock.get_requests()) == 1
+        assert SUB not in mcp_token._exchanger._cache
+
+    async def test_an_ordinary_error_is_not_retried(
+        self, monkeypatch, portal, signed_in, httpx_mock: HTTPXMock
+    ):
+        monkeypatch.setattr(settings, "MCP_ACTING_USER_TOKEN", "send")
+        httpx_mock.add_response(
+            method="POST", url=f"{EVENTS}/tools/register_for_event", status_code=500, json={}
+        )
+        result = await client().call_tool("events", "register_for_event", {}, acting_user=SUB)
+        assert not result.success
+        assert len(httpx_mock.get_requests()) == 1
+        assert SUB in mcp_token._exchanger._cache
+
+
+class TestProductionStartup:
+    def test_production_needs_the_exchange_url_and_audience(self, monkeypatch: pytest.MonkeyPatch):
+        from src.agent_token import check_agent_token_config
+
+        monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+        monkeypatch.setattr(settings, "AGENT_TOKEN_ISSUER", "https://support.access-ci.org")
+        monkeypatch.setattr(
+            settings,
+            "AGENT_TOKEN_JWKS_URL",
+            "https://support.access-ci.org/.well-known/exchange-jwks.json",
+        )
+        monkeypatch.setattr(settings, "MCP_ACTING_USER_TOKEN", "send")
+        monkeypatch.setattr(settings, "TOKEN_EXCHANGE_CLIENT_SECRET", "s")
+        monkeypatch.setattr(settings, "MCP_TOKEN_EXCHANGE_URL", "")
+        monkeypatch.setattr(settings, "MCP_TOKEN_AUDIENCE", "")
+        with pytest.raises(RuntimeError, match="MCP_TOKEN_EXCHANGE_URL and MCP_TOKEN_AUDIENCE"):
+            check_agent_token_config(settings)
+        monkeypatch.setattr(
+            settings, "MCP_TOKEN_EXCHANGE_URL", "http://support.access-ci.org/api/token-exchange"
+        )
+        monkeypatch.setattr(settings, "MCP_TOKEN_AUDIENCE", "https://mcp.access-ci.org")
+        with pytest.raises(RuntimeError, match="https"):
+            check_agent_token_config(settings)
+        monkeypatch.setattr(
+            settings, "MCP_TOKEN_EXCHANGE_URL", "https://support.access-ci.org/api/token-exchange"
+        )
+        check_agent_token_config(settings)
+
+    async def test_remembered_failures_are_bounded(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(mcp_token, "MAX_CACHED", 1)
+        ex = exchanger(Portal(status=400))
+        for sub in ("a@access-ci.org", SUB):
+            with pytest.raises(McpTokenUnavailableError):
+                await ex.token_for(sub, agent_jwt(sub))
+        assert list(ex._failures) == [SUB]
