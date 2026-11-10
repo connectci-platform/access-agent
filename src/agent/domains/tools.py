@@ -137,8 +137,9 @@ class MCPToolWrapper(BaseTool):
     async def _arun(self, **kwargs: Any) -> tuple[str, Any]:
         """Call the MCP tool; return its result as a JSON string, plus any structured content as the artifact.
 
-        The MCP servers trust ``X-Acting-User``, so the agent is the only place
-        a write is stopped. The identity gate refuses first; this checks again
+        Until the servers require the acting-user token (D8-2946, rollout step
+        3), they trust ``X-Acting-User``, so the agent is the only place a write
+        is stopped. The identity gate refuses first; this checks again
         at the one path to ``call_tool``, against the same rule, so a context
         plumbing mistake can't let a write through. It returns a refusal rather
         than raising, because a tool that raises aborts the whole turn.

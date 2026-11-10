@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from ..config import settings
 from ..telemetry import create_async_client
 from ..telemetry.spans import trace_mcp_call
+from .mcp_token import McpTokenUnavailableError, get_mcp_token_exchanger
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +154,14 @@ class MCPClient:
             headers["X-Acting-User"] = acting_user
         if server in settings.mcp_servers_requiring_api_key and settings.MCP_API_KEY:
             headers["X-Api-Key"] = settings.MCP_API_KEY
+        if acting_user and server in settings.mcp_servers_acting_for_users:
+            refusal = await self._add_acting_user_token(headers, server, acting_user)
+            if refusal is not None:
+                return MCPToolResult(
+                    success=False,
+                    error=refusal,
+                    duration_ms=int(time.time() * 1000) - start_ms,
+                )
 
         with trace_mcp_call(server, tool_name, arguments) as span:
             # span_error is what Honeycomb sees: response bodies and exception
@@ -228,6 +237,40 @@ class MCPClient:
                 # span-status error queries (e.g. the Honeycomb board) see failures.
                 span.set_status(Status(StatusCode.ERROR, span_error or "tool call failed"))
             return result
+
+    async def _add_acting_user_token(
+        self, headers: dict[str, str], server: str, acting_user: str
+    ) -> str | None:
+        """Adds the acting-user token for a server that acts for users.
+
+        Returns a refusal for the caller, or None to send the call. With
+        MCP_ACTING_USER_TOKEN=send a failed exchange leaves X-Acting-User alone
+        (rollout step 2); with require the call is not sent at all, since the
+        servers refuse the bare header from step 3 on.
+        """
+        mode = settings.MCP_ACTING_USER_TOKEN
+        if mode == "off":
+            return None
+        # Imported here: src.api imports the agent, which imports this module.
+        from ..api.identity import current_agent_token
+
+        try:
+            token = await get_mcp_token_exchanger().token_for(acting_user, current_agent_token())
+        except McpTokenUnavailableError as e:
+            if mode == "send":
+                logger.warning(
+                    "MCP acting-user token unavailable for %s, sending X-Acting-User only: %s",
+                    server,
+                    e,
+                )
+                return None
+            logger.error("MCP acting-user token unavailable for %s, call not sent: %s", server, e)
+            return (
+                "This action wasn't sent: the researcher's sign-in couldn't be confirmed with "
+                f"the ACCESS tool server ({e}). Ask them to sign in again and retry."
+            )
+        headers["Authorization"] = f"Bearer {token}"
+        return None
 
     def _parse_mcp_response(self, data: Any) -> Any:
         """Parse MCP response format to extract actual data.

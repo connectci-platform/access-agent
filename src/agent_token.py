@@ -287,6 +287,20 @@ def check_agent_token_config(settings: Settings) -> None:
         raise RuntimeError("XDMOD_TOOL_TIMEOUT_S must be positive")
     if settings.NSF_XDMOD_TOOL_TIMEOUT_S <= 0:
         raise RuntimeError("NSF_XDMOD_TOOL_TIMEOUT_S must be positive")
+    if settings.MCP_ACTING_USER_TOKEN != "off":
+        missing = [
+            name
+            for name, value in (
+                ("TOKEN_EXCHANGE_CLIENT_SECRET", settings.TOKEN_EXCHANGE_CLIENT_SECRET),
+                ("MCP_TOKEN_EXCHANGE_URL or AGENT_TOKEN_ISSUER", settings.mcp_token_exchange_url),
+            )
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(
+                f"MCP_ACTING_USER_TOKEN={settings.MCP_ACTING_USER_TOKEN} requires "
+                + " and ".join(missing)
+            )
     if settings.ENVIRONMENT != "production":
         return
     missing = [

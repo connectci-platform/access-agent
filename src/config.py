@@ -104,6 +104,39 @@ class Settings(BaseSettings):
     def agent_token_allowed_azp(self) -> frozenset[str]:
         return frozenset(c.strip() for c in self.AGENT_TOKEN_ALLOWED_AZP.split(",") if c.strip())
 
+    # Acting-user tokens for the MCP tool servers (D8-2946,
+    # src/tools/mcp_token.py). The agent exchanges the caller's agent token at
+    # the portal's /api/token-exchange, as the access-assistant client, and
+    # sends the result to the servers in mcp_servers_acting_for_users.
+    #   off:     X-Acting-User only (before rollout step 2).
+    #   send:    the token too; if the exchange fails, X-Acting-User alone.
+    #   require: the token too; if the exchange fails, the call isn't sent
+    #            (rollout step 3, with the servers' MCP_ACTING_USER_AUTH=token).
+    MCP_ACTING_USER_TOKEN: Literal["off", "send", "require"] = "off"
+    TOKEN_EXCHANGE_CLIENT_ID: str = "access-assistant"
+    TOKEN_EXCHANGE_CLIENT_SECRET: str = ""
+    # Empty means AGENT_TOKEN_ISSUER + /api/token-exchange.
+    MCP_TOKEN_EXCHANGE_URL: str = ""
+    # Empty means the per-environment default below, which must match the
+    # servers' MCP_TOKEN_AUDIENCE and the portal's registry.
+    MCP_TOKEN_AUDIENCE: str = ""
+
+    @property
+    def mcp_token_exchange_url(self) -> str:
+        if self.MCP_TOKEN_EXCHANGE_URL:
+            return self.MCP_TOKEN_EXCHANGE_URL
+        if self.AGENT_TOKEN_ISSUER:
+            return self.AGENT_TOKEN_ISSUER.rstrip("/") + "/api/token-exchange"
+        return ""
+
+    @property
+    def mcp_token_audience(self) -> str:
+        if self.MCP_TOKEN_AUDIENCE:
+            return self.MCP_TOKEN_AUDIENCE
+        if self.ENVIRONMENT == "production":
+            return "https://mcp.access-ci.org"
+        return "https://mcp.dev.invalid"
+
     # Turnstile bot protection (Cloudflare)
     # When TURNSTILE_SECRET_KEY is empty, Turnstile is disabled (current behavior).
     TURNSTILE_SITE_KEY: str = ""
@@ -384,6 +417,13 @@ class Settings(BaseSettings):
         and/or user-scoped reads. allocations is keyed for its user-scoped
         rp-account reads (get_my_rp_accounts / get_rp_account), not writes."""
         return {"jsm", "announcements", "events", "allocations"}
+
+    @property
+    def mcp_servers_acting_for_users(self) -> set[str]:
+        """Servers whose tools act as the signed-in researcher, and so get the
+        acting-user token (MCP_ACTING_USER_TOKEN). jsm files tickets on its own
+        service account and stays off this list."""
+        return {"announcements", "events", "allocations"}
 
     # T2 data-residency guard (fail closed). Production user queries must never
     # reach a commercial model API — a formal program mandate, and Table 1 of
