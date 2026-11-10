@@ -132,9 +132,16 @@ class McpTokenExchanger:
         entry = await asyncio.shield(task)
         return entry.token
 
-    def invalidate(self, acting_user: str) -> None:
-        """Drops a cached token, after a tool server refused it."""
+    def refused(self, acting_user: str) -> None:
+        """A tool server refused this user's token: drop it, and for
+        FAILURE_TTL_S answer as a failed exchange instead of minting another,
+        so a server that keeps refusing can't spend the portal's allowance
+        (shared with XDMoD) on every call."""
         self._cache.pop(acting_user, None)
+        self._failures[acting_user] = (self._clock(), "the tool server refused the sign-in token")
+        self._failures.move_to_end(acting_user)
+        while len(self._failures) > MAX_CACHED:
+            self._failures.popitem(last=False)
 
     def _forget(self, acting_user: str, task: asyncio.Task[_Cached]) -> None:
         if self._inflight.get(acting_user) is task:
