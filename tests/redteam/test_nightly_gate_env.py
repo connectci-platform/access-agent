@@ -31,5 +31,6 @@ def test_gate_env_passes_the_lifespan_agent_token_check():
             ENVIRONMENT=env["ENVIRONMENT"],
             AGENT_TOKEN_ISSUER=env.get("AGENT_TOKEN_ISSUER", ""),
             AGENT_TOKEN_JWKS_URL=env.get("AGENT_TOKEN_JWKS_URL", ""),
+            MCP_ACTING_USER_TOKEN=env.get("MCP_ACTING_USER_TOKEN", "off"),
         )
     )
