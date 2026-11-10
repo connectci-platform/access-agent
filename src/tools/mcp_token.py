@@ -47,6 +47,9 @@ REFRESH_MARGIN_S = 90
 MAX_CACHED = 2000
 # The portal mints for 900 seconds; anything longer is not what we asked for.
 MAX_LIFETIME_S = 900
+# A failed exchange is answered from memory this long, so a misconfiguration
+# doesn't spend the portal's 60-an-hour allowance on every tool call.
+FAILURE_TTL_S = 30
 
 
 class McpTokenUnavailableError(Exception):
@@ -80,6 +83,7 @@ class McpTokenExchanger:
         self._transport = transport
         self._cache: OrderedDict[str, _Cached] = OrderedDict()
         self._inflight: dict[str, asyncio.Task[_Cached]] = {}
+        self._failures: OrderedDict[str, tuple[float, str]] = OrderedDict()
 
     @classmethod
     def from_settings(cls, settings: Settings) -> McpTokenExchanger:
@@ -106,6 +110,13 @@ class McpTokenExchanger:
             raise McpTokenUnavailableError("the token exchange is not configured")
         if not agent_token:
             raise McpTokenUnavailableError("the request carries no sign-in token to exchange")
+        # The agent token was verified for this request; a cached token is
+        # only ever handed to a request signed in as the same user.
+        if _subject(agent_token) != acting_user:
+            raise McpTokenUnavailableError("the sign-in token belongs to another user")
+        failed = self._failures.get(acting_user)
+        if failed is not None and self._clock() - failed[0] < FAILURE_TTL_S:
+            raise McpTokenUnavailableError(failed[1])
         cached = self._cache.get(acting_user)
         if cached is not None and cached.expires_at - self._clock() > REFRESH_MARGIN_S:
             self._cache.move_to_end(acting_user)
@@ -121,9 +132,20 @@ class McpTokenExchanger:
         entry = await asyncio.shield(task)
         return entry.token
 
+    def invalidate(self, acting_user: str) -> None:
+        """Drops a cached token, after a tool server refused it."""
+        self._cache.pop(acting_user, None)
+
     def _forget(self, acting_user: str, task: asyncio.Task[_Cached]) -> None:
         if self._inflight.get(acting_user) is task:
             del self._inflight[acting_user]
+        if not task.cancelled() and isinstance(task.exception(), McpTokenUnavailableError):
+            self._failures[acting_user] = (self._clock(), str(task.exception()))
+            self._failures.move_to_end(acting_user)
+            while len(self._failures) > MAX_CACHED:
+                self._failures.popitem(last=False)
+        else:
+            self._failures.pop(acting_user, None)
 
     async def _exchange(self, acting_user: str, agent_token: str) -> _Cached:
         # RFC 6749 2.3.1: each half is form-encoded before base64.
@@ -213,6 +235,14 @@ def _access_token(response: httpx.Response) -> str:
     ):
         raise McpTokenUnavailableError("the portal returned an unexpected token")
     return token
+
+
+def _subject(agent_token: str) -> str | None:
+    try:
+        sub = jwt.decode(agent_token, options={"verify_signature": False}).get("sub")
+    except jwt.InvalidTokenError:
+        return None
+    return sub if isinstance(sub, str) else None
 
 
 def _unverified_claims(token: str) -> dict[str, Any]:

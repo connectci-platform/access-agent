@@ -166,13 +166,8 @@ class MCPClient:
             # for the agent and local logs.
             span_error: str | None = None
             try:
-                response = await client.post(
-                    url,
-                    json={"arguments": arguments},
-                    headers=headers,
-                    # Per request: the shared client keeps whichever timeout it
-                    # was first built with, which can be health_check's.
-                    timeout=self.timeout_for(server, tool_name),
+                response = await self._post(
+                    client, url, arguments, headers, server, tool_name, acting_user
                 )
                 response.raise_for_status()
 
@@ -198,7 +193,7 @@ class MCPClient:
                 span_error = f"HTTP {e.response.status_code}"
                 result = MCPToolResult(
                     success=False,
-                    error=f"HTTP {e.response.status_code}: {e.response.text[:500]}",
+                    error=_status_error(e.response, token_sent="Authorization" in headers),
                     duration_ms=int(time.time() * 1000) - start_ms,
                 )
             except httpx.TimeoutException:
@@ -268,6 +263,63 @@ class MCPClient:
         headers["Authorization"] = f"Bearer {token}"
         return None
 
+    async def _post(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        arguments: dict[str, Any],
+        headers: dict[str, str],
+        server: str,
+        tool_name: str,
+        acting_user: str | None,
+    ) -> httpx.Response:
+        response = await client.post(
+            url,
+            json={"arguments": arguments},
+            headers=headers,
+            # Per request: the shared client keeps whichever timeout it
+            # was first built with, which can be health_check's.
+            timeout=self.timeout_for(server, tool_name),
+        )
+        if "Authorization" in headers and _token_refused(response):
+            response = await self._after_token_refused(
+                client, response, headers, server, tool_name, arguments, acting_user
+            )
+        return response
+
+    async def _after_token_refused(
+        self,
+        client: httpx.AsyncClient,
+        response: httpx.Response,
+        headers: dict[str, str],
+        server: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        acting_user: str | None,
+    ) -> httpx.Response:
+        """A server refused the token (401) or couldn't check it (503).
+
+        The servers answer both before running the tool, so nothing was done.
+        The cached token is dropped either way. With send (rollout step 2) the
+        call is retried once with X-Acting-User alone; with require the
+        refusal stands, and the caller reports it as a sign-in problem.
+        """
+        if acting_user:
+            get_mcp_token_exchanger().invalidate(acting_user)
+        if settings.MCP_ACTING_USER_TOKEN != "send":
+            logger.error("MCP server %s refused the acting-user token", server)
+            return response
+        logger.warning(
+            "MCP server %s refused the acting-user token, retrying with X-Acting-User", server
+        )
+        del headers["Authorization"]
+        return await client.post(
+            str(response.request.url),
+            json={"arguments": arguments},
+            headers=headers,
+            timeout=self.timeout_for(server, tool_name),
+        )
+
     def _parse_mcp_response(self, data: Any) -> Any:
         """Parse MCP response format to extract actual data.
 
@@ -312,3 +364,20 @@ class MCPClient:
             return response.status_code == 200
         except Exception:
             return False
+
+
+def _token_refused(response: httpx.Response) -> bool:
+    """A server's answer to a token it won't accept, or can't check right now."""
+    if response.status_code == 401:
+        return "invalid_token" in response.headers.get("www-authenticate", "")
+    return response.status_code == 503
+
+
+def _status_error(response: httpx.Response, *, token_sent: bool) -> str:
+    error = f"HTTP {response.status_code}: {response.text[:500]}"
+    if token_sent and _token_refused(response):
+        return (
+            "This action wasn't completed: the ACCESS tool server didn't accept the "
+            f"researcher's sign-in ({error}). Ask them to sign in again and retry."
+        )
+    return error
