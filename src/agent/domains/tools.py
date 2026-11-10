@@ -13,7 +13,7 @@ from typing import Annotated, Any, Literal
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, BeforeValidator, Field, WithJsonSchema, create_model
 
-from ...tool_attachments import externalize
+from ...tool_attachments import NOT_ATTACHED_NOTE, externalize
 from ...tools.mcp_client import MCPClient
 from ..auth_tools import ToolIdentityClass, tool_identity_class
 from ..middleware.requires_auth import CoarseReason, refusal_artifact, refusal_text
@@ -164,6 +164,9 @@ class MCPToolWrapper(BaseTool):
                 tool_name=self.name,
                 arguments=arguments,
                 acting_user=self.acting_user,
+                # Only a full-screen thread's client reads structured content,
+                # and only there can a large attachment be stored.
+                include_structured=self.attachment_thread_id is not None,
             )
         except asyncio.CancelledError:
             # Cut off at the turn's deadline. It still ran, so it still counts.
@@ -174,12 +177,19 @@ class MCPToolWrapper(BaseTool):
 
         if result.success:
             artifact = None
+            data = result.data
             if result.structured:
-                structured = await asyncio.to_thread(
+                structured, dropped = await asyncio.to_thread(
                     externalize, result.structured, self.attachment_thread_id
                 )
-                artifact = {"structured_content": structured}
-            return json.dumps(result.data, default=str), artifact
+                if dropped:
+                    data = (
+                        f"{data}\n\n{NOT_ATTACHED_NOTE}"
+                        if isinstance(data, str)
+                        else {"result": data, "note": NOT_ATTACHED_NOTE}
+                    )
+                artifact = {"structured_content": structured} if structured else None
+            return json.dumps(data, default=str), artifact
         return json.dumps({"error": result.error}), TIMED_OUT_ARTIFACT if result.timed_out else None
 
 

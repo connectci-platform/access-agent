@@ -41,7 +41,7 @@ async def client():
 
 
 def _stored(thread_id: str) -> str:
-    return externalize({"table": TABLE}, thread_id)["table_ref"]["id"]
+    return externalize({"table": TABLE}, thread_id)[0]["table_ref"]["id"]
 
 
 def _url(thread_id: str, attachment_id: str) -> str:
@@ -130,3 +130,102 @@ async def test_a_caller_that_takes_gzip_gets_it_compressed(client, agent_tokens)
     assert "content-encoding" not in plain.headers
     assert plain.json() == TABLE
     assert plain.headers["cache-control"] == "private, no-store"
+
+
+class _Graph:
+    def __init__(self, messages):
+        self.messages = messages
+
+    async def aget_state(self, config):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(values={"messages": self.messages})
+
+
+def _request():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(checkpointer=object())))
+
+
+def _ref_message(attachment_id: str):
+    from langchain_core.messages import ToolMessage
+
+    return ToolMessage(
+        content="summary",
+        tool_call_id="c",
+        name="get_raw_data",
+        artifact={"structured_content": {"table_ref": {"id": attachment_id, "kind": "table"}}},
+    )
+
+
+async def test_after_a_run_attachments_no_message_refers_to_are_deleted(
+    client, agent_tokens, monkeypatch
+):
+    """A retried, edited or compacted turn's table goes; the kept turn's stays."""
+    from src.tool_attachments import get_tool_attachment_store
+
+    get_thread_owner_store().claim_thread("t-a", "alice@x")
+    kept, replaced = _stored("t-a"), _stored("t-a")
+
+    async def _fake_stream(**_kwargs):
+        yield "updates", {"tool_calling_loop": {"final_answer": "hi"}}
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _fake_stream)
+    monkeypatch.setattr(
+        "src.api.thread_routes.create_checkpointed_graph",
+        lambda cp: _Graph([_ref_message(kept)]),
+    )
+    app.state.checkpointer = object()
+    try:
+        r = await client.post(
+            "/api/v1/threads/t-a/runs/stream",
+            headers=agent_tokens.headers("alice@x"),
+            json={"input": {"messages": [{"role": "user", "content": "again"}]}},
+        )
+    finally:
+        app.state.checkpointer = None
+
+    assert r.status_code == 200
+    assert get_tool_attachment_store().ids_for("t-a") == {kept}
+    assert replaced != kept
+
+
+async def test_the_sweep_waits_out_a_stopped_turn_still_saving(monkeypatch):
+    from src.api import thread_routes
+    from src.tool_attachments import get_tool_attachment_store
+
+    get_thread_owner_store().claim_thread("t-a", "alice@x")
+    attachment = _stored("t-a")
+    monkeypatch.setattr(thread_routes, "stopped_turn_saving", lambda t: True)
+    monkeypatch.setattr(thread_routes, "create_checkpointed_graph", lambda cp: _Graph([]))
+
+    await thread_routes._sweep_attachments("t-a", _request())  # type: ignore[arg-type]
+
+    assert get_tool_attachment_store().ids_for("t-a") == {attachment}
+
+
+async def test_the_sweep_never_raises(monkeypatch, caplog):
+    from src.api import thread_routes
+
+    get_thread_owner_store().claim_thread("t-a", "alice@x")
+    _stored("t-a")
+
+    def broken(cp):
+        raise RuntimeError("checkpointer gone")
+
+    monkeypatch.setattr(thread_routes, "create_checkpointed_graph", broken)
+
+    await thread_routes._sweep_attachments("t-a", _request())  # type: ignore[arg-type]
+    assert "Couldn't sweep attachments" in caplog.text
+
+
+async def test_a_thread_with_nothing_stored_reads_no_state(monkeypatch):
+    from src.api import thread_routes
+
+    def unexpected(cp):
+        raise AssertionError("read the thread for nothing")
+
+    monkeypatch.setattr(thread_routes, "create_checkpointed_graph", unexpected)
+
+    await thread_routes._sweep_attachments("t-empty", _request())  # type: ignore[arg-type]

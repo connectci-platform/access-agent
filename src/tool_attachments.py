@@ -13,9 +13,16 @@ Charts stay inline: a chart payload is a few KB, and the client draws the
 chart, its chip and its switcher label from the message the moment it
 arrives.
 
-The table is created by ``create_all`` on first use, like thread_owners, and
-references thread_owners so that deleting a thread's owner row deletes its
-attachments with it.
+Only a full-screen thread run asks MCP servers for structured content, so a
+table only ever arrives where it can be stored. If it can't be stored, it is
+dropped and the model is told, never left inline.
+
+After each run the thread route deletes the thread's attachments that its
+messages no longer refer to (``keep_only``). That one rule covers a turn that
+was stopped and replaced, retried or edited, and one that compaction folded
+into a summary, along with any path added later. The table is created by
+``create_all`` on first use, like thread_owners, and references thread_owners
+with ON DELETE CASCADE, so deleting a thread's owner row deletes them too.
 """
 
 from __future__ import annotations
@@ -26,25 +33,15 @@ import secrets
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import (
-    Column,
-    DateTime,
-    ForeignKey,
-    Integer,
-    String,
-    Text,
-    create_engine,
-    delete,
-    event,
-    select,
-)
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, delete, select
 
-from .config import settings
-from .thread_owners import ThreadOwnerBase
+from .thread_owners import ThreadOwnerBase, get_thread_owner_store
 
 if TYPE_CHECKING:
-    from sqlalchemy.engine import Engine
+    from collections.abc import Iterable
+
+    from sqlalchemy import Select
+    from sqlalchemy.orm import Session, sessionmaker
 
 logger = logging.getLogger(__name__)
 
@@ -69,12 +66,6 @@ class ToolAttachmentRow(ThreadOwnerBase):  # type: ignore[misc]
     created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
 
 
-def _enable_sqlite_foreign_keys(dbapi_connection: Any, _record: Any) -> None:
-    cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA foreign_keys=ON")
-    cursor.close()
-
-
 def reference_for(kind: str, attachment_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """The payload without its rows, plus the id that fetches them."""
     ref = {k: v for k, v in payload.items() if k != "rows"}
@@ -82,104 +73,134 @@ def reference_for(kind: str, attachment_id: str, payload: dict[str, Any]) -> dic
     return ref
 
 
+def referenced_ids(messages: Iterable[Any]) -> set[str]:
+    """The stored attachment ids a thread's messages still refer to."""
+    ids: set[str] = set()
+    for message in messages:
+        artifact = getattr(message, "artifact", None)
+        content = artifact.get("structured_content") if isinstance(artifact, dict) else None
+        if not isinstance(content, dict):
+            continue
+        for kind in STORED_KINDS:
+            ref = content.get(kind + REF_SUFFIX)
+            if isinstance(ref, dict) and isinstance(ref.get("id"), str):
+                ids.add(ref["id"])
+    return ids
+
+
 class ToolAttachmentStore:
+    """Shares the thread-owner store's engine and pool: one pool per worker,
+    and the same database the access check reads."""
+
     def __init__(self) -> None:
-        self._engine: Engine | None = None
         self._session_factory: sessionmaker[Session] | None = None
 
-    def _ensure(self) -> bool:
-        if self._session_factory is not None:
-            return True
-        if not settings.DATABASE_URL:
-            return False
-        db_url = settings.DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
-        self._engine = create_engine(db_url)
-        if self._engine.dialect.name == "sqlite":
-            event.listen(self._engine, "connect", _enable_sqlite_foreign_keys)
-        ThreadOwnerBase.metadata.create_all(self._engine)
-        self._session_factory = sessionmaker(bind=self._engine)
-        return True
+    def _sessions(self) -> sessionmaker[Session] | None:
+        if self._session_factory is None:
+            factory = get_thread_owner_store().session_factory()
+            if factory is None:
+                return None
+            # create_all on the owner store's first use already made it when
+            # this module was imported first; this covers the other order.
+            ToolAttachmentRow.__table__.create(factory.kw["bind"], checkfirst=True)
+            self._session_factory = factory
+        return self._session_factory
 
     def put(self, thread_id: str, kind: str, payload: dict[str, Any]) -> str | None:
         """Store the payload and return its id, or None when it can't be stored
-        (no database, or no owner row for the thread)."""
-        if not self._ensure() or self._session_factory is None:
-            return None
-        text = json.dumps(payload, separators=(",", ":"))
-        attachment_id = secrets.token_hex(16)
-        session = self._session_factory()
+        (no database, no owner row for the thread, or any database error).
+        Never raises: the tool's data was already fetched."""
         try:
-            session.add(
-                ToolAttachmentRow(
-                    id=attachment_id,
-                    thread_id=thread_id,
-                    kind=kind,
-                    payload=text,
-                    size_bytes=len(text.encode()),
+            sessions = self._sessions()
+            if sessions is None or get_thread_owner_store().resolve_owner(thread_id) is None:
+                return None
+            text = json.dumps(payload, separators=(",", ":"))
+            attachment_id = secrets.token_hex(16)
+            with sessions() as session, session.begin():
+                session.add(
+                    ToolAttachmentRow(
+                        id=attachment_id,
+                        thread_id=thread_id,
+                        kind=kind,
+                        payload=text,
+                        size_bytes=len(text.encode()),
+                    )
                 )
-            )
-            session.commit()
             return attachment_id
         except Exception:
-            session.rollback()
-            logger.warning("couldn't store a %s attachment; it stays on the message", kind)
+            logger.warning("couldn't store a %s attachment", kind, exc_info=True)
             return None
-        finally:
-            session.close()
 
     def get(self, thread_id: str, attachment_id: str) -> str | None:
         """The stored JSON, only when it belongs to this thread."""
-        if not self._ensure() or self._session_factory is None:
+        sessions = self._sessions()
+        if sessions is None:
             return None
-        session = self._session_factory()
-        try:
+        with sessions() as session:
             return session.execute(
                 select(ToolAttachmentRow.payload).where(
                     ToolAttachmentRow.id == attachment_id,
                     ToolAttachmentRow.thread_id == thread_id,
                 )
             ).scalar_one_or_none()
-        finally:
-            session.close()
 
-    def delete_thread(self, thread_id: str) -> int:
-        """Delete a thread's attachments, for a path that deletes the thread's
-        checkpoints but keeps its owner row. Returns how many went."""
-        if not self._ensure() or self._session_factory is None:
-            return 0
-        session = self._session_factory()
-        try:
-            result = session.execute(
-                delete(ToolAttachmentRow).where(ToolAttachmentRow.thread_id == thread_id)
+    def ids_for(self, thread_id: str) -> set[str]:
+        sessions = self._sessions()
+        if sessions is None:
+            return set()
+        with sessions() as session:
+            query: Select[Any] = select(ToolAttachmentRow.id).where(
+                ToolAttachmentRow.thread_id == thread_id
             )
-            session.commit()
+            return {str(i) for i in session.scalars(query)}
+
+    def keep_only(self, thread_id: str, keep: set[str]) -> int:
+        """Delete this thread's attachments that aren't in ``keep``. Returns how many went."""
+        sessions = self._sessions()
+        if sessions is None:
+            return 0
+        with sessions() as session, session.begin():
+            statement = delete(ToolAttachmentRow).where(ToolAttachmentRow.thread_id == thread_id)
+            if keep:
+                statement = statement.where(ToolAttachmentRow.id.not_in(keep))
+            result = session.execute(statement)
             return int(getattr(result, "rowcount", 0) or 0)
-        finally:
-            session.close()
+
+
+# What the model reads when a table couldn't be stored. get_raw_data's text
+# said the table is attached, which is now untrue.
+NOT_ATTACHED_NOTE = (
+    "Note: the full table couldn't be attached for the user, so there is no data "
+    "panel or download for it. Answer from the summary above, and say the full "
+    "table isn't available this time."
+)
 
 
 def externalize(
     structured: dict[str, Any], thread_id: str | None, store: ToolAttachmentStore | None = None
-) -> dict[str, Any]:
-    """structuredContent with each stored kind replaced by its reference.
+) -> tuple[dict[str, Any], bool]:
+    """structuredContent with each stored kind replaced by its reference, and
+    whether a payload had to be dropped.
 
-    Without a thread (the widget's /query, the eval) or when the write fails,
-    the payload stays inline, as before.
+    A table is never left inline, where every later checkpoint would copy it.
+    Without a thread to store it under, or when the write fails, it is dropped
+    and the caller tells the model so.
     """
-    if not thread_id:
-        return structured
     store = store or get_tool_attachment_store()
     out = dict(structured)
+    dropped = False
     for kind in STORED_KINDS:
-        payload = out.get(kind)
-        if not isinstance(payload, dict):
+        payload = out.pop(kind, None)
+        if payload is None:
             continue
-        attachment_id = store.put(thread_id, kind, payload)
+        attachment_id = (
+            store.put(thread_id, kind, payload) if thread_id and isinstance(payload, dict) else None
+        )
         if attachment_id is None:
+            dropped = True
             continue
-        del out[kind]
         out[kind + REF_SUFFIX] = reference_for(kind, attachment_id, payload)
-    return out
+    return out, dropped
 
 
 _store: ToolAttachmentStore | None = None

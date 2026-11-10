@@ -227,6 +227,12 @@ async def stopped_turn_saved(thread_id: str, timeout: float = SAVE_WAIT_S) -> No
         logger.warning("Saving a stopped turn on %s is slow; going on without it", thread_id)
 
 
+def stopped_turn_saving(thread_id: str) -> bool:
+    """Whether a stopped turn on this thread is still being saved."""
+    task = _pending.get(thread_id)
+    return task is not None and not task.done()
+
+
 async def drain_stopped_turns(timeout: float = SAVE_WAIT_S) -> None:
     """At shutdown, give saves still running a moment to finish before the
     checkpointer closes."""

@@ -144,21 +144,33 @@ class TestMCPClient:
         assert "X-Acting-User" not in request.headers
 
     @pytest.mark.asyncio
-    async def test_call_tool_asks_for_structured_content(self, httpx_mock: HTTPXMock):
-        """Every tool call asks the server to include structuredContent."""
-        httpx_mock.add_response(
-            method="POST",
-            url="http://localhost:3002/tools/get_chart_data",
-            json={"content": [{"type": "text", "text": "Chart Data"}]},
-        )
+    async def test_call_tool_asks_for_structured_content_only_when_told(
+        self, httpx_mock: HTTPXMock
+    ):
+        """Only a full-screen thread run, whose client reads it, asks for structuredContent.
+
+        Anywhere else (the widget's /query, the eval) a server answers as it
+        would any other host, so get_raw_data doesn't tell the model a table
+        is attached and nothing large lands in that thread's checkpoints.
+        """
+        for _ in range(2):
+            httpx_mock.add_response(
+                method="POST",
+                url="http://localhost:3002/tools/get_chart_data",
+                json={"content": [{"type": "text", "text": "Chart Data"}]},
+            )
 
         client = MCPClient()
         client._server_urls["xdmod"] = "http://localhost:3002"
 
+        await client.call_tool(
+            server="xdmod", tool_name="get_chart_data", arguments={}, include_structured=True
+        )
         await client.call_tool(server="xdmod", tool_name="get_chart_data", arguments={})
 
-        request = httpx_mock.get_request()
-        assert request.headers.get("X-Include-Structured-Content") == "1"
+        asked, plain = httpx_mock.get_requests()
+        assert asked.headers.get("X-Include-Structured-Content") == "1"
+        assert "X-Include-Structured-Content" not in plain.headers
 
     @pytest.mark.asyncio
     async def test_call_tool_http_error(self, httpx_mock: HTTPXMock):
