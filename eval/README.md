@@ -173,7 +173,7 @@ Optional fields (used in `combined_battery.json`):
   "capability_area": "messy_combined",
   "battery": "combined",
   "expected_type": "combined",
-  "expected_tools": ["get_infrastructure_news", "get_resource_hardware"]
+  "expected_tools": ["get_infrastructure_news", "search_resources"]
 }
 ```
 

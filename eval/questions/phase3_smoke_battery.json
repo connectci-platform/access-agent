@@ -245,7 +245,7 @@
     "capability_area": "messy_combined",
     "battery": "phase3_smoke",
     "expected_type": "combined",
-    "expected_tools": ["get_infrastructure_news", "get_resource_hardware"],
+    "expected_tools": ["get_infrastructure_news", "search_resources"],
     "phase3_category": "multi-tool",
     "source_battery": "combined"
   },
@@ -255,7 +255,7 @@
     "capability_area": "messy_combined",
     "battery": "phase3_smoke",
     "expected_type": "combined",
-    "expected_tools": ["get_resource_hardware", "search_software", "get_infrastructure_news", "search_events"],
+    "expected_tools": ["get_resource", "search_software", "get_infrastructure_news", "search_events"],
     "phase3_category": "multi-tool",
     "source_battery": "combined"
   },

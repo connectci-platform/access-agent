@@ -1,0 +1,10 @@
+[
+  {"id": "cr-docs-01", "question": "Which ACCESS resources have H100 GPUs?", "capability_area": "compute_resources", "battery": "resource_docs", "expected_type": "dynamic", "expected_tools": ["search_resources"]},
+  {"id": "cr-docs-02", "question": "I need GPUs with at least 80 GB of memory each on nodes with at least 1 TB of RAM. Where can I run that?", "capability_area": "compute_resources", "battery": "resource_docs", "expected_type": "dynamic", "expected_tools": ["search_resources"]},
+  {"id": "cr-docs-03", "question": "I have a simulation that needs to run for about 150 hours in a single job. Which ACCESS resource allows that?", "capability_area": "compute_resources", "battery": "resource_docs", "expected_type": "dynamic", "expected_tools": ["search_resources"]},
+  {"id": "cr-docs-04", "question": "Which ACCESS resources host the AlphaFold databases?", "capability_area": "compute_resources", "battery": "resource_docs", "expected_type": "dynamic", "expected_tools": ["search_resources"]},
+  {"id": "cr-docs-05", "question": "Compare the GPU hardware available on Delta and Bridges-2", "capability_area": "compute_resources", "battery": "resource_docs", "expected_type": "dynamic", "expected_tools": ["compare_resources"]},
+  {"id": "cr-docs-06", "question": "Does Voyager have GPUs?", "capability_area": "compute_resources", "battery": "resource_docs", "expected_type": "dynamic", "expected_tools": ["search_resources"]},
+  {"id": "cr-docs-07", "question": "What hardware does Nexus-GPU at Georgia Tech have?", "capability_area": "compute_resources", "battery": "resource_docs", "expected_type": "dynamic", "expected_tools": ["search_resources"]},
+  {"id": "cr-docs-08", "question": "Which ACCESS resource has the most CPU cores per node?", "capability_area": "compute_resources", "battery": "resource_docs", "expected_type": "dynamic", "expected_tools": ["search_resources"]}
+]
