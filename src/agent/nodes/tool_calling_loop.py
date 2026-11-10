@@ -212,7 +212,7 @@ _STATUS_TOOL_OVERRIDES = {
 _STATUS_SUBJECT_TOOLS = {
     "search_software": ("query", "Searching software for {}..."),
     "get_software_details": ("software_name", "Looking up {}..."),
-    "get_resource_hardware": ("id", "Looking up {} hardware..."),
+    "get_resource": ("resource", "Looking up {}..."),
     "search_access_documents": ("rp_name", "Searching ACCESS documentation for {}..."),
     "search_events": ("query", "Searching events for {}..."),
     "search_resources": ("query", "Searching resources for {}..."),

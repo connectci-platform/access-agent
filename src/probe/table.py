@@ -37,7 +37,12 @@ PROBE_TABLE: list[ProbeCase] = [
     ProbeCase("affinity-groups", "search_affinity_groups", {"query": "GPU", "limit": 20}),
     ProbeCase("announcements", "search_announcements", {"query": "Expanse", "limit": 10}),
     ProbeCase("compute-resources", "search_resources", {"has_gpu": True}),
-    ProbeCase("compute-resources", "get_resource_hardware", {"id": "Anvil"}),
+    # Queue-level hardware filters, read from the resource documentation (D8-2977).
+    ProbeCase(
+        "compute-resources",
+        "search_resources",
+        {"gpu_type": "H100", "min_gpu_memory_gb": 80},
+    ),
     # "How do I log in to Expanse using SSH?" (eval/README.md). The bare name lists
     # Expanse's systems to choose from, so the probe names the CPU system.
     ProbeCase("compute-resources", "get_resource", {"resource": "Expanse CPU"}),

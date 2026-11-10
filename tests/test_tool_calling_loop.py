@@ -817,7 +817,7 @@ class TestToolStatusSubject:
         [
             ("search_software", {"query": "PyTorch"}, "Searching software for PyTorch..."),
             ("get_software_details", {"software_name": "gromacs"}, "Looking up gromacs..."),
-            ("get_resource_hardware", {"id": "Anvil"}, "Looking up Anvil hardware..."),
+            ("get_resource", {"resource": "Anvil GPU"}, "Looking up Anvil GPU..."),
             (
                 "search_access_documents",
                 {"query": "How do I log in?", "rp_name": "delta"},
