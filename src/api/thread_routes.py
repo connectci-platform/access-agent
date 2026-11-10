@@ -6,6 +6,7 @@ src/api/thread_access.py, which is where access is decided.
 """
 
 import asyncio
+import gzip
 import logging
 import time
 import uuid
@@ -440,6 +441,7 @@ def _serialize_values(values: dict[str, Any] | None) -> dict[str, Any]:
 async def thread_attachment(
     thread_id: str,
     attachment_id: str,
+    raw_request: Request,
     identity: Identity,
     claim_key: ClaimKey = None,
 ) -> Response:
@@ -451,9 +453,15 @@ async def thread_attachment(
     if payload is None:
         raise refuse_thread()
     # The thread's owner may reload it; nobody between may keep a copy.
-    return Response(
-        payload, media_type="application/json", headers={"Cache-Control": "private, no-store"}
-    )
+    headers = {"Cache-Control": "private, no-store", "Vary": "Accept-Encoding"}
+    if "gzip" in raw_request.headers.get("accept-encoding", ""):
+        # A table's JSON is mostly repeated names and digits, so it shrinks to
+        # about a quarter. The app has no compression middleware, which would
+        # hold back the SSE run stream.
+        body = await asyncio.to_thread(gzip.compress, payload.encode(), 6)
+        headers["Content-Encoding"] = "gzip"
+        return Response(body, media_type="application/json", headers=headers)
+    return Response(payload, media_type="application/json", headers=headers)
 
 
 @thread_router.post("/threads/{thread_id}/claim")

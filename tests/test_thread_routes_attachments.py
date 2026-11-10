@@ -111,3 +111,22 @@ async def test_an_unknown_id_or_thread_gets_404(client, agent_tokens):
 
     assert unknown_id.status_code == 404
     assert unknown_thread.status_code == 404
+
+
+async def test_a_caller_that_takes_gzip_gets_it_compressed(client, agent_tokens):
+    get_thread_owner_store().claim_thread("t-a", "alice@x")
+    attachment = _stored("t-a")
+    headers = agent_tokens.headers("alice@x")
+
+    zipped = await client.get(
+        _url("t-a", attachment), headers={**headers, "Accept-Encoding": "gzip"}
+    )
+    plain = await client.get(
+        _url("t-a", attachment), headers={**headers, "Accept-Encoding": "identity"}
+    )
+
+    assert zipped.headers["content-encoding"] == "gzip"
+    assert zipped.json() == TABLE  # httpx decodes it
+    assert "content-encoding" not in plain.headers
+    assert plain.json() == TABLE
+    assert plain.headers["cache-control"] == "private, no-store"
