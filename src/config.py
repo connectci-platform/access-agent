@@ -258,7 +258,7 @@ class Settings(BaseSettings):
     CONTEXT_EDIT_TRIGGER_TOKENS: int = 45000
     CONTEXT_EDIT_KEEP_TOOL_RESULTS: int = 4
 
-    # MCP Server base host (configurable, defaults to production IP)
+    # Host for the production port map below. Production mode only.
     MCP_SERVER_HOST: str = "localhost"
 
     # When set, every MCP server is reached at {MCP_BASE_URL}/{server}, the path the
@@ -347,7 +347,7 @@ class Settings(BaseSettings):
                 "jsm": "http://mcp-jsm:3000",
             }
         if self.ENVIRONMENT == "production":
-            # Production MCP servers at 45.79.215.140
+            # MCP_SERVER_HOST plus each server's published port
             host = self.MCP_SERVER_HOST
             return {
                 "system-status": f"http://{host}:3003",

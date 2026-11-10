@@ -93,38 +93,38 @@ commit them.
 
 ### Running an eval
 
-Prod Postgres lives in a Docker container on `mcp.access-ci.org` and is not
-directly reachable from a workstation, so open an SSH tunnel first:
+Prod Postgres runs in a Docker container on burrow (mcp.access-ci.org) and
+publishes 5433 on that host's loopback, so open an SSH tunnel first:
 
 ```bash
 # Terminal 1: open the tunnel, leave it running
 ./scripts/eval-tunnel-open
 ```
 
-The tunnel forwards local `5432` → `mcp.access-ci.org:5432`. If you already
-run a local Postgres on 5432, set a different local port:
+The tunnel forwards local `5432` to `localhost:5433` on the `burrow` host from
+your `~/.ssh/config`. If something already listens on 5432 locally, such as a
+Docker Postgres, pick another local port and pass the same variable to both
+scripts. `eval-prod` rewrites `DATABASE_URL` to that port, so the env file
+doesn't change:
 
 ```bash
-EVAL_PROD_DB_LOCAL_PORT=5433 ./scripts/eval-tunnel-open
+EVAL_PROD_DB_LOCAL_PORT=5434 ./scripts/eval-tunnel-open
+EVAL_PROD_DB_LOCAL_PORT=5434 ./scripts/eval-prod run --questions ...
 ```
 
-and update `DATABASE_URL` in `.env.eval.prod` to match (`...@localhost:5433/...`).
-
-The tunnel assumes the prod container publishes Postgres on the SSH host's
-loopback (i.e. `localhost:5432` on `mcp.access-ci.org`). If that ever
-changes — for example, if Postgres moves onto a Docker-internal network
-only — the tunnel target in `scripts/eval-tunnel-open` will need updating.
+The MCP servers' ports on burrow are firewalled from outside, so evals reach
+them through the public proxy instead. `MCP_BASE_URL=https://mcp.access-ci.org`
+in `.env.eval.prod` sends each server to `https://mcp.access-ci.org/<server>`.
 
 Then from another terminal:
 
 ```bash
-./scripts/eval-prod run \
-  --questions eval/questions/friendly_battery.json \
-  --push-argilla
+./scripts/eval-prod run --questions eval/questions/friendly_battery.json
 ```
 
-Results land in the prod Argilla dataset configured by
-`ARGILLA_EVAL_DATASET` in `.env.eval.prod`.
+The banner shows the database, MCP servers and catalog a run will use.
+Results land in the prod eval database, and questions are scored against the
+facts in the reporting dashboard.
 
 ### Safety checks
 
@@ -133,7 +133,6 @@ The `eval-prod` wrapper refuses to run if:
 - `.env.eval.prod` does not exist
 - `ENVIRONMENT` is not `production` after loading the env file
 - `DATABASE_URL` is unset or still contains the `USER:PASS` placeholder
-- `ARGILLA_EVAL_DATASET` is unset
 
 These catch the common mistake of running the wrapper before filling in
 the env file.
