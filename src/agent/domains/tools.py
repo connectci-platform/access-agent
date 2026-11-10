@@ -13,6 +13,7 @@ from typing import Annotated, Any, Literal
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, BeforeValidator, Field, WithJsonSchema, create_model
 
+from ...tool_attachments import externalize
 from ...tools.mcp_client import MCPClient
 from ..auth_tools import ToolIdentityClass, tool_identity_class
 from ..middleware.requires_auth import CoarseReason, refusal_artifact, refusal_text
@@ -113,6 +114,11 @@ class MCPToolWrapper(BaseTool):
     read_only: bool | None = None
     """The server's readOnlyHint for this tool, or None when it published none."""
 
+    attachment_thread_id: str | None = None
+    """The full-screen thread a large attachment is stored under, so it isn't
+    checkpointed with every message (src/tool_attachments.py). None keeps it
+    on the message."""
+
     # The artifact carries a refusal's reason, as the identity gate's does, or
     # marks a timeout.
     response_format: Literal["content", "content_and_artifact"] = "content_and_artifact"
@@ -167,7 +173,12 @@ class MCPToolWrapper(BaseTool):
         record_tool_timing(self.name, result.duration_ms)
 
         if result.success:
-            artifact = {"structured_content": result.structured} if result.structured else None
+            artifact = None
+            if result.structured:
+                structured = await asyncio.to_thread(
+                    externalize, result.structured, self.attachment_thread_id
+                )
+                artifact = {"structured_content": structured}
             return json.dumps(result.data, default=str), artifact
         return json.dumps({"error": result.error}), TIMED_OUT_ARTIFACT if result.timed_out else None
 
@@ -177,6 +188,7 @@ def create_mcp_tools_from_catalog(
     acting_user: str | None = None,
     *,
     can_write: bool = False,
+    attachment_thread_id: str | None = None,
 ) -> list[BaseTool]:
     """Create LangChain tool wrappers for every available tool in the catalog.
 
@@ -189,6 +201,8 @@ def create_mcp_tools_from_catalog(
         tool_catalog: The MCP tool catalog dict with "servers" key.
         acting_user: ACCESS ID for auth headers, or None for anonymous.
         can_write: Whether write tools may reach the MCP server this run.
+        attachment_thread_id: The full-screen thread to store large
+            attachments under, or None to keep them on the message.
 
     Returns:
         List of MCPToolWrapper instances, one per available tool in the catalog.
@@ -227,6 +241,7 @@ def create_mcp_tools_from_catalog(
                 acting_user=acting_user,
                 can_write=can_write,
                 read_only=tool_def.get("read_only"),
+                attachment_thread_id=attachment_thread_id,
             )
             tools.append(wrapper)
 

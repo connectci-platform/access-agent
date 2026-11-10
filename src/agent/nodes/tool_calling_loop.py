@@ -93,6 +93,7 @@ def _build_prompt_and_tools(
     resource_context: str | None,
     profile: dict[str, Any] | None,
     time_zone: str | None = None,
+    attachment_thread_id: str | None = None,
 ) -> tuple[str, list[BaseTool], bool]:
     """Assemble the loop's system prompt and tool list.
 
@@ -112,7 +113,12 @@ def _build_prompt_and_tools(
     "was a profile supplied" value.
     """
     mcp_tools = _apply_read_only_filter(
-        create_mcp_tools_from_catalog(tool_catalog, acting_user, can_write=can_write)
+        create_mcp_tools_from_catalog(
+            tool_catalog,
+            acting_user,
+            can_write=can_write,
+            attachment_thread_id=attachment_thread_id,
+        )
     )
     if profile is not None and acting_user is None:
         logger.warning("profile supplied without an acting user; ignoring")
@@ -752,6 +758,8 @@ async def tool_calling_loop_node(  # noqa: PLR0915
             resource_context=state.get("resource_context"),
             profile=state.get("profile"),
             time_zone=state.get("time_zone"),
+            # Only the full-screen client reads stored attachments back.
+            attachment_thread_id=state.get("session_id") if context.thread_run else None,
         )
 
         span.set_attribute("agent.tool_count", len(tools))
