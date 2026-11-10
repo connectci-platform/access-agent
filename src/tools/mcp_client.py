@@ -305,7 +305,7 @@ class MCPClient:
         refusal stands, and the caller reports it as a sign-in problem.
         """
         if acting_user:
-            get_mcp_token_exchanger().invalidate(acting_user)
+            get_mcp_token_exchanger().refused(acting_user)
         if settings.MCP_ACTING_USER_TOKEN != "send":
             logger.error("MCP server %s refused the acting-user token", server)
             return response

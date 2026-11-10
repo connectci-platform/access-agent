@@ -467,14 +467,6 @@ class TestEdges:
         await ex.token_for(SUB, AGENT_TOKEN)
         assert len(portal.requests) == 2
 
-    async def test_invalidate_drops_the_cached_token(self):
-        portal = Portal()
-        ex = exchanger(portal)
-        await ex.token_for(SUB, AGENT_TOKEN)
-        ex.invalidate(SUB)
-        await ex.token_for(SUB, AGENT_TOKEN)
-        assert len(portal.requests) == 2
-
 
 def refuse(httpx_mock: HTTPXMock, status: int) -> None:
     headers = {"www-authenticate": 'Bearer error="invalid_token"'} if status == 401 else {}
@@ -563,3 +555,42 @@ class TestProductionStartup:
             with pytest.raises(McpTokenUnavailableError):
                 await ex.token_for(sub, agent_jwt(sub))
         assert list(ex._failures) == [SUB]
+
+
+class TestRefusalIsRemembered:
+    async def test_send_skips_the_exchange_while_a_refusal_is_fresh(
+        self, monkeypatch, portal, signed_in, httpx_mock: HTTPXMock
+    ):
+        monkeypatch.setattr(settings, "MCP_ACTING_USER_TOKEN", "send")
+        refuse(httpx_mock, 401)
+        ok(httpx_mock, f"{EVENTS}/tools/register_for_event")
+        ok(httpx_mock, f"{EVENTS}/tools/register_for_event")
+        await client().call_tool("events", "register_for_event", {}, acting_user=SUB)
+        second = await client().call_tool("events", "register_for_event", {}, acting_user=SUB)
+        assert second.success
+        assert len(portal.requests) == 1
+        assert "authorization" not in httpx_mock.get_requests()[-1].headers
+
+    async def test_require_fails_while_a_refusal_is_fresh(
+        self, monkeypatch, portal, signed_in, httpx_mock: HTTPXMock
+    ):
+        monkeypatch.setattr(settings, "MCP_ACTING_USER_TOKEN", "require")
+        refuse(httpx_mock, 401)
+        await client().call_tool("events", "register_for_event", {}, acting_user=SUB)
+        second = await client().call_tool("events", "register_for_event", {}, acting_user=SUB)
+        assert not second.success
+        assert "refused" in (second.error or "")
+        assert len(portal.requests) == 1
+        assert len(httpx_mock.get_requests()) == 1
+
+    async def test_the_refusal_expires(self):
+        now = [time.time()]
+        portal = Portal()
+        ex = exchanger(portal, clock=lambda: now[0])
+        await ex.token_for(SUB, AGENT_TOKEN)
+        ex.refused(SUB)
+        with pytest.raises(McpTokenUnavailableError, match="refused"):
+            await ex.token_for(SUB, AGENT_TOKEN)
+        now[0] += mcp_token.FAILURE_TTL_S + 1
+        await ex.token_for(SUB, AGENT_TOKEN)
+        assert len(portal.requests) == 2
