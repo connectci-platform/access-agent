@@ -261,6 +261,12 @@ class Settings(BaseSettings):
     # MCP Server base host (configurable, defaults to production IP)
     MCP_SERVER_HOST: str = "localhost"
 
+    # When set, every MCP server is reached at {MCP_BASE_URL}/{server}, the path the
+    # public proxy at https://mcp.access-ci.org serves, instead of a host and port.
+    # Workstation evals against production use it because burrow's MCP ports are
+    # firewalled. Unset, the URLs come from ENVIRONMENT and MCP_SERVER_HOST as before.
+    MCP_BASE_URL: str = ""
+
     # MCP API key for servers that require authentication (write operations)
     MCP_API_KEY: str = ""
 
@@ -317,7 +323,14 @@ class Settings(BaseSettings):
     # MCP Server port mappings
     @property
     def mcp_server_urls(self) -> dict[str, str]:
-        """Get MCP server URLs based on environment."""
+        """Get MCP server URLs: under MCP_BASE_URL when set, otherwise by environment."""
+        urls = self._mcp_server_urls_for_environment()
+        base = self.MCP_BASE_URL.strip().rstrip("/")
+        if base:
+            return {name: f"{base}/{name}" for name in urls}
+        return urls
+
+    def _mcp_server_urls_for_environment(self) -> dict[str, str]:
         if self.ENVIRONMENT == "docker":
             # Docker network uses service names
             return {
