@@ -56,6 +56,13 @@ set -a
 source "${ENV_FILE}"
 set +a
 
+# eval-tunnel-open takes EVAL_PROD_DB_LOCAL_PORT when 5432 is taken locally, for
+# example by a Docker Postgres. Point DATABASE_URL at that same local port.
+if [[ -n "${EVAL_PROD_DB_LOCAL_PORT:-}" ]]; then
+  DATABASE_URL="$(printf '%s' "${DATABASE_URL:-}" | sed -E "s#@(localhost|127\.0\.0\.1):[0-9]+/#@\1:${EVAL_PROD_DB_LOCAL_PORT}/#")"
+  export DATABASE_URL
+fi
+
 # Safety checks — refuse to run if the file didn't actually set prod values.
 if [[ "${ENVIRONMENT:-}" != "production" ]]; then
   echo "error: ENVIRONMENT is '${ENVIRONMENT:-unset}', expected 'production'." >&2
@@ -88,7 +95,8 @@ cat >&2 <<BANNER
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  eval-prod | mode: ${MODE}
  database: ${DB_REDACTED}
- mcp catalog: ${MCP_CATALOG_URL:-${MCP_CATALOG_PATH:-UNSET}}
+ mcp servers: ${MCP_BASE_URL:-${MCP_SERVER_HOST:-UNSET} (host and port)}
+ mcp catalog: ${MCP_CATALOG_URL:-${MCP_CATALOG_PATH:-live from the mcp servers}}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 BANNER
 
