@@ -99,6 +99,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await asyncio.wait(list(_detached_reports), timeout=5)
     if getattr(app.state, "_checkpointer_cm", None) is not None:
         await app.state._checkpointer_cm.__aexit__(None, None, None)  # noqa: SLF001
+        # Closed now: a run that outlives shutdown mustn't use it.
+        app.state.checkpointer = None
     await app.state.agent_token_verifier.aclose()
     await close_shared_client()
     await get_uky_client().close()

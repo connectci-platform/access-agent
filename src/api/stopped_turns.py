@@ -23,8 +23,10 @@ from langchain_core.messages import (
     BaseMessage,
     HumanMessage,
     RemoveMessage,
+    ToolMessage,
 )
 
+from ..agent.auth_tools import ToolIdentityClass, tool_identity_class
 from ..agent.graph import create_checkpointed_graph
 from ..agent.stopped_replies import REASON, STOPPED, is_stopped
 from ..agent.turn_capture import get_turn_capture
@@ -39,6 +41,15 @@ SAVE_WAIT_S = 5.0
 # Written as this node so the saved checkpoint has nothing left to run: its only
 # edge goes to END, as a finished turn's does.
 _AS_NODE = "suggest_follow_ups"
+
+# Stands for a write the turn sent whose result never came back.
+WRITE_IN_FLIGHT_TEXT = (
+    "This request was sent, but the turn was cut off before its result came back. "
+    "It may have gone through: check before doing it again."
+)
+
+# A run's start when the stop came before the run read the thread.
+UNKNOWN_START = object()
 
 # Saves started by a stop, by thread, so the next run and a history read wait
 # for them instead of reading the thread before the stopped turn is in it.
@@ -55,31 +66,88 @@ def _question_saved(saved: list[AnyMessage], query: str) -> bool:
     return isinstance(last, HumanMessage) and last.text.strip() == query.strip()
 
 
+def _is_write(name: str) -> bool:
+    return tool_identity_class(name) is ToolIdentityClass.WRITE
+
+
+def write_record(tool_messages: list[Any]) -> list[BaseMessage]:
+    """The turn's write calls, each followed by its result, in the order they
+    happened. A write still in flight gets a result saying it may have gone
+    through, so a Retry doesn't repeat it blind. Read calls are left out: they
+    changed nothing, and asking again reads again.
+    """
+    results = {m.tool_call_id: m for m in tool_messages if isinstance(m, ToolMessage)}
+    record: list[BaseMessage] = []
+    for message in tool_messages:
+        if not isinstance(message, AIMessage):
+            continue
+        calls = [c for c in message.tool_calls if _is_write(c["name"])]
+        if not calls:
+            continue
+        record.append(
+            AIMessage(content=message.content, id=message.id or str(uuid.uuid4()), tool_calls=calls)
+        )
+        for call in calls:
+            result = results.get(call["id"] or "")
+            record.append(
+                result
+                if result is not None
+                else ToolMessage(
+                    content=WRITE_IN_FLIGHT_TEXT,
+                    tool_call_id=call["id"] or "",
+                    name=call["name"],
+                    status="error",
+                    id=str(uuid.uuid4()),
+                )
+            )
+    return record
+
+
 def stopped_messages(
     saved: list[AnyMessage],
     query: str,
     streamed: dict[str, AIMessageChunk],
     reason: str = "user",
+    tool_messages: list[Any] | None = None,
 ) -> list[BaseMessage]:
-    """What a cut-off turn adds to the saved thread: the answer text that had
-    streamed, one message per streamed id as the client showed it, and the
-    question too when the turn ended before the graph saved it.
+    """What a cut-off turn adds to the saved thread: the question when the turn
+    ended before the graph saved it, then its write calls and their results
+    (see write_record), then the answer text that had streamed, one message per
+    streamed id as the client showed it.
 
     With no text yet the answer is an empty message, so the question still
     reads as answered by a stopped turn rather than waiting for an answer.
     ``reason`` is "user" (Stop or a closed tab), "timeout" or "error".
     """
     meta = {STOPPED: True, REASON: reason}
+    record = write_record(tool_messages or [])
+    # A write call's own text went with it, so it isn't repeated as stopped text.
+    in_record = {m.id for m in record}
     partial: list[BaseMessage] = [
         AIMessage(content=chunk.content, id=key or str(uuid.uuid4()), response_metadata=meta)
         for key, chunk in streamed.items()
-        if chunk.text.strip()
+        if chunk.text.strip() and key not in in_record
     ]
     if not partial:
         partial = [AIMessage(content="", id=str(uuid.uuid4()), response_metadata=meta)]
     if _question_saved(saved, query):
-        return partial
-    return [HumanMessage(content=query, id=str(uuid.uuid4())), *partial]
+        return [*record, *partial]
+    return [HumanMessage(content=query, id=str(uuid.uuid4())), *record, *partial]
+
+
+def still_this_turn(saved: list[AnyMessage], query: str, start: Any) -> bool:
+    """Whether the saved thread is still where this run left it: nothing after
+    the message it began from but, at most, its own question. A save slower
+    than the next run's wait would otherwise land after that run's answer, or
+    in the middle of it. ``start`` is that message's id, None for an empty
+    thread, or UNKNOWN_START when the run never read the thread."""
+    if start is UNKNOWN_START:
+        return True
+    ids = [m.id for m in saved]
+    if start is not None and start not in ids:
+        return False
+    tail = saved[ids.index(start) + 1 :] if start is not None else saved
+    return not tail or (len(tail) == 1 and _question_saved(tail, query))
 
 
 def unanswered_turn(messages: list[AnyMessage]) -> list[str]:
@@ -101,13 +169,21 @@ async def _save(
     query: str,
     streamed: dict[str, AIMessageChunk],
     reason: str,
+    tool_messages: list[Any],
+    start: Any,
 ) -> None:
     try:
         graph = create_checkpointed_graph(checkpointer)
         config = {"configurable": {"thread_id": thread_id}}
         state = await graph.aget_state(config)
         saved = (state.values or {}).get("messages", [])
-        update = stopped_messages(saved, query, streamed, reason)
+        if not still_this_turn(saved, query, start):
+            logger.warning(
+                "Not saving the stopped turn on %s: a later run has written the thread",
+                thread_id,
+            )
+            return
+        update = stopped_messages(saved, query, streamed, reason, tool_messages)
         await graph.aupdate_state(config, {"messages": update}, as_node=_AS_NODE)
     except Exception:
         logger.exception("Saving a stopped turn failed")
@@ -119,12 +195,17 @@ def keep_stopped_turn(
     query: str,
     streamed: dict[str, AIMessageChunk],
     reason: str = "user",
+    *,
+    tool_messages: list[Any] | None = None,
+    start: Any = UNKNOWN_START,
 ) -> None:
     """Save the cut-off turn from a task of its own, so the cancel that ended
     the run can't cut the write short."""
     if checkpointer is None:
         return
-    task = asyncio.ensure_future(_save(checkpointer, thread_id, query, streamed, reason))
+    task = asyncio.ensure_future(
+        _save(checkpointer, thread_id, query, streamed, reason, tool_messages or [], start)
+    )
     _pending[thread_id] = task
 
     def _done(done: asyncio.Task[None]) -> None:
@@ -167,6 +248,16 @@ async def drop_unanswered_turn(checkpointer: Any, thread_id: str) -> None:
         await graph.aupdate_state(config, {"messages": removals}, as_node=_AS_NODE)
 
 
+async def _thread_end(checkpointer: Any, thread_id: str) -> Any:
+    """The id of the thread's last message as this run begins, or None."""
+    if checkpointer is None:
+        return UNKNOWN_START
+    graph = create_checkpointed_graph(checkpointer)
+    state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+    messages = (state.values or {}).get("messages", [])
+    return messages[-1].id if messages else None
+
+
 def answer_delivered(final_state: dict[str, Any]) -> bool:
     """Whether the turn's answer is complete: a node has returned it, with its id.
 
@@ -189,6 +280,18 @@ def _past_turn_deadline() -> bool:
     return deadline is not None and time.monotonic() >= deadline
 
 
+async def without_tool_messages(
+    into: list[Any], events: AsyncIterator[tuple[str, Any]]
+) -> AsyncGenerator[tuple[str, Any], None]:
+    """``events`` from stream_agent without its "tool_messages" events, whose
+    messages go into ``into`` for a cut-off turn's write record."""
+    async for stream_type, chunk in events:
+        if stream_type == "tool_messages":
+            into.extend(chunk)
+        else:
+            yield stream_type, chunk
+
+
 async def keeping_cut_off_turn(
     events: AsyncIterator[T],
     *,
@@ -197,11 +300,13 @@ async def keeping_cut_off_turn(
     query: str,
     final_state: dict[str, Any],
     streamed: dict[str, AIMessageChunk],
+    tool_messages: list[Any] | None = None,
     replace_stopped_turn: bool = False,
 ) -> AsyncGenerator[T, None]:
     """``events``, one run's stream, keeping its turn in the thread when it ends
     before its answer was delivered. The caller fills ``final_state`` and
-    ``streamed`` (answer chunks by message id) as it reads the events.
+    ``streamed`` (answer chunks by message id) and ``tool_messages`` (the
+    "tool_messages" events stream_agent sends) as it reads the events.
 
     A stop lands here as a CancelledError, or as GeneratorExit when it came
     while an event was being sent and the generator is closed afterwards. The
@@ -209,9 +314,19 @@ async def keeping_cut_off_turn(
     failure is any other exception. Each is re-raised for the route to report.
     """
 
+    start: Any = UNKNOWN_START
+
     def _keep(reason: str) -> None:
         if not answer_delivered(final_state):
-            keep_stopped_turn(checkpointer, thread_id, query, streamed, reason)
+            keep_stopped_turn(
+                checkpointer,
+                thread_id,
+                query,
+                streamed,
+                reason,
+                tool_messages=tool_messages,
+                start=start,
+            )
 
     try:
         # A turn cut off just before this run may still be being saved.
@@ -219,6 +334,7 @@ async def keeping_cut_off_turn(
         if replace_stopped_turn:
             # Retry or Edit: the question asked again replaces its stopped turn.
             await drop_unanswered_turn(checkpointer, thread_id)
+        start = await _thread_end(checkpointer, thread_id)
         async for event in events:
             yield event
     except (asyncio.CancelledError, GeneratorExit):

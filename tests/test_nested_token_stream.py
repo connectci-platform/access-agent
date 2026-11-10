@@ -123,3 +123,22 @@ async def test_stream_agent_yields_flattened_pairs(monkeypatch):
         ("updates", {"tool_calling_loop": {"done": True}}),
         ("messages", ("tok", {"langgraph_node": "model"})),
     ]
+
+
+async def test_nested_tool_calls_and_results_go_on_as_tool_messages():
+    """D8-3047: a cut-off turn keeps the writes it made, so the route needs them."""
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    call = AIMessage(content="", tool_calls=[{"name": "x", "args": {}, "id": "c1"}])
+    result = ToolMessage(content="ok", tool_call_id="c1")
+
+    async def stream():
+        yield ("inner",), "updates", {"model": {"messages": [call]}}
+        yield ("inner",), "updates", {"tools": [{"messages": [result]}, "other"]}
+        yield ("inner",), "updates", {"model": {"messages": [AIMessage(content="text")]}}
+        yield ("inner",), "updates", None
+
+    assert [e async for e in _flatten_subgraph_events(stream())] == [
+        ("tool_messages", [call]),
+        ("tool_messages", [result]),
+    ]

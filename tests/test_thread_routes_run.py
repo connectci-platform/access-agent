@@ -1904,3 +1904,65 @@ async def test_history_waits_for_a_stopped_turn_being_saved(client, bearer_for, 
         stopped_turns._pending.clear()
     assert r.status_code == 200
     assert order == ["saved", "read"]
+
+
+async def test_stop_after_a_write_keeps_the_write_for_retry(bearer_for, seed_owner):
+    """D8-3047: the write a stopped turn made stays in the thread, paired with its
+    result, so the model knows it happened when the question is asked again."""
+    from types import SimpleNamespace
+
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from src.agent.graph import create_checkpointed_graph
+    from src.agent_token import AgentIdentity
+    from src.api.stopped_turns import stopped_turn_saved
+    from src.api.thread_routes import RunRequest, thread_run_stream
+
+    seed_owner("t-write", "canceller@x")
+    import src.api.thread_runs as tr
+
+    saver = InMemorySaver()
+    graph = create_checkpointed_graph(saver)
+    config = {"configurable": {"thread_id": "t-write"}}
+    call = AIMessage(
+        content="",
+        id="m1",
+        tool_calls=[{"name": "create_announcement", "args": {}, "id": "c1", "type": "tool_call"}],
+    )
+    result = ToolMessage(content="created", tool_call_id="c1", name="create_announcement", id="t1")
+    wrote = asyncio.Event()
+
+    async def _write_then_wait(**_kwargs):
+        # As the graph saves the question when the run starts.
+        await graph.aupdate_state(
+            config, {"messages": [HumanMessage("post it", id="h")]}, as_node="suggest_follow_ups"
+        )
+        yield "tool_messages", [call, result]
+        wrote.set()
+        await asyncio.sleep(10)
+
+    identity = AgentIdentity(
+        sub="canceller@x", scopes=frozenset({"agent:read"}), exp=int(time.time()) + 900
+    )
+    raw_request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(checkpointer=saver)))
+    body = RunRequest.model_validate(
+        {"input": {"messages": [{"role": "user", "content": "post it"}]}}
+    )
+
+    async def _consume() -> None:
+        with patch("src.api.thread_routes.stream_agent", _write_then_wait):
+            response = await thread_run_stream("t-write", body, raw_request, identity)
+            async for _ in response.body_iterator:
+                pass
+
+    task = asyncio.ensure_future(_consume())
+    await wrote.wait()
+    assert tr.cancel_run("t-write", tr._active_by_thread["t-write"]) is True
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await stopped_turn_saved("t-write")
+
+    messages = (await graph.aget_state(config)).values["messages"]
+    assert [m.id for m in messages[:3]] == ["h", "m1", "t1"]
+    assert messages[3].response_metadata["stopped"] is True
