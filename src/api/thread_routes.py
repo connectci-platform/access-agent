@@ -29,7 +29,7 @@ from ..agent.profile import UserProfile
 from ..agent.profile_source import allocated_profile_for
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..config import settings
-from ..tool_attachments import get_tool_attachment_store
+from ..tool_attachments import get_tool_attachment_store, referenced_ids
 from ..turn_reporter import _hash_user, get_turn_reporter
 from ..turnstile import NOT_CHARGED, charge_query, check_turnstile
 from .answer_tokens import ANSWER_MODEL_NODE, is_answer_token
@@ -41,7 +41,12 @@ from .handoff_tokens import (
 from .identity import ClaimKey, Identity, require_identity
 from .sse import format_sse_event
 from .stopped_turns import answer_delivered as _answer_delivered
-from .stopped_turns import keeping_cut_off_turn, stopped_turn_saved, without_tool_messages
+from .stopped_turns import (
+    keeping_cut_off_turn,
+    stopped_turn_saved,
+    stopped_turn_saving,
+    without_tool_messages,
+)
 from .thread_access import refuse_thread, require_thread_access
 from .thread_runs import (
     acquire_thread_run,
@@ -508,6 +513,38 @@ async def exchange_handoff(body: ExchangeRequest, identity: Identity) -> dict[st
     return {"thread_id": thread_id}
 
 
+async def _end_run(lookup: asyncio.Future[Any], thread_id: str, raw_request: Request) -> None:
+    """Cancel a profile lookup a disconnect cut short (a no-op once it's done),
+    then sweep, while the run still holds the thread so no other run is
+    storing attachments as their references are read."""
+    lookup.cancel()
+    await asyncio.shield(_sweep_attachments(thread_id, raw_request))
+
+
+async def _sweep_attachments(thread_id: str, raw_request: Request) -> None:
+    """Delete this thread's stored attachments that its messages no longer
+    refer to: a turn stopped and replaced, retried or edited, or folded into a
+    summary by compaction. Never raises; whatever is missed goes next run."""
+    checkpointer = getattr(raw_request.app.state, "checkpointer", None)
+    if checkpointer is None:
+        return
+    store = get_tool_attachment_store()
+    try:
+        if not await asyncio.to_thread(store.ids_for, thread_id):
+            return
+        await stopped_turn_saved(thread_id)
+        if stopped_turn_saving(thread_id):
+            return  # its turn may yet refer to one
+        graph = create_checkpointed_graph(checkpointer)
+        state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+        keep = referenced_ids((state.values or {}).get("messages", []))
+        deleted = await asyncio.to_thread(store.keep_only, thread_id, keep)
+        if deleted:
+            logger.info("Deleted %d attachments no message refers to on %s", deleted, thread_id)
+    except Exception:
+        logger.warning("Couldn't sweep attachments on %s", thread_id, exc_info=True)
+
+
 @thread_router.post("/threads/{thread_id}/runs/stream", response_model=None)
 async def thread_run_stream(
     thread_id: str,
@@ -631,8 +668,7 @@ async def thread_run_stream(
                 await _report(state=final_state, ok=False)
                 return
             finally:
-                # A disconnect before the lookup finished. A no-op once it has.
-                lookup.cancel()
+                await _end_run(lookup, thread_id, raw_request)
 
         # Turn report write lives OUTSIDE both run_with_timeout and held_run — a
         # slow reporter write must not trip a spurious TimeoutError into an

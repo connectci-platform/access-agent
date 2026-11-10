@@ -117,10 +117,24 @@ class ThreadOwnerStore:
         # same idiom src/turn_reporter.py and src/usage_logger.py use. A sqlite
         # (or already-`+psycopg`) URL passes through untouched.
         db_url = settings.DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
-        self._engine = create_engine(db_url)
-        ThreadOwnerBase.metadata.create_all(self._engine)
-        self._session_factory = sessionmaker(bind=self._engine)
+        engine = create_engine(db_url)
+        try:
+            ThreadOwnerBase.metadata.create_all(engine)
+        except Exception:
+            # Don't keep a pool for a database that refused us; the next call
+            # tries again from scratch.
+            engine.dispose()
+            raise
+        self._engine = engine
+        self._session_factory = sessionmaker(bind=engine)
         return True
+
+    def session_factory(self) -> sessionmaker[Session] | None:
+        """This store's sessions, for a table that shares its engine and pool
+        (src/tool_attachments.py). None without a database."""
+        if not self._ensure():
+            return None
+        return self._session_factory
 
     def claim_thread(
         self, thread_id: str, acting_user: str | None, claim_key: str | None = None

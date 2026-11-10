@@ -110,6 +110,8 @@ class MCPClient:
         tool_name: str,
         arguments: dict[str, Any],
         acting_user: str | None = None,
+        *,
+        include_structured: bool = False,
     ) -> MCPToolResult:
         """Execute an MCP tool call.
 
@@ -118,6 +120,10 @@ class MCPClient:
             tool_name: Name of the tool to call.
             arguments: Arguments to pass to the tool.
             acting_user: ACCESS ID of user performing action (e.g., jsmith@access-ci.org).
+            include_structured: Ask the server for structuredContent. Only a
+                full-screen thread run does: anywhere else a server answers as
+                it would any MCP host, so get_raw_data doesn't say a table is
+                attached and nothing large reaches that thread's checkpoints.
 
         Returns:
             MCPToolResult with success status and data or error.
@@ -138,13 +144,11 @@ class MCPClient:
 
         logger.info(f"MCP call: {tool_name} with args: {arguments}")
 
-        # Build headers. The agent keeps structuredContent out of the model's
-        # context (it becomes the tool message's artifact), so it asks for it;
-        # servers leave it out for callers that don't.
-        headers = {
-            "Content-Type": "application/json",
-            "X-Include-Structured-Content": "1",
-        }
+        # structuredContent becomes the tool message's artifact, out of the
+        # model's context; servers leave it out for callers that don't ask.
+        headers = {"Content-Type": "application/json"}
+        if include_structured:
+            headers["X-Include-Structured-Content"] = "1"
         if acting_user:
             headers["X-Acting-User"] = acting_user
         if server in settings.mcp_servers_requiring_api_key and settings.MCP_API_KEY:
