@@ -138,7 +138,10 @@ class McpTokenExchanger:
         so a server that keeps refusing can't spend the portal's allowance
         (shared with XDMoD) on every call."""
         self._cache.pop(acting_user, None)
-        self._failures[acting_user] = (self._clock(), "the tool server refused the sign-in token")
+        self._remember_failure(acting_user, "the tool server refused the sign-in token")
+
+    def _remember_failure(self, acting_user: str, reason: str) -> None:
+        self._failures[acting_user] = (self._clock(), reason)
         self._failures.move_to_end(acting_user)
         while len(self._failures) > MAX_CACHED:
             self._failures.popitem(last=False)
@@ -147,10 +150,7 @@ class McpTokenExchanger:
         if self._inflight.get(acting_user) is task:
             del self._inflight[acting_user]
         if not task.cancelled() and isinstance(task.exception(), McpTokenUnavailableError):
-            self._failures[acting_user] = (self._clock(), str(task.exception()))
-            self._failures.move_to_end(acting_user)
-            while len(self._failures) > MAX_CACHED:
-                self._failures.popitem(last=False)
+            self._remember_failure(acting_user, str(task.exception()))
         else:
             self._failures.pop(acting_user, None)
 
