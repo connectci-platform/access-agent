@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .state import ToolCatalog
 
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 
 from ..telemetry import get_tracer
@@ -262,11 +263,32 @@ async def _flatten_subgraph_events(
     The model runs in a create_agent graph nested inside tool_calling_loop, so
     its tokens only surface with subgraphs=True. Nested "updates" are dropped,
     because their keys are inner node names that callers would merge into state.
+    What they carry of tool calls, the model's calls and the tools' results,
+    goes on as a ``"tool_messages"`` event instead, so a route that cuts the
+    turn off can keep the calls that already ran (see src/api/stopped_turns.py).
     """
     async for namespace, stream_type, chunk in events:
         if namespace and stream_type == "updates":
+            calls = _tool_messages(chunk)
+            if calls:
+                yield "tool_messages", calls
             continue
         yield stream_type, chunk
+
+
+def _tool_messages(update: Any) -> list[Any]:
+    """The tool-call and tool-result messages in a nested node update."""
+    outputs = update.values() if isinstance(update, dict) else []
+    found: list[Any] = []
+    for output in outputs:
+        for part in output if isinstance(output, list) else [output]:
+            messages = part.get("messages") if isinstance(part, dict) else None
+            found.extend(
+                m
+                for m in messages or []
+                if isinstance(m, ToolMessage) or (isinstance(m, AIMessage) and m.tool_calls)
+            )
+    return found
 
 
 async def stream_agent(
@@ -290,6 +312,7 @@ async def stream_agent(
       - ``"messages"``: LLM token chunks (with metadata including ``langgraph_node``)
       - ``"updates"``: State updates after each top-level node completes
         (nested updates are dropped, see ``_flatten_subgraph_events``)
+      - ``"tool_messages"``: the model's tool calls and their results, as they happen
     """
     from .state import create_initial_state
 

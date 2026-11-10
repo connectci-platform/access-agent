@@ -315,3 +315,142 @@ async def test_a_delivered_answer_isnt_kept_again():
     with contextlib.suppress(asyncio.CancelledError):
         await _drive(_cancelled(), saver, final_state=delivered)
     assert "t" not in stopped_turns._pending
+
+
+# ---------------------------------------------------------------------------
+# A save that lands late doesn't write over a later run (D8-3047)
+# ---------------------------------------------------------------------------
+
+
+def test_still_this_turn():
+    from src.api.stopped_turns import UNKNOWN_START, still_this_turn
+
+    h0, a0 = HumanMessage(content="old", id="h0"), AIMessage(content="a", id="a0")
+    q = HumanMessage(content="q", id="h1")
+    later = [HumanMessage(content="q2", id="h2"), AIMessage(content="a2", id="a2")]
+    assert still_this_turn([h0, a0], "q", "a0")
+    assert still_this_turn([h0, a0, q], "q", "a0")
+    assert still_this_turn([], "q", None)
+    assert still_this_turn([q], "q", None)
+    assert not still_this_turn([h0, a0, q, *later], "q", "a0")
+    assert not still_this_turn([h0, a0, *later], "q", "a0")
+    assert not still_this_turn([HumanMessage(content="x", id="hx")], "q", "a0")
+    assert still_this_turn([h0, a0, *later], "q", UNKNOWN_START)
+
+
+async def test_a_late_save_after_the_next_run_is_skipped(caplog):
+    saver = InMemorySaver()
+    await _seed(saver, [HumanMessage(content="old", id="h0"), AIMessage(content="a", id="a0")])
+    # This run's question, then the next run's question and answer, all saved
+    # before this run's slow save got to write.
+    await _seed(
+        saver,
+        [
+            HumanMessage(content="q", id="h1"),
+            HumanMessage(content="q2", id="h2"),
+            AIMessage(content="a2", id="a2"),
+        ],
+    )
+    keep_stopped_turn(saver, "t", "q", {"r1": AIMessageChunk(content="Half", id="r1")}, start="a0")
+    await stopped_turn_saved("t")
+    assert [m.id for m in await _thread(saver)] == ["h0", "a0", "h1", "h2", "a2"]
+    assert "a later run has written the thread" in caplog.text
+
+
+async def test_the_run_records_where_it_began():
+    """keeping_cut_off_turn reads the thread's end before the run starts."""
+    saver = InMemorySaver()
+    await _seed(saver, [HumanMessage(content="old", id="h0"), AIMessage(content="a", id="a0")])
+    graph = create_checkpointed_graph(saver)
+
+    async def _next_run_wins():
+        # The next run's turn lands before this run's save does.
+        await graph.aupdate_state(
+            CONFIG,
+            {"messages": [HumanMessage(content="q2", id="h2"), AIMessage(content="a2", id="a2")]},
+            as_node="suggest_follow_ups",
+        )
+        yield 1
+        raise asyncio.CancelledError
+
+    with contextlib.suppress(asyncio.CancelledError):
+        await _drive(_next_run_wins(), saver)
+    await stopped_turn_saved("t")
+    assert [m.id for m in await _thread(saver)] == ["h0", "a0", "h2", "a2"]
+
+
+# ---------------------------------------------------------------------------
+# A cut-off turn keeps the writes it already made (D8-3047)
+# ---------------------------------------------------------------------------
+
+
+def _calls(*names_ids, text=""):
+    return AIMessage(
+        content=text,
+        id="m-" + "-".join(i for _, i in names_ids),
+        tool_calls=[{"name": n, "args": {}, "id": i, "type": "tool_call"} for n, i in names_ids],
+    )
+
+
+def test_write_record_keeps_writes_paired_with_their_results():
+    from langchain_core.messages import ToolMessage
+
+    from src.api.stopped_turns import WRITE_IN_FLIGHT_TEXT, write_record
+
+    read_round = _calls(("search_resources", "c1"))
+    read_result = ToolMessage(content="found", tool_call_id="c1", name="search_resources")
+    mixed = _calls(("create_announcement", "c2"), ("search_events", "c3"), text="Posting it.")
+    done = ToolMessage(content="created #7", tool_call_id="c2", name="create_announcement")
+    in_flight = _calls(("update_announcement", "c4"))
+
+    record = write_record([read_round, read_result, mixed, done, in_flight, "junk"])
+
+    assert [type(m).__name__ for m in record] == [
+        "AIMessage",
+        "ToolMessage",
+        "AIMessage",
+        "ToolMessage",
+    ]
+    assert [c["id"] for c in record[0].tool_calls] == ["c2"]
+    assert record[0].content == "Posting it."
+    assert record[1].content == "created #7"
+    assert record[3].tool_call_id == "c4"
+    assert record[3].content == WRITE_IN_FLIGHT_TEXT
+    assert record[3].status == "error"
+    assert write_record([read_round, read_result]) == []
+
+
+def test_stopped_messages_put_the_writes_before_the_stopped_text():
+    from langchain_core.messages import ToolMessage
+
+    call = _calls(("create_announcement", "c2"), text="Posting it.")
+    result = ToolMessage(content="created #7", tool_call_id="c2", name="create_announcement")
+    streamed = {
+        call.id: AIMessageChunk(content="Posting it.", id=call.id),
+        "r2": AIMessageChunk(content="Done, it is", id="r2"),
+    }
+    saved = [HumanMessage(content="q", id="h")]
+    out = stopped_messages(saved, "q", streamed, "user", [call, result])
+    assert [m.id for m in out[:2]] == [call.id, result.id]
+    assert out[1].tool_call_id == "c2"
+    # The call's own text isn't repeated as stopped text.
+    assert [(m.id, m.content) for m in out[2:]] == [("r2", "Done, it is")]
+    assert is_stopped(out[-1]) and not is_stopped(out[0])
+    # With the question not yet saved, it comes first.
+    out = stopped_messages([], "q", {}, "user", [call, result])
+    assert isinstance(out[0], HumanMessage)
+    assert out[1].tool_calls
+
+
+async def test_without_tool_messages_sets_them_aside():
+    from src.api.stopped_turns import without_tool_messages
+
+    async def _events():
+        yield "messages", 1
+        yield "tool_messages", ["call", "result"]
+        yield "updates", 2
+
+    kept: list = []
+    out = [e async for e in without_tool_messages(kept, _events())]
+    assert out == [("messages", 1), ("updates", 2)]
+    assert kept == ["call", "result"]

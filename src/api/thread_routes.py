@@ -39,7 +39,7 @@ from .handoff_tokens import (
 from .identity import ClaimKey, Identity, require_identity
 from .sse import format_sse_event
 from .stopped_turns import answer_delivered as _answer_delivered
-from .stopped_turns import keeping_cut_off_turn, stopped_turn_saved
+from .stopped_turns import keeping_cut_off_turn, stopped_turn_saved, without_tool_messages
 from .thread_access import require_thread_access
 from .thread_runs import (
     acquire_thread_run,
@@ -200,12 +200,14 @@ async def _stream_run_events(
     """``_run_events`` for one run, keeping the turn in the thread when it ends
     before its answer was delivered (see stopped_turns.keeping_cut_off_turn)."""
     streamed: dict[str, AIMessageChunk] = {}
+    tool_messages: list[Any] = []
     events = _run_events(
         thread_id=thread_id,
         query=query,
         checkpointer=checkpointer,
         final_state=final_state,
         streamed=streamed,
+        tool_messages=tool_messages,
         **run,
     )
     async for event in keeping_cut_off_turn(
@@ -215,6 +217,7 @@ async def _stream_run_events(
         query=query,
         final_state=final_state,
         streamed=streamed,
+        tool_messages=tool_messages,
         replace_stopped_turn=replace_stopped_turn,
     ):
         yield event
@@ -232,6 +235,7 @@ async def _run_events(
     checkpointer: Any,
     final_state: dict[str, Any],
     streamed: dict[str, AIMessageChunk],
+    tool_messages: list[Any],
 ) -> AsyncGenerator[str, None]:
     """The messages/custom/values SSE sequence for one run, mutating
     ``final_state`` in place (mirrors turn_capture's in-place-mutation pattern)
@@ -249,16 +253,20 @@ async def _run_events(
     # The thread as the latest node update leaves it, for the values event.
     thread: list[Any] = []
 
-    async for stream_type, chunk in stream_agent(
-        query=query,
-        session_id=thread_id,
-        question_id=run_id,
-        tool_catalog=registry.catalog,
-        context=context,
-        resource_context=resource_context,
-        profile=profile,
-        time_zone=time_zone,
-        checkpointer=checkpointer,
+    # Tool calls are kept aside for a cut-off turn's write record.
+    async for stream_type, chunk in without_tool_messages(
+        tool_messages,
+        stream_agent(
+            query=query,
+            session_id=thread_id,
+            question_id=run_id,
+            tool_catalog=registry.catalog,
+            context=context,
+            resource_context=resource_context,
+            profile=profile,
+            time_zone=time_zone,
+            checkpointer=checkpointer,
+        ),
     ):
         if stream_type == "custom":
             if (
