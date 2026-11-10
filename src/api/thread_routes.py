@@ -15,7 +15,7 @@ from typing import Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel
@@ -28,6 +28,7 @@ from ..agent.profile import UserProfile
 from ..agent.profile_source import allocated_profile_for
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..config import settings
+from ..tool_attachments import get_tool_attachment_store
 from ..turn_reporter import _hash_user, get_turn_reporter
 from ..turnstile import NOT_CHARGED, charge_query, check_turnstile
 from .answer_tokens import ANSWER_MODEL_NODE, is_answer_token
@@ -40,7 +41,7 @@ from .identity import ClaimKey, Identity, require_identity
 from .sse import format_sse_event
 from .stopped_turns import answer_delivered as _answer_delivered
 from .stopped_turns import keeping_cut_off_turn, stopped_turn_saved, without_tool_messages
-from .thread_access import require_thread_access
+from .thread_access import refuse_thread, require_thread_access
 from .thread_runs import (
     acquire_thread_run,
     cancel_run,
@@ -433,6 +434,26 @@ def _serialize_values(values: dict[str, Any] | None) -> dict[str, Any]:
         return {}
     msgs = values.get("messages", [])
     return {"messages": [m.model_dump() if hasattr(m, "model_dump") else m for m in msgs]}
+
+
+@thread_router.get("/threads/{thread_id}/attachments/{attachment_id}")
+async def thread_attachment(
+    thread_id: str,
+    attachment_id: str,
+    identity: Identity,
+    claim_key: ClaimKey = None,
+) -> Response:
+    """A stored tool attachment (src/tool_attachments.py), on the same access
+    as reading the thread's history. An id stored under another thread is the
+    same 404 as an unknown thread."""
+    require_thread_access(thread_id, identity.sub if identity else None, claim_key)
+    payload = await asyncio.to_thread(get_tool_attachment_store().get, thread_id, attachment_id)
+    if payload is None:
+        raise refuse_thread()
+    # The thread's owner may reload it; nobody between may keep a copy.
+    return Response(
+        payload, media_type="application/json", headers={"Cache-Control": "private, no-store"}
+    )
 
 
 @thread_router.post("/threads/{thread_id}/claim")
