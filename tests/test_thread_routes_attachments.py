@@ -176,7 +176,9 @@ async def test_after_a_run_attachments_no_message_refers_to_are_deleted(
         "src.api.thread_routes.create_checkpointed_graph",
         lambda cp: _Graph([_ref_message(kept)]),
     )
-    app.state.checkpointer = object()
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    app.state.checkpointer = InMemorySaver()
     try:
         r = await client.post(
             "/api/v1/threads/t-a/runs/stream",
@@ -200,7 +202,7 @@ async def test_the_sweep_waits_out_a_stopped_turn_still_saving(monkeypatch):
     monkeypatch.setattr(thread_routes, "stopped_turn_saving", lambda t: True)
     monkeypatch.setattr(thread_routes, "create_checkpointed_graph", lambda cp: _Graph([]))
 
-    await thread_routes._sweep_attachments("t-a", _request())  # type: ignore[arg-type]
+    await thread_routes._sweep_attachments("t-a", object())  # type: ignore[arg-type]
 
     assert get_tool_attachment_store().ids_for("t-a") == {attachment}
 
@@ -216,7 +218,7 @@ async def test_the_sweep_never_raises(monkeypatch, caplog):
 
     monkeypatch.setattr(thread_routes, "create_checkpointed_graph", broken)
 
-    await thread_routes._sweep_attachments("t-a", _request())  # type: ignore[arg-type]
+    await thread_routes._sweep_attachments("t-a", object())  # type: ignore[arg-type]
     assert "Couldn't sweep attachments" in caplog.text
 
 
@@ -228,4 +230,55 @@ async def test_a_thread_with_nothing_stored_reads_no_state(monkeypatch):
 
     monkeypatch.setattr(thread_routes, "create_checkpointed_graph", unexpected)
 
-    await thread_routes._sweep_attachments("t-empty", _request())  # type: ignore[arg-type]
+    await thread_routes._sweep_attachments("t-empty", object())  # type: ignore[arg-type]
+
+
+async def test_a_table_this_run_stores_survives_the_cleanup(client, agent_tokens, monkeypatch):
+    """Cleanup runs at the start of a run, under its lock, before anything new
+    is stored: a table stored mid-run, before its message is saved, stays."""
+    from src.tool_attachments import get_tool_attachment_store
+
+    get_thread_owner_store().claim_thread("t-a", "alice@x")
+    stale = _stored("t-a")
+    fresh: list[str] = []
+
+    async def _fake_stream(**_kwargs):
+        fresh.append(_stored("t-a"))
+        yield "updates", {"tool_calling_loop": {"final_answer": "hi"}}
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _fake_stream)
+    # The saved thread refers to neither: the stale one goes, the fresh one stays.
+    monkeypatch.setattr("src.api.thread_routes.create_checkpointed_graph", lambda cp: _Graph([]))
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    app.state.checkpointer = InMemorySaver()
+    try:
+        r = await client.post(
+            "/api/v1/threads/t-a/runs/stream",
+            headers=agent_tokens.headers("alice@x"),
+            json={"input": {"messages": [{"role": "user", "content": "q"}]}},
+        )
+    finally:
+        app.state.checkpointer = None
+
+    assert r.status_code == 200
+    assert get_tool_attachment_store().ids_for("t-a") == {fresh[0]}
+    assert stale not in fresh
+
+
+async def test_a_database_error_reads_as_not_found(client, agent_tokens, monkeypatch):
+    from src.tool_attachments import ToolAttachmentStore
+
+    get_thread_owner_store().claim_thread("t-a", "alice@x")
+    attachment = _stored("t-a")
+
+    def down(self):
+        raise RuntimeError("database is down")
+
+    monkeypatch.setattr(ToolAttachmentStore, "_sessions", down)
+    owner = await client.get(_url("t-a", attachment), headers=agent_tokens.headers("alice@x"))
+    stranger = await client.get(_url("t-a", attachment), headers=agent_tokens.headers("bob@x"))
+
+    assert owner.status_code == 404
+    assert stranger.status_code == 404
+    assert owner.json() == stranger.json() == {"detail": "Thread not found"}

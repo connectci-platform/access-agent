@@ -20,9 +20,12 @@ dropped and the model is told, never left inline.
 After each run the thread route deletes the thread's attachments that its
 messages no longer refer to (``keep_only``). That one rule covers a turn that
 was stopped and replaced, retried or edited, and one that compaction folded
-into a summary, along with any path added later. The table is created by
-``create_all`` on first use, like thread_owners, and references thread_owners
-with ON DELETE CASCADE, so deleting a thread's owner row deletes them too.
+into a summary, along with any path added later.
+
+The table has its own metadata, created on first use, so a failure to make it
+(a permissions error, say) can only lose tables: the thread-owner tables, and
+every access check that reads them, never depend on it. It shares the owner
+store's engine and pool.
 """
 
 from __future__ import annotations
@@ -33,9 +36,10 @@ import secrets
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, delete, select
+from sqlalchemy import Column, DateTime, Integer, String, Text, delete, select
+from sqlalchemy.orm import declarative_base
 
-from .thread_owners import ThreadOwnerBase, get_thread_owner_store
+from .thread_owners import get_thread_owner_store
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -50,16 +54,14 @@ STORED_KINDS = ("table",)
 REF_SUFFIX = "_ref"
 
 
-class ToolAttachmentRow(ThreadOwnerBase):  # type: ignore[misc]
+AttachmentBase = declarative_base()
+
+
+class ToolAttachmentRow(AttachmentBase):  # type: ignore[valid-type,misc]
     __tablename__ = "tool_attachments"
 
     id = Column(String(32), primary_key=True)
-    thread_id = Column(
-        String(100),
-        ForeignKey("thread_owners.thread_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
+    thread_id = Column(String(100), nullable=False, index=True)
     kind = Column(String(32), nullable=False)
     payload = Column(Text, nullable=False)  # JSON; Postgres compresses it out of line
     size_bytes = Column(Integer, nullable=False)
@@ -100,9 +102,7 @@ class ToolAttachmentStore:
             factory = get_thread_owner_store().session_factory()
             if factory is None:
                 return None
-            # create_all on the owner store's first use already made it when
-            # this module was imported first; this covers the other order.
-            ToolAttachmentRow.__table__.create(factory.kw["bind"], checkfirst=True)
+            AttachmentBase.metadata.create_all(factory.kw["bind"])
             self._session_factory = factory
         return self._session_factory
 
@@ -132,27 +132,38 @@ class ToolAttachmentStore:
             return None
 
     def get(self, thread_id: str, attachment_id: str) -> str | None:
-        """The stored JSON, only when it belongs to this thread."""
-        sessions = self._sessions()
-        if sessions is None:
+        """The stored JSON, only when it belongs to this thread. A database
+        error reads as not found: the client says the table didn't load and
+        offers Retry."""
+        try:
+            sessions = self._sessions()
+            if sessions is None:
+                return None
+            with sessions() as session:
+                return session.execute(
+                    select(ToolAttachmentRow.payload).where(
+                        ToolAttachmentRow.id == attachment_id,
+                        ToolAttachmentRow.thread_id == thread_id,
+                    )
+                ).scalar_one_or_none()
+        except Exception:
+            logger.warning("couldn't read an attachment", exc_info=True)
             return None
-        with sessions() as session:
-            return session.execute(
-                select(ToolAttachmentRow.payload).where(
-                    ToolAttachmentRow.id == attachment_id,
-                    ToolAttachmentRow.thread_id == thread_id,
-                )
-            ).scalar_one_or_none()
 
     def ids_for(self, thread_id: str) -> set[str]:
-        sessions = self._sessions()
-        if sessions is None:
+        """This thread's stored ids; none on a database error, so the cleanup skips."""
+        try:
+            sessions = self._sessions()
+            if sessions is None:
+                return set()
+            with sessions() as session:
+                query: Select[Any] = select(ToolAttachmentRow.id).where(
+                    ToolAttachmentRow.thread_id == thread_id
+                )
+                return {str(i) for i in session.scalars(query)}
+        except Exception:
+            logger.warning("couldn't list attachments", exc_info=True)
             return set()
-        with sessions() as session:
-            query: Select[Any] = select(ToolAttachmentRow.id).where(
-                ToolAttachmentRow.thread_id == thread_id
-            )
-            return {str(i) for i in session.scalars(query)}
 
     def keep_only(self, thread_id: str, keep: set[str]) -> int:
         """Delete this thread's attachments that aren't in ``keep``. Returns how many went."""

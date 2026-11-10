@@ -206,6 +206,7 @@ async def _stream_run_events(
 ) -> AsyncGenerator[str, None]:
     """``_run_events`` for one run, keeping the turn in the thread when it ends
     before its answer was delivered (see stopped_turns.keeping_cut_off_turn)."""
+    await _sweep_attachments(thread_id, checkpointer)
     streamed: dict[str, AIMessageChunk] = {}
     tool_messages: list[Any] = []
     events = _run_events(
@@ -513,19 +514,14 @@ async def exchange_handoff(body: ExchangeRequest, identity: Identity) -> dict[st
     return {"thread_id": thread_id}
 
 
-async def _end_run(lookup: asyncio.Future[Any], thread_id: str, raw_request: Request) -> None:
-    """Cancel a profile lookup a disconnect cut short (a no-op once it's done),
-    then sweep, while the run still holds the thread so no other run is
-    storing attachments as their references are read."""
-    lookup.cancel()
-    await asyncio.shield(_sweep_attachments(thread_id, raw_request))
-
-
-async def _sweep_attachments(thread_id: str, raw_request: Request) -> None:
+async def _sweep_attachments(thread_id: str, checkpointer: Any) -> None:
     """Delete this thread's stored attachments that its messages no longer
     refer to: a turn stopped and replaced, retried or edited, or folded into a
-    summary by compaction. Never raises; whatever is missed goes next run."""
-    checkpointer = getattr(raw_request.app.state, "checkpointer", None)
+    summary by compaction. Never raises; whatever is missed goes next run.
+
+    Runs at the start of a run, holding its thread lock, before the run stores
+    anything: a run's own tables are never swept before their messages save,
+    and no run is cut short by a cleanup after it."""
     if checkpointer is None:
         return
     store = get_tool_attachment_store()
@@ -668,7 +664,8 @@ async def thread_run_stream(
                 await _report(state=final_state, ok=False)
                 return
             finally:
-                await _end_run(lookup, thread_id, raw_request)
+                # A disconnect before the lookup finished. A no-op once it has.
+                lookup.cancel()
 
         # Turn report write lives OUTSIDE both run_with_timeout and held_run — a
         # slow reporter write must not trip a spurious TimeoutError into an

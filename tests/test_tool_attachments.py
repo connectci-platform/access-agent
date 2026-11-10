@@ -6,7 +6,6 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
-from sqlalchemy import text
 
 from src.thread_owners import get_thread_owner_store
 from src.tool_attachments import (
@@ -111,7 +110,7 @@ def test_a_database_error_on_the_first_write_drops_the_table_without_raising(mon
     def refuse(*args: Any, **kwargs: Any) -> None:
         raise RuntimeError("database is down")
 
-    monkeypatch.setattr(attachments.ToolAttachmentRow.__table__, "create", refuse)
+    monkeypatch.setattr(attachments.AttachmentBase.metadata, "create_all", refuse)
 
     assert externalize({"table": TABLE}, "t1") == ({}, True)
 
@@ -142,20 +141,29 @@ def test_a_table_that_is_not_an_object_is_dropped():
     assert externalize({"table": "not a table"}, "t1") == ({}, True)
 
 
-def test_deleting_a_threads_owner_row_deletes_its_attachments():
-    get_thread_owner_store().claim_thread("t1", "alice@x")
-    get_thread_owner_store().claim_thread("t2", "bob@x")
-    kept = _store_one("t2")
-    gone = _store_one("t1")
-    sessions = get_thread_owner_store().session_factory()
-    assert sessions is not None
-    with sessions.kw["bind"].connect() as conn:
-        conn.execute(text("PRAGMA foreign_keys=ON"))  # Postgres always enforces it
-        conn.execute(text("DELETE FROM thread_owners WHERE thread_id = 't1'"))
-        conn.commit()
+def test_a_failed_attachments_table_never_breaks_thread_access(monkeypatch):
+    """Its own metadata: if its table can't be made, only tables are lost."""
+    import src.tool_attachments as attachments
 
-    assert get_tool_attachment_store().get("t1", gone) is None
-    assert get_tool_attachment_store().get("t2", kept) is not None
+    def refuse(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("permission denied for schema public")
+
+    monkeypatch.setattr(attachments.AttachmentBase.metadata, "create_all", refuse)
+    owners = get_thread_owner_store()
+
+    assert owners.claim_thread("t1", "alice@x") is True
+    assert externalize({"table": TABLE}, "t1") == ({}, True)
+    assert get_tool_attachment_store().get("t1", "x") is None
+    assert get_tool_attachment_store().ids_for("t1") == set()
+    assert owners.access("t1", "alice@x").name == "OWNER"
+
+
+def test_the_attachments_table_isnt_in_the_owner_stores_metadata():
+    import src.thread_owners as owners
+    import src.tool_attachments as attachments
+
+    assert "tool_attachments" not in owners.ThreadOwnerBase.metadata.tables
+    assert "tool_attachments" in attachments.AttachmentBase.metadata.tables
 
 
 def test_keep_only_deletes_what_the_thread_no_longer_refers_to():
