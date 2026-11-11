@@ -147,7 +147,15 @@ class TestRefusalText:
         assert text.startswith("Not done.")
         assert settings.LOGIN_URL not in text
         assert "can't make changes on their behalf" in text
-        assert "https://support.access-ci.org/open-a-ticket" in text
+        # Anyone may still file a ticket here (D8-3069).
+        assert "Filing a support ticket is still allowed here" in text
+        assert "open-a-ticket" not in text
+
+
+def test_a_sign_in_refusal_still_allows_a_ticket():
+    # D8-3069: a refusal stays in the thread, so it must not stop a later
+    # login ticket from someone who can't sign in.
+    assert "Filing a support ticket is still allowed" in refusal_text("write_action")
 
 
 def _tool(name: str) -> StructuredTool:

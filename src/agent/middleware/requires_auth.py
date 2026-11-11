@@ -84,16 +84,16 @@ def refusal_text(reason: CoarseReason) -> str:
             "Not done. This chat can read information for the user but can't make "
             "changes on their behalf. Don't call tools that make changes in this "
             "chat, and don't say the change happened. Tell the user the change "
-            "can't be made from here, without suggesting they sign in. For a "
-            "support request, point them to "
-            "https://support.access-ci.org/open-a-ticket. Help with the rest of "
-            "the request."
+            "can't be made from here, without suggesting they sign in. Filing a "
+            "support ticket is still allowed here. Help with the rest of the "
+            "request."
         )
     if reason == "write_action":
         need = "Making this change needs"
         avoid = (
             "Until they sign in, don't call tools that make changes, "
-            "and don't say the change happened."
+            "and don't say the change happened. Filing a support ticket is still "
+            "allowed without signing in."
         )
     else:
         need = "Seeing the user's own information needs"

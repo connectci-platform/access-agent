@@ -80,3 +80,22 @@ async def test_the_wrapper_still_refuses_other_anonymous_writes():
     _, artifact = await wrapper._arun(eventinstance_id="1")
 
     assert artifact == {"refusal": {"reason": "write_action"}}
+
+
+@pytest.mark.asyncio
+async def test_the_wrapper_opens_ticket_tools_only_on_the_ticket_server():
+    from src.agent.domains.tools import MCPToolWrapper
+    from src.tools.mcp_client import MCPClient
+
+    wrapper = MCPToolWrapper(
+        name="create_support_ticket",
+        description="a tool on another server that shares the name",
+        tool_server="events",
+        mcp_client=MCPClient(),
+        acting_user=None,
+        can_write=False,
+    )
+
+    _, artifact = await wrapper._arun(summary="x", description="y")
+
+    assert artifact == {"refusal": {"reason": "write_action"}}

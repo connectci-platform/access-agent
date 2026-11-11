@@ -311,12 +311,20 @@ class MCPClient:
         retried once with X-Acting-User alone; otherwise with require the
         refusal stands, and the caller reports it as a sign-in problem.
         """
-        if acting_user:
+        header_only_ok = server in settings.mcp_servers_accepting_header_only
+        # A jsm refusal says nothing about the token for the other servers, so
+        # it doesn't hold the user's token back from them.
+        if acting_user and not header_only_ok:
             get_mcp_token_exchanger().refused(acting_user)
-        if (
-            settings.MCP_ACTING_USER_TOKEN != "send"
-            and server not in settings.mcp_servers_accepting_header_only
-        ):
+        if header_only_ok:
+            # The ticket still goes out, marked unverified, but every signed-in
+            # ticket would: jsm's token settings are probably wrong.
+            logger.error(
+                "AUTH_INFRA: MCP server %s refused the acting-user token; filing "
+                "header-only, as unverified",
+                server,
+            )
+        elif settings.MCP_ACTING_USER_TOKEN != "send":
             logger.error("MCP server %s refused the acting-user token", server)
             return response
         logger.warning(

@@ -542,6 +542,8 @@ class TestServerRefusesTheToken:
         retried = httpx_mock.get_requests()[1]
         assert "authorization" not in retried.headers
         assert retried.headers["x-acting-user"] == SUB
+        # A jsm refusal doesn't hold the token back from the other servers.
+        assert SUB in mcp_token._exchanger._cache
 
     async def test_an_ordinary_error_is_not_retried(
         self, monkeypatch, portal, signed_in, httpx_mock: HTTPXMock

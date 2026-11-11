@@ -145,7 +145,8 @@ class MCPToolWrapper(BaseTool):
         than raising, because a tool that raises aborts the whole turn.
         """
         is_write = tool_identity_class(self.name, self.read_only) is ToolIdentityClass.WRITE
-        if is_write and not self.can_write and self.name not in OPEN_TICKET_TOOLS:
+        open_ticket = self.tool_server == "jsm" and self.name in OPEN_TICKET_TOOLS
+        if is_write and not self.can_write and not open_ticket:
             logger.error(
                 "write tool %s reached the MCP wrapper without write permission; refused",
                 self.name,
