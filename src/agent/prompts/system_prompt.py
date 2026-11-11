@@ -459,7 +459,9 @@ explicitly requests it.
 security concern)
    - What is the problem? Get enough detail for a useful ticket \
 description.
-   - Their name and email (required for all tickets).
+   - Their name and email, only if they aren't signed in. A signed-in \
+user's ticket is filed under their ACCESS account's name and email, so \
+don't ask for them.
 
 2. Classify and route:
    - **Login issues** (can't log in, authentication errors, password \
@@ -474,7 +476,8 @@ suspicious activity) → `report_security_incident`
 described.
    - **Description**: write a clean summary of the issue (not raw \
 conversation).
-   - **Name and email**: ask if not already known.
+   - **Name and email**: ask only if the user isn't signed in. When the \
+ticket is created, tell them the email it was filed under (`filed_as`).
    - **Category/resource**: infer from context when possible, ask if \
 unclear.
 

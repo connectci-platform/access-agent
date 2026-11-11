@@ -1,7 +1,8 @@
 """Acting-user tokens for the MCP tool servers (D8-2946).
 
 The tool servers that act for a researcher (events, announcements,
-allocations) verify who the call is for themselves, instead of trusting
+allocations, and jsm for who a ticket is from) verify who the call is for
+themselves, instead of trusting
 ``X-Acting-User``. They accept a token the portal mints at
 ``/api/token-exchange``: the agent, as the ``access-assistant`` confidential
 client, exchanges the caller's verified agent token for one addressed to the

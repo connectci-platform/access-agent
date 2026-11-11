@@ -228,7 +228,7 @@ class TestSettings:
         monkeypatch.setattr(settings, "ENVIRONMENT", "local")
         assert settings.mcp_token_audience == "https://mcp.dev.invalid"
         assert settings.MCP_ACTING_USER_TOKEN in ("off", "send", "require")
-        assert "jsm" not in settings.mcp_servers_acting_for_users
+        assert "jsm" in settings.mcp_servers_acting_for_users
 
     def test_startup_refuses_token_mode_without_a_secret(self, monkeypatch: pytest.MonkeyPatch):
         from src.agent_token import check_agent_token_config
@@ -303,14 +303,15 @@ class TestMCPClientActingUserToken:
         # The agent token itself never reaches a tool server.
         assert AGENT_TOKEN not in str(sent.headers)
 
-    async def test_jsm_stays_on_its_service_account(
+    async def test_jsm_gets_the_token_to_file_under_the_signed_in_account(
         self, monkeypatch, portal, signed_in, httpx_mock: HTTPXMock
     ):
+        # D8-3069: the ticket server files a signed-in user's ticket under the
+        # email and name on the verified token, not the model's arguments.
         monkeypatch.setattr(settings, "MCP_ACTING_USER_TOKEN", "require")
         ok(httpx_mock, f"{JSM}/tools/create_support_ticket")
         await client().call_tool("jsm", "create_support_ticket", {}, acting_user=SUB)
-        assert "authorization" not in httpx_mock.get_requests()[0].headers
-        assert portal.requests == []
+        assert httpx_mock.get_requests()[0].headers["authorization"] == f"Bearer {TOKEN}"
 
     async def test_anonymous_calls_exchange_nothing(
         self, monkeypatch, portal, httpx_mock: HTTPXMock
