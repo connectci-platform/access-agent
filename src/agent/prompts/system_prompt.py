@@ -519,6 +519,16 @@ SIGNED_IN_NOTE = (
 )
 
 
+def _access_id_line(acting_user: str) -> str:
+    """Names the signed-in user's ACCESS ID, which looks like an email but isn't."""
+    return (
+        f"The signed-in user's ACCESS ID: `{acting_user}`. ACCESS IDs end in "
+        f"@access-ci.org, but this is their ACCESS username, not their email "
+        f"address: never call it their email or use it as one. When a task needs "
+        f"their email, such as a support ticket, ask for one."
+    )
+
+
 def _today() -> date:
     return datetime.now(UTC).date()
 
@@ -593,16 +603,16 @@ def build_system_prompt(
     ]
 
     read_only_session = acting_user is not None and not can_write
-    if read_only_session:
+    if acting_user is not None and not can_write:
         sections.append(
-            f"## Acting user\n\nCurrent user: `{acting_user}`. "
+            f"## Acting user\n\n{_access_id_line(acting_user)} "
             f"Use this when calling tools that accept an acting-user "
             f"identity (allocations, personal usage queries). This chat can read "
             f"information for the user but can't make changes on their behalf."
         )
     elif acting_user:
         sections.append(
-            f"## Acting user\n\nCurrent user: `{acting_user}`. "
+            f"## Acting user\n\n{_access_id_line(acting_user)} "
             f"Use this when calling tools that accept an acting-user "
             f"identity (allocations, ticket-creation, personal usage queries). "
             f"{SIGNED_IN_NOTE}"
