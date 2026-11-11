@@ -575,7 +575,7 @@ def build_system_prompt(
     Args:
         acting_user: ACCESS ID of the authenticated requester. Surfaced
             so the LLM can pass it through tools that personalize on
-            identity (allocations, ticket-creation, personal usage).
+            identity (allocations, personal usage).
         can_write: Whether this run may make changes. When a signed-in caller
             can't, the announcement and ticket workflows are left out, since
             they walk the model through tools it will be refused. The gate
@@ -614,7 +614,7 @@ def build_system_prompt(
         sections.append(
             f"## Acting user\n\n{_access_id_line(acting_user)} "
             f"Use this when calling tools that accept an acting-user "
-            f"identity (allocations, ticket-creation, personal usage queries). "
+            f"identity (allocations, personal usage queries). "
             f"{SIGNED_IN_NOTE}"
         )
     else:
