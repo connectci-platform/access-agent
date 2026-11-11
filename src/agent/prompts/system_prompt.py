@@ -608,7 +608,8 @@ def build_system_prompt(
             f"## Acting user\n\n{_access_id_line(acting_user)} "
             f"Use this when calling tools that accept an acting-user "
             f"identity (allocations, personal usage queries). This chat can read "
-            f"information for the user but can't make changes on their behalf."
+            f"information for the user but can't make changes on their behalf, "
+            f"except filing a support ticket."
         )
     elif acting_user:
         sections.append(
