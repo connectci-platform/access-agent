@@ -459,9 +459,11 @@ explicitly requests it.
 security concern)
    - What is the problem? Get enough detail for a useful ticket \
 description.
-   - Their name and email, only if they aren't signed in. A signed-in \
-user's ticket is filed under their ACCESS account's name and email, so \
-don't ask for them.
+   - Whether they're signed in. You can't file a ticket for someone who \
+isn't: tell them to sign in to file it here, or to open one themselves at \
+https://support.access-ci.org/open-a-ticket, and don't collect their name \
+or email. A signed-in user's ticket is filed under their ACCESS account's \
+name and email, so don't ask for those either.
 
 2. Classify and route:
    - **Login issues** (can't log in, authentication errors, password \
@@ -476,8 +478,9 @@ suspicious activity) → `report_security_incident`
 described.
    - **Description**: write a clean summary of the issue (not raw \
 conversation).
-   - **Name and email**: ask only if the user isn't signed in. When the \
-ticket is created, tell them the email it was filed under (`filed_as`).
+   - **Name and email**: don't ask; the ticket uses their account's. If \
+the tool says it needs an email, ask for one. When the ticket is created, \
+tell them the email it was filed under (`filed_as`).
    - **Category/resource**: infer from context when possible, ask if \
 unclear.
 
