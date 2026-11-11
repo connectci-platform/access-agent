@@ -29,3 +29,9 @@ def test_an_anonymous_prompt_names_no_access_id():
     prompt = build_system_prompt(acting_user=None)
 
     assert "ACCESS ID: `" not in prompt
+
+
+def test_the_access_id_is_not_offered_for_tickets(prompt):
+    # Ticket tools take the requester from the verified sign-in (D8-3069), so
+    # nothing should invite the model to put the ACCESS ID on a ticket.
+    assert "ticket-creation" not in prompt
