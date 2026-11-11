@@ -347,6 +347,20 @@ class TestMCPClientActingUserToken:
         assert "sign-in couldn't be confirmed" in (result.error or "")
         assert httpx_mock.get_requests() == []
 
+    async def test_require_still_sends_a_ticket_when_the_exchange_fails(
+        self, monkeypatch, portal, signed_in, httpx_mock: HTTPXMock
+    ):
+        # D8-3069: the ticket server files a header-only call as unverified.
+        monkeypatch.setattr(settings, "MCP_ACTING_USER_TOKEN", "require")
+        portal.status = 400
+        portal.token = None
+        ok(httpx_mock, f"{JSM}/tools/create_login_ticket")
+        result = await client().call_tool("jsm", "create_login_ticket", {}, acting_user=SUB)
+        assert result.success
+        sent = httpx_mock.get_requests()[0]
+        assert "authorization" not in sent.headers
+        assert sent.headers["x-acting-user"] == SUB
+
     async def test_require_without_a_signed_in_request_sends_nothing(
         self, monkeypatch, portal, httpx_mock: HTTPXMock
     ):
@@ -507,6 +521,27 @@ class TestServerRefusesTheToken:
         assert "didn't accept the researcher's sign-in" in (result.error or "")
         assert len(httpx_mock.get_requests()) == 1
         assert SUB not in mcp_token._exchanger._cache
+
+    async def test_require_retries_a_refused_ticket_with_the_header(
+        self, monkeypatch, portal, signed_in, httpx_mock: HTTPXMock
+    ):
+        # D8-3069: the ticket server files a header-only call as unverified, so
+        # a refused token doesn't stop the ticket even in require.
+        monkeypatch.setattr(settings, "MCP_ACTING_USER_TOKEN", "require")
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{JSM}/tools/create_support_ticket",
+            status_code=401,
+            headers={"www-authenticate": 'Bearer error="invalid_token"'},
+            json={"error": "refused"},
+            match_headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+        ok(httpx_mock, f"{JSM}/tools/create_support_ticket")
+        result = await client().call_tool("jsm", "create_support_ticket", {}, acting_user=SUB)
+        assert result.success
+        retried = httpx_mock.get_requests()[1]
+        assert "authorization" not in retried.headers
+        assert retried.headers["x-acting-user"] == SUB
 
     async def test_an_ordinary_error_is_not_retried(
         self, monkeypatch, portal, signed_in, httpx_mock: HTTPXMock

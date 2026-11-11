@@ -252,7 +252,9 @@ class MCPClient:
         try:
             token = await get_mcp_token_exchanger().token_for(acting_user, current_agent_token())
         except McpTokenUnavailableError as e:
-            if mode == "send":
+            # The ticket server files a call with only X-Acting-User as an
+            # unverified ticket (D8-3069), so a ticket is never held back.
+            if mode == "send" or server in settings.mcp_servers_accepting_header_only:
                 logger.warning(
                     "MCP acting-user token unavailable for %s, sending X-Acting-User only: %s",
                     server,
@@ -304,13 +306,17 @@ class MCPClient:
         """A server refused the token (401) or couldn't check it (503).
 
         The servers answer both before running the tool, so nothing was done.
-        The cached token is dropped either way. With send (rollout step 2) the
-        call is retried once with X-Acting-User alone; with require the
+        The cached token is dropped either way. With send (rollout step 2), or
+        for a server that files such a call as unverified (jsm), the call is
+        retried once with X-Acting-User alone; otherwise with require the
         refusal stands, and the caller reports it as a sign-in problem.
         """
         if acting_user:
             get_mcp_token_exchanger().refused(acting_user)
-        if settings.MCP_ACTING_USER_TOKEN != "send":
+        if (
+            settings.MCP_ACTING_USER_TOKEN != "send"
+            and server not in settings.mcp_servers_accepting_header_only
+        ):
             logger.error("MCP server %s refused the acting-user token", server)
             return response
         logger.warning(

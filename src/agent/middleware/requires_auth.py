@@ -26,7 +26,7 @@ from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import HumanMessage, ToolMessage
 
 from ...config import settings
-from ..auth_tools import ToolIdentityClass, tool_identity_class
+from ..auth_tools import OPEN_TICKET_TOOLS, ToolIdentityClass, tool_identity_class
 from ..context import AgentContext, require_context
 
 if TYPE_CHECKING:
@@ -54,7 +54,7 @@ def refusal_reason(
     ``read_only`` is the tool server's readOnlyHint, when there is one; see
     ``tool_identity_class`` for how it is used.
     """
-    if not name:
+    if not name or name in OPEN_TICKET_TOOLS:
         return None
     identity_class = tool_identity_class(name, read_only)
     if identity_class is ToolIdentityClass.NONE:

@@ -425,6 +425,13 @@ class Settings(BaseSettings):
         service account but takes the requester from the token (D8-3069)."""
         return {"announcements", "events", "allocations", "jsm"}
 
+    @property
+    def mcp_servers_accepting_header_only(self) -> set[str]:
+        """Servers that still act on X-Acting-User alone, marked unverified, when
+        no acting-user token can be had: jsm files such a ticket as unverified
+        (D8-3069), so a failed exchange never stops a ticket, even in require."""
+        return {"jsm"}
+
     # T2 data-residency guard (fail closed). Production user queries must never
     # reach a commercial model API — a formal program mandate, and Table 1 of
     # the trust model claims it as enforced in code. Enforcing at Settings
