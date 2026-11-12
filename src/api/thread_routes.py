@@ -374,7 +374,9 @@ def extract_confirm_ids(content: Any) -> list[str]:
         for item in raw:
             if isinstance(item, str) and _PREVIEW_ID.fullmatch(item) and item not in ids:
                 ids.append(item)
-    return ids[:MAX_CONFIRM_IDS]
+                if len(ids) == MAX_CONFIRM_IDS:
+                    return ids
+    return ids
 
 
 def _last_user_content(messages: list[dict[str, Any]]) -> Any:
