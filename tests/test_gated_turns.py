@@ -89,7 +89,8 @@ class _ServerTool(StructuredTool):
 
 def _tools(ran: list[str]) -> list[StructuredTool]:
     def make(name: str, server: str) -> StructuredTool:
-        def _run() -> str:
+        # confirmed: a write tool without it is refused by the write gate.
+        def _run(confirmed: bool = False) -> str:
             ran.append(name)
             return json.dumps({"tool": name, "results": [{"title": "Python workshop"}]})
 

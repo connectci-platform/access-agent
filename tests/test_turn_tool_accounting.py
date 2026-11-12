@@ -79,7 +79,8 @@ class _ServerTool(StructuredTool):
 def _tool(name: str, server: str = "", *, timed: bool = True) -> StructuredTool:
     """A tool whose result names itself and its argument, so pairing is checkable."""
 
-    def _run(n: int = 0, pad: str = "") -> str:
+    # confirmed: a write tool without it is refused by the write gate.
+    def _run(n: int = 0, pad: str = "", confirmed: bool = False) -> str:
         if timed:
             record_tool_timing(name, 10 + n)
         return json.dumps({"tool": name, "n": n, "pad": pad})

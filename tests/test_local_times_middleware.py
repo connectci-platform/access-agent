@@ -7,7 +7,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
 from src.agent.middleware.local_times import LocalTimesMiddleware
-from src.agent.middleware.preview_first import _is_preview
+from src.agent.middleware.write_gate import preview_body
 
 NY = "America/New_York"
 
@@ -84,7 +84,7 @@ async def test_a_nested_register_result_gets_local_times_and_still_reads_as_a_pr
     assert data["event"]["start_local"] == "Fri, Nov 20, 2026, 1:00 PM EST"
     assert data["event"]["start_date"] == "2026-11-20T18:00:00+00:00"
     assert "end_local" not in data["event"]
-    assert _is_preview(result)
+    assert preview_body(result) is not None
 
 
 async def test_a_summer_date_is_given_in_daylight_time():

@@ -6,7 +6,7 @@ question from the thread, with no tool call, and calls the old result current.
 Prompt rules don't hold for Qwen, which trusts message content over them, so the
 model's view of the thread is rewritten instead. The stored thread doesn't
 change, so ``request.state`` keeps the original messages for code that reads
-them, such as ``PreviewFirstMiddleware``.
+them.
 
 An earlier turn is anything before the latest human message. That holds after
 compaction, which moves questions forward but keeps the current question ahead

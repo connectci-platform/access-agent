@@ -46,9 +46,9 @@ from ..domains.capabilities import WRITE_MCP_TOOL_NAMES
 from ..domains.tools import create_mcp_tools_from_catalog
 from ..middleware.earlier_results import EarlierResultsMiddleware, earlier_results_view
 from ..middleware.local_times import LocalTimesMiddleware
-from ..middleware.preview_first import PreviewFirstMiddleware
 from ..middleware.requires_auth import RequiresAuthMiddleware
 from ..middleware.turn_budget import TurnBudgetMiddleware, step_capped_view
+from ..middleware.write_gate import WriteGateMiddleware
 from ..profile import UserProfile
 from ..prompts.system_prompt import build_system_prompt
 from ..state import ToolResult
@@ -717,6 +717,14 @@ def _replace_sentinel_message(messages: list[Any], replacement: str) -> None:
             return
 
 
+def _confirm_ids(messages: list[Any]) -> list[str]:
+    """The preview ids the user confirmed with this turn's question."""
+    for message in reversed(messages):
+        if isinstance(message, HumanMessage):
+            return list(message.additional_kwargs.get("confirm", []))
+    return []
+
+
 async def tool_calling_loop_node(  # noqa: PLR0915
     state: dict[str, Any], runtime: Runtime[AgentContext]
 ) -> dict[str, Any]:
@@ -794,9 +802,12 @@ async def tool_calling_loop_node(  # noqa: PLR0915
             # Inside context editing, so it sees which results were cleared.
             EarlierResultsMiddleware(),
             gate,
-            # After the gate, so a caller who may not register is refused
-            # rather than shown a preview.
-            PreviewFirstMiddleware(),
+            # After the gate, so a caller who may not write is refused rather
+            # than shown a preview, and a confirmed replay is checked like any call.
+            WriteGateMiddleware(
+                thread_id=state.get("session_id") or "",
+                confirm_ids=_confirm_ids(state.get("messages", [])),
+            ),
             # Outside the budget, so its timeout notes pass through; it only adds
             # keys, so a preview it rewrites still reads as one.
             LocalTimesMiddleware(state.get("time_zone")),
