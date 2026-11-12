@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from src.pending_previews import PendingPreviewRow, PendingPreviewStore, get_pending_preview_store
 
@@ -59,6 +59,22 @@ def test_a_preview_older_than_a_day_cant_be_claimed():
         )
 
     assert store.claim("t1", preview_id) is None
+
+
+def test_recording_removes_the_threads_expired_previews_only():
+    store = get_pending_preview_store()
+    old_id = store.record("t1", "create_event", ARGS)
+    other_id = store.record("t2", "create_event", ARGS)
+    old = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=24, minutes=1)
+    with store._sessions()() as session, session.begin():
+        session.execute(update(PendingPreviewRow).values(created_at=old))
+
+    fresh_id = store.record("t1", "create_event", ARGS)
+
+    with store._sessions()() as session:
+        ids = set(session.scalars(select(PendingPreviewRow.id)))
+    assert ids == {other_id, fresh_id}
+    assert old_id not in ids
 
 
 def test_concurrent_claims_yield_exactly_one_success():

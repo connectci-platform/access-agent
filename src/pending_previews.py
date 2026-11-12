@@ -21,7 +21,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Column, DateTime, String, Text, Update, update
+from sqlalchemy import Column, DateTime, String, Text, Update, delete, update
 from sqlalchemy.orm import declarative_base
 
 from .thread_owners import get_thread_owner_store
@@ -66,13 +66,22 @@ class PendingPreviewStore:
         return self._session_factory
 
     def record(self, thread_id: str, tool: str, args: dict[str, Any]) -> str | None:
-        """Store the call and return its id, or None when it can't be stored."""
+        """Store the call and return its id, or None when it can't be stored.
+
+        The thread's expired previews go in the same transaction, so the table
+        holds at most a day of each thread's previews."""
         try:
             sessions = self._sessions()
             if sessions is None:
                 return None
             preview_id = uuid.uuid4().hex
             with sessions() as session, session.begin():
+                session.execute(
+                    delete(PendingPreviewRow).where(
+                        PendingPreviewRow.thread_id == thread_id,
+                        PendingPreviewRow.created_at <= _now() - PREVIEW_TTL,  # type: ignore[arg-type]
+                    )
+                )
                 session.add(
                     PendingPreviewRow(
                         id=preview_id, thread_id=thread_id, tool=tool, args=json.dumps(args)
