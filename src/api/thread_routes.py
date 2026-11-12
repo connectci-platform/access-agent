@@ -8,6 +8,7 @@ src/api/thread_access.py, which is where access is decided.
 import asyncio
 import gzip
 import logging
+import re
 import time
 import uuid
 from collections.abc import AsyncGenerator, Callable, Coroutine
@@ -244,6 +245,7 @@ async def _run_events(
     final_state: dict[str, Any],
     streamed: dict[str, AIMessageChunk],
     tool_messages: list[Any],
+    confirm_ids: list[str],
 ) -> AsyncGenerator[str, None]:
     """The messages/custom/values SSE sequence for one run, mutating
     ``final_state`` in place (mirrors turn_capture's in-place-mutation pattern)
@@ -274,6 +276,7 @@ async def _run_events(
             profile=profile,
             time_zone=time_zone,
             checkpointer=checkpointer,
+            confirm_ids=confirm_ids,
         ),
     ):
         if stream_type == "custom":
@@ -349,6 +352,38 @@ def _extract_text_content(content: Any) -> str:
     return ""
 
 
+MAX_CONFIRM_IDS = 10
+_PREVIEW_ID = re.compile(r"[0-9a-f]{32}")
+
+
+def extract_confirm_ids(content: Any) -> list[str]:
+    """Preview ids from a Confirm click's ``confirm`` block.
+
+    Client input, so anything malformed is dropped rather than raised: only
+    exactly-32-lowercase-hex strings survive, deduplicated, at most 10.
+    """
+    if not isinstance(content, list):
+        return []
+    ids: list[str] = []
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "confirm":
+            continue
+        raw = block.get("preview_ids")
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            if isinstance(item, str) and _PREVIEW_ID.fullmatch(item) and item not in ids:
+                ids.append(item)
+    return ids[:MAX_CONFIRM_IDS]
+
+
+def _last_user_content(messages: list[dict[str, Any]]) -> Any:
+    for msg in reversed(messages):
+        if msg.get("type") == "human" or msg.get("role") == "user":
+            return msg.get("content", "")
+    return ""
+
+
 def _last_user_text(messages: list[dict[str, Any]]) -> str:
     """The query the agent runs is the latest user turn in the run input.
 
@@ -361,10 +396,7 @@ def _last_user_text(messages: list[dict[str, Any]]) -> str:
     full-screen client sends ``[{"type": "text", "text": "..."}]``); only the
     text blocks are extracted.
     """
-    for msg in reversed(messages):
-        if msg.get("type") == "human" or msg.get("role") == "user":
-            return _extract_text_content(msg.get("content", ""))
-    return ""
+    return _extract_text_content(_last_user_content(messages))
 
 
 @thread_router.post("/threads")
@@ -627,6 +659,7 @@ async def thread_run_stream(
                         thread_id=thread_id,
                         run_id=run_id,
                         query=query,
+                        confirm_ids=extract_confirm_ids(_last_user_content(body.input.messages)),
                         context=AgentContext.from_identity(identity, thread_run=True),
                         resource_context=resource_context,
                         profile=profile,

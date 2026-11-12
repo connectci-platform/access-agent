@@ -250,6 +250,16 @@ class AgentState(TypedDict):
     ]
 
 
+def human_turn(query: str, confirm_ids: list[str] | None = None) -> HumanMessage:
+    """The turn's question, carrying any Confirm-click preview ids out of band.
+
+    The ids ride in additional_kwargs, never content, so the model reads only
+    the text and WriteGateMiddleware reads the ids from the latest human message.
+    """
+    kwargs = {"confirm": list(confirm_ids)} if confirm_ids else {}
+    return HumanMessage(content=query, additional_kwargs=kwargs)
+
+
 def create_initial_state(
     query: str,
     session_id: str,
@@ -258,6 +268,7 @@ def create_initial_state(
     resource_context: str | None = None,
     profile: UserProfile | None = None,
     time_zone: str | None = None,
+    confirm_ids: list[str] | None = None,
 ) -> AgentState:
     """Create the initial state for a new query.
 
@@ -270,6 +281,7 @@ def create_initial_state(
         profile: Optional per-request user profile hint (allocated resources).
             Stored as a plain dict (model_dump()) — see AgentState.profile.
         time_zone: Optional IANA zone the user's times are given in.
+        confirm_ids: Preview ids from a Confirm click, kept on the HumanMessage.
 
     Returns:
         An initialized AgentState ready for the graph.
@@ -277,7 +289,7 @@ def create_initial_state(
     return AgentState(
         # Conversation memory - add the user's query as a message
         # The add_messages reducer will accumulate this with previous messages
-        messages=[HumanMessage(content=query)],
+        messages=[human_turn(query, confirm_ids)],
         # Inputs
         query=query,
         session_id=session_id,
