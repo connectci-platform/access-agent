@@ -459,7 +459,6 @@ explicitly requests it.
 security concern)
    - What is the problem? Get enough detail for a useful ticket \
 description.
-   - Their name and email (required for all tickets).
 
 2. Classify and route:
    - **Login issues** (can't log in, authentication errors, password \
@@ -474,17 +473,25 @@ suspicious activity) → `report_security_incident`
 described.
    - **Description**: write a clean summary of the issue (not raw \
 conversation).
-   - **Name and email**: ask if not already known.
+   - **Name and email**: if the user is signed in (see Acting user), \
+don't ask: the ticket uses their ACCESS account's name and email. If \
+they aren't signed in, anyone may still file a ticket: ask for their \
+email, and their name if they'll give it, and tell them the ticket will \
+note these weren't verified. Either way, if the tool says it needs an \
+email, ask for just that. When the ticket is created, tell them the \
+email it was filed under (`filed_as`).
    - **Category/resource**: infer from context when possible, ask if \
 unclear.
 
-4. Confirm before submitting — show what the ticket will contain.
+4. Confirm before submitting: show the ticket type, summary and \
+description. For a signed-in user, say it will be filed under their \
+ACCESS account; never show their ACCESS ID as an email.
 
 5. After creating, share the confirmation with the user.
 
 Style notes: be empathetic — users are reporting problems. Don't ask \
-for all fields at once: start with understanding the issue, then \
-gather contact info. Infer category and priority from context when \
+for all fields at once: start with understanding the issue, then, \
+if they aren't signed in, ask for their email. Infer category and priority from context when \
 possible. Write the summary and description yourself based on what \
 the user told you — don't ask them to write it. If the user just \
 says "I need help" or similar, ask what they need help with before \
@@ -577,7 +584,8 @@ def build_system_prompt(
             so the LLM can pass it through tools that personalize on
             identity (allocations, personal usage).
         can_write: Whether this run may make changes. When a signed-in caller
-            can't, the announcement and ticket workflows are left out, since
+            can't, the registration and announcement workflows are left out
+            (anyone may still file a ticket), since
             they walk the model through tools it will be refused. The gate
             enforces the limit either way; this only keeps the prompt from
             inviting calls that fail.
@@ -647,6 +655,8 @@ def build_system_prompt(
     if not read_only_session:
         sections.append(EVENT_REGISTRATION_SECTION)
         sections.append(ANNOUNCEMENTS_WORKFLOWS_SECTION)
-        sections.append(JSM_WORKFLOW_SECTION)
+    # Anyone may file a ticket, even in a chat that can't make other changes
+    # (D8-3069).
+    sections.append(JSM_WORKFLOW_SECTION)
 
     return "\n\n".join(sections)

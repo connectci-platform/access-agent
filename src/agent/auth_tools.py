@@ -45,6 +45,13 @@ from src.agent.domains.capabilities import (
 _AUTH_READ_RE = re.compile(r"^(get_my_|authenticate$|complete_authentication$)")
 _WRITE_PREFIX_RE = re.compile(r"^(create_|update_|delete_|register_|cancel_|report_)")
 
+# Writes anyone may make, signed in or not (D8-3069). Someone who can't sign in
+# is who most needs a login ticket, and the ticket server files a ticket
+# without a verified sign-in as unverified, like the public ticket form does.
+OPEN_TICKET_TOOLS = frozenset(
+    {"create_support_ticket", "create_login_ticket", "report_security_incident"}
+)
+
 
 class ToolIdentityClass(Enum):
     """Why (if at all) a tool needs a resolved identity before it can be called."""

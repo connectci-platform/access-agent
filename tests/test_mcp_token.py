@@ -228,7 +228,7 @@ class TestSettings:
         monkeypatch.setattr(settings, "ENVIRONMENT", "local")
         assert settings.mcp_token_audience == "https://mcp.dev.invalid"
         assert settings.MCP_ACTING_USER_TOKEN in ("off", "send", "require")
-        assert "jsm" not in settings.mcp_servers_acting_for_users
+        assert "jsm" in settings.mcp_servers_acting_for_users
 
     def test_startup_refuses_token_mode_without_a_secret(self, monkeypatch: pytest.MonkeyPatch):
         from src.agent_token import check_agent_token_config
@@ -303,14 +303,15 @@ class TestMCPClientActingUserToken:
         # The agent token itself never reaches a tool server.
         assert AGENT_TOKEN not in str(sent.headers)
 
-    async def test_jsm_stays_on_its_service_account(
+    async def test_jsm_gets_the_token_to_file_under_the_signed_in_account(
         self, monkeypatch, portal, signed_in, httpx_mock: HTTPXMock
     ):
+        # D8-3069: the ticket server files a signed-in user's ticket under the
+        # email and name on the verified token, not the model's arguments.
         monkeypatch.setattr(settings, "MCP_ACTING_USER_TOKEN", "require")
         ok(httpx_mock, f"{JSM}/tools/create_support_ticket")
         await client().call_tool("jsm", "create_support_ticket", {}, acting_user=SUB)
-        assert "authorization" not in httpx_mock.get_requests()[0].headers
-        assert portal.requests == []
+        assert httpx_mock.get_requests()[0].headers["authorization"] == f"Bearer {TOKEN}"
 
     async def test_anonymous_calls_exchange_nothing(
         self, monkeypatch, portal, httpx_mock: HTTPXMock
@@ -345,6 +346,20 @@ class TestMCPClientActingUserToken:
         assert not result.success
         assert "sign-in couldn't be confirmed" in (result.error or "")
         assert httpx_mock.get_requests() == []
+
+    async def test_require_still_sends_a_ticket_when_the_exchange_fails(
+        self, monkeypatch, portal, signed_in, httpx_mock: HTTPXMock
+    ):
+        # D8-3069: the ticket server files a header-only call as unverified.
+        monkeypatch.setattr(settings, "MCP_ACTING_USER_TOKEN", "require")
+        portal.status = 400
+        portal.token = None
+        ok(httpx_mock, f"{JSM}/tools/create_login_ticket")
+        result = await client().call_tool("jsm", "create_login_ticket", {}, acting_user=SUB)
+        assert result.success
+        sent = httpx_mock.get_requests()[0]
+        assert "authorization" not in sent.headers
+        assert sent.headers["x-acting-user"] == SUB
 
     async def test_require_without_a_signed_in_request_sends_nothing(
         self, monkeypatch, portal, httpx_mock: HTTPXMock
@@ -506,6 +521,29 @@ class TestServerRefusesTheToken:
         assert "didn't accept the researcher's sign-in" in (result.error or "")
         assert len(httpx_mock.get_requests()) == 1
         assert SUB not in mcp_token._exchanger._cache
+
+    async def test_require_retries_a_refused_ticket_with_the_header(
+        self, monkeypatch, portal, signed_in, httpx_mock: HTTPXMock
+    ):
+        # D8-3069: the ticket server files a header-only call as unverified, so
+        # a refused token doesn't stop the ticket even in require.
+        monkeypatch.setattr(settings, "MCP_ACTING_USER_TOKEN", "require")
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{JSM}/tools/create_support_ticket",
+            status_code=401,
+            headers={"www-authenticate": 'Bearer error="invalid_token"'},
+            json={"error": "refused"},
+            match_headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+        ok(httpx_mock, f"{JSM}/tools/create_support_ticket")
+        result = await client().call_tool("jsm", "create_support_ticket", {}, acting_user=SUB)
+        assert result.success
+        retried = httpx_mock.get_requests()[1]
+        assert "authorization" not in retried.headers
+        assert retried.headers["x-acting-user"] == SUB
+        # A jsm refusal doesn't hold the token back from the other servers.
+        assert SUB in mcp_token._exchanger._cache
 
     async def test_an_ordinary_error_is_not_retried(
         self, monkeypatch, portal, signed_in, httpx_mock: HTTPXMock

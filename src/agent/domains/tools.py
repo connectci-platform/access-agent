@@ -15,7 +15,7 @@ from pydantic import BaseModel, BeforeValidator, Field, WithJsonSchema, create_m
 
 from ...tool_attachments import NOT_ATTACHED_NOTE, externalize
 from ...tools.mcp_client import MCPClient
-from ..auth_tools import ToolIdentityClass, tool_identity_class
+from ..auth_tools import OPEN_TICKET_TOOLS, ToolIdentityClass, tool_identity_class
 from ..middleware.requires_auth import CoarseReason, refusal_artifact, refusal_text
 from ..middleware.turn_budget import TIMED_OUT_ARTIFACT
 from ..turn_capture import record_tool_timing
@@ -145,7 +145,8 @@ class MCPToolWrapper(BaseTool):
         than raising, because a tool that raises aborts the whole turn.
         """
         is_write = tool_identity_class(self.name, self.read_only) is ToolIdentityClass.WRITE
-        if is_write and not self.can_write:
+        open_ticket = self.tool_server == "jsm" and self.name in OPEN_TICKET_TOOLS
+        if is_write and not self.can_write and not open_ticket:
             logger.error(
                 "write tool %s reached the MCP wrapper without write permission; refused",
                 self.name,

@@ -2142,15 +2142,15 @@
        },
        "user_email": {
         "type": "string",
-        "description": "User's email address"
+        "description": "User's email address. Needed only when the user isn't signed in; a signed-in user's ticket uses their account's email."
        },
        "user_name": {
         "type": "string",
-        "description": "User's full name"
+        "description": "User's full name. Needed only when the user isn't signed in; a signed-in user's ticket uses their account's name."
        },
        "access_id": {
         "type": "string",
-        "description": "User's ACCESS ID (optional)"
+        "description": "User's ACCESS ID (optional). Ignored when the user is signed in, since the ticket uses their verified ACCESS ID."
        },
        "category": {
         "type": "string",
@@ -2212,9 +2212,7 @@
       },
       "required": [
        "summary",
-       "description",
-       "user_email",
-       "user_name"
+       "description"
       ]
      },
      "annotations": {
@@ -2237,15 +2235,15 @@
        },
        "user_email": {
         "type": "string",
-        "description": "User's email address"
+        "description": "User's email address. Needed only when the user isn't signed in; a signed-in user's ticket uses their account's email."
        },
        "user_name": {
         "type": "string",
-        "description": "User's full name"
+        "description": "User's full name. Needed only when the user isn't signed in; a signed-in user's ticket uses their account's name."
        },
        "access_id": {
         "type": "string",
-        "description": "User's ACCESS ID (optional)"
+        "description": "User's ACCESS ID (optional). Ignored when the user is signed in, since the ticket uses their verified ACCESS ID."
        },
        "login_type": {
         "type": "string",
@@ -2305,8 +2303,6 @@
       "required": [
        "summary",
        "description",
-       "user_email",
-       "user_name",
        "login_type"
       ]
      },
@@ -2330,15 +2326,15 @@
        },
        "user_email": {
         "type": "string",
-        "description": "User's email address"
+        "description": "User's email address. Needed only when the user isn't signed in; a signed-in user's ticket uses their account's email."
        },
        "user_name": {
         "type": "string",
-        "description": "User's full name"
+        "description": "User's full name. Needed only when the user isn't signed in; a signed-in user's ticket uses their account's name."
        },
        "access_id": {
         "type": "string",
-        "description": "User's ACCESS ID (optional)"
+        "description": "User's ACCESS ID (optional). Ignored when the user is signed in, since the ticket uses their verified ACCESS ID."
        },
        "priority": {
         "type": "string",
@@ -2354,9 +2350,7 @@
       },
       "required": [
        "summary",
-       "description",
-       "user_email",
-       "user_name"
+       "description"
       ]
      },
      "annotations": {

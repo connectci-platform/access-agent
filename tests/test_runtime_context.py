@@ -329,7 +329,8 @@ def test_a_signed_in_caller_who_cant_write_gets_no_write_workflows():
     prompt = build_system_prompt(acting_user="u@x", can_write=False)
 
     assert "## Announcements workflow" not in prompt
-    assert "## Support-ticket workflow" not in prompt
+    # Anyone may still file a ticket (D8-3069).
+    assert "## Support-ticket workflow" in prompt
     assert "can't make changes on their behalf" in prompt
     assert "ticket-creation" not in prompt
 
