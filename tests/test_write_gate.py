@@ -24,12 +24,16 @@ from src.agent.middleware.requires_auth import RequiresAuthMiddleware
 from src.agent.middleware.turn_budget import TurnBudgetMiddleware
 from src.agent.middleware.write_gate import (
     ALREADY_CONFIRMED_NOTE,
+    ALREADY_PREVIEWED_NO_CHANGES_TEXT,
+    ALREADY_PREVIEWED_REGISTRATION_TEXT,
     ALREADY_PREVIEWED_TEXT,
     CONFIRM_ERROR_NOTE,
     CONFIRM_FAILED_NOTE,
     NOT_FROM_ASSISTANT_TEXT,
     PARTIAL_CONFIRM_NOTE,
     PREVIEW_NOTE,
+    REPEATED_NO_CHANGES_ANSWER,
+    REPEATED_REGISTRATION_ANSWER,
     REPEATED_WRITE_ANSWER,
     SERVICE_DOWN_TEXT,
     TYPED_CONFIRM_NOTE,
@@ -1091,7 +1095,7 @@ async def test_repeating_a_previewed_write_in_a_turn_doesnt_run_it_again():
 
     assert json.loads(first.content)["preview_id"]
     assert sent == []
-    assert again.content == ALREADY_PREVIEWED_TEXT
+    assert again.content == ALREADY_PREVIEWED_REGISTRATION_TEXT
     assert again.tool_call_id == "c2"
     assert turn_previews([first, again]) == turn_previews([first])
 
@@ -1112,8 +1116,73 @@ async def test_a_model_that_keeps_repeating_a_write_ends_the_turn_on_the_card():
 
     assert ran == [("9372", False)]
     assert len(turn_previews(result["messages"])) == 1
-    assert result["messages"][-1].content == REPEATED_WRITE_ANSWER
+    assert result["messages"][-1].content == REPEATED_REGISTRATION_ANSWER
     assert not result["messages"][-1].tool_calls
+
+
+def update_event(event_id: int, title: str | None = None, confirmed: bool = False) -> str:
+    """Update an event."""
+    return ""
+
+
+UPDATE_TOOL = StructuredTool.from_function(update_event)
+
+
+async def test_a_repeat_written_another_way_is_still_a_repeat():
+    """The model may send 9372 as a string, or add an unset field as null; the
+    tool gets the same call, so the card mustn't list it twice."""
+    gate = _gate()
+    _, first = await _run(_call({"event_id": 9372}, "update_event"), tool_=UPDATE_TOOL, gate=gate)
+    sent, again = await _run(
+        _call({"event_id": "9372", "title": None}, "update_event", "c2"),
+        tool_=UPDATE_TOOL,
+        gate=gate,
+    )
+
+    assert json.loads(first.content)["preview_id"]
+    assert sent == []
+    assert again.content == ALREADY_PREVIEWED_TEXT
+
+
+async def test_a_different_change_to_the_same_event_still_previews():
+    gate = _gate()
+    await _run(
+        _call({"event_id": 9372, "title": "A"}, "update_event"), tool_=UPDATE_TOOL, gate=gate
+    )
+    sent, again = await _run(
+        _call({"event_id": 9372, "title": "B"}, "update_event", "c2"), tool_=UPDATE_TOOL, gate=gate
+    )
+
+    assert sent == [{"event_id": 9372, "title": "B", "confirmed": False}]
+    assert json.loads(again.content)["preview_id"]
+
+
+async def test_a_repeat_of_a_change_that_changes_nothing_isnt_sent_to_confirm():
+    """A no-change preview has no Confirm button to point at."""
+    gate = _gate()
+    unchanged = json.dumps({**PREVIEW, "data": {"no_changes": True}})
+    await _run(_call({"event_id": 1}, "update_event"), unchanged, tool_=UPDATE_TOOL, gate=gate)
+    _, again = await _run(
+        _call({"event_id": 1}, "update_event", "c2"), unchanged, tool_=UPDATE_TOOL, gate=gate
+    )
+    await _run(
+        _call({"event_id": 1}, "update_event", "c3"), unchanged, tool_=UPDATE_TOOL, gate=gate
+    )
+
+    assert again.content == ALREADY_PREVIEWED_NO_CHANGES_TEXT
+    result = await _before(gate)
+    assert result is not None
+    assert result["messages"][-1].content == REPEATED_NO_CHANGES_ANSWER
+
+
+async def test_a_repeated_card_change_ends_pointing_at_confirm():
+    gate = _gate()
+    for i in range(3):
+        await _run(_call({"event_id": 1}, "update_event", f"c{i}"), tool_=UPDATE_TOOL, gate=gate)
+
+    result = await _before(gate)
+    assert result is not None
+    assert result["messages"][-1].content == REPEATED_WRITE_ANSWER
 
 
 def test_turn_previews_lists_each_preview_id_once():

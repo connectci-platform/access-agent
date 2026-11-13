@@ -24,6 +24,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ...pending_previews import ClaimStatus, get_pending_preview_store
 from ..auth_tools import ToolIdentityClass, tool_identity_class
+from .turn_budget import call_key
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -44,12 +45,32 @@ ALREADY_PREVIEWED_TEXT = (
     "This exact change was already previewed in this reply and is on the user's card. "
     "Nothing has changed. Don't call it again: ask the user to click Confirm on the card."
 )
+# A registration is confirmed by its own button (Register, Join waitlist),
+# shown in the side panel or on the card depending on the client.
+ALREADY_PREVIEWED_REGISTRATION_TEXT = (
+    "This exact change was already previewed in this reply. Nothing has changed. Don't "
+    "call it again: ask the user to use the button shown with it."
+)
+ALREADY_PREVIEWED_NO_CHANGES_TEXT = (
+    "This exact change was already previewed in this reply, and it wouldn't change "
+    "anything. Don't call it again: tell the user nothing needs changing."
+)
 # The turn's answer when the model keeps calling a change it already
 # previewed: it is trying to confirm it, which only the button can do.
 REPEATED_WRITE_ANSWER = (
     "I've prepared the change, and nothing has changed yet. Click Confirm on the card "
     "to make it, or Cancel if you don't want it."
 )
+REPEATED_REGISTRATION_ANSWER = (
+    "I've prepared it, and nothing has changed yet. It happens only when you click its button."
+)
+REPEATED_NO_CHANGES_ANSWER = "That wouldn't change anything, so there's nothing to confirm."
+_REGISTRATION_TOOLS = frozenset({"register_for_event", "cancel_registration"})
+_REPEAT_TEXTS = {
+    "card": (ALREADY_PREVIEWED_TEXT, REPEATED_WRITE_ANSWER),
+    "registration": (ALREADY_PREVIEWED_REGISTRATION_TEXT, REPEATED_REGISTRATION_ANSWER),
+    "no_changes": (ALREADY_PREVIEWED_NO_CHANGES_TEXT, REPEATED_NO_CHANGES_ANSWER),
+}
 _MAX_REPEATS = 2
 UNCONFIRMABLE_NOTE = (
     "This is a preview, but it can't be confirmed right now. Tell the user to try "
@@ -160,9 +181,14 @@ def clean_confirm_ids(raw: Any) -> list[str]:
     return ids
 
 
-def _record_key(name: str, args: dict[str, Any]) -> tuple[str, str]:
-    """A write call's identity within a turn: its tool and its arguments."""
-    return (name, json.dumps(args, sort_keys=True, default=str))
+def _preview_kind(name: str, body: dict[str, Any]) -> str:
+    """Which button, if any, confirms this preview: what a repeat is told."""
+    data = body.get("data")
+    if body.get("no_changes") is True or (
+        isinstance(data, dict) and data.get("no_changes") is True
+    ):
+        return "no_changes"
+    return "registration" if name in _REGISTRATION_TOOLS else "card"
 
 
 def turn_previews(messages: list[Any]) -> list[dict[str, Any]]:
@@ -296,10 +322,14 @@ class WriteGateMiddleware(AgentMiddleware):
         # (tool, args) -> preview id recorded this turn, so identical calls
         # share one id and Confirm all can't write the same change twice. The
         # lock covers parallel calls from one model step.
-        self._recorded: dict[tuple[str, str], str] = {}
+        # Keyed as the tool would receive the call, so "9372" and 9372 match.
+        self._recorded: dict[str, str] = {}
+        self._kinds: dict[str, str] = {}
         self._record_lock = asyncio.Lock()
-        # Calls this turn that repeated an already-previewed change.
+        # Calls this turn that repeated an already-previewed change, and the
+        # kind of the last one, which picks the turn's closing answer.
         self._repeats = 0
+        self._repeat_kind = "card"
 
     @hook_config(can_jump_to=["tools", "end"])
     async def abefore_model(
@@ -310,7 +340,8 @@ class WriteGateMiddleware(AgentMiddleware):
         # A model that keeps calling a change it already previewed would loop
         # to the recursion limit, and that error loses the turn and its card.
         if self._repeats >= _MAX_REPEATS:
-            return {"messages": [AIMessage(content=REPEATED_WRITE_ANSWER)], "jump_to": "end"}
+            answer = _REPEAT_TEXTS[self._repeat_kind][1]
+            return {"messages": [AIMessage(content=answer)], "jump_to": "end"}
         # The loop comes back here after every tool round; only the first may
         # claim. Approval ends with that round, so a replayed call refused before
         # reaching this gate can't leave one behind for the model to reuse.
@@ -414,12 +445,15 @@ class WriteGateMiddleware(AgentMiddleware):
         args = {k: v for k, v in call["args"].items() if k != "confirmed"}
         # A repeat of a change already previewed this turn, often the model
         # trying to confirm a typed yes, isn't run again or added to the card.
-        if self._recorded.get(_record_key(name, args)) is not None:
+        key = call_key(name, args, request.tool)
+        if self._recorded.get(key) is not None:
             self._repeats += 1
+            self._repeat_kind = self._kinds.get(key, "card")
             logger.info(
                 "WRITE_REPEATED: %s called again after its preview (%d)", name, self._repeats
             )
-            return ToolMessage(content=ALREADY_PREVIEWED_TEXT, name=name, tool_call_id=call["id"])
+            text = _REPEAT_TEXTS[self._repeat_kind][0]
+            return ToolMessage(content=text, name=name, tool_call_id=call["id"])
         result = await handler(
             request.override(tool_call={**call, "args": {**args, "confirmed": False}})
         )
@@ -428,7 +462,9 @@ class WriteGateMiddleware(AgentMiddleware):
             return result
         body = preview_body(result)
         if body is not None:
-            preview_id = await self._record(name, args, _acting_user(request.runtime))
+            preview_id = await self._record(
+                key, name, args, _acting_user(request.runtime), _preview_kind(name, body)
+            )
             if preview_id is None:
                 return _with_body(result, {**body, "note": UNCONFIRMABLE_NOTE})
             return _with_body(result, {**body, "preview_id": preview_id, "note": PREVIEW_NOTE})
@@ -437,9 +473,10 @@ class WriteGateMiddleware(AgentMiddleware):
         logger.error("WRITE_WITHOUT_CONFIRM: %s did not preview when called unconfirmed", name)
         return _with_note(result, UNCONFIRMED_WRITE_NOTE)
 
-    async def _record(self, name: str, args: dict[str, Any], acting_user: str | None) -> str | None:
+    async def _record(
+        self, key: str, name: str, args: dict[str, Any], acting_user: str | None, kind: str
+    ) -> str | None:
         """This turn's id for the call, recording it on first sight."""
-        key = _record_key(name, args)
         async with self._record_lock:
             preview_id = self._recorded.get(key)
             if preview_id is None:
@@ -449,4 +486,5 @@ class WriteGateMiddleware(AgentMiddleware):
                 )
                 if preview_id is not None:
                     self._recorded[key] = preview_id
+                    self._kinds[key] = kind
             return preview_id
