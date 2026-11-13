@@ -44,6 +44,13 @@ ALREADY_PREVIEWED_TEXT = (
     "This exact change was already previewed in this reply and is on the user's card. "
     "Nothing has changed. Don't call it again: ask the user to click Confirm on the card."
 )
+# The turn's answer when the model keeps calling a change it already
+# previewed: it is trying to confirm it, which only the button can do.
+REPEATED_WRITE_ANSWER = (
+    "I've prepared the change, and nothing has changed yet. Click Confirm on the card "
+    "to make it, or Cancel if you don't want it."
+)
+_MAX_REPEATS = 2
 UNCONFIRMABLE_NOTE = (
     "This is a preview, but it can't be confirmed right now. Tell the user to try "
     "again in a moment."
@@ -291,13 +298,19 @@ class WriteGateMiddleware(AgentMiddleware):
         # lock covers parallel calls from one model step.
         self._recorded: dict[tuple[str, str], str] = {}
         self._record_lock = asyncio.Lock()
+        # Calls this turn that repeated an already-previewed change.
+        self._repeats = 0
 
-    @hook_config(can_jump_to=["tools"])
+    @hook_config(can_jump_to=["tools", "end"])
     async def abefore_model(
         self,
         state: Any,  # noqa: ARG002
         runtime: Runtime[Any],
     ) -> dict[str, Any] | None:
+        # A model that keeps calling a change it already previewed would loop
+        # to the recursion limit, and that error loses the turn and its card.
+        if self._repeats >= _MAX_REPEATS:
+            return {"messages": [AIMessage(content=REPEATED_WRITE_ANSWER)], "jump_to": "end"}
         # The loop comes back here after every tool round; only the first may
         # claim. Approval ends with that round, so a replayed call refused before
         # reaching this gate can't leave one behind for the model to reuse.
@@ -402,6 +415,10 @@ class WriteGateMiddleware(AgentMiddleware):
         # A repeat of a change already previewed this turn, often the model
         # trying to confirm a typed yes, isn't run again or added to the card.
         if self._recorded.get(_record_key(name, args)) is not None:
+            self._repeats += 1
+            logger.info(
+                "WRITE_REPEATED: %s called again after its preview (%d)", name, self._repeats
+            )
             return ToolMessage(content=ALREADY_PREVIEWED_TEXT, name=name, tool_call_id=call["id"])
         result = await handler(
             request.override(tool_call={**call, "args": {**args, "confirmed": False}})

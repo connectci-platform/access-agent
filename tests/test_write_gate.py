@@ -30,6 +30,7 @@ from src.agent.middleware.write_gate import (
     NOT_FROM_ASSISTANT_TEXT,
     PARTIAL_CONFIRM_NOTE,
     PREVIEW_NOTE,
+    REPEATED_WRITE_ANSWER,
     SERVICE_DOWN_TEXT,
     TYPED_CONFIRM_NOTE,
     UNCONFIRMABLE_NOTE,
@@ -1093,6 +1094,26 @@ async def test_repeating_a_previewed_write_in_a_turn_doesnt_run_it_again():
     assert again.content == ALREADY_PREVIEWED_TEXT
     assert again.tool_call_id == "c2"
     assert turn_previews([first, again]) == turn_previews([first])
+
+
+async def test_a_model_that_keeps_repeating_a_write_ends_the_turn_on_the_card():
+    """The local model, told a change is on the card, called it again until the
+    recursion limit, which lost the turn and its card."""
+    ran: list[Any] = []
+    calls = [
+        AIMessage(content="", tool_calls=[_call({"eventinstance_id": "9372"}, call_id=f"c{i}")])
+        for i in range(6)
+    ]
+    agent = _agent([*calls, AIMessage(content="never reached")], ran, _gate(), [])
+
+    result = await agent.ainvoke(
+        {"messages": [HumanMessage(content="yes, register me")]}, context=WRITER
+    )
+
+    assert ran == [("9372", False)]
+    assert len(turn_previews(result["messages"])) == 1
+    assert result["messages"][-1].content == REPEATED_WRITE_ANSWER
+    assert not result["messages"][-1].tool_calls
 
 
 def test_turn_previews_lists_each_preview_id_once():
