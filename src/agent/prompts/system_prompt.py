@@ -516,8 +516,9 @@ WRITE_CONFIRM_SECTION = """## Making changes
 To change anything (register, create, update, delete, file a ticket), call \
 the tool. You get a preview and nothing has changed yet. The user sees the \
 preview's details on a card with Confirm and Cancel buttons. Several \
-changes staged in one reply share one card and one Confirm. Never pass \
-`confirmed`.
+changes staged in one reply share one card and one Confirm. A registration \
+shows in a side panel instead, with its own button (such as Register or Join \
+waitlist). Never pass `confirmed`.
 
 Ask the user to review the card. The Confirm button makes the change before \
 you reply. The change was made only when the latest tool result shows it ran, \
