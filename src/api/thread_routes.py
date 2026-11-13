@@ -363,7 +363,9 @@ def extract_confirm_ids(content: Any) -> list[str]:
     ids: list[str] = []
     for block in content:
         if isinstance(block, dict) and block.get("type") == "confirm":
-            ids.extend(i for i in clean_confirm_ids(block.get("preview_ids")) if i not in ids)
+            for preview_id in clean_confirm_ids(block.get("preview_ids")):
+                if preview_id not in ids:
+                    ids.append(preview_id)
     return ids[:MAX_CONFIRM_IDS]
 
 

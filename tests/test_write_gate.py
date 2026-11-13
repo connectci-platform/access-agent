@@ -33,6 +33,7 @@ from src.agent.middleware.write_gate import (
     UNCONFIRMED_WRITE_NOTE,
     WriteGateMiddleware,
     preview_body,
+    turn_previews,
 )
 from src.agent.state import human_turn
 from src.pending_previews import get_pending_preview_store
@@ -865,3 +866,21 @@ async def test_an_approved_replay_of_a_tool_missing_from_the_catalog_says_the_se
     )
     assert result.status == "error"
     assert result.tool_call_id == call["id"]
+
+
+def test_turn_previews_lists_only_unexecuted_stamped_previews():
+    pid = "b" * 32
+    stamped = ToolMessage(
+        content=json.dumps({**PREVIEW, "preview_id": pid}), tool_call_id="c1", name="update_event"
+    )
+    ran = ToolMessage(
+        content=json.dumps({"status": "updated", "executed": True, "preview_id": "c" * 32}),
+        tool_call_id="c2",
+        name="update_event",
+    )
+    unstamped = ToolMessage(content=json.dumps(PREVIEW), tool_call_id="c3", name="update_event")
+
+    previews = turn_previews([stamped, ran, unstamped])
+
+    assert [p["preview_id"] for p in previews] == [pid]
+    assert previews[0]["tool"] == "update_event"
