@@ -8,7 +8,6 @@ src/api/thread_access.py, which is where access is decided.
 import asyncio
 import gzip
 import logging
-import re
 import time
 import uuid
 from collections.abc import AsyncGenerator, Callable, Coroutine
@@ -25,6 +24,7 @@ from starlette.responses import StreamingResponse
 
 from ..agent.context import AgentContext
 from ..agent.graph import create_checkpointed_graph, stream_agent
+from ..agent.middleware.write_gate import MAX_CONFIRM_IDS, clean_confirm_ids
 from ..agent.nodes.capability_discovery import is_capability_question
 from ..agent.profile import UserProfile
 from ..agent.profile_source import allocated_profile_for
@@ -352,10 +352,6 @@ def _extract_text_content(content: Any) -> str:
     return ""
 
 
-MAX_CONFIRM_IDS = 10
-_PREVIEW_ID = re.compile(r"[0-9a-f]{32}")
-
-
 def extract_confirm_ids(content: Any) -> list[str]:
     """Preview ids from a Confirm click's ``confirm`` block.
 
@@ -366,17 +362,9 @@ def extract_confirm_ids(content: Any) -> list[str]:
         return []
     ids: list[str] = []
     for block in content:
-        if not isinstance(block, dict) or block.get("type") != "confirm":
-            continue
-        raw = block.get("preview_ids")
-        if not isinstance(raw, list):
-            continue
-        for item in raw:
-            if isinstance(item, str) and _PREVIEW_ID.fullmatch(item) and item not in ids:
-                ids.append(item)
-                if len(ids) == MAX_CONFIRM_IDS:
-                    return ids
-    return ids
+        if isinstance(block, dict) and block.get("type") == "confirm":
+            ids.extend(i for i in clean_confirm_ids(block.get("preview_ids")) if i not in ids)
+    return ids[:MAX_CONFIRM_IDS]
 
 
 def _last_user_content(messages: list[dict[str, Any]]) -> Any:

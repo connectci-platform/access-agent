@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 from langchain.agents.middleware.types import AgentMiddleware, hook_config
@@ -119,6 +120,49 @@ def preview_body(message: Any) -> dict[str, Any] | None:
     if body is None or body.get("status") != "preview" or body.get("executed") is not False:
         return None
     return body
+
+
+MAX_CONFIRM_IDS = 10
+_PREVIEW_ID = re.compile(r"[0-9a-f]{32}")
+
+
+def clean_confirm_ids(raw: Any) -> list[str]:
+    """Client-sent preview ids, filtered: only exactly-32-lowercase-hex strings
+    survive, deduplicated in order, at most 10. Anything malformed is dropped."""
+    if not isinstance(raw, list):
+        return []
+    ids: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and _PREVIEW_ID.fullmatch(item) and item not in ids:
+            ids.append(item)
+            if len(ids) == MAX_CONFIRM_IDS:
+                break
+    return ids
+
+
+def turn_previews(messages: list[Any]) -> list[dict[str, Any]]:
+    """The stamped previews among a turn's tool messages, in order, as
+    ``{"preview_id", "tool", "data", "no_changes"}``. A preview with no valid
+    id (its record failed) can't be confirmed, so it is left out."""
+    previews: list[dict[str, Any]] = []
+    for message in messages:
+        body = preview_body(message)
+        if body is None:
+            continue
+        preview_id = body.get("preview_id")
+        if not isinstance(preview_id, str) or not _PREVIEW_ID.fullmatch(preview_id):
+            continue
+        data = body.get("data")
+        previews.append(
+            {
+                "preview_id": preview_id,
+                "tool": message.name or "",
+                "data": data,
+                "no_changes": body.get("no_changes") is True
+                or (isinstance(data, dict) and data.get("no_changes") is True),
+            }
+        )
+    return previews
 
 
 def _is_failure(message: ToolMessage) -> bool:
