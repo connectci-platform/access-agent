@@ -51,6 +51,12 @@ CONFIRM_FAILED_NOTE = (
     "The user clicked Confirm, but that preview was already used or has expired, so "
     "this click changed nothing. Tell them so and offer to preview it again."
 )
+PARTIAL_CONFIRM_NOTE = (
+    "The user clicked Confirm on {total} changes. {failed} of them had already been "
+    "used or had expired, so those weren't made; the rest ran, and their results are "
+    "the latest tool results. Tell them which changes were made and offer to preview "
+    "the others again."
+)
 TYPED_CONFIRM_NOTE = (
     "The user typed a confirmation instead of clicking Confirm, so nothing was "
     "changed. Ask them to click Confirm on the card."
@@ -69,6 +75,16 @@ def _is_typed_confirmation(message: HumanMessage) -> bool:
     """A bare "yes" or "confirm" typed in place of the button, nothing longer."""
     text = (_text(message.content) or "").strip().casefold().rstrip(".!?, ")
     return text in _TYPED_CONFIRMATIONS
+
+
+def _answers_a_preview(messages: list[Any], human_index: int) -> bool:
+    """Whether the turn before this message left a preview waiting for Confirm."""
+    for message in reversed(messages[:human_index]):
+        if isinstance(message, HumanMessage):
+            return False
+        if preview_body(message) is not None:
+            return True
+    return False
 
 
 def _text(content: Any) -> str | None:
@@ -188,11 +204,13 @@ class WriteGateMiddleware(AgentMiddleware):
             calls.append({"id": call_id, "name": tool, "args": args})
             self.approved[call_id] = (tool, args)
         failed = len(preview_ids) - len(calls)
-        if failed:
+        if failed and calls:
+            self.failed_note = PARTIAL_CONFIRM_NOTE.format(total=len(preview_ids), failed=failed)
+        elif failed:
             self.failed_note = CONFIRM_FAILED_NOTE
             if len(preview_ids) > 1:
                 self.failed_note += (
-                    f" {failed} of the {len(preview_ids)} changes they confirmed could not be made."
+                    f" None of the {len(preview_ids)} changes they confirmed were made."
                 )
         if not calls:
             return None
@@ -209,7 +227,12 @@ class WriteGateMiddleware(AgentMiddleware):
             if not isinstance(message, HumanMessage):
                 continue
             note = self.failed_note
-            if note is None and not self.confirm_ids and _is_typed_confirmation(message):
+            if (
+                note is None
+                and not self.confirm_ids
+                and _is_typed_confirmation(message)
+                and _answers_a_preview(view, i)
+            ):
                 note = TYPED_CONFIRM_NOTE
             if note is None:
                 return await handler(request)

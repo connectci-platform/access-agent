@@ -25,6 +25,7 @@ from src.agent.middleware.turn_budget import TurnBudgetMiddleware
 from src.agent.middleware.write_gate import (
     CONFIRM_FAILED_NOTE,
     NOT_FROM_ASSISTANT_TEXT,
+    PARTIAL_CONFIRM_NOTE,
     PREVIEW_NOTE,
     SERVICE_DOWN_TEXT,
     TYPED_CONFIRM_NOTE,
@@ -402,8 +403,8 @@ async def test_one_good_and_one_spent_id_run_the_good_one_and_note_the_other():
 
     assert len(update["messages"][0].tool_calls) == 1  # type: ignore[index]
     view = await _view(gate, [HumanMessage(content="Confirm")])
-    assert view[-1].content.count(CONFIRM_FAILED_NOTE) == 1
-    assert "1 of the 2 changes" in view[-1].content
+    assert CONFIRM_FAILED_NOTE not in view[-1].content
+    assert view[-1].content.endswith(PARTIAL_CONFIRM_NOTE.format(total=2, failed=1))
 
 
 async def test_when_every_confirmed_change_failed_the_note_says_how_many():
@@ -413,7 +414,7 @@ async def test_when_every_confirmed_change_failed_the_note_says_how_many():
 
     view = await _view(gate, [HumanMessage(content="Confirm")])
     assert view[-1].content.count(CONFIRM_FAILED_NOTE) == 1
-    assert "2 of the 2 changes" in view[-1].content
+    assert "None of the 2 changes they confirmed were made." in view[-1].content
 
 
 async def test_without_a_failed_id_the_model_view_is_unchanged():
@@ -772,13 +773,27 @@ async def test_a_confirmed_call_that_executed_logs_nothing(caplog):
 
 # ── Review fixes ─────────────────────────────────────────────────────────────
 
+_PREVIEW_TURN = [
+    HumanMessage(content="Register me for the GPU workshop"),
+    AIMessage(
+        content="",
+        tool_calls=[{"id": "c1", "name": "register_for_event", "args": {"id": "1"}}],
+    ),
+    ToolMessage(
+        content=json.dumps({**PREVIEW, "preview_id": "a" * 32}),
+        tool_call_id="c1",
+        name="register_for_event",
+    ),
+    AIMessage(content="Here's the registration. Click Confirm to sign up."),
+]
+
 
 @pytest.mark.parametrize(
     "text",
     ["Confirm", "confirm", " Yes. ", "y", "OK!", "okay", "Go ahead", "do it", "Proceed."],
 )
 async def test_a_typed_confirmation_with_no_ids_tells_the_model_nothing_changed(text):
-    view = await _view(_gate(), [HumanMessage(content=text)])
+    view = await _view(_gate(), [*_PREVIEW_TURN, HumanMessage(content=text)])
 
     assert view[-1].content.count(TYPED_CONFIRM_NOTE) == 1
     assert TYPED_CONFIRM_NOTE == (
@@ -791,7 +806,28 @@ async def test_a_typed_confirmation_with_no_ids_tells_the_model_nothing_changed(
     "text", ["yes please register me for the other one too", "Confirm the date is Tuesday", ""]
 )
 async def test_a_longer_sentence_is_not_flagged_as_a_typed_confirmation(text):
-    messages = [HumanMessage(content=text)]
+    messages = [*_PREVIEW_TURN, HumanMessage(content=text)]
+
+    assert await _view(_gate(), messages) == messages
+
+
+async def test_a_yes_to_a_plain_answer_gets_no_note():
+    messages = [
+        HumanMessage(content="Any GPU events?"),
+        AIMessage(content="Two this week. Want me to look further out?"),
+        HumanMessage(content="yes"),
+    ]
+
+    assert await _view(_gate(), messages) == messages
+
+
+async def test_a_yes_after_an_earlier_turns_preview_gets_no_note():
+    messages = [
+        *_PREVIEW_TURN,
+        HumanMessage(content="Never mind, any GPU events?"),
+        AIMessage(content="Two this week. Want more?"),
+        HumanMessage(content="yes"),
+    ]
 
     assert await _view(_gate(), messages) == messages
 
