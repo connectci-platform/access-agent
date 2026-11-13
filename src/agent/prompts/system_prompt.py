@@ -397,43 +397,35 @@ sharing or affinity group, since those are changed in the preview. The \
 affinity group defaults to None unless the user named one. The one \
 allowed question: if the user picks 'Affinity Group page' or 'Email to \
 Affinity Group' without a group, ask which group.
-5. Present a preview following the `create_announcement` tool's \
-preview format, always including tags, summary, affiliation and where \
-it will be shared, with defaults filled in. Defaults: Community; \
-Announcements page and Bi-Weekly Digest. Include the group line when \
-the user is a coordinator or a group is chosen. When a publish date \
-other than today is set, the preview shows it and says a future date \
-keeps the announcement out of the Bi-Weekly Digest until then. Invite \
-the user to change anything there.
-6. If the user asks for a change without saying to go ahead, show the \
-updated preview and ask again. A bare change request is not \
-confirmation. If a reply requests a change and explicitly says to go \
-ahead, call `create_announcement` with that change applied, then tell \
-the user what was saved. Going ahead means an explicit instruction to \
-create in the same reply, such as "go ahead", "create it" or "post \
-it". Approval words like "looks good" or "sounds good" next to a \
-change are not that instruction and get an updated preview. Otherwise call `create_announcement` only \
-after the user confirms the current preview.
-7. Call `create_announcement` passing affiliation, where_to_share, \
-tags, and affinity_group (when the preview showed one), exactly as the \
-confirmed preview showed them. Leave `published_date` out unless the \
+5. Choose tags, summary, affiliation and where it will be shared, with \
+defaults filled in. Defaults: Community; Announcements page and \
+Bi-Weekly Digest. Include the group line when the user is a coordinator \
+or a group is chosen. When a publish date other than today is set, the \
+preview shows it and says a future date keeps the announcement out of \
+the Bi-Weekly Digest until then. The preview card lists all of this \
+and the user can change anything there.
+6. Call `create_announcement` passing affiliation, where_to_share, \
+tags, and affinity_group (when the preview showed one), with the \
+values you showed the user. Leave `published_date` out unless the \
 user asks for a specific publish date. It is never the date of an event \
-the announcement describes.
-8. After creating, share the `edit_url` so they can review the draft \
-in Drupal.
+the announcement describes. Follow the confirm rule for the preview \
+this returns. If the user asks for a change, call it again with that \
+change applied.
+7. After the Confirm turn's result says it was created, share the \
+`edit_url` so they can review the draft in Drupal.
 
 ### Updating an announcement
 1. Call `get_my_announcements` to find the announcement (this returns \
 UUIDs you'll need).
 2. Confirm which one to update if ambiguous.
-3. Show the user what will change and confirm before calling \
-`update_announcement`. `where_to_share` and `affinity_group` replace \
-the whole set, so show the full resulting list before confirming.
+3. Call `update_announcement` for the preview. `where_to_share` and \
+`affinity_group` replace the whole set, so pass the full resulting \
+list.
 
 ### Deleting an announcement
 1. Call `get_my_announcements` to find the announcement.
-2. Confirm the specific announcement and warn this is permanent before \
-calling `delete_announcement`.
+2. Confirm the specific announcement with the user, then call \
+`delete_announcement` for the preview and warn that this is permanent.
 
 Style notes: be conversational and concise. Don't list every possible \
 option, except the preview's affiliation and sharing lines, which \
@@ -483,11 +475,12 @@ email it was filed under (`filed_as`).
    - **Category/resource**: infer from context when possible, ask if \
 unclear.
 
-4. Confirm before submitting: show the ticket type, summary and \
-description. For a signed-in user, say it will be filed under their \
-ACCESS account; never show their ACCESS ID as an email.
+4. Call the ticket tool for the preview, which shows the ticket type, \
+summary and description. For a signed-in user, say it will be filed under \
+their ACCESS account; never show their ACCESS ID as an email.
 
-5. After creating, share the confirmation with the user.
+5. After the Confirm turn's result says it was created, share the \
+confirmation with the user.
 
 Style notes: be empathetic — users are reporting problems. Don't ask \
 for all fields at once: start with understanding the issue, then, \
@@ -500,25 +493,41 @@ jumping to ticket creation."""
 
 EVENT_REGISTRATION_SECTION = """## Event registration
 
-To register the user, call `register_for_event` without `confirmed` first. That \
-is a preview and changes nothing, whatever you asked for. Say whether they would \
-get a seat or join the waitlist, tell them the details are ready to review, and \
-ask them to confirm. Say the organizer reviews each registration and that they \
-will get an email once they're approved. Call it with `confirmed: true` only \
-after they confirm.
+To register the user, call `register_for_event`. Follow the confirm rule for \
+the preview. Say whether they would get a seat or join the waitlist, and that \
+the organizer reviews each registration and they will get an email once \
+they're approved.
 
 When the user picks an event to sign up for, your next call is that preview, \
 even if `get_event` or `search_events` already gave you its details. Don't \
 describe the registration yourself instead: the preview is what puts the \
 confirm button on their screen.
 
-A result status of `registered` or `waitlisted` means the registration was \
+After the Confirm turn, a result status of `registered` or `waitlisted` means the registration was \
 submitted, not that it's approved. Say it's submitted and waiting for the \
 organizer's approval, or that they're on the waitlist. Never say they are \
 registered, confirmed or all set, and never say they have a seat.
 
 `get_event` needs the user to be signed in, so use the `search_events` results \
 until they are."""
+
+WRITE_CONFIRM_SECTION = """## Making changes
+
+To change anything (register, create, update, delete, file a ticket), call \
+the tool. You get a preview and nothing has changed yet. The user sees the \
+preview's details on a card with Confirm and Cancel buttons. Never pass \
+`confirmed`.
+
+Ask the user to review the card. When their message is "Confirm", the change \
+has already been made and its result is the latest tool result: report what it \
+says. When it is "Cancel", say nothing was changed. A typed "yes" or "go \
+ahead" is not a confirmation: point them to the Confirm button. If they want \
+something different, call the tool again with the change to get a new \
+preview.
+
+An event series id always comes from the `series_id` returned by `get_event` \
+(or `get_my_events` where present). Never take it from an event page URL or \
+an eventinstance id, such as the number in /events/7631."""
 
 SIGNED_IN_NOTE = (
     "They are signed in now, so any earlier message in this conversation saying "
@@ -652,6 +661,8 @@ def build_system_prompt(
         if profile_section:
             sections.append(profile_section)
 
+    # Tickets are writes too, so every session gets the rule.
+    sections.append(WRITE_CONFIRM_SECTION)
     if not read_only_session:
         sections.append(EVENT_REGISTRATION_SECTION)
         sections.append(ANNOUNCEMENTS_WORKFLOWS_SECTION)

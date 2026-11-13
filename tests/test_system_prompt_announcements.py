@@ -16,7 +16,10 @@ def _normalize(text: str) -> str:
 
 def test_workflow_always_shows_affiliation_and_sharing_in_preview():
     section = _normalize(build_system_prompt())
-    assert "always including tags, summary, affiliation and where it will be shared" in section
+    assert (
+        "Choose tags, summary, affiliation and where it will be shared, with defaults filled in"
+        in section
+    )
     assert "Community" in section
     assert "Announcements page and Bi-Weekly Digest" in section
 
@@ -36,23 +39,16 @@ def test_update_workflow_shows_full_replacement_set():
 def test_missing_fields_are_asked_before_the_preview():
     section = _normalize(ANNOUNCEMENTS_WORKFLOWS_SECTION)
     ask = section.index("Ask only about a missing or unclear title, body or summary")
-    preview = section.index("Present a preview")
+    preview = section.index("Choose tags, summary, affiliation")
     assert ask < preview
 
 
-def test_change_request_triggers_re_preview_not_creation():
+def test_announcement_flow_defers_to_the_confirm_rule():
     section = _normalize(ANNOUNCEMENTS_WORKFLOWS_SECTION)
-    assert "If the user asks for a change without saying to go ahead" in section
-    assert "show the updated preview and ask again" in section
-    assert "A bare change request is not confirmation" in section
-    assert "requests a change and explicitly says to go ahead" in section
-    assert "an explicit instruction to create in the same reply" in section
-    assert '"go ahead", "create it" or "post it"' in section
-    assert 'Approval words like "looks good" or "sounds good"' in section
-    assert "get an updated preview" in section
-    assert "only after the user confirms the current preview" in section
-    assert "call `create_announcement` with that change applied" in section
-    assert "tell the user what was saved" in section
+    assert "Follow the confirm rule for the preview" in section
+    assert "If the user asks for a change, call it again" in section
+    assert "A bare change request is not confirmation" not in section
+    assert "go ahead" not in section
 
 
 def test_affinity_group_defaults_to_none_with_one_allowed_question():
@@ -62,10 +58,10 @@ def test_affinity_group_defaults_to_none_with_one_allowed_question():
     assert "ask which group" in section
 
 
-def test_create_passes_fields_exactly_as_confirmed_preview():
+def test_create_passes_the_fields_it_showed_the_user():
     section = _normalize(ANNOUNCEMENTS_WORKFLOWS_SECTION)
     assert "affiliation, where_to_share, tags, and affinity_group" in section
-    assert "exactly as the confirmed preview showed them" in section
+    assert "with the values you showed the user" in section
 
 
 def test_style_exception_for_preview_lines():
