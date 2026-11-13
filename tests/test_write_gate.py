@@ -23,6 +23,8 @@ from src.agent.middleware.local_times import LocalTimesMiddleware
 from src.agent.middleware.requires_auth import RequiresAuthMiddleware
 from src.agent.middleware.turn_budget import TurnBudgetMiddleware
 from src.agent.middleware.write_gate import (
+    ALREADY_CONFIRMED_NOTE,
+    CONFIRM_ERROR_NOTE,
     CONFIRM_FAILED_NOTE,
     NOT_FROM_ASSISTANT_TEXT,
     PARTIAL_CONFIRM_NOTE,
@@ -36,11 +38,12 @@ from src.agent.middleware.write_gate import (
     turn_previews,
 )
 from src.agent.state import human_turn
-from src.pending_previews import get_pending_preview_store
+from src.pending_previews import Claim, ClaimStatus, get_pending_preview_store
 from tests.agent_runtime import context_for, run_loop
 
 THREAD = "thread-1"
-WRITER = context_for("user123", can_write=True)
+USER = "user123"
+WRITER = context_for(USER, can_write=True)
 PREVIEW = {
     "action": "register",
     "status": "preview",
@@ -154,8 +157,8 @@ async def test_a_model_confirmed_call_runs_as_a_preview_that_is_recorded_and_sta
     assert HEX32.match(body["preview_id"])
     assert body["note"] == PREVIEW_NOTE
     assert {k: body[k] for k in PREVIEW} == PREVIEW
-    claimed = get_pending_preview_store().claim(THREAD, body["preview_id"])
-    assert claimed == ("register_for_event", {"eventinstance_id": "9372"})
+    claimed = get_pending_preview_store().claim(THREAD, body["preview_id"], acting_user=USER)
+    assert claimed == Claim(ClaimStatus.CLAIMED, "register_for_event", {"eventinstance_id": "9372"})
 
 
 @pytest.mark.parametrize("confirmed", [True, "true", "True", "yes", 1, "maybe", False])
@@ -274,9 +277,11 @@ async def test_a_command_result_is_left_alone():
 # ── Confirm turns ────────────────────────────────────────────────────────────
 
 
-def _recorded(args: dict[str, Any] | None = None, thread: str = THREAD) -> str:
+def _recorded(
+    args: dict[str, Any] | None = None, thread: str = THREAD, user: str | None = USER
+) -> str:
     preview_id = get_pending_preview_store().record(
-        thread, "register_for_event", args or {"eventinstance_id": "9372"}
+        thread, "register_for_event", args or {"eventinstance_id": "9372"}, acting_user=user
     )
     assert preview_id is not None
     return preview_id
@@ -324,7 +329,9 @@ async def test_a_confirm_claims_the_preview_and_jumps_to_its_stored_call():
             {"eventinstance_id": "9372", "confirmed": True},
         )
     ]
-    assert get_pending_preview_store().claim(THREAD, preview_id) is None
+    assert get_pending_preview_store().claim(THREAD, preview_id, acting_user=USER) == Claim(
+        ClaimStatus.ALREADY_USED
+    )
 
 
 async def test_the_confirmed_call_passes_the_gate_unchanged():
@@ -371,11 +378,10 @@ async def test_a_repeated_confirm_id_makes_one_call_and_no_failure_note():
     assert CONFIRM_FAILED_NOTE not in view[-1].content
 
 
-@pytest.mark.parametrize("kind", ["spent", "foreign", "forged"])
+@pytest.mark.parametrize("kind", ["foreign", "forged", "other-user"])
 async def test_an_unclaimable_id_makes_no_jump_and_tells_the_model(kind):
-    if kind == "spent":
-        preview_id = _recorded()
-        get_pending_preview_store().claim(THREAD, preview_id)
+    if kind == "other-user":
+        preview_id = _recorded(user="someone-else")
     elif kind == "foreign":
         preview_id = _recorded(thread="someone-else")
     else:
@@ -393,7 +399,8 @@ async def test_a_foreign_id_stays_claimable_by_its_own_thread():
 
     await _before(_gate([preview_id]))
 
-    assert get_pending_preview_store().claim("someone-else", preview_id) is not None
+    claim = get_pending_preview_store().claim("someone-else", preview_id, acting_user=USER)
+    assert claim.status is ClaimStatus.CLAIMED
 
 
 async def test_one_good_and_one_spent_id_run_the_good_one_and_note_the_other():
@@ -444,7 +451,9 @@ async def test_the_second_model_call_of_a_turn_claims_nothing_more():
     gate.confirm_ids.append(later)
 
     assert await _before(gate) is None
-    assert get_pending_preview_store().claim(THREAD, later) is not None
+    assert get_pending_preview_store().claim(THREAD, later, acting_user=USER).status is (
+        ClaimStatus.CLAIMED
+    )
 
 
 async def test_a_turn_with_no_confirm_ids_never_jumps():
@@ -528,7 +537,7 @@ async def test_jumping_to_tools_runs_the_confirmed_call_through_every_tool_middl
 
 
 async def test_the_acting_user_check_still_refuses_a_confirmed_call():
-    preview_id = _recorded()
+    preview_id = _recorded(user=None)
     ran: list[Any] = []
     agent = _agent([AIMessage(content="Sign in first.")], ran, _gate([preview_id]), [])
 
@@ -575,7 +584,8 @@ async def test_a_typed_yes_only_ever_previews():
     assert body is not None
     assert body["note"] == PREVIEW_NOTE
     assert body["data"]["start_local"] == "Fri, Nov 20, 2026, 1:00 PM EST"
-    assert get_pending_preview_store().claim(THREAD, body["preview_id"]) is not None
+    claim = get_pending_preview_store().claim(THREAD, body["preview_id"], acting_user=USER)
+    assert claim.status is ClaimStatus.CLAIMED
 
 
 # ── The loop builds it ───────────────────────────────────────────────────────
@@ -774,6 +784,18 @@ async def test_a_confirmed_call_that_executed_logs_nothing(caplog):
 
 # ── Review fixes ─────────────────────────────────────────────────────────────
 
+
+def _without_preview_ids(messages: list[Any]) -> list[Any]:
+    out = []
+    for message in messages:
+        if isinstance(message, ToolMessage):
+            body = {k: v for k, v in json.loads(message.content).items() if k != "preview_id"}
+            out.append(message.model_copy(update={"content": json.dumps(body)}))
+        else:
+            out.append(message)
+    return out
+
+
 _PREVIEW_TURN = [
     HumanMessage(content="Register me for the GPU workshop"),
     AIMessage(
@@ -809,7 +831,7 @@ async def test_a_typed_confirmation_with_no_ids_tells_the_model_nothing_changed(
 async def test_a_longer_sentence_is_not_flagged_as_a_typed_confirmation(text):
     messages = [*_PREVIEW_TURN, HumanMessage(content=text)]
 
-    assert await _view(_gate(), messages) == messages
+    assert await _view(_gate(), messages) == _without_preview_ids(messages)
 
 
 async def test_a_yes_to_a_plain_answer_gets_no_note():
@@ -830,7 +852,7 @@ async def test_a_yes_after_an_earlier_turns_preview_gets_no_note():
         HumanMessage(content="yes"),
     ]
 
-    assert await _view(_gate(), messages) == messages
+    assert await _view(_gate(), messages) == _without_preview_ids(messages)
 
 
 async def test_a_confirm_click_with_ids_gets_no_typed_confirmation_note():
@@ -879,8 +901,188 @@ def test_turn_previews_lists_only_unexecuted_stamped_previews():
         name="update_event",
     )
     unstamped = ToolMessage(content=json.dumps(PREVIEW), tool_call_id="c3", name="update_event")
+    not_a_write = ToolMessage(
+        content=json.dumps({**PREVIEW, "preview_id": "d" * 32}),
+        tool_call_id="c4",
+        name="search_events",
+    )
 
-    previews = turn_previews([stamped, ran, unstamped])
+    previews = turn_previews([stamped, ran, unstamped, not_a_write])
 
     assert [p["preview_id"] for p in previews] == [pid]
     assert previews[0]["tool"] == "update_event"
+
+
+# ── Adversarial review fixes ─────────────────────────────────────────────────
+
+
+async def test_a_confirm_of_an_already_used_preview_says_so_and_not_to_preview_again():
+    preview_id = _recorded()
+    get_pending_preview_store().claim(THREAD, preview_id, acting_user=USER)
+    gate = _gate([preview_id])
+
+    assert await _before(gate) is None
+
+    view = await _view(gate, [HumanMessage(content="Confirm")])
+    assert view[-1].content == f"Confirm\n\n{ALREADY_CONFIRMED_NOTE}"
+    assert ALREADY_CONFIRMED_NOTE == (
+        "That change was already confirmed earlier in this conversation; don't preview "
+        "it again. Point the user to the earlier result."
+    )
+
+
+async def test_a_confirm_that_hits_a_store_error_says_nothing_was_changed(monkeypatch):
+    monkeypatch.setattr(
+        get_pending_preview_store(), "claim", lambda *a, **k: Claim(ClaimStatus.ERROR)
+    )
+    gate = _gate(["a" * 32])
+
+    assert await _before(gate) is None
+
+    view = await _view(gate, [HumanMessage(content="Confirm")])
+    assert view[-1].content == f"Confirm\n\n{CONFIRM_ERROR_NOTE}"
+    assert "couldn't be confirmed right now" in CONFIRM_ERROR_NOTE
+    assert "nothing was changed by this click" in CONFIRM_ERROR_NOTE
+
+
+async def test_a_mixed_failed_confirm_names_each_kind_of_failure():
+    used = _recorded({"eventinstance_id": "1"})
+    get_pending_preview_store().claim(THREAD, used, acting_user=USER)
+    gate = _gate([used, "f" * 32])
+
+    assert await _before(gate) is None
+
+    view = await _view(gate, [HumanMessage(content="Confirm")])
+    assert ALREADY_CONFIRMED_NOTE in view[-1].content
+    assert CONFIRM_FAILED_NOTE in view[-1].content
+    assert "None of the 2 changes they confirmed were made." in view[-1].content
+
+
+async def test_a_partial_confirm_with_an_already_used_one_says_it_was_made_earlier():
+    good = _recorded({"eventinstance_id": "1"})
+    used = _recorded({"eventinstance_id": "2"})
+    get_pending_preview_store().claim(THREAD, used, acting_user=USER)
+    gate = _gate([good, used])
+
+    update = await _before(gate)
+
+    assert len(update["messages"][0].tool_calls) == 1  # type: ignore[index]
+    view = await _view(gate, [HumanMessage(content="Confirm")])
+    note = view[-1].content
+    assert note.endswith(gate.failed_note)
+    assert "1 of them had already been confirmed earlier" in note
+    assert "offer to preview" not in note
+
+
+async def test_a_partial_confirm_with_an_expired_one_keeps_the_partial_note():
+    good = _recorded()
+    gate = _gate([good, "f" * 32])
+
+    await _before(gate)
+
+    assert gate.failed_note == PARTIAL_CONFIRM_NOTE.format(total=2, failed=1)
+
+
+async def test_a_preview_is_recorded_for_the_acting_user():
+    _, result = await _run(_call({"eventinstance_id": "9372"}))
+
+    preview_id = json.loads(result.content)["preview_id"]
+    store = get_pending_preview_store()
+    assert store.claim(THREAD, preview_id, acting_user="intruder").status is (
+        ClaimStatus.EXPIRED_OR_UNKNOWN
+    )
+    assert store.claim(THREAD, preview_id, acting_user=USER).status is ClaimStatus.CLAIMED
+
+
+async def test_another_user_cannot_confirm_the_preview():
+    preview_id = _recorded()
+    gate = _gate([preview_id])
+
+    update = await gate.abefore_model({"messages": []}, Runtime(context=context_for("intruder")))
+
+    assert update is None
+    view = await _view(gate, [HumanMessage(content="Confirm")])
+    assert view[-1].content == f"Confirm\n\n{CONFIRM_FAILED_NOTE}"
+    assert get_pending_preview_store().claim(THREAD, preview_id, acting_user=USER).status is (
+        ClaimStatus.CLAIMED
+    )
+
+
+async def test_the_model_never_sees_a_preview_id_but_keeps_the_note():
+    stamped = ToolMessage(
+        content=json.dumps({**PREVIEW, "preview_id": "a" * 32, "note": PREVIEW_NOTE}),
+        tool_call_id="c1",
+        name="register_for_event",
+    )
+    messages = [HumanMessage(content="Register me"), stamped]
+
+    view = await _view(_gate(), messages)
+
+    body = json.loads(view[-1].content)
+    assert "preview_id" not in body
+    assert body["note"] == PREVIEW_NOTE
+    assert body["status"] == "preview"
+    assert "a" * 32 not in str([m.content for m in view])
+    assert json.loads(stamped.content)["preview_id"] == "a" * 32
+
+
+async def test_the_model_never_sees_a_preview_id_on_a_confirm_turn_with_a_note():
+    stamped = ToolMessage(
+        content=json.dumps({**PREVIEW, "preview_id": "a" * 32}),
+        tool_call_id="c1",
+        name="register_for_event",
+    )
+    gate = _gate(["e" * 32])
+    await _before(gate)
+
+    view = await _view(gate, [stamped, HumanMessage(content="Confirm")])
+
+    assert "preview_id" not in json.loads(view[0].content)
+    assert CONFIRM_FAILED_NOTE in view[-1].content
+
+
+async def test_two_identical_writes_in_one_step_share_one_preview_id():
+    import asyncio
+
+    gate = _gate()
+    first, second = await asyncio.gather(
+        _run(_call({"eventinstance_id": "9372"}, call_id="c1"), gate=gate),
+        _run(_call({"eventinstance_id": "9372", "confirmed": True}, call_id="c2"), gate=gate),
+    )
+    other = await _run(_call({"eventinstance_id": "1111"}, call_id="c3"), gate=gate)
+
+    ids = [json.loads(r.content)["preview_id"] for _, r in (first, second, other)]
+    assert ids[0] == ids[1]
+    assert ids[2] != ids[0]
+
+
+async def test_identical_writes_through_a_real_agent_confirm_once():
+    ran: list[Any] = []
+    calls = [
+        _call({"eventinstance_id": "9372"}, call_id="c1"),
+        _call({"eventinstance_id": "9372"}, call_id="c2"),
+    ]
+    agent = _agent(
+        [AIMessage(content="", tool_calls=calls), AIMessage(content="Click Confirm.")],
+        ran,
+        _gate(),
+        [],
+    )
+
+    result = await agent.ainvoke(
+        {"messages": [HumanMessage(content="Register me")]}, context=WRITER
+    )
+
+    previews = turn_previews(result["messages"])
+    assert len(previews) == 2
+    assert len({p["preview_id"] for p in previews}) == 1
+
+
+async def test_a_preview_without_a_thread_is_shown_without_a_button():
+    gate = WriteGateMiddleware(thread_id="", confirm_ids=[])
+
+    _, result = await _run(_call({"eventinstance_id": "1"}), gate=gate)
+
+    body = json.loads(result.content)
+    assert body["note"] == UNCONFIRMABLE_NOTE
+    assert "preview_id" not in body
