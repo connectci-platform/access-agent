@@ -26,6 +26,8 @@ from src.agent.middleware.write_gate import (
     CONFIRM_FAILED_NOTE,
     NOT_FROM_ASSISTANT_TEXT,
     PREVIEW_NOTE,
+    SERVICE_DOWN_TEXT,
+    TYPED_CONFIRM_NOTE,
     UNCONFIRMABLE_NOTE,
     UNCONFIRMED_WRITE_NOTE,
     WriteGateMiddleware,
@@ -766,3 +768,64 @@ async def test_a_confirmed_call_that_executed_logs_nothing(caplog):
     await _run(call, json.dumps(REGISTERED), gate=gate)
 
     assert "CONFIRMED_NOT_EXECUTED" not in caplog.text
+
+
+# ── Review fixes ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Confirm", "confirm", " Yes. ", "y", "OK!", "okay", "Go ahead", "do it", "Proceed."],
+)
+async def test_a_typed_confirmation_with_no_ids_tells_the_model_nothing_changed(text):
+    view = await _view(_gate(), [HumanMessage(content=text)])
+
+    assert view[-1].content.count(TYPED_CONFIRM_NOTE) == 1
+    assert TYPED_CONFIRM_NOTE == (
+        "The user typed a confirmation instead of clicking Confirm, so nothing was "
+        "changed. Ask them to click Confirm on the card."
+    )
+
+
+@pytest.mark.parametrize(
+    "text", ["yes please register me for the other one too", "Confirm the date is Tuesday", ""]
+)
+async def test_a_longer_sentence_is_not_flagged_as_a_typed_confirmation(text):
+    messages = [HumanMessage(content=text)]
+
+    assert await _view(_gate(), messages) == messages
+
+
+async def test_a_confirm_click_with_ids_gets_no_typed_confirmation_note():
+    gate = _gate(["e" * 32])
+    await _before(gate)
+
+    view = await _view(gate, [HumanMessage(content="Confirm")])
+
+    assert TYPED_CONFIRM_NOTE not in view[-1].content
+    assert CONFIRM_FAILED_NOTE in view[-1].content
+
+
+def test_the_failure_note_only_says_this_click_changed_nothing():
+    assert CONFIRM_FAILED_NOTE == (
+        "The user clicked Confirm, but that preview was already used or has expired, so "
+        "this click changed nothing. Tell them so and offer to preview it again."
+    )
+
+
+async def test_an_approved_replay_of_a_tool_missing_from_the_catalog_says_the_service_is_down():
+    gate = _gate([_recorded({"eventinstance_id": "9372"})])
+    call = await _approved_call(gate)
+
+    async def handler(request: Any) -> ToolMessage:
+        raise AssertionError("must not run")
+
+    result = await gate.awrap_tool_call(_request(call, None), handler)
+
+    assert result.content == SERVICE_DOWN_TEXT
+    assert SERVICE_DOWN_TEXT == (
+        "That service isn't available right now, so nothing was changed. Tell the user "
+        "and offer to preview it again later."
+    )
+    assert result.status == "error"
+    assert result.tool_call_id == call["id"]

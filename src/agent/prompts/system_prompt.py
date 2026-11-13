@@ -518,9 +518,11 @@ the tool. You get a preview and nothing has changed yet. The user sees the \
 preview's details on a card with Confirm and Cancel buttons. Never pass \
 `confirmed`.
 
-Ask the user to review the card. When their message is "Confirm", the change \
-has already been made and its result is the latest tool result: report what it \
-says. When it is "Cancel", say nothing was changed. A typed "yes" or "go \
+Ask the user to review the card. The Confirm button makes the change before \
+you reply. The change was made only when the latest tool result shows it ran, \
+a result that is not a preview: then report what it says. If the latest result \
+is still a preview, nothing has changed, so point them to the Confirm button. \
+When it is "Cancel", say nothing was changed. A typed "yes" or "go \
 ahead" is not a confirmation: point them to the Confirm button. If they want \
 something different, call the tool again with the change to get a new \
 preview.

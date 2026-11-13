@@ -10,6 +10,7 @@ Retry and Edit replace that turn instead of asking the question a second time.
 """
 
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -70,18 +71,47 @@ def _is_write(name: str) -> bool:
     return tool_identity_class(name) is ToolIdentityClass.WRITE
 
 
+def _only_previewed(result: ToolMessage | None) -> bool:
+    """Whether the call's result is a preview: nothing was written."""
+    if result is None:
+        return False
+    content = result.content
+    if isinstance(content, list):
+        content = "".join(
+            b if isinstance(b, str) else str(b.get("text", ""))
+            for b in content
+            if isinstance(b, str) or (isinstance(b, dict) and b.get("type") == "text")
+        )
+    if not isinstance(content, str):
+        return False
+    try:
+        body = json.loads(content)
+    except json.JSONDecodeError:
+        return False
+    return (
+        isinstance(body, dict)
+        and body.get("status") == "preview"
+        and body.get("executed") is not True
+    )
+
+
 def write_record(tool_messages: list[Any]) -> list[BaseMessage]:
     """The turn's write calls, each followed by its result, in the order they
     happened. A write still in flight gets a result saying it may have gone
     through, so a Retry doesn't repeat it blind. Read calls are left out: they
-    changed nothing, and asking again reads again.
+    changed nothing, and asking again reads again. So are writes whose result is
+    a preview, which wrote nothing either.
     """
     results = {m.tool_call_id: m for m in tool_messages if isinstance(m, ToolMessage)}
     record: list[BaseMessage] = []
     for message in tool_messages:
         if not isinstance(message, AIMessage):
             continue
-        calls = [c for c in message.tool_calls if _is_write(c["name"])]
+        calls = [
+            c
+            for c in message.tool_calls
+            if _is_write(c["name"]) and not _only_previewed(results.get(c["id"] or ""))
+        ]
         if not calls:
             continue
         record.append(

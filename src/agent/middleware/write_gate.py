@@ -49,9 +49,26 @@ UNCONFIRMED_WRITE_NOTE = (
 )
 CONFIRM_FAILED_NOTE = (
     "The user clicked Confirm, but that preview was already used or has expired, so "
-    "nothing was changed. Tell them so and offer to preview it again."
+    "this click changed nothing. Tell them so and offer to preview it again."
+)
+TYPED_CONFIRM_NOTE = (
+    "The user typed a confirmation instead of clicking Confirm, so nothing was "
+    "changed. Ask them to click Confirm on the card."
+)
+SERVICE_DOWN_TEXT = (
+    "That service isn't available right now, so nothing was changed. Tell the user "
+    "and offer to preview it again later."
+)
+_TYPED_CONFIRMATIONS = frozenset(
+    {"confirm", "yes", "y", "ok", "okay", "go ahead", "do it", "proceed"}
 )
 NOT_FROM_ASSISTANT_TEXT = "This change can't be made from the assistant."
+
+
+def _is_typed_confirmation(message: HumanMessage) -> bool:
+    """A bare "yes" or "confirm" typed in place of the button, nothing longer."""
+    text = (_text(message.content) or "").strip().casefold().rstrip(".!?, ")
+    return text in _TYPED_CONFIRMATIONS
 
 
 def _text(content: Any) -> str | None:
@@ -186,14 +203,20 @@ class WriteGateMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        if self.failed_note is None:
-            return await handler(request)
         view = list(request.messages)
         for i in range(len(view) - 1, -1, -1):
             message = view[i]
-            if isinstance(message, HumanMessage):
-                view[i] = _noted(message, self.failed_note)
-                break
+            if not isinstance(message, HumanMessage):
+                continue
+            note = self.failed_note
+            if note is None and not self.confirm_ids and _is_typed_confirmation(message):
+                note = TYPED_CONFIRM_NOTE
+            if note is None:
+                return await handler(request)
+            view[i] = _noted(message, note)
+            break
+        else:
+            return await handler(request)
         return await handler(request.override(messages=view))
 
     async def awrap_tool_call(
@@ -210,6 +233,11 @@ class WriteGateMiddleware(AgentMiddleware):
         read_only = getattr(request.tool, "read_only", None)
         if tool_identity_class(name, read_only) is not ToolIdentityClass.WRITE:
             return await handler(request)
+        # The user approved this call but its service is gone from the catalog.
+        if request.tool is None and approved == (name, call["args"]):
+            return ToolMessage(
+                content=SERVICE_DOWN_TEXT, name=name, tool_call_id=call["id"], status="error"
+            )
         # A write that can't preview would run on the model's word alone.
         if "confirmed" not in (getattr(request.tool, "args", None) or {}):
             return ToolMessage(

@@ -58,7 +58,9 @@ def test_prompt_states_one_confirm_rule_for_every_write():
 
         assert "## Making changes" in prompt
         assert "Never pass `confirmed`" in prompt
-        assert 'When their message is "Confirm", the change has already been made' in prompt
+        assert "the latest tool result shows it ran" in prompt
+        assert "If the latest result is still a preview, nothing has changed" in prompt
+        assert 'When their message is "Confirm", the change has already been made' not in prompt
         assert 'When it is "Cancel", say nothing was changed' in prompt
         assert 'A typed "yes" or "go ahead" is not a confirmation' in prompt
         assert "call the tool again with the change to get a new preview" in prompt

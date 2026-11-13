@@ -420,6 +420,31 @@ def test_write_record_keeps_writes_paired_with_their_results():
     assert write_record([read_round, read_result]) == []
 
 
+def test_write_record_leaves_out_calls_that_only_previewed():
+    import json
+
+    from langchain_core.messages import ToolMessage
+
+    from src.api.stopped_turns import WRITE_IN_FLIGHT_TEXT, write_record
+
+    preview = json.dumps({"status": "preview", "executed": False, "data": {}})
+    ran = json.dumps({"status": "created", "executed": True})
+    previewed = _calls(("create_announcement", "c1"))
+    previewed_result = ToolMessage(content=preview, tool_call_id="c1", name="create_announcement")
+    mixed = _calls(("update_announcement", "c2"), ("delete_announcement", "c3"))
+    ran_result = ToolMessage(content=ran, tool_call_id="c2", name="update_announcement")
+    cut_off = ToolMessage(content=preview, tool_call_id="x", name="x")
+
+    assert write_record([previewed, previewed_result]) == []
+
+    record = write_record([mixed, ran_result, _calls(("create_event", "c4")), cut_off])
+
+    assert [c["id"] for c in record[0].tool_calls] == ["c2", "c3"]
+    assert record[1].content == ran
+    assert record[2].content == WRITE_IN_FLIGHT_TEXT
+    assert [c["id"] for c in record[3].tool_calls] == ["c4"]
+
+
 def test_stopped_messages_put_the_writes_before_the_stopped_text():
     from langchain_core.messages import ToolMessage
 
