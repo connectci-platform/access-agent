@@ -927,7 +927,8 @@ async def test_a_confirm_of_an_already_used_preview_says_so_and_not_to_preview_a
     assert view[-1].content == f"Confirm\n\n{ALREADY_CONFIRMED_NOTE}"
     assert ALREADY_CONFIRMED_NOTE == (
         "That change was already confirmed earlier in this conversation; don't preview "
-        "it again. Point the user to the earlier result."
+        "it again. Point the user to the earlier result, and if that result shows it "
+        "failed, offer to preview it again."
     )
 
 
