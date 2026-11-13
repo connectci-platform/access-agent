@@ -24,6 +24,7 @@ from src.agent.middleware.requires_auth import RequiresAuthMiddleware
 from src.agent.middleware.turn_budget import TurnBudgetMiddleware
 from src.agent.middleware.write_gate import (
     ALREADY_CONFIRMED_NOTE,
+    ALREADY_PREVIEWED_TEXT,
     CONFIRM_ERROR_NOTE,
     CONFIRM_FAILED_NOTE,
     NOT_FROM_ASSISTANT_TEXT,
@@ -1075,8 +1076,34 @@ async def test_identical_writes_through_a_real_agent_confirm_once():
     )
 
     previews = turn_previews(result["messages"])
-    assert len(previews) == 2
-    assert len({p["preview_id"] for p in previews}) == 1
+    assert len(previews) == 1
+
+
+async def test_repeating_a_previewed_write_in_a_turn_doesnt_run_it_again():
+    """After a typed yes the model may call the same write again and again; the
+    tool isn't rerun and the card gets no copies."""
+    gate = _gate()
+    _, first = await _run(_call({"eventinstance_id": "9372"}, call_id="c1"), gate=gate)
+    sent, again = await _run(
+        _call({"eventinstance_id": "9372", "confirmed": True}, call_id="c2"), gate=gate
+    )
+
+    assert json.loads(first.content)["preview_id"]
+    assert sent == []
+    assert again.content == ALREADY_PREVIEWED_TEXT
+    assert again.tool_call_id == "c2"
+    assert turn_previews([first, again]) == turn_previews([first])
+
+
+def test_turn_previews_lists_each_preview_id_once():
+    stamped = ToolMessage(
+        content=json.dumps({**PREVIEW, "preview_id": "a" * 32}),
+        tool_call_id="c1",
+        name="register_for_event",
+    )
+    copy = stamped.model_copy(update={"tool_call_id": "c2"})
+
+    assert [p["preview_id"] for p in turn_previews([stamped, copy])] == ["a" * 32]
 
 
 async def test_a_preview_without_a_thread_is_shown_without_a_button():

@@ -40,6 +40,10 @@ PREVIEW_NOTE = (
     "Confirm button; ask them to review and click Confirm. Do not call this tool "
     "again to confirm."
 )
+ALREADY_PREVIEWED_TEXT = (
+    "This exact change was already previewed in this reply and is on the user's card. "
+    "Nothing has changed. Don't call it again: ask the user to click Confirm on the card."
+)
 UNCONFIRMABLE_NOTE = (
     "This is a preview, but it can't be confirmed right now. Tell the user to try "
     "again in a moment."
@@ -149,9 +153,14 @@ def clean_confirm_ids(raw: Any) -> list[str]:
     return ids
 
 
+def _record_key(name: str, args: dict[str, Any]) -> tuple[str, str]:
+    """A write call's identity within a turn: its tool and its arguments."""
+    return (name, json.dumps(args, sort_keys=True, default=str))
+
+
 def turn_previews(messages: list[Any]) -> list[dict[str, Any]]:
-    """The stamped previews among a turn's tool messages, in order, as
-    ``{"preview_id", "tool", "data", "no_changes"}``. A preview with no valid
+    """The stamped previews among a turn's tool messages, in order and each id
+    once, as ``{"preview_id", "tool", "data", "no_changes"}``. A preview with no valid
     id (its record failed) can't be confirmed, so it is left out, and so is a
     result from a tool whose name doesn't classify as a write."""
     previews: list[dict[str, Any]] = []
@@ -163,6 +172,9 @@ def turn_previews(messages: list[Any]) -> list[dict[str, Any]]:
             continue
         preview_id = body.get("preview_id")
         if not isinstance(preview_id, str) or not _PREVIEW_ID.fullmatch(preview_id):
+            continue
+        # Identical calls in one step share an id; the card shows it once.
+        if any(p["preview_id"] == preview_id for p in previews):
             continue
         data = body.get("data")
         previews.append(
@@ -387,6 +399,10 @@ class WriteGateMiddleware(AgentMiddleware):
             _warn_if_not_executed(name, result)
             return result
         args = {k: v for k, v in call["args"].items() if k != "confirmed"}
+        # A repeat of a change already previewed this turn, often the model
+        # trying to confirm a typed yes, isn't run again or added to the card.
+        if self._recorded.get(_record_key(name, args)) is not None:
+            return ToolMessage(content=ALREADY_PREVIEWED_TEXT, name=name, tool_call_id=call["id"])
         result = await handler(
             request.override(tool_call={**call, "args": {**args, "confirmed": False}})
         )
@@ -406,7 +422,7 @@ class WriteGateMiddleware(AgentMiddleware):
 
     async def _record(self, name: str, args: dict[str, Any], acting_user: str | None) -> str | None:
         """This turn's id for the call, recording it on first sight."""
-        key = (name, json.dumps(args, sort_keys=True, default=str))
+        key = _record_key(name, args)
         async with self._record_lock:
             preview_id = self._recorded.get(key)
             if preview_id is None:
