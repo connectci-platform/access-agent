@@ -1204,3 +1204,47 @@ async def test_a_preview_without_a_thread_is_shown_without_a_button():
     body = json.loads(result.content)
     assert body["note"] == UNCONFIRMABLE_NOTE
     assert "preview_id" not in body
+
+
+# ── Edge paths ───────────────────────────────────────────────────────────────
+
+
+async def test_a_yes_with_nothing_before_it_gets_no_note():
+    messages = [AIMessage(content="Hello."), HumanMessage(content="yes")]
+
+    assert await _view(_gate(), messages) == messages
+
+
+async def test_a_typed_yes_in_content_blocks_gets_the_note_as_a_block():
+    yes = HumanMessage(content=[{"type": "text", "text": "yes"}])
+
+    view = await _view(_gate(), [*_PREVIEW_TURN, yes])
+
+    assert view[-1].content[-1] == {"type": "text", "text": TYPED_CONFIRM_NOTE}
+
+
+def test_content_that_isnt_text_reads_as_no_object():
+    from src.agent.middleware.write_gate import _json_object, _text
+
+    odd = ToolMessage(content="x", tool_call_id="c1").model_copy(update={"content": 5})
+
+    assert _text(5) is None
+    assert _json_object(odd) is None
+
+
+def test_a_partial_note_names_every_kind_of_failure():
+    from src.agent.middleware.write_gate import _partial_note
+
+    note = _partial_note(4, 1, 1, 1)
+
+    assert "1 of them had already been confirmed" in note
+    assert "1 of them had expired or couldn't be found" in note
+    assert "1 of them couldn't be confirmed right now" in note
+
+
+def test_a_replay_that_returned_no_tool_message_isnt_warned_about(caplog):
+    from src.agent.middleware.write_gate import _warn_if_not_executed
+
+    _warn_if_not_executed("register_for_event", None)
+
+    assert "CONFIRMED_NOT_EXECUTED" not in caplog.text

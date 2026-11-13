@@ -359,3 +359,65 @@ async def test_the_profile_is_checkpointed_overwritten_each_run_and_not_in_histo
             values = (await saver.aget(config))["channel_values"]
             assert values.get("profile") == (run_profile.model_dump() if run_profile else None)
             assert set(_serialize_values(values)) == {"messages"}
+
+
+# ---------------------------------------------------------------------------
+# A resumed per-request turn carries the Confirm click's ids
+# ---------------------------------------------------------------------------
+
+CONFIRM_ID = "c" * 32
+
+
+def _last_human(saver: InMemorySaver, thread: str) -> Any:
+    from langchain_core.messages import HumanMessage
+
+    graph = g.create_checkpointed_graph(saver)
+    state = graph.get_state({"configurable": {"thread_id": thread}})
+    return [m for m in state.values["messages"] if isinstance(m, HumanMessage)][-1]
+
+
+async def test_run_agent_per_request_resume_keeps_confirm_ids(saver_with_async_setup):
+    with patch.object(
+        g,
+        "create_async_checkpointer",
+        return_value=_FakeAsyncCheckpointerCM(saver_with_async_setup),
+    ):
+        for query, ids in (("first", None), ("Confirm", [CONFIRM_ID])):
+            await g.run_agent(
+                query=query,
+                session_id="resume-confirm",
+                question_id=query,
+                tool_catalog=TOOL_CATALOG,
+                context=AgentContext.anonymous(),
+                use_checkpointing=True,
+                db_uri="sqlite:///fake",
+                confirm_ids=ids,
+            )
+
+    last = _last_human(saver_with_async_setup, "resume-confirm")
+    assert last.content == "Confirm"
+    assert last.additional_kwargs == {"confirm": [CONFIRM_ID]}
+
+
+async def test_stream_agent_per_request_resume_keeps_confirm_ids(saver_with_async_setup):
+    with patch.object(
+        g,
+        "create_async_checkpointer",
+        return_value=_FakeAsyncCheckpointerCM(saver_with_async_setup),
+    ):
+        for query, ids in (("first", None), ("Confirm", [CONFIRM_ID])):
+            await _drain(
+                g.stream_agent(
+                    query=query,
+                    session_id="stream-resume-confirm",
+                    question_id=query,
+                    tool_catalog=TOOL_CATALOG,
+                    context=AgentContext.anonymous(),
+                    use_checkpointing=True,
+                    db_uri="sqlite:///fake",
+                    confirm_ids=ids,
+                )
+            )
+
+    last = _last_human(saver_with_async_setup, "stream-resume-confirm")
+    assert last.additional_kwargs == {"confirm": [CONFIRM_ID]}
