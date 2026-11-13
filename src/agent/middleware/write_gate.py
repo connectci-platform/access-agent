@@ -22,7 +22,7 @@ from langchain.agents.middleware.types import AgentMiddleware, hook_config
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ...pending_previews import get_pending_preview_store
-from ..domains.capabilities import WRITE_MCP_TOOL_NAMES
+from ..auth_tools import ToolIdentityClass, tool_identity_class
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -108,13 +108,20 @@ def _with_note(message: ToolMessage, note: str) -> ToolMessage:
     return message.model_copy(update={"content": f"{_text(message.content) or ''}\n\n{note}"})
 
 
-def _noted(message: HumanMessage, notes: list[str]) -> HumanMessage:
-    extra = "\n\n".join(notes)
+def _noted(message: HumanMessage, extra: str) -> HumanMessage:
     if isinstance(message.content, str):
         return message.model_copy(update={"content": f"{message.content}\n\n{extra}"})
     return message.model_copy(
         update={"content": [*message.content, {"type": "text", "text": extra}]}
     )
+
+
+def _warn_if_not_executed(name: str, result: Any) -> None:
+    """A confirmed replay that didn't write means the server and the stored
+    preview disagree; the user clicked Confirm and nothing changed."""
+    body = _json_object(result) if isinstance(result, ToolMessage) else None
+    if body is not None and (body.get("status") == "preview" or body.get("executed") is False):
+        logger.warning("CONFIRMED_NOT_EXECUTED: %s did not write when confirmed", name)
 
 
 class WriteGateMiddleware(AgentMiddleware):
@@ -128,8 +135,9 @@ class WriteGateMiddleware(AgentMiddleware):
         super().__init__()
         self.thread_id = thread_id
         self.confirm_ids = confirm_ids
-        self.approved: set[str] = set()
-        self.failed_notes: list[str] = []
+        # call id -> (tool, args): only that exact call runs confirmed.
+        self.approved: dict[str, tuple[str, dict[str, Any]]] = {}
+        self.failed_note: str | None = None
         self._claimed = False
 
     @hook_config(can_jump_to=["tools"])
@@ -138,21 +146,32 @@ class WriteGateMiddleware(AgentMiddleware):
         state: Any,  # noqa: ARG002
         runtime: Runtime[Any],  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        # The loop comes back here after every tool round; only the first may claim.
+        # The loop comes back here after every tool round; only the first may
+        # claim. Approval ends with that round, so a replayed call refused before
+        # reaching this gate can't leave one behind for the model to reuse.
         if self._claimed:
+            self.approved.clear()
             return None
         self._claimed = True
         store = get_pending_preview_store()
+        preview_ids = list(dict.fromkeys(self.confirm_ids))
         calls = []
-        for preview_id in dict.fromkeys(self.confirm_ids):
+        for preview_id in preview_ids:
             claimed = await asyncio.to_thread(store.claim, self.thread_id, preview_id)
             if claimed is None:
-                self.failed_notes.append(CONFIRM_FAILED_NOTE)
                 continue
-            tool, args = claimed
+            tool, stored = claimed
             call_id = f"confirm-{preview_id}"
-            calls.append({"id": call_id, "name": tool, "args": {**args, "confirmed": True}})
-            self.approved.add(call_id)
+            args = {**stored, "confirmed": True}
+            calls.append({"id": call_id, "name": tool, "args": args})
+            self.approved[call_id] = (tool, args)
+        failed = len(preview_ids) - len(calls)
+        if failed:
+            self.failed_note = CONFIRM_FAILED_NOTE
+            if len(preview_ids) > 1:
+                self.failed_note += (
+                    f" {failed} of the {len(preview_ids)} changes they confirmed could not be made."
+                )
         if not calls:
             return None
         return {"messages": [AIMessage(content="", tool_calls=calls)], "jump_to": "tools"}
@@ -162,13 +181,13 @@ class WriteGateMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        if not self.failed_notes:
+        if self.failed_note is None:
             return await handler(request)
         view = list(request.messages)
         for i in range(len(view) - 1, -1, -1):
             message = view[i]
             if isinstance(message, HumanMessage):
-                view[i] = _noted(message, self.failed_notes)
+                view[i] = _noted(message, self.failed_note)
                 break
         return await handler(request.override(messages=view))
 
@@ -179,17 +198,22 @@ class WriteGateMiddleware(AgentMiddleware):
     ) -> ToolMessage | Command[Any]:
         call = request.tool_call
         name = call["name"]
-        if name not in WRITE_MCP_TOOL_NAMES:
+        # Taken on first sight, so an approval is used once at most.
+        approved = self.approved.pop(call["id"] or "", None)
+        # The shared classifier, so a write missing from the name list still
+        # fails closed when its server marks it as one.
+        read_only = getattr(request.tool, "read_only", None)
+        if tool_identity_class(name, read_only) is not ToolIdentityClass.WRITE:
             return await handler(request)
         # A write that can't preview would run on the model's word alone.
         if "confirmed" not in (getattr(request.tool, "args", None) or {}):
             return ToolMessage(
                 content=NOT_FROM_ASSISTANT_TEXT, name=name, tool_call_id=call["id"], status="error"
             )
-        if call["id"] in self.approved:
-            # Once: the id is ours, but a later call could reuse it.
-            self.approved.discard(call["id"])
-            return await handler(request)
+        if approved == (name, call["args"]):
+            result = await handler(request)
+            _warn_if_not_executed(name, result)
+            return result
         args = {k: v for k, v in call["args"].items() if k != "confirmed"}
         result = await handler(
             request.override(tool_call={**call, "args": {**args, "confirmed": False}})

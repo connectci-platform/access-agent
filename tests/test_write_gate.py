@@ -401,6 +401,17 @@ async def test_one_good_and_one_spent_id_run_the_good_one_and_note_the_other():
     assert len(update["messages"][0].tool_calls) == 1  # type: ignore[index]
     view = await _view(gate, [HumanMessage(content="Confirm")])
     assert view[-1].content.count(CONFIRM_FAILED_NOTE) == 1
+    assert "1 of the 2 changes" in view[-1].content
+
+
+async def test_when_every_confirmed_change_failed_the_note_says_how_many():
+    gate = _gate(["e" * 32, "f" * 32])
+
+    assert await _before(gate) is None
+
+    view = await _view(gate, [HumanMessage(content="Confirm")])
+    assert view[-1].content.count(CONFIRM_FAILED_NOTE) == 1
+    assert "2 of the 2 changes" in view[-1].content
 
 
 async def test_without_a_failed_id_the_model_view_is_unchanged():
@@ -612,3 +623,133 @@ async def test_the_loop_gives_a_plain_question_no_confirm_ids():
 
     gate = next(m for m in built["middleware"] if isinstance(m, WriteGateMiddleware))
     assert gate.confirm_ids == []
+
+
+# ── Fix round 1: fail closed, and approval tied to the replayed call ─────────
+
+
+def update_widget(widget_id: str, confirmed: bool = False) -> str:
+    """Update a widget."""
+    return ""
+
+
+def update_gadget(gadget_id: str) -> str:
+    """Update a gadget."""
+    return ""
+
+
+class _HintedTool(StructuredTool):
+    read_only: bool | None = None
+
+
+UNLISTED_WRITE = _HintedTool.from_function(update_widget, read_only=False)
+UNLISTED_NO_CONFIRM = _HintedTool.from_function(update_gadget, read_only=False)
+
+
+async def test_an_unlisted_write_is_still_forced_to_a_preview():
+    sent, result = await _run(
+        _call({"widget_id": "w1", "confirmed": True}, name="update_widget"),
+        tool_=UNLISTED_WRITE,
+    )
+
+    assert sent == [{"widget_id": "w1", "confirmed": False}]
+    assert HEX32.match(json.loads(result.content)["preview_id"])
+
+
+async def test_an_unlisted_write_without_confirmed_is_refused():
+    async def handler(request: Any) -> ToolMessage:
+        raise AssertionError("must not run")
+
+    call = _call({"gadget_id": "g1"}, name="update_gadget")
+    result = await _gate().awrap_tool_call(_request(call, UNLISTED_NO_CONFIRM), handler)
+
+    assert result.content == NOT_FROM_ASSISTANT_TEXT
+
+
+async def test_a_tool_the_server_marks_as_a_write_is_gated_whatever_its_name():
+    tool_ = _HintedTool.from_function(register_for_event, name="sign_up", read_only=False)
+
+    sent, _ = await _run(
+        _call({"eventinstance_id": "1", "confirmed": True}, name="sign_up"), tool_=tool_
+    )
+
+    assert sent[0]["confirmed"] is False
+
+
+async def _approved_call(gate: WriteGateMiddleware) -> dict[str, Any]:
+    update = await _before(gate)
+    assert update is not None
+    return dict(update["messages"][0].tool_calls[0])
+
+
+async def test_a_reused_confirm_id_with_other_args_is_forced_to_a_preview():
+    gate = _gate([_recorded({"eventinstance_id": "9372"})])
+    call = await _approved_call(gate)
+    changed = {**call, "args": {"eventinstance_id": "1111", "confirmed": True}}
+
+    sent, _ = await _run(changed, gate=gate)
+
+    assert sent == [{"eventinstance_id": "1111", "confirmed": False}]
+
+
+async def test_a_reused_confirm_id_for_another_tool_is_forced_to_a_preview():
+    gate = _gate([_recorded({"eventinstance_id": "9372"})])
+    call = await _approved_call(gate)
+    other = {**call, "name": "cancel_registration"}
+
+    sent, _ = await _run(other, gate=gate)
+
+    assert sent[0]["confirmed"] is False
+
+
+async def test_approval_ends_with_the_first_tool_round():
+    """A call refused before reaching the gate must not leave its approval behind."""
+    gate = _gate([_recorded()])
+    call = await _approved_call(gate)
+
+    assert await _before(gate) is None
+    sent, _ = await _run(call, gate=gate)
+
+    assert sent[0]["confirmed"] is False
+
+
+async def test_a_later_model_call_reusing_the_confirm_id_is_forced_to_a_preview():
+    preview_id = _recorded({"eventinstance_id": "9372"})
+    ran: list[Any] = []
+    reuse = _call({"eventinstance_id": "9372", "confirmed": True}, call_id=f"confirm-{preview_id}")
+    agent = _agent(
+        [AIMessage(content="", tool_calls=[reuse]), AIMessage(content="Done.")],
+        ran,
+        _gate([preview_id]),
+        [],
+    )
+
+    await agent.ainvoke({"messages": [human_turn("Confirm", [preview_id])]}, context=WRITER)
+
+    assert ran == [("9372", True), ("9372", False)]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [json.dumps(PREVIEW), json.dumps({"status": "already_registered", "executed": False})],
+)
+async def test_a_confirmed_call_that_did_not_execute_is_logged(caplog, content):
+    caplog.set_level(logging.WARNING)
+    gate = _gate([_recorded()])
+    call = await _approved_call(gate)
+
+    _, result = await _run(call, content, gate=gate)
+
+    assert "register_for_event" in caplog.text
+    assert "CONFIRMED_NOT_EXECUTED" in caplog.text
+    assert result.content == content
+
+
+async def test_a_confirmed_call_that_executed_logs_nothing(caplog):
+    caplog.set_level(logging.WARNING)
+    gate = _gate([_recorded()])
+    call = await _approved_call(gate)
+
+    await _run(call, json.dumps(REGISTERED), gate=gate)
+
+    assert "CONFIRMED_NOT_EXECUTED" not in caplog.text
