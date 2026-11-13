@@ -745,6 +745,19 @@ async def test_a_confirmed_call_that_did_not_execute_is_logged(caplog, content):
     assert result.content == content
 
 
+async def test_a_confirmed_call_that_errored_is_logged(caplog):
+    caplog.set_level(logging.WARNING)
+    gate = _gate([_recorded()])
+    call = await _approved_call(gate)
+    error = ToolMessage(
+        content="timed out", tool_call_id=call["id"], name=call["name"], status="error"
+    )
+
+    await _run(call, error, gate=gate)
+
+    assert "CONFIRMED_NOT_EXECUTED" in caplog.text
+
+
 async def test_a_confirmed_call_that_executed_logs_nothing(caplog):
     caplog.set_level(logging.WARNING)
     gate = _gate([_recorded()])

@@ -119,8 +119,13 @@ def _noted(message: HumanMessage, extra: str) -> HumanMessage:
 def _warn_if_not_executed(name: str, result: Any) -> None:
     """A confirmed replay that didn't write means the server and the stored
     preview disagree; the user clicked Confirm and nothing changed."""
-    body = _json_object(result) if isinstance(result, ToolMessage) else None
-    if body is not None and (body.get("status") == "preview" or body.get("executed") is False):
+    if not isinstance(result, ToolMessage):
+        return
+    body = _json_object(result)
+    failed = result.status == "error"
+    if failed or (
+        body is not None and (body.get("status") == "preview" or body.get("executed") is False)
+    ):
         logger.warning("CONFIRMED_NOT_EXECUTED: %s did not write when confirmed", name)
 
 
