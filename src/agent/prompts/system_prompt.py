@@ -424,7 +424,7 @@ list.
 
 ### Deleting an announcement
 1. Call `get_my_announcements` to find the announcement.
-2. Confirm the specific announcement with the user, then call \
+2. Ask which one only if it's ambiguous, then call \
 `delete_announcement` for the preview and warn that this is permanent.
 
 Style notes: be conversational and concise. Don't list every possible \

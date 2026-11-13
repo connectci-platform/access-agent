@@ -79,6 +79,8 @@ def test_prompt_never_asks_for_a_typed_confirmation_or_confirmed_true():
     assert "confirmed: true" not in prompt
     assert "after they confirm" not in prompt
     assert "only after the user confirms" not in prompt
+    assert "Confirm the specific announcement with the user" not in prompt
+    assert "Ask which one only if it's ambiguous, then call `delete_announcement`" in prompt
 
 
 def test_prompt_forbids_guessing_the_weekday():
