@@ -1,11 +1,11 @@
 """Upload content checks and re-encoding (D8-3086)."""
 
 import asyncio
+import base64
 import io
 import json
 import os
 import sys
-import threading
 
 import pytest
 from PIL import Image
@@ -14,7 +14,7 @@ from src.agent.upload_window import shown_in_full
 from src.api.thread_routes import _upload_payload
 from src.config import settings
 from src.tool_attachments import upload_reference
-from src.uploads import pdf_extract, process
+from src.uploads import image_extract, pdf_extract, process
 from src.uploads.process import Processed, Rejected, clean_filename, process_upload
 
 
@@ -267,67 +267,169 @@ def test_extract_main_writes_json():
     assert json.loads(out.getvalue())["text"] == "Hi"
 
 
-def test_memory_limit_is_set(monkeypatch):
-    calls = []
-    monkeypatch.setattr(pdf_extract.resource, "setrlimit", lambda *a: calls.append(a))
-
-    pdf_extract.limit_memory(123)
-
-    assert calls == [(pdf_extract.resource.RLIMIT_AS, (123, 123))]
-
-
 def _refuse(*_args):
     raise ValueError("current limit exceeds maximum limit")
 
 
-def test_memory_limit_refusal_tolerated_on_macos(monkeypatch):
-    monkeypatch.setattr(pdf_extract.resource, "setrlimit", _refuse)
-    monkeypatch.setattr(pdf_extract.sys, "platform", "darwin")
+def test_pixel_cap_does_not_depend_on_pillow_warning(monkeypatch):
+    big = _png(Image.new("L", (6000, 5000)))
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", None)
+    real_open = Image.open
 
-    pdf_extract.limit_memory(123)
+    def silent_open(*args, **kwargs):
+        Image.MAX_IMAGE_PIXELS = None  # Pillow stays silent
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(Image, "open", silent_open)
+
+    assert image_extract.decode(big, 25_000_000, 1600, 2 * 1024 * 1024) == {"refused": "pixels"}
 
 
-def test_memory_limit_refusal_fails_on_linux(monkeypatch):
-    monkeypatch.setattr(pdf_extract.resource, "setrlimit", _refuse)
-    monkeypatch.setattr(pdf_extract.sys, "platform", "linux")
+def _spy_children(monkeypatch) -> list[asyncio.subprocess.Process]:
+    procs: list[asyncio.subprocess.Process] = []
+    real = asyncio.create_subprocess_exec
 
-    with pytest.raises(ValueError):
-        pdf_extract.limit_memory(123)
+    async def spy(*args, **kwargs):
+        procs.append(await real(*args, **kwargs))
+        return procs[-1]
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
+    return procs
 
 
-async def test_pixel_cap_does_not_depend_on_pillow_warning(monkeypatch):
-    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", None)  # Pillow stays silent
-    result = await process_upload(
-        "image", "image/png", "big.png", _png(Image.new("L", (6000, 5000)))
+def _sleeper(tmp_path) -> str:
+    script = tmp_path / "sleeper.py"
+    script.write_text("import time\ntime.sleep(60)\n")
+    return str(script)
+
+
+async def test_image_timeout_kills_the_decoder(tmp_path, monkeypatch):
+    monkeypatch.setattr(process, "IMAGE_EXTRACT_PATH", _sleeper(tmp_path))
+    monkeypatch.setattr(settings, "UPLOAD_IMAGE_TIMEOUT_S", 0.1)
+    procs = _spy_children(monkeypatch)
+
+    result = await process_upload("image", "image/png", "slow.jpg", b"x")
+
+    assert result == Rejected("slow.jpg", "took too long to read")
+    assert procs[0].returncode is not None  # killed and reaped
+
+
+async def test_cancelled_image_decode_kills_the_child_and_frees_its_slot(tmp_path, monkeypatch):
+    monkeypatch.setattr(process, "IMAGE_EXTRACT_PATH", _sleeper(tmp_path))
+    monkeypatch.setattr(process, "_semaphore", asyncio.Semaphore(1))
+    procs = _spy_children(monkeypatch)
+    task = asyncio.create_task(process_upload("image", "", "a.png", b"x"))
+    while not procs:
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert procs[0].returncode is not None
+    assert process._semaphore._value == 1
+
+
+async def test_image_decoder_is_held_to_its_memory_limit(monkeypatch):
+    monkeypatch.setattr(settings, "UPLOAD_IMAGE_RLIMIT_AS", 1024 * 1024 * 1024)
+    argv: list[tuple] = []
+    real = asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        argv.append(args)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
+
+    await _image(_png(Image.new("RGB", (4, 4))))
+
+    assert argv[0][2] == str(process.IMAGE_EXTRACT_PATH)
+    assert argv[0][-1] == str(1024 * 1024 * 1024)
+
+
+def test_image_decoder_runs_as_isolated_script():
+    import subprocess
+
+    done = subprocess.run(
+        [sys.executable, "-I", str(process.IMAGE_EXTRACT_PATH), "100", "1600", "1000000", "1"],
+        input=_png(Image.new("RGB", (20, 10), "red")),
+        capture_output=True,
+        check=True,
     )
 
-    assert result == Rejected("big.png", "is over 25 million pixels")
+    assert json.loads(done.stdout) == {"refused": "pixels"}
 
 
-async def test_cancelled_decode_keeps_its_slot_until_the_thread_ends(monkeypatch):
-    monkeypatch.setattr(process, "_semaphore", asyncio.Semaphore(1))
-    gate = threading.Event()
-    started: list[str] = []
+def test_image_decoder_main_writes_json():
+    out = io.BytesIO()
+    image_extract.main(
+        ["x", "100", "1600", "1000000"], io.BytesIO(_png(Image.new("L", (5, 4)))), out
+    )
 
-    def slow(name, _data):
-        started.append(name)
-        gate.wait(5)
-        return Rejected(name, "x")
+    result = json.loads(out.getvalue())
+    assert (result["mime_type"], result["width"], result["height"]) == ("image/png", 5, 4)
 
-    monkeypatch.setattr(process, "_process_image", slow)
-    first = asyncio.create_task(process_upload("image", "", "a", b""))
-    while not started:
-        await asyncio.sleep(0.01)
-    first.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await first
-    second = asyncio.create_task(process_upload("image", "", "b", b""))
-    await asyncio.sleep(0.1)
-    assert started == ["a"]  # the cancelled decode still holds the only slot
 
-    gate.set()
-    assert await second == Rejected("b", "x")
-    assert started == ["a", "b"]
+@pytest.mark.parametrize("module", [pdf_extract, image_extract])
+def test_each_decoder_sets_its_memory_limit(monkeypatch, module):
+    calls = []
+    monkeypatch.setattr(module.resource, "setrlimit", lambda *a: calls.append(a))
+
+    module.limit_memory(123)
+
+    assert calls == [(module.resource.RLIMIT_AS, (123, 123))]
+
+
+@pytest.mark.parametrize("module", [pdf_extract, image_extract])
+def test_each_decoder_tolerates_no_limit_on_macos_only(monkeypatch, module):
+    monkeypatch.setattr(module.resource, "setrlimit", _refuse)
+    monkeypatch.setattr(module.sys, "platform", "darwin")
+    module.limit_memory(123)
+
+    monkeypatch.setattr(module.sys, "platform", "linux")
+    with pytest.raises(ValueError):
+        module.limit_memory(123)
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "{}",
+        '{"refused": "unreadable"}',
+        "[]",
+        '{"mime_type": "image/gif", "data": "", "width": 1, "height": 1}',
+        '{"mime_type": "image/png", "data": "**", "width": 1, "height": 1}',
+        "not json",
+    ],
+)
+async def test_unexpected_decoder_output_is_unreadable(tmp_path, monkeypatch, output):
+    script = tmp_path / "bad.py"
+    script.write_text(f"import sys\nsys.stdout.write({output!r})\n")
+    monkeypatch.setattr(process, "IMAGE_EXTRACT_PATH", script)
+
+    result = await process_upload("image", "image/png", "x.png", b"x")
+
+    assert result == Rejected("x.png", "couldn't be read as an image")
+
+
+async def test_a_decoder_that_crashes_is_unreadable(tmp_path, monkeypatch):
+    script = tmp_path / "crash.py"
+    script.write_text("raise MemoryError\n")
+    monkeypatch.setattr(process, "IMAGE_EXTRACT_PATH", script)
+
+    result = await process_upload("image", "image/png", "x.png", b"x")
+
+    assert result == Rejected("x.png", "couldn't be read as an image")
+
+
+async def test_image_spawn_failure_is_unreadable(monkeypatch):
+    async def fail(*_args, **_kwargs):
+        raise OSError("fork: Cannot allocate memory")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fail)
+
+    result = await process_upload("image", "", "x.png", b"x")
+
+    assert result == Rejected("x.png", "couldn't be read as an image")
 
 
 async def test_cancelled_pdf_extraction_kills_the_child(tmp_path, monkeypatch):
@@ -456,3 +558,24 @@ async def test_a_text_file_that_fits_is_not_cut():
     assert isinstance(result, Processed)
     assert result.text == _SLURM_LOG[:2000]
     assert result.text_truncated is False
+
+
+# The decoder runs in its own process above; these run it in this one, so
+# every branch is measured.
+def _decoded(data: bytes) -> dict:
+    return image_extract.decode(data, 25_000_000, 1600, settings.UPLOAD_PNG_MAX_BYTES)
+
+
+def test_decode_in_process_covers_each_outcome():
+    sixteen = Image.new("I;16", (4, 4))
+    assert _open(base64.b64decode(_decoded(_png(sixteen))["data"])).mode in ("L", "RGB")
+
+    clear = _decoded(_png(Image.new("RGBA", (8, 8), (255, 0, 0, 0))))
+    assert _open(base64.b64decode(clear["data"])).mode == "RGBA"
+
+    for mode in ("RGB", "RGBA"):
+        noise = Image.frombytes(mode, (1000, 1000), os.urandom(1000 * 1000 * len(mode)))
+        assert _decoded(_png(noise))["mime_type"] == "image/jpeg"
+
+    assert _decoded(_png(Image.new("1", (9000, 9000)))) == {"refused": "pixels"}
+    assert _decoded(b"%!PS-Adobe-3.0 EPSF-3.0\n") == {"refused": "unreadable"}

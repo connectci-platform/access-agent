@@ -1,12 +1,15 @@
 """Validate and re-encode chat uploads (D8-3086).
 
 `process_upload` checks content only: decode, pixel cap, page cap, text cap, NUL
-bytes. Per-kind byte limits are enforced at ingress, before this runs.
+bytes. Per-kind byte limits are enforced at ingress, before this runs. Images
+and PDFs are read in their own processes (image_extract.py, pdf_extract.py),
+held to a timeout and a memory limit, at most ``UPLOAD_DECODE_CONCURRENCY`` at
+a time across the agent.
 """
 
 import asyncio
+import base64
 import contextlib
-import io
 import json
 import re
 import sys
@@ -14,18 +17,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from PIL import Image
-
 from src.agent.upload_window import fit_file_text
 from src.config import settings
 
-# Pillow only offers a module-global pixel cap, so it is set once, here. Nothing
-# else in the agent opens images.
-Image.MAX_IMAGE_PIXELS = settings.UPLOAD_MAX_PIXELS
-
 PDF_EXTRACT_PATH = Path(__file__).with_name("pdf_extract.py")
-_IMAGE_FORMATS = ["PNG", "JPEG", "GIF", "WEBP"]
-_JPEG_QUALITY = 90
+IMAGE_EXTRACT_PATH = Path(__file__).with_name("image_extract.py")
+_IMAGE_TYPES = frozenset({"image/png", "image/jpeg"})
 _semaphore = asyncio.Semaphore(settings.UPLOAD_DECODE_CONCURRENCY)
 
 
@@ -63,7 +60,8 @@ async def process_upload(
 ) -> Processed | Rejected:
     name = clean_filename(name)
     if kind == "image":
-        return await _decode_in_thread(name, data)
+        async with _semaphore:
+            return await _process_image(name, data)
     if kind == "pdf":
         async with _semaphore:
             return await _process_pdf(name, data)
@@ -72,38 +70,39 @@ async def process_upload(
     return Rejected(name, "isn't a supported file type")
 
 
-async def _decode_in_thread(name: str, data: bytes) -> Processed | Rejected:
-    """Hold a decode slot until the worker thread ends, even if the caller is cancelled.
+class _ChildError(Exception):
+    """The extractor couldn't start, or exited with an error."""
 
-    A cancelled await does not stop a running thread. Releasing the slot at
-    cancellation would let dropped connections stack up decodes without limit.
+
+async def _run_child(script: Path, args: list[int], data: bytes, timeout: float) -> bytes:
+    """Run an extractor on ``data`` and return what it wrote.
+
+    Raises TimeoutError past ``timeout`` and _ChildError when it can't start
+    or exits with an error. On a timeout, a cancel or any other error, the
+    child is killed and reaped before this returns.
     """
-    await _semaphore.acquire()
-    task = asyncio.ensure_future(asyncio.to_thread(_process_image, name, data))
-    task.add_done_callback(lambda _: _semaphore.release())
-    return await asyncio.shield(task)
-
-
-def _flatten_to_8bit(im: Image.Image) -> Image.Image:
-    if im.mode.startswith("I;16") or im.mode == "I":
-        im = im.point(lambda v: v / 256).convert("L")
-    if im.mode in ("RGBA", "LA", "PA") or "transparency" in im.info:
-        return im.convert("RGBA")
-    return im.convert("RGB")
-
-
-def _encode(im: Image.Image) -> tuple[bytes, str]:
-    out = io.BytesIO()
-    im.save(out, "PNG", optimize=True)
-    if out.tell() <= settings.UPLOAD_PNG_MAX_BYTES:
-        return out.getvalue(), "image/png"
-    if im.mode == "RGBA":
-        flat = Image.new("RGB", im.size, "white")
-        flat.paste(im, mask=im.getchannel("A"))
-        im = flat
-    out = io.BytesIO()
-    im.save(out, "JPEG", quality=_JPEG_QUALITY)
-    return out.getvalue(), "image/jpeg"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-I",
+            str(script),
+            *(str(arg) for arg in args),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except OSError as exc:  # fork or exec failed (EAGAIN, ENOMEM)
+        raise _ChildError from exc
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(data), timeout)
+    finally:
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            await proc.wait()
+    if proc.returncode != 0:
+        raise _ChildError
+    return stdout
 
 
 def _too_many_pixels(name: str) -> Rejected:
@@ -111,68 +110,69 @@ def _too_many_pixels(name: str) -> Rejected:
     return Rejected(name, f"is over {millions} million pixels")
 
 
-def _process_image(name: str, data: bytes) -> Processed | Rejected:
+async def _process_image(name: str, data: bytes) -> Processed | Rejected:
+    unreadable = Rejected(name, "couldn't be read as an image")
     try:
-        # Pillow only warns between 1x and 2x the cap and raises above 2x. A
-        # warnings filter is process-global and unsafe with parallel decodes, so
-        # the cap is enforced here, on the header size, before load().
-        opened = Image.open(io.BytesIO(data), formats=_IMAGE_FORMATS)
-        if opened.width * opened.height > settings.UPLOAD_MAX_PIXELS:
+        stdout = await _run_child(
+            IMAGE_EXTRACT_PATH,
+            [
+                settings.UPLOAD_MAX_PIXELS,
+                settings.UPLOAD_IMAGE_MAX_EDGE,
+                settings.UPLOAD_PNG_MAX_BYTES,
+                settings.UPLOAD_IMAGE_RLIMIT_AS,
+            ],
+            data,
+            settings.UPLOAD_IMAGE_TIMEOUT_S,
+        )
+    except TimeoutError:
+        return Rejected(name, "took too long to read")
+    except _ChildError:
+        return unreadable
+    try:
+        result = json.loads(stdout)
+        if result.get("refused") == "pixels":
             return _too_many_pixels(name)
-        opened.seek(0)
-        opened.load()
-        im = _flatten_to_8bit(opened)
-        edge = settings.UPLOAD_IMAGE_MAX_EDGE
-        im.thumbnail((edge, edge))
-        encoded, mime = _encode(im)
-    except Image.DecompressionBombError:
-        return _too_many_pixels(name)
-    except Exception:
-        return Rejected(name, "couldn't be read as an image")
+        mime_type = str(result["mime_type"])
+        encoded = base64.b64decode(result["data"], validate=True)
+        width, height = int(result["width"]), int(result["height"])
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return unreadable
+    if mime_type not in _IMAGE_TYPES:
+        return unreadable
     return Processed(
         kind="image",
         name=name,
-        mime_type=mime,
+        mime_type=mime_type,
         data=encoded,
-        width=im.width,
-        height=im.height,
+        width=width,
+        height=height,
     )
 
 
 async def _process_pdf(name: str, data: bytes) -> Processed | Rejected:
+    unreadable = Rejected(name, "couldn't be read as a PDF")
     try:
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-I",
-            str(PDF_EXTRACT_PATH),
-            str(settings.UPLOAD_PDF_MAX_PAGES),
-            str(settings.UPLOAD_TEXT_MAX_CHARS),
-            str(settings.UPLOAD_PDF_RLIMIT_AS),
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+        stdout = await _run_child(
+            PDF_EXTRACT_PATH,
+            [
+                settings.UPLOAD_PDF_MAX_PAGES,
+                settings.UPLOAD_TEXT_MAX_CHARS,
+                settings.UPLOAD_PDF_RLIMIT_AS,
+            ],
+            data,
+            settings.UPLOAD_PDF_TIMEOUT_S,
         )
-    except OSError:  # fork or exec failed (EAGAIN, ENOMEM)
-        return Rejected(name, "couldn't be read as a PDF")
-    try:
-        stdout, _ = await asyncio.wait_for(proc.communicate(data), settings.UPLOAD_PDF_TIMEOUT_S)
     except TimeoutError:
         return Rejected(name, "took too long to read")
-    finally:
-        # Timeout, cancellation or any other error: never leave the child running.
-        if proc.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            await proc.wait()
-    if proc.returncode != 0:
-        return Rejected(name, "couldn't be read as a PDF")
+    except _ChildError:
+        return unreadable
     try:
         result = json.loads(stdout)
         text = str(result["text"])
         pages = int(result["pages"])
         truncated = bool(result["truncated"])
     except (ValueError, KeyError, TypeError):
-        return Rejected(name, "couldn't be read as a PDF")
+        return unreadable
     text, cut = fit_file_text(name, text)
     return Processed(
         kind="pdf",

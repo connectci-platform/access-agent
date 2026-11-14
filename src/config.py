@@ -346,6 +346,9 @@ class Settings(BaseSettings):
     UPLOAD_PDF_MAX_PAGES: int = 30
     UPLOAD_PDF_TIMEOUT_S: int = 10
     UPLOAD_PDF_RLIMIT_AS: int = 384 * 1024 * 1024
+    UPLOAD_IMAGE_TIMEOUT_S: int = 10
+    # A 25-million-pixel RGBA image is 100MB decoded, and converting it makes a copy.
+    UPLOAD_IMAGE_RLIMIT_AS: int = 512 * 1024 * 1024
     UPLOAD_MESSAGE_MAX_TOKENS: int = 24_000  # one message's files, per model call
     UPLOAD_DECODE_CONCURRENCY: int = 2  # across the whole agent
     UPLOAD_RETENTION_DAYS: int = 30
