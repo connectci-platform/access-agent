@@ -15,7 +15,8 @@
 #
 # Run it with --acting-user and --allow-writes: create_event is a write tool, so without
 # write permission the gate refuses it before any preview. With writes allowed, the
-# preview-only guarantee rests on the model never sending confirmed: true.
+# model can only preview: the write gate forces confirmed:false on its calls, and a
+# write runs only from the user's Confirm click, replayed server-side.
 
 - id: ea-create-01
   question: I want to set up a weekly GPU programming workshop, Mondays at 2pm through October.
@@ -128,7 +129,6 @@
   - access_mcp packages/events/src/server.ts edit_occurrence description (verified 2026-09-15)
   - docs/security/write-capability-audit.md edit_occurrence row (verified 2026-09-15)
   authoring_notes:
-  - 'AUTHOR: edit_occurrence is the one events write with a split path — a location-only edit,
-    or a date edit on a dark/draft occurrence, applies immediately with no preview, while a
-    date change on a live occurrence with registrants previews and needs confirmed:true. The
-    fact grades the registrant case because that is the one with user-visible consequences.'
+  - 'AUTHOR: edit_occurrence now previews like every events write, and it runs only from the
+    user''s Confirm click, replayed server-side. The fact grades the registrant case because
+    that is the one with user-visible consequences.'

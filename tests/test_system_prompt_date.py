@@ -44,12 +44,45 @@ def test_prompt_sets_out_the_registration_steps():
     prompt = build_system_prompt()
 
     assert "## Event registration" in prompt
-    assert "without `confirmed`" in prompt
+    assert "call `register_for_event`" in prompt
     assert "waiting for the organizer's approval" in prompt
     assert "Never say they are registered" in prompt
     # The model once looked an event up with get_event and wrote its own
     # preview, so the client had no preview result to show a confirm button for.
     assert "your next call is that preview" in prompt
+
+
+def test_prompt_states_one_confirm_rule_for_every_write():
+    for kwargs in ({}, {"acting_user": "u@access-ci.org", "can_write": True}):
+        prompt = build_system_prompt(**kwargs)
+
+        assert "## Making changes" in prompt
+        assert "Never pass `confirmed`" in prompt
+        assert "the latest tool result shows it ran" in prompt
+        assert "If the latest result is still a preview, nothing has changed" in prompt
+        assert 'When their message is "Confirm", the change has already been made' not in prompt
+        assert 'When it is "Cancel", say nothing was changed' in prompt
+        assert 'A typed "yes" or "go ahead" is not a confirmation' in prompt
+        assert "call the tool again with the change to get a new preview" in prompt
+    # Tickets are writes, so a caller who can't otherwise write still gets it.
+    assert "## Making changes" in build_system_prompt(acting_user="u@access-ci.org")
+
+
+def test_prompt_takes_the_event_series_id_from_get_event():
+    prompt = build_system_prompt()
+
+    assert "comes from the `series_id` returned by `get_event`" in prompt
+    assert "Never take it from an event page URL or an eventinstance id" in prompt
+
+
+def test_prompt_never_asks_for_a_typed_confirmation_or_confirmed_true():
+    prompt = build_system_prompt(acting_user="u@access-ci.org", can_write=True)
+
+    assert "confirmed: true" not in prompt
+    assert "after they confirm" not in prompt
+    assert "only after the user confirms" not in prompt
+    assert "Confirm the specific announcement with the user" not in prompt
+    assert "Ask which one only if it's ambiguous, then call `delete_announcement`" in prompt
 
 
 def test_prompt_forbids_guessing_the_weekday():

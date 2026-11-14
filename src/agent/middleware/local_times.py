@@ -8,7 +8,7 @@ happens here: every dict in a JSON tool result that has a ``start_date`` or
 
 It is generic, not tied to the events tools, so any tool that uses these field
 names benefits. It only adds keys, so a result still reads the same to
-everything else that parses it (PreviewFirstMiddleware reads ``status``).
+everything else that parses it (WriteGateMiddleware reads ``status``).
 """
 
 from __future__ import annotations

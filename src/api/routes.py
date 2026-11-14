@@ -16,6 +16,7 @@ from starlette.responses import StreamingResponse
 
 from ..agent.context import AgentContext
 from ..agent.graph import stream_agent
+from ..agent.middleware.write_gate import clean_confirm_ids, turn_previews
 from ..agent.profile import UserProfile
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..config import settings
@@ -121,6 +122,11 @@ class QueryRequest(BaseModel):
         None,
         description="Optional user profile hint (allocated resources); "
         "steers retrieval, authorizes nothing",
+    )
+    confirm_ids: list[str] | None = Field(
+        None,
+        description="Preview ids from the widget's Confirm click; malformed ids are dropped "
+        "(32 lowercase hex, deduplicated, at most 10)",
     )
 
 
@@ -323,6 +329,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                         context=context,
                         resource_context=request.resource_context,
                         profile=request.profile,
+                        confirm_ids=clean_confirm_ids(request.confirm_ids) or None,
                         checkpointer=checkpointer,
                         use_checkpointing=USE_CHECKPOINTING,
                         db_uri=settings.DATABASE_URL if USE_CHECKPOINTING else None,
@@ -464,6 +471,10 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                 **({"node_trace": final_state.get("node_trace", [])} if include_trace else {}),
             },
         }
+        # Present only when non-empty, so a turn without writes is unchanged.
+        previews = turn_previews(tool_messages)
+        if previews:
+            done_data["previews"] = previews
         refusals = final_state.get("tool_refusals") or []
         if refusals:
             # The caller asked for something they may not do here. The turn

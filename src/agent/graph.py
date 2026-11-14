@@ -174,13 +174,14 @@ async def run_agent(
     checkpointer: Any | None = None,
     use_checkpointing: bool = False,
     db_uri: str | None = None,
+    confirm_ids: list[str] | None = None,
 ) -> AgentState:
     """Run the agent on a query.
 
     ``context`` says who the run acts for. It is required, so no caller can
     end up anonymous, or signed in, by omission.
     """
-    from .state import create_initial_state
+    from .state import create_initial_state, human_turn
 
     tracer = get_tracer("access-agent")
 
@@ -201,13 +202,12 @@ async def run_agent(
             resource_context=resource_context,
             profile=profile,
             time_zone=time_zone,
+            confirm_ids=confirm_ids,
         )
 
         logger.info(f"Running agent for query: {query[:50]}...")
 
         if checkpointer is not None:
-            from langchain_core.messages import HumanMessage
-
             graph = create_checkpointed_graph(checkpointer)
             config = {"configurable": {"thread_id": session_id}}
 
@@ -215,15 +215,13 @@ async def run_agent(
 
             if previous_state.values:
                 existing_messages = previous_state.values.get("messages", [])
-                initial_state["messages"] = [*existing_messages, HumanMessage(content=query)]
+                initial_state["messages"] = [*existing_messages, human_turn(query, confirm_ids)]
                 logger.info(
                     f"Resuming conversation with {len(existing_messages)} previous messages"
                 )
 
             final_state = await graph.ainvoke(initial_state, config, context=context)
         elif use_checkpointing and db_uri:
-            from langchain_core.messages import HumanMessage
-
             async with create_async_checkpointer(db_uri) as cp:
                 await cp.setup()
                 graph = create_checkpointed_graph(cp)
@@ -233,7 +231,7 @@ async def run_agent(
 
                 if previous_state.values:
                     existing_messages = previous_state.values.get("messages", [])
-                    initial_state["messages"] = [*existing_messages, HumanMessage(content=query)]
+                    initial_state["messages"] = [*existing_messages, human_turn(query, confirm_ids)]
                     logger.info(
                         f"Resuming conversation with {len(existing_messages)} previous messages"
                     )
@@ -304,6 +302,7 @@ async def stream_agent(
     checkpointer: Any | None = None,
     use_checkpointing: bool = False,
     db_uri: str | None = None,
+    confirm_ids: list[str] | None = None,
 ) -> AsyncGenerator[tuple[str, Any], None]:
     """Stream agent execution, yielding events as they occur.
 
@@ -314,7 +313,7 @@ async def stream_agent(
         (nested updates are dropped, see ``_flatten_subgraph_events``)
       - ``"tool_messages"``: the model's tool calls and their results, as they happen
     """
-    from .state import create_initial_state
+    from .state import create_initial_state, human_turn
 
     tracer = get_tracer("access-agent")
 
@@ -335,20 +334,19 @@ async def stream_agent(
             resource_context=resource_context,
             profile=profile,
             time_zone=time_zone,
+            confirm_ids=confirm_ids,
         )
 
         stream_mode = ["custom", "messages", "updates"]
 
         if checkpointer is not None:
-            from langchain_core.messages import HumanMessage
-
             graph = create_checkpointed_graph(checkpointer)
             config = {"configurable": {"thread_id": session_id}}
 
             previous_state = await graph.aget_state(config)
             if previous_state.values:
                 existing_messages = previous_state.values.get("messages", [])
-                initial_state["messages"] = [*existing_messages, HumanMessage(content=query)]
+                initial_state["messages"] = [*existing_messages, human_turn(query, confirm_ids)]
                 logger.info(
                     f"Resuming conversation with {len(existing_messages)} previous messages"
                 )
@@ -360,8 +358,6 @@ async def stream_agent(
             ):
                 yield stream_type, chunk
         elif use_checkpointing and db_uri:
-            from langchain_core.messages import HumanMessage
-
             async with create_async_checkpointer(db_uri) as cp:
                 await cp.setup()
                 graph = create_checkpointed_graph(cp)
@@ -370,7 +366,7 @@ async def stream_agent(
                 previous_state = await graph.aget_state(config)
                 if previous_state.values:
                     existing_messages = previous_state.values.get("messages", [])
-                    initial_state["messages"] = [*existing_messages, HumanMessage(content=query)]
+                    initial_state["messages"] = [*existing_messages, human_turn(query, confirm_ids)]
                     logger.info(
                         f"Resuming conversation with {len(existing_messages)} previous messages"
                     )

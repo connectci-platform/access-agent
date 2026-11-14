@@ -251,6 +251,22 @@ def _with_answer_note(messages: list[Any]) -> list[Any]:
     return [*messages, HumanMessage(content=ANSWER_NOW_NOTE)]
 
 
+def call_key(name: str, args: dict[str, Any], tool: Any) -> str:
+    """A call as the tool would receive it, not as the model wrote it.
+
+    Models send one value several ways ("true", JSON text for an object, a
+    null for an unset field). The tool's schema reduces those forms to one.
+    Arguments it would reject are compared as sent.
+    """
+    schema = getattr(tool, "args_schema", None)
+    if isinstance(schema, type) and issubclass(schema, BaseModel):
+        with suppress(ValidationError):
+            args = schema.model_validate(args).model_dump(
+                mode="json", exclude_none=True, exclude_defaults=True
+            )
+    return json.dumps([name, args], sort_keys=True, default=str)
+
+
 class TurnBudgetMiddleware(AgentMiddleware):
     """Stop tools at ``tool_deadline`` (``time.monotonic()``) and block timed-out repeats."""
 
@@ -272,20 +288,7 @@ class TurnBudgetMiddleware(AgentMiddleware):
 
     @staticmethod
     def _call_key(call: Any, tool: Any) -> str:
-        """What the tool would receive, not what the model wrote.
-
-        Models send one value several ways ("true", JSON text for an object, a
-        null for an unset field), and call ids repeat. The tool's schema reduces
-        those forms to one. Arguments it would reject are compared as sent.
-        """
-        args = call["args"]
-        schema = getattr(tool, "args_schema", None)
-        if isinstance(schema, type) and issubclass(schema, BaseModel):
-            with suppress(ValidationError):
-                args = schema.model_validate(args).model_dump(
-                    mode="json", exclude_none=True, exclude_defaults=True
-                )
-        return json.dumps([call["name"], args], sort_keys=True, default=str)
+        return call_key(call["name"], call["args"], tool)
 
     async def _run_read(
         self,

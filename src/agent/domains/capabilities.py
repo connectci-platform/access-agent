@@ -131,11 +131,11 @@ WRITE_MCP_TOOL_NAMES: frozenset[str] = frozenset(
         "cancel_registration",
         "register_for_event",
         # events domain — organizer writes (all POST/PATCH/DELETE in the
-        # access_mcp events server). delete_event and cancel_occurrence are
-        # preview-by-default but write when confirmed:true; edit_occurrence can
-        # apply immediately with no confirmation (location-only edits, or date
-        # edits on dark/draft occurrences), so the whole tool is stripped. These
-        # have no WRITE_CAPABILITY_IDS entry: events organizer tools are served
+        # access_mcp events server). Every write tool, edit_occurrence included,
+        # carries `confirmed` and is preview-by-default; the write gate forces
+        # confirmed:false on model calls and replays the stored call on the
+        # user's Confirm click. The whole set is stripped for callers who can't
+        # write. These have no WRITE_CAPABILITY_IDS entry: events organizer tools are served
         # to the tool_calling_loop from the MCP catalog and are not owned by any
         # registry write capability (the only events capability is the read-only
         # browse_events), so the tool-name deny-list is the sole guard — matching

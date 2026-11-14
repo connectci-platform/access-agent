@@ -35,7 +35,6 @@ from src.agent.middleware.earlier_results import (
     EarlierResultsMiddleware,
     earlier_results_view,
 )
-from src.agent.middleware.preview_first import PreviewFirstMiddleware
 from src.agent.middleware.requires_auth import (
     SIGNED_IN_NOTE,
     RequiresAuthMiddleware,
@@ -399,45 +398,6 @@ async def test_a_real_agent_composes_with_the_signed_in_view():
     )
 
     assert seen[0][-1].content == f"{_noted()}\n\n{SIGNED_IN_NOTE}"
-
-
-PREVIEW = json.dumps({"status": "preview", "summary": "Register for GPU Workshop?"})
-PREVIEW_CALL = {"eventinstance_id": "9372", "confirmed": True}
-
-
-async def test_a_real_agent_still_confirms_a_preview_behind_an_earlier_live_result():
-    """PreviewFirstMiddleware reads request.state, which the view must not reach."""
-    received: list[Any] = []
-
-    @tool
-    def register_for_event(eventinstance_id: str, confirmed: bool = False) -> str:
-        """Register for an event."""
-        received.append(confirmed)
-        return '{"status": "registered"}'
-
-    seen: list[list[Any]] = []
-    call = _ai_call("register_for_event", args=PREVIEW_CALL).tool_calls[0]
-    model = _recording_model(
-        [AIMessage(content="", tool_calls=[call]), AIMessage(content="Submitted.")], seen
-    )
-    agent = create_agent(
-        model=model,
-        tools=[register_for_event],
-        middleware=[EarlierResultsMiddleware(), PreviewFirstMiddleware()],
-    )
-    previewed = [
-        HumanMessage(content="Sign me up."),
-        _ai_call("register_for_event", args={"eventinstance_id": "9372"}),
-        _result("register_for_event", PREVIEW),
-        AIMessage(content="Confirm?"),
-    ]
-
-    await agent.ainvoke(
-        {"messages": [*_earlier_turn("search_events"), *previewed, HumanMessage(content="Yes.")]}
-    )
-
-    assert received == [True]
-    assert PREVIEW in [m.content for m in _tool_results(seen[0])]
 
 
 async def test_the_loop_rewrites_after_context_editing():

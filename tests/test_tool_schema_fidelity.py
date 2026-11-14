@@ -1,7 +1,9 @@
 """The schema the model sees for each MCP tool keeps what the server declared.
 
-Fixture: a snapshot of production ``/tools`` from 2026-11-08 (49 tools, raw
-responses, descriptions shortened). It must be refreshed by hand.
+Fixture: a snapshot of production ``tools/list`` from 2026-11-12 (48 tools, raw
+responses, descriptions cut to 60 characters). It must be refreshed by hand:
+initialize a session on https://mcp.access-ci.org/<server>/mcp for each server
+(no credential needed), call ``tools/list``, and keep every tool's fields.
 """
 
 import json
@@ -12,6 +14,7 @@ import pytest
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import ValidationError
 
+from src.agent.domains.capabilities import WRITE_MCP_TOOL_NAMES
 from src.agent.domains.tools import _build_args_schema, create_mcp_tools_from_catalog
 from src.tools.registry import CatalogAggregator
 
@@ -54,7 +57,7 @@ def _lossy_tools() -> list[str]:
 
 
 def test_the_fixture_covers_every_live_tool_and_each_lossy_shape():
-    assert len(RAW_TOOLS) == 49
+    assert len(RAW_TOOLS) == 48
     kinds = {
         key
         for name in _lossy_tools()
@@ -62,6 +65,16 @@ def test_the_fixture_covers_every_live_tool_and_each_lossy_shape():
         for key in set(p) - PLAIN_KEYS
     }
     assert {"enum", "items", "properties", "required"} <= kinds
+
+
+def test_every_write_tool_in_the_catalog_takes_a_boolean_confirmed():
+    """The write gate refuses a write tool that has no `confirmed` parameter."""
+    present = WRITE_MCP_TOOL_NAMES & set(RAW_TOOLS)
+    assert present == WRITE_MCP_TOOL_NAMES
+
+    for name in sorted(present):
+        props = RAW_TOOLS[name]["inputSchema"].get("properties", {})
+        assert props.get("confirmed", {}).get("type") == "boolean", name
 
 
 def test_every_declared_constraint_reaches_the_model():

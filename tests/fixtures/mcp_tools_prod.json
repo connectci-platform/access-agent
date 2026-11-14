@@ -73,75 +73,77 @@
    "tools": [
     {
      "name": "search_resources",
-     "description": "Search ACCESS-CI compute resources by name, type, or feature",
+     "description": "Find ACCESS resources from their documentation at https://su",
      "inputSchema": {
       "type": "object",
       "properties": {
-       "id": {
-        "type": "string",
-        "description": "Get specific resource (e.g., 'delta.ncsa.access-ci.org')"
-       },
        "query": {
         "type": "string",
-        "description": "Search names, descriptions, organizations, and features. For specific hardware models (e.g., 'A100'), use get_resource_hardware instead."
+        "description": "Words that must all appear, as whole words or word beginnings, in a resource's name, group, organization, description, CPU or GPU models, queue names, datasets or top software (e.g. 'Delta', 'H100', 'AlphaFold'). Prefer the hardware filters to describing hardware in words."
        },
        "type": {
         "type": "string",
-        "enum": [
-         "Cloud",
-         "GPU Compute",
-         "Innovative / Novel Compute",
-         "CPU Compute",
-         "Service / Other",
-         "Storage",
-         "Commercial Cloud",
-         "Sensors / Instruments"
-        ],
-        "description": "Filter by resource type"
-       },
-       "has_gpu": {
-        "type": "boolean",
-        "description": "Filter by GPU: true = only GPU resources, false = only non-GPU resources. Omit to include all resources."
+        "description": "Resource type: 'Compute' or 'Storage'"
        },
        "organization": {
         "type": "string",
-        "description": "Filter by org (NCSA, PSC, Purdue, SDSC, TACC)"
+        "description": "Organization name or abbreviation (e.g. 'NCSA', 'Purdue', 'TACC'). A center's university also works, such as 'University of Illinois' for NCSA or 'Carnegie Mellon' for PSC"
        },
-       "include_ids": {
+       "status": {
+        "type": "string",
+        "description": "'production', 'pre-production' or 'post-production'"
+       },
+       "has_gpu": {
         "type": "boolean",
-        "description": "Include resource IDs for other services",
-        "default": true
+        "description": "true: a queue has GPUs or other accelerators (Habana Gaudi, NEC Vector Engine). false: queues are documented and none has one."
+       },
+       "gpu_type": {
+        "type": "string",
+        "description": "Accelerator model text on a queue, e.g. 'H100', 'A100', 'Gaudi'"
+       },
+       "min_gpu_memory_gb": {
+        "type": "number",
+        "description": "Minimum memory per GPU, in GB, on a GPU queue"
+       },
+       "min_memory_gb": {
+        "type": "number",
+        "description": "Minimum RAM per node, in GB"
+       },
+       "min_cores_per_node": {
+        "type": "number",
+        "description": "Minimum CPU cores per node"
+       },
+       "cpu_type": {
+        "type": "string",
+        "description": "CPU model text on a queue, e.g. 'EPYC', 'Sapphire Rapids', 'Grace'"
+       },
+       "min_wall_time_hours": {
+        "type": "number",
+        "description": "Minimum maximum job length a queue allows, in hours"
+       },
+       "dataset": {
+        "type": "string",
+        "description": "Name of a dataset hosted on the resource, e.g. 'AlphaFold', 'COCO'"
+       },
+       "ondemand": {
+        "type": "boolean",
+        "description": "true keeps resources with a documented Open OnDemand portal"
+       },
+       "transfer_method": {
+        "type": "string",
+        "description": "Documented file transfer method, e.g. 'Globus', 'rsync', 'S3'"
        },
        "fields": {
         "type": "array",
         "items": {
          "type": "string"
         },
-        "description": "Project the response down to only these fields. Dotted path syntax: 'total', 'items[].name', 'items[].resource_ids', 'metadata.pagination.has_more', etc. Use to reduce payload size when you only need specific fields. Omit to receive the full response. Only applies to listing results, not single-resource lookups."
+        "description": "Project the response down to only these fields. Dotted path syntax: 'total', 'items[].name', 'items[].max_cores_per_node', 'items[].matching_queues', 'unchecked'. Omit to receive the full response."
        }
       }
      },
      "_meta": {
       "supportsFieldProjection": true
-     },
-     "annotations": {
-      "readOnlyHint": true
-     }
-    },
-    {
-     "name": "get_resource_hardware",
-     "description": "Get a resource's hardware description from CiDeR (CPU, GPU, ",
-     "inputSchema": {
-      "type": "object",
-      "properties": {
-       "id": {
-        "type": "string",
-        "description": "Resource name (e.g., 'Anvil', 'Delta') or full ID (e.g., 'anvil.purdue.access-ci.org')"
-       }
-      },
-      "required": [
-       "id"
-      ]
      },
      "annotations": {
       "readOnlyHint": true
@@ -506,7 +508,7 @@
        },
        "published_date": {
         "type": "string",
-        "description": "When to display (YYYY-MM-DD). Defaults to today."
+        "description": "The date the announcement is dated (YYYY-MM-DD) and picked up by the Bi-Weekly Digest, never the date of an event it describes. Leave it out unless the user asks for a specific publish date (default today)."
        },
        "tags": {
         "type": "array",
@@ -556,6 +558,10 @@
          ]
         },
         "description": "Where to share the announcement. Omit for the defaults 'Announcements page' + 'Bi-Weekly Digest'; an empty array is rejected. 'Affinity Group page' and 'Email to Affinity Group' require affinity_group."
+       },
+       "confirmed": {
+        "type": "boolean",
+        "description": "Omit to preview. Set true only after the user has approved this exact preview."
        }
       },
       "required": [
@@ -592,14 +598,18 @@
        },
        "published_date": {
         "type": "string",
-        "description": "New publication date YYYY-MM-DD (only if changing)"
+        "description": "New publish date (YYYY-MM-DD): the date the announcement is dated and picked up by the digest, never the date of an event it describes. Leave it out unless the user asks for a specific publish date."
        },
        "tags": {
         "type": "array",
         "items": {
          "type": "string"
         },
-        "description": "New tags \u2014 replaces ALL existing tags (only if changing). English tag NAMES as strings, taken verbatim from the \"name\" field of suggest_tags. Never pass ids or uuids."
+        "description": "New tags \u2014 replaces ALL existing tags (only if changing). English tag NAMES as strings, taken verbatim from the \"name\" field of suggest_tags. Never pass ids or uuids. An empty list means no change; to remove all tags use clear_tags. The web form requires at least one tag, so editing the announcement in Drupal later will ask for a tag."
+       },
+       "clear_tags": {
+        "type": "boolean",
+        "description": "Set true to remove ALL tags from the announcement. Only when the user explicitly asks to remove every tag; never combine with tags. Omit otherwise."
        },
        "affiliation": {
         "type": "string",
@@ -611,7 +621,19 @@
        },
        "affinity_group": {
         "type": "string",
-        "description": "Affinity group name or UUID. User must be allowed to post to the group (a coordinator of it, or an administrator or news manager). Replaces all of the announcement's affinity groups (only if changing). get_announcement_context lists only coordinated groups; an administrator or news manager names the group directly."
+        "description": "Affinity group name or UUID. User must be allowed to post to the group (a coordinator of it, or an administrator or news manager). Replaces all of the announcement's affinity groups with this one (only if changing). To add or remove one group and keep the rest, use add_affinity_group or remove_affinity_group instead. If get_my_announcements lists other groups on this announcement, including ones with a null title that the user may not view, say in the preview that they will be removed. get_announcement_context lists only coordinated groups; an administrator or news manager names the group directly."
+       },
+       "add_affinity_group": {
+        "type": "string",
+        "description": "Affinity group name or UUID to add while keeping every group already on the announcement, including ones the user may not view. Use when the user asks to also share with a group."
+       },
+       "remove_affinity_group": {
+        "type": "string",
+        "description": "Title or UUID of one group on the announcement to remove, as listed in get_my_announcements affinity_groups. Every other group is kept, including ones the user may not view."
+       },
+       "clear_affinity_groups": {
+        "type": "boolean",
+        "description": "Set true to remove ALL affinity groups. Only when the user explicitly asks to remove every group. Omit otherwise."
        },
        "external_link": {
         "type": "object",
@@ -642,6 +664,10 @@
          ]
         },
         "description": "Where to share the announcement (only if changing). Replaces the whole set of sharing options, so list every option to keep. When get_my_announcements returns where_to_share for this announcement, the known labels in it can be reused, but values it shows as unknown are shown as is and cannot be sent back; they are rejected here. Show the user the full resulting list before updating; an empty array is rejected. 'Affinity Group page' and 'Email to Affinity Group' only take effect if the announcement has an affinity group; this tool does not check that."
+       },
+       "confirmed": {
+        "type": "boolean",
+        "description": "Omit to preview. Set true only after the user has approved this exact preview."
        }
       },
       "required": [
@@ -664,7 +690,7 @@
        },
        "confirmed": {
         "type": "boolean",
-        "description": "Set to true only after user has explicitly confirmed deletion of THIS specific announcement. Required."
+        "description": "Omit to preview. Set true only after the user has approved this exact preview."
        }
       },
       "required": [
@@ -992,7 +1018,7 @@
       "properties": {
        "resource_id": {
         "type": "string",
-        "description": "The ACCESS Global Resource ID of the resource provider (e.g. delta-gpu.ncsa.access-ci.org). Get it from the search_resources tool \u2014 each result carries its resource ids."
+        "description": "The ACCESS Global Resource ID of the resource provider (e.g. delta-gpu.ncsa.access-ci.org). Get it from the search_resources tool \u2014 each result's id is its global resource ID."
        },
        "live": {
         "type": "boolean",
@@ -1265,7 +1291,7 @@
        },
        "confirmed": {
         "type": "boolean",
-        "description": "Omit or false for a no-write preview (status:\"preview\", executed:false \u2014 seat vs. waitlist); true to actually register (status:\"registered\"/\"waitlisted\", executed:true)."
+        "description": "Omit to preview. Set true only after the user has approved this exact preview."
        }
       },
       "required": [
@@ -1288,7 +1314,7 @@
        },
        "confirmed": {
         "type": "boolean",
-        "description": "Set to true only after the user has explicitly confirmed cancellation of THIS specific registration. Required."
+        "description": "Omit to preview. Set true only after the user has approved this exact preview."
        }
       },
       "required": [
@@ -1319,7 +1345,7 @@
        },
        "recurrence": {
         "type": "object",
-        "description": "A high-level recurrence pattern for a REPEATING event, translated to the native Drupal rule-field columns server-side. Use this for any repeating pattern. Mutually exclusive with recur_type and with custom_dates (supplying more than one is refused with validation_error). Examples: daily (freq:daily, start_date:2025-01-01, end_date:2025-02-28, start_time:10:00, duration_minutes:90); weekly (freq:weekly, start_date:2025-01-06, end_date:2025-03-31, days:[mon,wed], start_time:14:00, duration_minutes:60); monthly weekday (freq:monthly, monthly_mode:weekday, start_date:2025-01-06, end_date:2025-06-30, days:[mon], week_positions:[first], start_time:15:00, ends_at:16:30); monthly monthday (freq:monthly, monthly_mode:monthday, start_date:2025-01-15, end_date:2025-12-31, days_of_month:[15], start_time:10:00, duration_minutes:120); yearly (freq:yearly, start_date:2025-06-21, end_date:2027-06-21, monthly_mode:monthday, months:[jun], days_of_month:[21], year_interval:1, start_time:12:00, ends_at:13:00); consecutive (freq:consecutive, start_date:2025-01-13, end_date:2025-01-17, window_start:2025-01-13, window_end:2025-01-17, session_minutes:180, gap_minutes:30). Invalid combinations are refused with code validation_error, over_fill, or out_of_vocab naming the problem field.",
+        "description": "A high-level recurrence pattern for a REPEATING event, translated to the native Drupal rule-field columns server-side. Use this for any repeating pattern. Mutually exclusive with recur_type and with custom_dates (supplying more than one is refused with validation_error). Examples: daily {\"frequency\":\"daily\",\"start_date\":\"2025-01-01\",\"end_date\":\"2025-02-28\",\"start_time\":\"10:00\",\"duration_minutes\":90}; weekly {\"frequency\":\"weekly\",\"start_date\":\"2025-01-06\",\"end_date\":\"2025-03-31\",\"days\":[\"mon\",\"wed\"],\"start_time\":\"14:00\",\"duration_minutes\":60}; monthly, first Monday {\"frequency\":\"monthly\",\"monthly_mode\":\"weekday\",\"start_date\":\"2025-01-06\",\"end_date\":\"2025-06-30\",\"days\":[\"mon\"],\"week_positions\":[\"first\"],\"start_time\":\"15:00\",\"ends_at\":\"16:30\"}; monthly, the 15th {\"frequency\":\"monthly\",\"monthly_mode\":\"monthday\",\"start_date\":\"2025-01-15\",\"end_date\":\"2025-12-31\",\"days_of_month\":[15],\"start_time\":\"10:00\",\"duration_minutes\":120}; yearly {\"frequency\":\"yearly\",\"monthly_mode\":\"monthday\",\"start_date\":\"2025-06-21\",\"end_date\":\"2027-06-21\",\"months\":[\"jun\"],\"days_of_month\":[21],\"year_interval\":1,\"start_time\":\"12:00\",\"ends_at\":\"13:00\"}; consecutive sessions each day {\"frequency\":\"consecutive\",\"start_date\":\"2025-01-13\",\"end_date\":\"2025-01-17\",\"window_start\":\"09:00\",\"window_end\":\"17:00\",\"session_minutes\":180,\"gap_minutes\":30}. Invalid combinations are refused with code validation_error, over_fill, or out_of_vocab naming the problem field.",
         "properties": {
          "frequency": {
           "type": "string",
@@ -1394,11 +1420,11 @@
          },
          "window_start": {
           "type": "string",
-          "description": "Window start date (YYYY-MM-DD). Required for consecutive."
+          "description": "Start of each day's session window (24h HH:MM), interpreted in the acting user's profile timezone. Required for consecutive."
          },
          "window_end": {
           "type": "string",
-          "description": "Window end date (YYYY-MM-DD). Required for consecutive."
+          "description": "End of each day's session window (24h HH:MM), interpreted in the acting user's profile timezone. Required for consecutive."
          },
          "session_minutes": {
           "type": "number",
@@ -1473,7 +1499,7 @@
        },
        "confirmed": {
         "type": "boolean",
-        "description": "Omit or false for a no-write PREVIEW of the occurrence dates this recurrence would produce (status:\"preview\", executed:false, with occurrence_count/total_occurrence_count/truncated/occurrences); true to actually create the series."
+        "description": "Omit to preview. Set true only after the user has approved this exact preview."
        }
       },
       "required": [
@@ -1494,7 +1520,11 @@
       "properties": {
        "eventseries_id": {
         "type": "string",
-        "description": "The event series id (the get_event `series_id`, or the eventinstance id \u2014 either resolves to its series)."
+        "description": "The event series id: the `series_id` from get_event or get_my_events. Do not pass an eventinstance id."
+       },
+       "confirmed": {
+        "type": "boolean",
+        "description": "Omit to preview. Set true only after the user has approved this exact preview."
        },
        "title": {
         "type": "string"
@@ -1553,11 +1583,11 @@
       "properties": {
        "eventseries_id": {
         "type": "string",
-        "description": "The event series id (get_event `series_id`, or an eventinstance id \u2014 either resolves to its series)."
+        "description": "The event series id: the `series_id` from get_event or get_my_events. Do not pass an eventinstance id."
        },
        "confirmed": {
         "type": "boolean",
-        "description": "Omit or false for a no-write preview; true to execute the cancel/delete."
+        "description": "Omit to preview. Set true only after the user has approved this exact preview."
        }
       },
       "required": [
@@ -1576,7 +1606,11 @@
       "properties": {
        "eventseries_id": {
         "type": "string",
-        "description": "The event series id (get_event `series_id`, or an eventinstance id \u2014 either resolves to its series)."
+        "description": "The event series id: the `series_id` from get_event or get_my_events. Do not pass an eventinstance id."
+       },
+       "confirmed": {
+        "type": "boolean",
+        "description": "Omit to preview. Set true only after the user has approved this exact preview."
        }
       },
       "required": [
@@ -1595,7 +1629,11 @@
       "properties": {
        "eventseries_id": {
         "type": "string",
-        "description": "The event series id (get_event `series_id`, or an eventinstance id \u2014 either resolves to its series)."
+        "description": "The event series id: the `series_id` from get_event or get_my_events. Do not pass an eventinstance id."
+       },
+       "confirmed": {
+        "type": "boolean",
+        "description": "Omit to preview. Set true only after the user has approved this exact preview."
        }
       },
       "required": [
@@ -1618,7 +1656,7 @@
        },
        "confirmed": {
         "type": "boolean",
-        "description": "Omit or false for a no-write preview; true to execute the cancel."
+        "description": "Omit to preview. Set true only after the user has approved this exact preview."
        }
       },
       "required": [
@@ -1638,6 +1676,10 @@
        "eventinstance_id": {
         "type": "string",
         "description": "The eventinstance id to restore."
+       },
+       "confirmed": {
+        "type": "boolean",
+        "description": "Omit to preview. Set true only after the user has approved this exact preview."
        }
       },
       "required": [
@@ -1660,7 +1702,7 @@
        },
        "confirmed": {
         "type": "boolean",
-        "description": "Required true to commit a date change on a live occurrence with registrants; otherwise optional."
+        "description": "Omit to preview. Set true only after the user has approved this exact preview."
        },
        "date": {
         "type": "object",
@@ -1697,7 +1739,11 @@
       "properties": {
        "eventseries_id": {
         "type": "string",
-        "description": "The event series id to add an occurrence to (get_event `series_id`, or an eventinstance id \u2014 either resolves to its series)."
+        "description": "The event series id to add an occurrence to: the `series_id` from get_event or get_my_events. A series id only; an eventinstance id is not accepted."
+       },
+       "confirmed": {
+        "type": "boolean",
+        "description": "Omit to preview. Set true only after the user has approved this exact preview."
        },
        "date": {
         "type": "object",
@@ -1864,11 +1910,33 @@
         ],
         "default": "n"
        },
+       "aggregation_unit": {
+        "type": "string",
+        "description": "Length of each timeseries period. Omit for Auto, where XDMoD uses days for ranges under 6 months, months under 10 years, and quarters beyond that. Set Month for a monthly trend over a shorter range.",
+        "enum": [
+         "Auto",
+         "Day",
+         "Month",
+         "Quarter",
+         "Year"
+        ]
+       },
        "filters": {
         "type": "object",
-        "description": "Filter by dimension. Keys are dimension names (e.g., \"resource\", \"pi\", \"fieldofscience\"). Values can be names (e.g., {\"resource\": \"Delta\"}) or numeric IDs \u2014 names are auto-resolved.",
+        "description": "Filter by dimension. Keys are dimension names (e.g., \"resource\", \"pi\", \"fieldofscience\"). Each value is a name, auto-resolved to its ID (e.g., {\"resource\": \"Delta\"}), or an id listed by get_dimension_values given as a string. An exact name matches just that one. Otherwise a value matches the names that have it as whole words, so a family name matches the family (Delta matches NCSA DELTA CPU, NCSA DELTA GPU and NCSA DeltaAI) and \"chemistry\" does not match Biochemistry. Pass a list to match any of several (e.g., {\"resource\": [\"Delta\", \"Anvil\"]}).",
         "additionalProperties": {
-         "type": "string"
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "array",
+           "items": {
+            "type": "string"
+           },
+           "minItems": 1
+          }
+         ]
         }
        }
       },
@@ -1991,11 +2059,33 @@
         ],
         "default": "n"
        },
+       "aggregation_unit": {
+        "type": "string",
+        "description": "Length of each timeseries period. Omit for Auto, where XDMoD uses days for ranges under 6 months, months under 10 years, and quarters beyond that. Set Month for a monthly trend over a shorter range.",
+        "enum": [
+         "Auto",
+         "Day",
+         "Month",
+         "Quarter",
+         "Year"
+        ]
+       },
        "filters": {
         "type": "object",
-        "description": "Filter by dimension. Keys are dimension names (e.g., \"resource\", \"pi\", \"fieldofscience\"). Values can be names (e.g., \"Delta\") or numeric IDs \u2014 names are auto-resolved.",
+        "description": "Filter by dimension. Keys are dimension names (e.g., \"resource\", \"pi\", \"fieldofscience\"). Each value is a name, auto-resolved to its ID (e.g., {\"resource\": \"Delta\"}), or an id listed by get_dimension_values given as a string. An exact name matches just that one. Otherwise a value matches the names that have it as whole words, so a family name matches the family (Delta matches NCSA DELTA CPU, NCSA DELTA GPU and NCSA DeltaAI) and \"chemistry\" does not match Biochemistry. Pass a list to match any of several (e.g., {\"resource\": [\"Delta\", \"Anvil\"]}).",
         "additionalProperties": {
-         "type": "string"
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "array",
+           "items": {
+            "type": "string"
+           },
+           "minItems": 1
+          }
+         ]
         }
        }
       },
@@ -2208,6 +2298,10 @@
        "user_id_at_resource": {
         "type": "string",
         "description": "User's username at the resource (if applicable)"
+       },
+       "confirmed": {
+        "type": "boolean",
+        "description": "Omit to preview. Set true only after the user has approved this exact preview."
        }
       },
       "required": [
@@ -2298,6 +2392,10 @@
        "user_id_at_resource": {
         "type": "string",
         "description": "Username at the resource provider"
+       },
+       "confirmed": {
+        "type": "boolean",
+        "description": "Omit to preview. Set true only after the user has approved this exact preview."
        }
       },
       "required": [
@@ -2346,6 +2444,10 @@
         ],
         "default": "medium",
         "description": "Severity of the security concern"
+       },
+       "confirmed": {
+        "type": "boolean",
+        "description": "Omit to preview. Set true only after the user has approved this exact preview."
        }
       },
       "required": [
