@@ -18,6 +18,7 @@ from ..agent.context import AgentContext
 from ..agent.graph import stream_agent
 from ..agent.middleware.write_gate import clean_confirm_ids, turn_previews
 from ..agent.profile import UserProfile
+from ..agent.state import human_turn
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..config import settings
 from ..tools import ToolRegistry, get_catalog_aggregator
@@ -318,6 +319,9 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                 # session_id is permanently 409-locked until restart.
                 registry = await get_registry()
                 checkpointer = getattr(raw_request.app.state, "checkpointer", None)
+                confirm_ids = clean_confirm_ids(request.confirm_ids) or None
+                # The question's id, so a cut-off turn finds it in the thread.
+                question = human_turn(request.query, confirm_ids, message_id=str(uuid.uuid4()))
                 # Tool calls are kept aside for a cut-off turn's write record.
                 events = without_tool_messages(
                     tool_messages,
@@ -329,7 +333,8 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                         context=context,
                         resource_context=request.resource_context,
                         profile=request.profile,
-                        confirm_ids=clean_confirm_ids(request.confirm_ids) or None,
+                        confirm_ids=confirm_ids,
+                        message_id=question.id,
                         checkpointer=checkpointer,
                         use_checkpointing=USE_CHECKPOINTING,
                         db_uri=settings.DATABASE_URL if USE_CHECKPOINTING else None,
@@ -342,7 +347,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                         events,
                         checkpointer=checkpointer,
                         thread_id=session_id,
-                        query=request.query,
+                        question=question,
                         final_state=final_state,
                         streamed=chunks,
                         tool_messages=tool_messages,

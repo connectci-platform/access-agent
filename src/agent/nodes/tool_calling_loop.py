@@ -17,6 +17,7 @@ import uuid
 from collections import Counter, deque
 from collections.abc import Callable, Iterable
 from copy import deepcopy
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from langchain.agents import create_agent
@@ -48,6 +49,7 @@ from ..middleware.earlier_results import EarlierResultsMiddleware, earlier_resul
 from ..middleware.local_times import LocalTimesMiddleware
 from ..middleware.requires_auth import RequiresAuthMiddleware
 from ..middleware.turn_budget import TurnBudgetMiddleware, step_capped_view
+from ..middleware.uploads import UploadsMiddleware
 from ..middleware.write_gate import WriteGateMiddleware
 from ..profile import UserProfile
 from ..prompts.system_prompt import build_system_prompt
@@ -55,6 +57,7 @@ from ..state import ToolResult
 from ..token_estimate import cut_to_tokens, estimate_messages
 from ..tools import search_access_documents
 from ..turn_capture import get_turn_capture, mark_summarized
+from ..upload_window import earlier_note, is_reference, references, upload_window
 
 logger = logging.getLogger(__name__)
 
@@ -392,6 +395,17 @@ def _is_summary(message: Any) -> bool:
     )
 
 
+def _without_references(message: Any) -> Any:
+    """A question as the summary model reads it: each shared file as its
+    earlier-file note, which is also what the trim counts it as."""
+    if not references(message.content):
+        return message
+    content = [
+        {"type": "text", "text": earlier_note(b)} if is_reference(b) else b for b in message.content
+    ]
+    return message.model_copy(update={"content": content})
+
+
 class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
     """SummarizationMiddleware that records when it actually summarizes.
 
@@ -478,7 +492,8 @@ class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
         Upstream keeps 4,000 tokens and starts on a question, so one ordinary
         tool result in the last earlier turn leaves nothing, and its placeholder
         stands in for every earlier answer. Tool bodies are cut down instead,
-        since the summary needs their gist, and counted as sent.
+        since the summary needs their gist, and counted as sent. Shared files
+        reach it as their earlier-file notes, never their content.
         """
         clipped = [
             m.model_copy(update={"content": cut_to_tokens(m.content, _SUMMARY_TOOL_RESULT_TOKENS)})
@@ -487,18 +502,22 @@ class _FlaggingSummarizationMiddleware(SummarizationMiddleware):
             for m in messages
         ]
         try:
-            return list(
+            trimmed = list(
                 trim_messages(
                     clipped,
                     max_tokens=settings.SUMMARIZATION_INPUT_TOKENS,
-                    token_counter=estimate_messages,
+                    # The summary model never sees shared files, so none
+                    # counts in full. trim_messages also counts reversed
+                    # lists, which have no window of their own.
+                    token_counter=partial(estimate_messages, window=frozenset()),
                     strategy="last",
                     allow_partial=True,
                 )
             )
         except Exception:
             # Upstream's fallback, so a trim error degrades the summary, not the turn.
-            return clipped[-_SUMMARY_FALLBACK_MESSAGES:]
+            trimmed = clipped[-_SUMMARY_FALLBACK_MESSAGES:]
+        return [_without_references(m) for m in trimmed]
 
     @staticmethod
     def _build_new_messages(summary: str) -> list[Any]:
@@ -655,8 +674,11 @@ def _edit_aware_token_counter() -> TokenCounter:
 
     def count(messages: Iterable[Any]) -> int:
         edited = deepcopy(list(messages))
+        # Shared files count by the window the model's view uses. The edits
+        # leave questions alone, so it is the same before them and after.
+        window = upload_window(edited)
         edit.apply(edited, count_tokens=count_tokens_approximately)
-        return estimate_messages(earlier_results_view(step_capped_view(edited)))
+        return estimate_messages(earlier_results_view(step_capped_view(edited)), window)
 
     return count
 
@@ -811,9 +833,13 @@ async def tool_calling_loop_node(  # noqa: PLR0915
             # Outside the budget, so its timeout notes pass through; it only adds
             # keys, so a preview it rewrites still reads as one.
             LocalTimesMiddleware(state.get("time_zone")),
-            # Innermost, so only a call that would really run is timed, and the
-            # model's last view of the thread is the one that says time is up.
+            # Innermost of the tool hooks, so only a call that would really run
+            # is timed, and the model's last view of the thread is the one that
+            # says time is up.
             budget,
+            # Inside the budget, which counts shared files by their references.
+            # It can't count the image blocks this puts in their place.
+            UploadsMiddleware(thread_id=state.get("session_id") or ""),
         ]
         agent = create_agent(
             model=llm,

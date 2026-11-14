@@ -28,6 +28,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from ..auth_tools import ToolIdentityClass, tool_identity_class
 from ..domains.capabilities import live_data_tool_names
 from ..stopped_replies import stopped_replies_view
+from .notes import with_note
 from .turn_budget import REPEATED_CALL_NOTE, is_served_repeat
 
 if TYPE_CHECKING:
@@ -146,9 +147,7 @@ def earlier_results_view(
         return messages
     if not marked:
         return view
-    if isinstance(view[latest].content, str):
-        note = f"{view[latest].content}\n\n{EARLIER_TURN_NOTE}"
-        view[latest] = view[latest].model_copy(update={"content": note})
+    view[latest] = with_note(view[latest], EARLIER_TURN_NOTE)
     return view
 
 

@@ -96,13 +96,14 @@ class TurnstileGuard:
             )
         self._last_eviction = now
 
-    def requires_challenge(self, session_id: str) -> bool:
+    def requires_challenge(self, session_id: str, *, require_verified: bool = False) -> bool:
         """Check whether this session must complete a Turnstile challenge.
 
         Returns False (allow) if:
         - Turnstile is disabled
         - Session is already verified and TTL has not expired
-        - Mode is deferred and free queries remain
+        - Mode is deferred and free queries remain, unless ``require_verified``
+          (an anonymous run that shares files is never one of the free queries)
         """
         if not settings.turnstile_enabled:
             return False
@@ -122,7 +123,7 @@ class TurnstileGuard:
             logger.info("Turnstile verification expired for session %s (counter reset)", session_id)
 
         # Deferred mode: allow free queries; immediate mode: challenge immediately
-        return not (
+        return require_verified or not (
             settings.TURNSTILE_MODE == "deferred"
             and session.query_count < settings.TURNSTILE_FREE_QUERIES
         )
@@ -246,9 +247,15 @@ async def check_turnstile(
     acting_user: str | None,
     session_id: str,
     token: str | None,
+    *,
+    require_verified: bool = False,
 ) -> JSONResponse | None:
     """Check Turnstile for an anonymous caller. Returns a challenge response, or
     None to proceed.
+
+    ``require_verified`` skips the free-query allowance, so only a verified
+    session proceeds; the challenge is the same one the allowance running out
+    returns.
 
     ``session_id`` is the key the guard tracks free-query counts and
     verification state under. Authed callers (``acting_user`` truthy) always
@@ -258,7 +265,7 @@ async def check_turnstile(
         return None
 
     guard = get_turnstile_guard()
-    if not guard.requires_challenge(session_id):
+    if not guard.requires_challenge(session_id, require_verified=require_verified):
         return None
 
     # Session needs verification — check if a token was provided

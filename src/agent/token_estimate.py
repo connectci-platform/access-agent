@@ -133,11 +133,24 @@ def clear_cache() -> None:
     _loaded = _failed_at = None
 
 
-def estimate_messages(messages: Iterable[BaseMessage]) -> int:
-    """Tokens these messages are at most expected to cost, calls included."""
+def estimate_messages(messages: Iterable[BaseMessage], window: frozenset[str] | None = None) -> int:
+    """Tokens these messages are at most expected to cost, calls and shared files
+    included.
+
+    A question's files count in full when its id is in ``window``, as the model
+    sees them, and as short notes when it isn't. Without a window, it is the
+    upload window of ``messages`` themselves (``upload_window``).
+    """
+    # Imported here: upload_window counts with this module.
+    from .upload_window import references_tokens, upload_window
+
+    messages = list(messages)
+    if window is None:
+        window = upload_window(messages)
     total = 0
     for message in messages:
         total += _PER_MESSAGE + estimate_text(message.text)
+        total += references_tokens(message, window)
         for call in getattr(message, "tool_calls", None) or []:
             total += estimate_text(json.dumps([call["name"], call["args"]], default=str))
     return total

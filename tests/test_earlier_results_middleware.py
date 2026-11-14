@@ -209,12 +209,12 @@ def test_a_rewritten_message_keeps_its_identity_fields():
     assert (rewritten.id, rewritten.name, rewritten.tool_call_id) == ("t-1", LIVE, REUSED_ID)
 
 
-def test_a_question_in_content_blocks_still_gets_the_rewrite_without_a_note():
+def test_a_question_in_content_blocks_gets_the_note_as_a_block():
     blocks = [{"type": "text", "text": "Any usage data?"}]
     view = earlier_results_view([*_earlier_turn(LIVE), HumanMessage(content=blocks)])
 
     assert view[2].content.startswith(EARLIER_RESULT_PREFIX)
-    assert view[-1].content == blocks
+    assert view[-1].content == [*blocks, {"type": "text", "text": EARLIER_TURN_NOTE}]
 
 
 def test_compaction_notes_from_an_earlier_turn_are_marked_as_old():

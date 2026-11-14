@@ -135,12 +135,14 @@ async def test_a_widget_turn_that_fails_keeps_its_partial_answer():
     saver = InMemorySaver()
     graph = create_checkpointed_graph(saver)
     config = {"configurable": {"thread_id": "s-cut"}}
-    await graph.aupdate_state(
-        config, {"messages": [HumanMessage("q", id="h")]}, as_node="suggest_follow_ups"
-    )
     meta = {"langgraph_node": ANSWER_MODEL_NODE}
+    asked: list[str] = []
 
-    async def fake_stream(**_kwargs):
+    async def fake_stream(**kwargs):
+        # As the graph saves the question, under the id the route gave it.
+        asked.append(kwargs["message_id"])
+        question = HumanMessage("q", id=kwargs["message_id"])
+        await graph.aupdate_state(config, {"messages": [question]}, as_node="suggest_follow_ups")
         yield "messages", (AIMessageChunk(content="Half ", id="r1"), meta)
         yield "messages", (AIMessageChunk(content="an answer", id="r1"), meta)
         raise RuntimeError("vLLM 500")
@@ -165,5 +167,5 @@ async def test_a_widget_turn_that_fails_keeps_its_partial_answer():
 
     assert any("agent_error" in line for line in lines)
     messages = (await graph.aget_state(config)).values["messages"]
-    assert [(m.id, m.content) for m in messages] == [("h", "q"), ("r1", "Half an answer")]
+    assert [(m.id, m.content) for m in messages] == [(asked[0], "q"), ("r1", "Half an answer")]
     assert messages[-1].response_metadata == {"stopped": True, "reason": "error"}

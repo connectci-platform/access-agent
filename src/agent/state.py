@@ -5,7 +5,7 @@ containing all state needed for query processing.
 """
 
 import operator
-from typing import Annotated, Any, Literal, TypedDict
+from typing import Annotated, Any, Literal, TypedDict, cast
 
 from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.graph.message import add_messages
@@ -195,6 +195,12 @@ class AgentState(TypedDict):
         "the route; tool results give event times in it. Each run overwrites it, "
         "None included, like profile.",
     ]
+    upload_label: Annotated[
+        str | None,
+        "What the turn's question shares, e.g. 'Shared Screenshot.png' or 'Shared 3 "
+        "files', or None when it shares no file. Stands in for an empty query in "
+        "titles and follow-ups. Each run overwrites it, None included, like profile.",
+    ]
 
     # Read by api/routes.py for response metadata; not written on the current path.
     query_classification: Annotated[QueryClassification | None, "Query type classification"]
@@ -250,14 +256,30 @@ class AgentState(TypedDict):
     ]
 
 
-def human_turn(query: str, confirm_ids: list[str] | None = None) -> HumanMessage:
+def human_turn(
+    query: str,
+    confirm_ids: list[str] | None = None,
+    *,
+    content: list[dict[str, Any]] | None = None,
+    message_id: str | None = None,
+) -> HumanMessage:
     """The turn's question, carrying any Confirm-click preview ids out of band.
 
     The ids ride in additional_kwargs, never content, so the model reads only
     the text and WriteGateMiddleware reads the ids from the latest human message.
+
+    ``content`` is the question's blocks when it shares files: its text, a
+    reference per stored upload, and notes on any left out. Without it the
+    content is ``query``, as every question was before uploads. ``message_id``
+    is the id the run route minted, so a stopped turn finds its question by id.
     """
     kwargs = {"confirm": list(confirm_ids)} if confirm_ids else {}
-    return HumanMessage(content=query, additional_kwargs=kwargs)
+    blocks = cast("list[str | dict[Any, Any]] | None", content)
+    return HumanMessage(
+        content=blocks if blocks is not None else query,
+        id=message_id,
+        additional_kwargs=kwargs,
+    )
 
 
 def create_initial_state(
@@ -269,6 +291,9 @@ def create_initial_state(
     profile: UserProfile | None = None,
     time_zone: str | None = None,
     confirm_ids: list[str] | None = None,
+    content_blocks: list[dict[str, Any]] | None = None,
+    message_id: str | None = None,
+    upload_label: str | None = None,
 ) -> AgentState:
     """Create the initial state for a new query.
 
@@ -282,6 +307,9 @@ def create_initial_state(
             Stored as a plain dict (model_dump()) — see AgentState.profile.
         time_zone: Optional IANA zone the user's times are given in.
         confirm_ids: Preview ids from a Confirm click, kept on the HumanMessage.
+        content_blocks: The question's blocks when it shares files (see human_turn).
+        message_id: The question's id, minted by the run route.
+        upload_label: What the question shares, for titles and follow-ups.
 
     Returns:
         An initialized AgentState ready for the graph.
@@ -289,7 +317,7 @@ def create_initial_state(
     return AgentState(
         # Conversation memory - add the user's query as a message
         # The add_messages reducer will accumulate this with previous messages
-        messages=[human_turn(query, confirm_ids)],
+        messages=[human_turn(query, confirm_ids, content=content_blocks, message_id=message_id)],
         # Inputs
         query=query,
         session_id=session_id,
@@ -298,6 +326,7 @@ def create_initial_state(
         resource_context=resource_context,
         profile=profile.model_dump() if profile else None,
         time_zone=time_zone,
+        upload_label=upload_label,
         # Read by consumers but not written on the current path — initialize empty/None.
         query_classification=None,
         rag_matches=[],

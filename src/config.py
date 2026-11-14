@@ -326,6 +326,50 @@ class Settings(BaseSettings):
     # judge before parsing.
     EVAL_JUDGE_THINKING: bool = False
 
+    # Chat uploads (D8-3086). Sizes are bytes. Anonymous users get tighter
+    # limits and must have passed Turnstile. The request body caps are in the
+    # Caddyfile: 32MB on the stream route, 1MB elsewhere.
+    UPLOAD_MAX_FILES: int = 5
+    UPLOAD_MAX_FILES_ANON: int = 2
+    UPLOAD_MAX_TOTAL_BYTES: int = 20 * 1024 * 1024
+    UPLOAD_MAX_TOTAL_BYTES_ANON: int = 8 * 1024 * 1024
+    UPLOAD_MAX_IMAGE_BYTES: int = 10 * 1024 * 1024
+    UPLOAD_MAX_IMAGE_BYTES_ANON: int = 5 * 1024 * 1024
+    UPLOAD_MAX_PDF_BYTES: int = 10 * 1024 * 1024
+    UPLOAD_MAX_PDF_BYTES_ANON: int = 5 * 1024 * 1024
+    UPLOAD_MAX_TEXT_BYTES: int = 200 * 1024
+    UPLOAD_MAX_TEXT_BYTES_ANON: int = 100 * 1024
+    UPLOAD_MAX_PIXELS: int = 25_000_000  # decoded, before any resize
+    UPLOAD_IMAGE_MAX_EDGE: int = 1600  # long edge after re-encoding
+    UPLOAD_PNG_MAX_BYTES: int = 2 * 1024 * 1024  # larger PNGs go out as JPEG at 0.9
+    UPLOAD_TEXT_MAX_CHARS: int = 40_000  # from one PDF or text file
+    UPLOAD_PDF_MAX_PAGES: int = 30
+    UPLOAD_PDF_TIMEOUT_S: int = 10
+    UPLOAD_PDF_RLIMIT_AS: int = 384 * 1024 * 1024
+    UPLOAD_IMAGE_TIMEOUT_S: int = 10
+    # A 25-million-pixel RGBA image is 100MB decoded, and converting it makes a copy.
+    UPLOAD_IMAGE_RLIMIT_AS: int = 512 * 1024 * 1024
+    UPLOAD_MESSAGE_MAX_TOKENS: int = 24_000  # one message's files, per model call
+    UPLOAD_DECODE_CONCURRENCY: int = 2  # across the whole agent
+    UPLOAD_DECODE_WAIT_S: int = 20  # the longest a file waits for a decode slot
+    UPLOAD_SHARE_TIMEOUT_S: int = 60  # a run's sweep and file storing, together
+    # Runs one caller may have storing new files at once, across their threads.
+    UPLOAD_MAX_INFLIGHT_PER_CALLER: int = 2
+    # Stored upload bytes per thread (the rows' JSON, so base64 and text).
+    UPLOAD_THREAD_MAX_BYTES: int = 100 * 1024 * 1024
+    UPLOAD_THREAD_MAX_BYTES_ANON: int = 30 * 1024 * 1024
+    UPLOAD_RETENTION_DAYS: int = 30
+    UPLOAD_WINDOW_TURNS: int = 2
+    # Content blocks in one message, checked before any is read. The client
+    # sends the text, at most five files and a Confirm click.
+    UPLOAD_MAX_BLOCKS: int = 50
+    # A run request's "{" and "[" together, counted on the raw body before it
+    # is parsed: 10 million empty blocks fit in 32MB and parse to about 650MB.
+    # Base64 has none; the headroom is for a long typed question holding JSON.
+    RUN_BODY_MAX_BRACKETS: int = 20_000
+    # Messages in a run request. The client sends only the new question.
+    RUN_MAX_MESSAGES: int = 50
+
     # Per-thread run turn bound (src/api/thread_runs.py run_with_timeout)
     # Bounded by check_agent_token_config (src/agent_token.py).
     AGENT_TURN_TIMEOUT_S: int = 120
