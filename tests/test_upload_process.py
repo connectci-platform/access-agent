@@ -10,7 +10,10 @@ import threading
 import pytest
 from PIL import Image
 
+from src.agent.upload_window import shown_in_full
+from src.api.thread_routes import _upload_payload
 from src.config import settings
+from src.tool_attachments import upload_reference
 from src.uploads import pdf_extract, process
 from src.uploads.process import Processed, Rejected, clean_filename, process_upload
 
@@ -402,3 +405,54 @@ def test_extract_stops_reading_pages_past_the_char_cap():
     assert result["pages"] == 3
     assert result["truncated"] is True
     assert result["text"] == ("A" * 60 + "\n" + "B" * 60)[:100]
+
+
+# A Slurm log: 40,000 characters of dense lines, which estimate past one
+# message's token cap before the character cap is reached.
+_SLURM_LOG = "".join(
+    f"[2026-11-12T08:{i % 60:02d}:{i % 60:02d}.{i:06d}] slurmstepd: task/cgroup: "
+    f"job {4100000 + i} step {i % 7} rss={i * 37}K vmem={i * 91}K\n"
+    for i in range(2000)
+)[:40_000]
+_CSV = "".join(
+    f"{i},{i * 3.14159:.5f},{i * 7919 % 100003},node{i % 512:03d}\n" for i in range(4000)
+)
+_HEX = "".join(f"{(i * 2654435761) % 2**32:08x}" for i in range(5000))
+_CJK = "资源分配作业调度计算节点超级计算机" * 2500
+
+
+@pytest.mark.parametrize("text", [_SLURM_LOG, _CSV, _HEX, _CJK], ids=["log", "csv", "hex", "cjk"])
+@pytest.mark.parametrize("name", ["slurm-4100000.out", "n" * 100])
+async def test_a_dense_text_file_alone_is_always_shown_in_full(text, name):
+    result = await process_upload("text", "text/plain", name, text.encode())
+
+    assert isinstance(result, Processed)
+    assert result.text_truncated is True
+    ref = upload_reference("a" * 32, _upload_payload(result))
+    assert shown_in_full([ref]) == [True]
+
+
+async def test_a_dense_file_is_cut_at_the_end_of_a_line():
+    result = await process_upload("text", "text/plain", "slurm.out", _SLURM_LOG.encode())
+
+    assert isinstance(result, Processed) and result.text is not None
+    assert _SLURM_LOG.startswith(result.text + "\n")
+    assert len(result.text) > 10_000
+
+
+async def test_a_dense_pdf_alone_is_always_shown_in_full():
+    pages = [_HEX[i : i + 1500] for i in range(0, 30_000, 1500)]
+    result = await process_upload("pdf", "application/pdf", "dump.pdf", _pdf(pages))
+
+    assert isinstance(result, Processed)
+    assert result.text_truncated is True
+    ref = upload_reference("a" * 32, _upload_payload(result))
+    assert shown_in_full([ref]) == [True]
+
+
+async def test_a_text_file_that_fits_is_not_cut():
+    result = await process_upload("text", "text/plain", "a.log", _SLURM_LOG[:2000].encode())
+
+    assert isinstance(result, Processed)
+    assert result.text == _SLURM_LOG[:2000]
+    assert result.text_truncated is False

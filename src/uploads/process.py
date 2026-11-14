@@ -16,6 +16,7 @@ from typing import Literal
 
 from PIL import Image
 
+from src.agent.upload_window import fit_file_text
 from src.config import settings
 
 # Pillow only offers a module-global pixel cap, so it is set once, here. Nothing
@@ -172,13 +173,14 @@ async def _process_pdf(name: str, data: bytes) -> Processed | Rejected:
         truncated = bool(result["truncated"])
     except (ValueError, KeyError, TypeError):
         return Rejected(name, "couldn't be read as a PDF")
+    text, cut = fit_file_text(name, text)
     return Processed(
         kind="pdf",
         name=name,
         mime_type="application/pdf",
         data=data,
         text=text,
-        text_truncated=truncated,
+        text_truncated=truncated or cut,
         no_text=not text.strip(),
         pages=pages,
     )
@@ -187,13 +189,12 @@ async def _process_pdf(name: str, data: bytes) -> Processed | Rejected:
 def _process_text(name: str, data: bytes) -> Processed | Rejected:
     if b"\x00" in data:
         return Rejected(name, "isn't a text file")
-    text = data.decode("utf-8", errors="replace")
-    limit = settings.UPLOAD_TEXT_MAX_CHARS
+    text, cut = fit_file_text(name, data.decode("utf-8", errors="replace"))
     return Processed(
         kind="text",
         name=name,
         mime_type="text/plain",
         data=data,
-        text=text[:limit],
-        text_truncated=len(text) > limit,
+        text=text,
+        text_truncated=cut,
     )

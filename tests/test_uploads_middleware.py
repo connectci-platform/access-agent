@@ -23,6 +23,7 @@ from src.agent.nodes import tool_calling_loop as loop_mod
 from src.agent.token_estimate import estimate_messages, estimate_text
 from src.agent.upload_window import (
     NO_MESSAGE_NOTE,
+    cut_note,
     earlier_note,
     file_block,
     left_out_note,
@@ -231,7 +232,7 @@ async def test_a_cut_file_says_where_it_was_cut(store, row):
     seen = await _model_sees(UploadsMiddleware(thread_id=THREAD), [question("q1", ref)])
 
     block = _texts(seen[0])[1]
-    assert "cut at 40,000 characters" in block
+    assert cut_note() in block
     assert block.endswith("</file>")
 
 

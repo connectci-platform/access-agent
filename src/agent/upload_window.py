@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any, TypeGuard
 from langchain_core.messages import HumanMessage
 
 from ..config import settings
-from .token_estimate import estimate_text
+from .token_estimate import estimate_text, prefix_within
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -133,13 +133,38 @@ def file_block(name: str, text: str) -> str:
 
 def cut_note() -> str:
     """The line ending a file whose text was cut for the model."""
-    return f"[The content was cut at {settings.UPLOAD_TEXT_MAX_CHARS:,} characters.]"
+    return "[The content was cut here: the file is longer than you can read at once.]"
 
 
 def _body_note_tokens() -> int:
     """The most a file's body adds beyond its text: the cut line, or the
     no-text body of a PDF with no text, never both."""
     return max(estimate_text(f"\n{cut_note()}"), estimate_text(NO_TEXT_BODY))
+
+
+def fit_file_text(name: str, text: str) -> tuple[str, bool]:
+    """A PDF's or text file's text as stored, and whether it was cut.
+
+    Cut to ``UPLOAD_TEXT_MAX_CHARS``, and so that the file shown in full, with
+    its wrapper and body note, costs at most ``UPLOAD_MESSAGE_MAX_TOKENS``: a
+    file alone in its message is always read. Dense text such as a log or a
+    CSV reaches the token cap well before the character cap. The cut falls at
+    the end of a line when one is in the kept text's second half.
+    """
+    limit = settings.UPLOAD_TEXT_MAX_CHARS
+    budget = (
+        settings.UPLOAD_MESSAGE_MAX_TOKENS
+        - estimate_text(file_block(name, ""))
+        - _body_note_tokens()
+    )
+    if len(text) <= limit and estimate_text(text) <= budget:
+        return text, False
+    kept = prefix_within(text[:limit], budget)
+    line_end = kept.rfind("\n")
+    if line_end >= len(kept) // 2:
+        kept = kept[:line_end]
+    # A shorter prefix can, rarely, count a token more; this keeps it in budget.
+    return prefix_within(kept, budget), True
 
 
 def _count(value: Any) -> TypeGuard[float]:
