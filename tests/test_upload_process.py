@@ -579,3 +579,32 @@ def test_decode_in_process_covers_each_outcome():
 
     assert _decoded(_png(Image.new("1", (9000, 9000)))) == {"refused": "pixels"}
     assert _decoded(b"%!PS-Adobe-3.0 EPSF-3.0\n") == {"refused": "unreadable"}
+
+
+def _rotated_jpeg() -> bytes:
+    """A 40x20 JPEG, left half red, whose EXIF says to turn it 90 degrees clockwise."""
+    im = Image.new("RGB", (40, 20), "blue")
+    im.paste((255, 0, 0), (0, 0, 20, 20))
+    exif = Image.Exif()
+    exif[0x0112] = 6  # Orientation: rotate 90 CW to display
+    out = io.BytesIO()
+    im.save(out, "JPEG", exif=exif, quality=95)
+    return out.getvalue()
+
+
+async def test_exif_orientation_is_applied_before_re_encoding():
+    result = await _image(_rotated_jpeg(), "phone.jpg")
+
+    assert (result.width, result.height) == (20, 40)
+    out = _open(result.data).convert("RGB")
+    assert out.size == (20, 40)
+    red, blue = out.getpixel((10, 5)), out.getpixel((10, 35))
+    assert red[0] > 200 and red[2] < 60  # the left half is now the top
+    assert blue[2] > 200 and blue[0] < 60
+    assert not out.getexif().get(0x0112)
+
+
+def test_decode_in_process_applies_exif_orientation():
+    result = _decoded(_rotated_jpeg())
+
+    assert (result["width"], result["height"]) == (20, 40)

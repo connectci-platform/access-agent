@@ -46,7 +46,7 @@ def _encode(im: Any, png_max_bytes: int) -> tuple[bytes, str]:
 
 
 def decode(data: bytes, max_pixels: int, max_edge: int, png_max_bytes: int) -> dict[str, Any]:
-    from PIL import Image  # after the memory limit is set
+    from PIL import Image, ImageOps  # after the memory limit is set
 
     # Pillow only warns between 1x and 2x its own cap and raises above 2x, so
     # the cap is enforced here, on the header size, before load().
@@ -60,6 +60,9 @@ def decode(data: bytes, max_pixels: int, max_edge: int, png_max_bytes: int) -> d
         # saves memory and time. Other formats ignore it.
         opened.draft("RGB", (max_edge, max_edge))
         opened.load()
+        # A phone photo is stored sideways with an EXIF note to turn it, which
+        # re-encoding drops, so it is turned here and measured after.
+        ImageOps.exif_transpose(opened, in_place=True)
         im = _flatten_to_8bit(opened)
         im.thumbnail((max_edge, max_edge))
         encoded, mime = _encode(im, png_max_bytes)
