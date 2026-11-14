@@ -76,17 +76,20 @@ async def _in_slot(
     name: str, work: Coroutine[Any, Any, Processed | Rejected]
 ) -> Processed | Rejected:
     """Run ``work`` in a decode slot, or refuse the file when none frees up
-    within ``UPLOAD_DECODE_WAIT_S``."""
+    within ``UPLOAD_DECODE_WAIT_S``. ``work`` is closed on every path, so a
+    file cancelled while it waits is never reported as unawaited."""
     try:
-        async with asyncio.timeout(settings.UPLOAD_DECODE_WAIT_S):
-            await _semaphore.acquire()
-    except TimeoutError:
-        work.close()
-        return Rejected(name, BUSY)
-    try:
-        return await work
+        try:
+            async with asyncio.timeout(settings.UPLOAD_DECODE_WAIT_S):
+                await _semaphore.acquire()
+        except TimeoutError:
+            return Rejected(name, BUSY)
+        try:
+            return await work
+        finally:
+            _semaphore.release()
     finally:
-        _semaphore.release()
+        work.close()
 
 
 class _ChildError(Exception):

@@ -624,3 +624,25 @@ async def test_a_file_waiting_too_long_for_a_slot_is_refused(monkeypatch, kind, 
     )
     process._semaphore.release()
     assert process._semaphore._value == 1  # the refused wait took no slot
+
+
+async def test_a_file_cancelled_while_waiting_for_a_slot_leaves_no_unawaited_work(monkeypatch):
+    monkeypatch.setattr(process, "_semaphore", asyncio.Semaphore(1))
+    await process._semaphore.acquire()  # someone else's decode
+    made = []
+    real = process._process_image
+
+    def _spy(name, data):
+        made.append(real(name, data))
+        return made[-1]
+
+    monkeypatch.setattr(process, "_process_image", _spy)
+    task = asyncio.create_task(process_upload("image", "", "a.png", b"x"))
+    await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert made[0].cr_frame is None  # closed, so never reported as unawaited
+    process._semaphore.release()
+    assert process._semaphore._value == 1
