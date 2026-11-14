@@ -306,7 +306,8 @@ async def suggest_follow_ups_node(
     if not context.thread_run:
         return {}
     answer = _answer_to_follow(state)
-    question = (state.get("query") or "").strip()
+    # An upload-only turn has no typed text; its label stands in as the question.
+    question = (state.get("query") or state.get("upload_label") or "").strip()
     if answer is None or not question:
         return {}
     timeout = _time_left()

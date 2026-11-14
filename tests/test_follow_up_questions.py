@@ -341,6 +341,27 @@ async def test_the_call_is_small_unstreamed_and_sees_the_turn(fake_llm):
     assert fu.SUGGESTION_TIMEOUT_S == 4.0
 
 
+async def test_an_upload_only_turn_uses_the_upload_label_as_the_question(fake_llm):
+    update = await _node(_state(query="", upload_label="screenshot.png"))
+
+    assert "suggested_questions" in update["messages"][0].additional_kwargs
+    ((messages, _),) = fake_llm.calls
+    assert "Question:\nscreenshot.png\n\n" in messages[-1].content
+
+
+async def test_typed_text_wins_over_the_upload_label(fake_llm):
+    await _node(_state(upload_label="screenshot.png"))
+
+    ((messages, _),) = fake_llm.calls
+    assert f"Question:\n{QUESTION}\n\n" in messages[-1].content
+    assert "screenshot.png" not in messages[-1].content
+
+
+async def test_no_text_and_no_label_changes_nothing(fake_llm):
+    assert await _node(_state(query="", upload_label=None)) == {}
+    assert fake_llm.calls == []
+
+
 async def test_list_content_answers_are_read_as_text(fake_llm):
     answer = AIMessage(
         content=[{"type": "text", "text": "Delta has "}, "A100s.", {"type": "image"}], id="a1"
