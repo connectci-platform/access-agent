@@ -44,6 +44,7 @@ from ..token_estimate import (
     estimate_tools,
     truncated_note,
 )
+from ..upload_window import ANSWER_NOW_SOURCE, upload_window
 
 logger = logging.getLogger(__name__)
 
@@ -182,14 +183,15 @@ def step_capped_view(messages: list[Any]) -> list[Any]:
     return view if cut else messages
 
 
-def fitted_view(messages: list[Any], limit: int) -> list[Any]:
+def fitted_view(messages: list[Any], limit: int, window: frozenset[str] | None = None) -> list[Any]:
     """The model's view cut to ``limit`` estimated tokens, the last line of defence.
 
     Tool results are cut, oldest first and the current turn's included, until
     the messages fit. Nothing is dropped or reordered, so every call keeps its
-    result. Returns ``messages`` itself when they already fit.
+    result. Returns ``messages`` itself when they already fit. Shared files
+    count by ``window``, the upload window of ``messages`` when it is None.
     """
-    over = estimate_messages(messages) - limit
+    over = estimate_messages(messages, window) - limit
     if over <= 0:
         return messages
     view = list(messages)
@@ -248,7 +250,8 @@ def _with_answer_note(messages: list[Any]) -> list[Any]:
     if isinstance(last, ToolMessage) and isinstance(last.content, str):
         noted = last.model_copy(update={"content": f"{last.content}\n\n{ANSWER_NOW_NOTE}"})
         return [*messages[:-1], noted]
-    return [*messages, HumanMessage(content=ANSWER_NOW_NOTE)]
+    note = HumanMessage(content=ANSWER_NOW_NOTE, additional_kwargs={"lc_source": ANSWER_NOW_SOURCE})
+    return [*messages, note]
 
 
 def call_key(name: str, args: dict[str, Any], tool: Any) -> str:
@@ -398,8 +401,12 @@ class TurnBudgetMiddleware(AgentMiddleware):
         last_call = self.out_of_time()
         tools: list[Any] = [] if last_call else list(request.tools)
         note = estimate_text(ANSWER_NOW_NOTE) + 8 if last_call else 0
+        # The same window the model's view of shared files uses (UploadsMiddleware).
+        window = upload_window(request.messages)
         messages = fitted_view(
-            step_capped_view(request.messages), self._room_for_messages(request, tools) - note
+            step_capped_view(request.messages),
+            self._room_for_messages(request, tools) - note,
+            window,
         )
         if last_call:
             self.deadline_hit = True
