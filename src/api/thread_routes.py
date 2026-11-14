@@ -13,7 +13,7 @@ import re
 import time
 import uuid
 from collections.abc import AsyncGenerator, Callable, Coroutine, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -215,6 +215,7 @@ async def _stream_run_events(
     message_id: str,
     checkpointer: Any,
     final_state: dict[str, Any],
+    caller_key: str,
     replace_stopped_turn: bool = False,
     **run: Any,
 ) -> AsyncGenerator[str, None]:
@@ -226,7 +227,7 @@ async def _stream_run_events(
     to the client as one ``upload_dropped`` event before the answer. The
     turn's ``upload_label`` goes into ``final_state`` for its report.
     """
-    shared = await _sweep_then_share(thread_id, checkpointer, parsed)
+    shared = await _sweep_then_share(thread_id, checkpointer, parsed, caller_key)
     final_state["upload_label"] = shared.label()
     if shared.notes or shared.not_read:
         dropped = bounded_notes(shared.notes + shared.not_read)
@@ -963,8 +964,27 @@ async def _sweep_attachments(thread_id: str, checkpointer: Any, keep: Iterable[s
         logger.warning("Couldn't sweep attachments on %s", thread_id, exc_info=True)
 
 
+# Share phases with new files running now, by caller (_caller_key). One
+# process serves the agent, so this count is all of them.
+_sharing: dict[str, int] = {}
+CALLER_BUSY = (
+    "wasn't read because files you shared in another conversation are still being read. "
+    "Try sharing it again in a moment"
+)
+
+
+def _caller_key(caller: str | None, claim_key: str | None, thread_id: str) -> str:
+    """Who a run's share phase counts against: the signed-in account, else the
+    browser's claim key, else the thread."""
+    if caller:
+        return f"user:{caller}"
+    if claim_key:
+        return f"key:{claim_key}"
+    return f"thread:{thread_id}"
+
+
 async def _sweep_then_share(
-    thread_id: str, checkpointer: Any, parsed: ParsedMessage
+    thread_id: str, checkpointer: Any, parsed: ParsedMessage, caller_key: str
 ) -> SharedFiles:
     """The sweep, then the message's files. In this order the sweep can't
     delete what this run stores, and it keeps the references the run resends.
@@ -972,10 +992,26 @@ async def _sweep_then_share(
     Both together have ``UPLOAD_SHARE_TIMEOUT_S``: files not stored by then
     are refused and the turn runs. The sweep itself is never cut short, since
     a delete still running after the files were stored could take them too.
+    A caller already running ``UPLOAD_MAX_INFLIGHT_PER_CALLER`` share phases
+    with new files, in other threads, has this message's new files refused.
     """
     deadline = asyncio.get_running_loop().time() + settings.UPLOAD_SHARE_TIMEOUT_S
-    await _sweep_attachments(thread_id, checkpointer, keep=parsed.ref_ids)
-    return await _share_files(thread_id, parsed, deadline)
+    if not parsed.uploads:
+        await _sweep_attachments(thread_id, checkpointer, keep=parsed.ref_ids)
+        return await _share_files(thread_id, parsed, deadline)
+    if _sharing.get(caller_key, 0) >= settings.UPLOAD_MAX_INFLIGHT_PER_CALLER:
+        refused = [f"{u.name} couldn't be shared: it {CALLER_BUSY}." for u in parsed.uploads]
+        parsed = replace(parsed, uploads=[], dropped=[*parsed.dropped, *refused])
+        await _sweep_attachments(thread_id, checkpointer, keep=parsed.ref_ids)
+        return await _share_files(thread_id, parsed, deadline)
+    _sharing[caller_key] = _sharing.get(caller_key, 0) + 1
+    try:
+        await _sweep_attachments(thread_id, checkpointer, keep=parsed.ref_ids)
+        return await _share_files(thread_id, parsed, deadline)
+    finally:
+        _sharing[caller_key] -= 1
+        if not _sharing[caller_key]:
+            del _sharing[caller_key]
 
 
 @dataclass
@@ -1105,6 +1141,7 @@ async def thread_run_stream(
                     time_zone=_time_zone_from(body.context),
                     checkpointer=getattr(raw_request.app.state, "checkpointer", None),
                     final_state=final_state,
+                    caller_key=_caller_key(caller, claim_key, thread_id),
                     replace_stopped_turn=(body.context or {}).get("replace_stopped_turn") is True,
                 ):
                     yield event

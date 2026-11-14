@@ -353,6 +353,8 @@ class Settings(BaseSettings):
     UPLOAD_DECODE_CONCURRENCY: int = 2  # across the whole agent
     UPLOAD_DECODE_WAIT_S: int = 20  # the longest a file waits for a decode slot
     UPLOAD_SHARE_TIMEOUT_S: int = 60  # a run's sweep and file storing, together
+    # Runs one caller may have storing new files at once, across their threads.
+    UPLOAD_MAX_INFLIGHT_PER_CALLER: int = 2
     UPLOAD_RETENTION_DAYS: int = 30
     UPLOAD_WINDOW_TURNS: int = 2
     # Content blocks in one message, checked before any is read. The client

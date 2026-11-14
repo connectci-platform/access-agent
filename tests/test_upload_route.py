@@ -840,7 +840,101 @@ async def test_the_sweep_counts_against_the_deadline(monkeypatch):
         uploads=[thread_routes.IncomingUpload("text", "text/plain", "a.txt", b"x")]
     )
 
-    shared = await _sweep_then_share("t-any", None, parsed)
+    shared = await _sweep_then_share("t-any", None, parsed, "user:me")
 
     assert shared.notes == ["a.txt couldn't be shared: it took too long to read."]
     assert shared.references == []
+
+
+# ---------------------------------------------------------------------------
+# One caller's share phases at once
+# ---------------------------------------------------------------------------
+
+
+def _upload(name: str) -> Any:
+    from src.api.thread_routes import IncomingUpload
+
+    return IncomingUpload("text", "text/plain", name, b"x")
+
+
+async def test_a_caller_past_the_in_flight_cap_has_its_files_refused(monkeypatch):
+    from src.api import thread_routes
+    from src.api.thread_routes import ParsedMessage, _sweep_then_share
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "UPLOAD_MAX_INFLIGHT_PER_CALLER", 1)
+    release = asyncio.Event()
+
+    async def _process(kind, mime_type, name, data):
+        if name == "a.txt":
+            await release.wait()
+        return Rejected(name, "x")
+
+    monkeypatch.setattr(thread_routes, "process_upload", _process)
+    first = asyncio.create_task(
+        _sweep_then_share("t-1", None, ParsedMessage(uploads=[_upload("a.txt")]), "user:me")
+    )
+    await asyncio.sleep(0.01)
+
+    other = await _sweep_then_share(
+        "t-2", None, ParsedMessage(uploads=[_upload("b.txt")]), "user:you"
+    )
+    refused = await _sweep_then_share(
+        "t-3", None, ParsedMessage(uploads=[_upload("c.txt")]), "user:me"
+    )
+    no_files = await _sweep_then_share("t-4", None, ParsedMessage(text="hi"), "user:me")
+
+    assert refused.notes == [f"c.txt couldn't be shared: it {thread_routes.CALLER_BUSY}."]
+    assert thread_routes.CALLER_BUSY == (
+        "wasn't read because files you shared in another conversation are still being "
+        "read. Try sharing it again in a moment"
+    )
+    assert other.notes == ["b.txt couldn't be shared: it x."]
+    assert no_files.notes == []
+    release.set()
+    await first
+    assert thread_routes._sharing == {}
+
+
+async def test_a_cancelled_share_phase_frees_its_place(monkeypatch):
+    from src.api import thread_routes
+    from src.api.thread_routes import ParsedMessage, _sweep_then_share
+
+    async def _process(kind, mime_type, name, data):
+        await asyncio.sleep(10)
+
+    monkeypatch.setattr(thread_routes, "process_upload", _process)
+    task = asyncio.create_task(
+        _sweep_then_share("t-1", None, ParsedMessage(uploads=[_upload("a.txt")]), "user:me")
+    )
+    await asyncio.sleep(0.01)
+    assert thread_routes._sharing == {"user:me": 1}
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert thread_routes._sharing == {}
+
+
+def test_a_caller_is_known_by_account_then_claim_key_then_thread():
+    from src.api.thread_routes import _caller_key
+
+    assert _caller_key("me@x", CLAIM_KEY, "t") == "user:me@x"
+    assert _caller_key(None, CLAIM_KEY, "t") == f"key:{CLAIM_KEY}"
+    assert _caller_key(None, None, "t") == "thread:t"
+
+
+async def test_the_route_counts_share_phases_by_caller(client, seen, monkeypatch, agent_tokens):
+    from src.api import thread_routes
+
+    keys: list[str] = []
+    real = thread_routes._sweep_then_share
+
+    async def _spy(thread_id, checkpointer, parsed, caller_key):
+        keys.append(caller_key)
+        return await real(thread_id, checkpointer, parsed, caller_key)
+
+    monkeypatch.setattr(thread_routes, "_sweep_then_share", _spy)
+    await _run(client, "t-who", [_text("x")], headers=agent_tokens.headers("me@x"))
+
+    assert keys == ["user:me@x"]
