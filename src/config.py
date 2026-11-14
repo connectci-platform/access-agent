@@ -350,6 +350,9 @@ class Settings(BaseSettings):
     UPLOAD_DECODE_CONCURRENCY: int = 2  # across the whole agent
     UPLOAD_RETENTION_DAYS: int = 30
     UPLOAD_WINDOW_TURNS: int = 2
+    # Content blocks in one message, checked before any is read. The client
+    # sends the text, at most five files and a Confirm click.
+    UPLOAD_MAX_BLOCKS: int = 50
 
     # Per-thread run turn bound (src/api/thread_runs.py run_with_timeout)
     # Bounded by check_agent_token_config (src/agent_token.py).

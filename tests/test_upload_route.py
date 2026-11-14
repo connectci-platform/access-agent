@@ -337,9 +337,9 @@ async def test_a_reference_from_another_thread_is_dropped_with_a_note(client, se
     ]
     r = await _run(client, "t-mine", content)
 
-    assert _dropped(r.text) == [[NOT_FOUND, NOT_FOUND]]
-    note = f"[Not shared: {NOT_FOUND}]"
-    assert seen[0]["content_blocks"] == [_text("look"), _text(f"{note}\n{note}")]
+    # The same sentence twice is said once.
+    assert _dropped(r.text) == [[NOT_FOUND]]
+    assert seen[0]["content_blocks"] == [_text("look"), _text(f"[Not shared: {NOT_FOUND}]")]
     assert seen[0]["query"] == "look"
     assert seen[0]["upload_label"] is None
 
@@ -728,3 +728,49 @@ async def test_a_stop_after_a_reused_id_saves_the_question_under_its_new_id():
     assert [m.content for m in messages] == ["q0", "a0", "again", ""]
     assert messages[0].id == old and messages[2].id not in (old, None)
     assert is_stopped(messages[-1])
+
+
+# ---------------------------------------------------------------------------
+# Bounded input: the block cap and the notes
+# ---------------------------------------------------------------------------
+
+
+async def test_a_message_with_too_many_blocks_is_refused_before_any_is_read(
+    client, seen, monkeypatch
+):
+    from src.config import settings
+
+    def _never(*_args, **_kwargs):
+        raise AssertionError("a block was read")
+
+    monkeypatch.setattr("src.api.thread_routes._shares_files", _never)
+    monkeypatch.setattr("src.api.thread_routes.parse_message", _never)
+    content = [{"type": "junk"}] * (settings.UPLOAD_MAX_BLOCKS + 1)
+    r = await _run(client, "t-flood", content)
+
+    assert r.status_code == 400
+    assert seen == []
+
+
+async def test_a_message_at_the_block_cap_runs(client, seen):
+    from src.config import settings
+
+    content = [_text("hi"), *([{"type": "junk"}] * (settings.UPLOAD_MAX_BLOCKS - 1))]
+    r = await _run(client, "t-at-cap", content)
+
+    assert r.status_code == 200
+    assert "event: values" in r.text
+
+
+async def test_the_notes_are_deduplicated_and_bounded(client, seen):
+    junk = [{"type": "junk", "metadata": {"name": f"f{i}.bin"}} for i in range(30)]
+    content = [_text("x"), *junk, *([{"type": "attachment", "id": "nope"}] * 5)]
+    r = await _run(client, "t-notes", content)
+
+    [dropped] = _dropped(r.text)
+    assert len(dropped) == 11
+    assert dropped[0] == "f0.bin was left out: that kind of file isn't supported."
+    assert dropped[-1] == "And 21 more."
+    note = seen[0]["content_blocks"][-1]["text"]
+    assert note.count("[Not shared: ") == 11
+    assert note.endswith("[Not shared: And 21 more.]")

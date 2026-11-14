@@ -229,7 +229,7 @@ async def _stream_run_events(
     shared = await _sweep_then_share(thread_id, checkpointer, parsed)
     final_state["upload_label"] = shared.label()
     if shared.notes or shared.not_read:
-        dropped = shared.notes + shared.not_read
+        dropped = bounded_notes(shared.notes + shared.not_read)
         yield format_sse_event("custom", {"type": "upload_dropped", "files": dropped})
     streamed: dict[str, AIMessageChunk] = {}
     tool_messages: list[Any] = []
@@ -598,7 +598,7 @@ class SharedFiles:
         blocks: list[dict[str, Any]] = [{"type": "text", "text": text}] if text else []
         blocks.extend(self.references)
         if self.notes:
-            notes = "\n".join(f"[Not shared: {note}]" for note in self.notes)
+            notes = "\n".join(f"[Not shared: {note}]" for note in bounded_notes(self.notes))
             blocks.append({"type": "text", "text": notes})
         return blocks
 
@@ -610,6 +610,18 @@ class SharedFiles:
         if len(self.references) == 1:
             return f"Shared {self.references[0]['name']}"
         return f"Shared {len(self.references)} files"
+
+
+_MAX_NOTES = 10
+
+
+def bounded_notes(notes: list[str]) -> list[str]:
+    """``notes`` without repeats, at most ``_MAX_NOTES`` of them and then one
+    sentence counting the rest."""
+    unique = list(dict.fromkeys(notes))
+    if len(unique) <= _MAX_NOTES:
+        return unique
+    return [*unique[:_MAX_NOTES], f"And {len(unique) - _MAX_NOTES} more."]
 
 
 def _upload_payload(upload: Processed) -> dict[str, Any]:
@@ -948,6 +960,9 @@ async def _read_turn(body: RunRequest, thread_id: str, caller: str | None) -> _T
     """
     message = _last_user_message(body.input.messages)
     content = message.get("content", "")
+    # Before anything walks the blocks: notes and work grow with their number.
+    if isinstance(content, list) and len(content) > settings.UPLOAD_MAX_BLOCKS:
+        return JSONResponse(status_code=400, content={"detail": "Too many parts in one message"})
     shares_files = _shares_files(content)
     challenge = await check_turnstile(
         caller,
