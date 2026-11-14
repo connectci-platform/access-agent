@@ -30,6 +30,7 @@ it goes to its own model call and never into a thread.
 from __future__ import annotations
 
 import math
+import re
 from typing import TYPE_CHECKING, Any, TypeGuard
 
 from langchain_core.messages import HumanMessage
@@ -126,9 +127,19 @@ def missing_note(ref: Mapping[str, Any]) -> str:
     return f"[File no longer available: {file_name(ref)}]"
 
 
+# Any "</file" in a file's content or name, in any case, which would close its
+# block early and let the rest read as the conversation.
+_CLOSER = re.compile(r"</(file)", re.IGNORECASE)
+
+
+def neutralize(text: str) -> str:
+    """``text`` with every ``</file`` written ``<\\/file``, so it can't close a block."""
+    return _CLOSER.sub(r"<\\/\1", text)
+
+
 def file_block(name: str, text: str) -> str:
     """A PDF's or text file's content as the model sees it."""
-    return f'<file name="{name}" note="{_FILE_NOTE}">\n{text}\n</file>'
+    return f'<file name="{neutralize(name)}" note="{_FILE_NOTE}">\n{neutralize(text)}\n</file>'
 
 
 def cut_note() -> str:
@@ -151,6 +162,8 @@ def fit_file_text(name: str, text: str) -> tuple[str, bool]:
     CSV reaches the token cap well before the character cap. The cut falls at
     the end of a line when one is in the kept text's second half.
     """
+    # Neutralized before it is measured, so the estimate counts what the model reads.
+    text = neutralize(text)
     limit = settings.UPLOAD_TEXT_MAX_CHARS
     budget = (
         settings.UPLOAD_MESSAGE_MAX_TOKENS
