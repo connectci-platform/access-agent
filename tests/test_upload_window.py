@@ -11,12 +11,15 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from src.agent.middleware.turn_budget import ANSWER_NOW_NOTE, _with_answer_note, fitted_view
 from src.agent.token_estimate import estimate_messages, estimate_text
 from src.agent.upload_window import (
+    NO_TEXT_BODY,
+    cut_note,
     earlier_note,
     file_block,
     missing_note,
     reference_tokens,
     references_tokens,
     shown_in_full,
+    too_large_note,
     upload_window,
 )
 from src.config import settings
@@ -143,7 +146,8 @@ def test_an_image_costs_its_pixels_over_1024():
 def test_a_text_or_pdf_reference_costs_its_estimate_and_its_wrapper():
     ref = text_file(500)
 
-    assert reference_tokens(ref) == 500 + estimate_text(file_block("run_md.sh", ""))
+    body_notes = max(estimate_text(f"\n{cut_note()}"), estimate_text(NO_TEXT_BODY))
+    assert reference_tokens(ref) == 500 + estimate_text(file_block("run_md.sh", "")) + body_notes
     pdf = {**ref, "kind": "pdf", "pages": 3}
     assert reference_tokens(pdf) == reference_tokens(ref)
 
@@ -206,7 +210,7 @@ def test_references_inside_the_window_cost_in_full_up_to_the_cap(monkeypatch):
 
     assert references_tokens(message, frozenset({"q1"})) == reference_tokens(
         refs[0]
-    ) + estimate_text(earlier_note(refs[1]))
+    ) + estimate_text(too_large_note(refs[1]))
 
 
 def test_references_outside_the_window_cost_their_notes():

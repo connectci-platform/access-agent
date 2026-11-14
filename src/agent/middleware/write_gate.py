@@ -24,6 +24,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ...pending_previews import ClaimStatus, get_pending_preview_store
 from ..auth_tools import ToolIdentityClass, tool_identity_class
+from .notes import with_note
 from .turn_budget import call_key
 
 if TYPE_CHECKING:
@@ -283,14 +284,6 @@ def _with_note(message: ToolMessage, note: str) -> ToolMessage:
     return message.model_copy(update={"content": f"{_text(message.content) or ''}\n\n{note}"})
 
 
-def _noted(message: HumanMessage, extra: str) -> HumanMessage:
-    if isinstance(message.content, str):
-        return message.model_copy(update={"content": f"{message.content}\n\n{extra}"})
-    return message.model_copy(
-        update={"content": [*message.content, {"type": "text", "text": extra}]}
-    )
-
-
 def _warn_if_not_executed(name: str, result: Any) -> None:
     """A confirmed replay that didn't write means the server and the stored
     preview disagree; the user clicked Confirm and nothing changed."""
@@ -407,7 +400,7 @@ class WriteGateMiddleware(AgentMiddleware):
             ):
                 note = TYPED_CONFIRM_NOTE
             if note is not None:
-                view[i] = _noted(message, note)
+                view[i] = with_note(message, note)
                 changed = True
             break
         if not changed:

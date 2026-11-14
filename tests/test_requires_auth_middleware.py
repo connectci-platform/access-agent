@@ -21,6 +21,7 @@ from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.runtime import Runtime
 
 from src.agent.middleware.requires_auth import (
+    SIGNED_IN_NOTE,
     RequiresAuthMiddleware,
     refusal_artifact,
     refusal_text,
@@ -367,12 +368,12 @@ def test_a_refusal_after_the_latest_request_adds_no_note():
     assert messages[0].content == "Again."
 
 
-def test_a_request_with_block_content_is_left_alone():
+def test_a_request_with_block_content_gets_the_note_as_a_block():
     latest = HumanMessage(content=[{"type": "text", "text": "Again."}])
 
     messages = _after_sign_in([_refused(), latest])
 
-    assert messages[1].content == latest.content
+    assert messages[1].content == [*latest.content, {"type": "text", "text": SIGNED_IN_NOTE}]
 
 
 async def test_the_model_call_gets_the_rewritten_messages():

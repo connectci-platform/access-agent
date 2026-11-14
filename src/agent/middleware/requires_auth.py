@@ -28,6 +28,7 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from ...config import settings
 from ..auth_tools import OPEN_TICKET_TOOLS, ToolIdentityClass, tool_identity_class
 from ..context import AgentContext, require_context
+from .notes import with_note
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -142,9 +143,8 @@ def signed_in_since(messages: list[Any], context: AgentContext) -> list[Any]:
     while last >= 0 and not isinstance(view[last], HumanMessage):
         last -= 1
     refused_before = any(_cleared_by_sign_in(m, context) for m in messages[: max(last, 0)])
-    if refused_before and isinstance(view[last].content, str):
-        note = f"{view[last].content}\n\n{SIGNED_IN_NOTE}"
-        view[last] = view[last].model_copy(update={"content": note})
+    if refused_before:
+        view[last] = with_note(view[last], SIGNED_IN_NOTE)
     return view
 
 
