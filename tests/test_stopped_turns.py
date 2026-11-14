@@ -242,7 +242,7 @@ async def _drive(events, saver, final_state=None, **kw):
         events,
         checkpointer=saver,
         thread_id="t",
-        question=Q,
+        question=kw.pop("question", None) or _q(),
         final_state=final_state if final_state is not None else {},
         streamed=streamed,
         **kw,
@@ -253,9 +253,10 @@ async def _drive(events, saver, final_state=None, **kw):
 
 async def test_a_failed_run_keeps_its_turn_marked_error():
     saver = InMemorySaver()
-    await _seed(saver, [HumanMessage(content="q", id="h")])
 
     async def _boom():
+        # As the graph saves the question when the run starts.
+        await _seed(saver, [_q()])
         yield 1
         raise RuntimeError("vLLM 500")
 
@@ -271,12 +272,12 @@ async def test_a_cancel_past_the_deadline_is_a_timeout(monkeypatch):
     import time
 
     saver = InMemorySaver()
-    await _seed(saver, [HumanMessage(content="q", id="h")])
     monkeypatch.setattr(
         stopped_turns, "get_turn_capture", lambda: {"turn_deadline": time.monotonic() - 1}
     )
 
     async def _cancelled():
+        await _seed(saver, [_q()])
         yield 1
         raise asyncio.CancelledError
 
@@ -290,12 +291,12 @@ async def test_a_cancel_before_the_deadline_is_a_stop(monkeypatch):
     import time
 
     saver = InMemorySaver()
-    await _seed(saver, [HumanMessage(content="q", id="h")])
     monkeypatch.setattr(
         stopped_turns, "get_turn_capture", lambda: {"turn_deadline": time.monotonic() + 60}
     )
 
     async def _cancelled():
+        await _seed(saver, [_q()])
         raise asyncio.CancelledError
         yield
 
@@ -506,3 +507,25 @@ async def test_without_tool_messages_sets_them_aside():
     out = [e async for e in without_tool_messages(kept, _events())]
     assert out == [("messages", 1), ("updates", 2)]
     assert kept == ["call", "result"]
+
+
+async def test_a_question_id_the_thread_already_holds_is_replaced_before_the_run():
+    saver = InMemorySaver()
+    await _seed(saver, [HumanMessage(content="old", id="h"), AIMessage(content="a", id="a0")])
+    question = _q("new", "h")
+    fresh = _q("new", "h-new")
+    seen: list[str | None] = []
+
+    async def _events():
+        seen.append(question.id)
+        yield 1
+
+    await _drive(_events(), saver, question=question)
+    await _drive(_events_fresh(fresh, seen), saver, question=fresh)
+    assert seen[0] not in ("h", None)
+    assert seen[1] == "h-new"
+
+
+async def _events_fresh(question, seen):
+    seen.append(question.id)
+    yield 1

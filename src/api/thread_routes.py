@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
-from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
@@ -241,7 +241,7 @@ async def _stream_run_events(
         query=parsed.text,
         confirm_ids=parsed.confirm_ids,
         content_blocks=content_blocks,
-        message_id=message_id,
+        question=question,
         upload_label=final_state["upload_label"],
         checkpointer=checkpointer,
         final_state=final_state,
@@ -278,7 +278,7 @@ async def _run_events(
     tool_messages: list[Any],
     confirm_ids: list[str],
     content_blocks: list[dict[str, Any]] | None,
-    message_id: str,
+    question: HumanMessage,
     upload_label: str | None,
 ) -> AsyncGenerator[str, None]:
     """The messages/custom/values SSE sequence for one run, mutating
@@ -312,7 +312,9 @@ async def _run_events(
             checkpointer=checkpointer,
             confirm_ids=confirm_ids,
             content_blocks=content_blocks,
-            message_id=message_id,
+            # Read as the run starts, after keeping_cut_off_turn has made sure
+            # the thread doesn't already hold it.
+            message_id=question.id,
             upload_label=upload_label,
         ),
     ):
@@ -565,7 +567,8 @@ def _last_user_content(messages: list[dict[str, Any]]) -> Any:
 def _message_id(message: dict[str, Any]) -> str:
     """The id the turn's question is saved under: the client's, when it is a
     UUID in canonical form, otherwise a new one. A stopped turn finds its
-    question by this id."""
+    question by this id. One the thread already holds is replaced once the run
+    reads the thread (stopped_turns.keeping_cut_off_turn)."""
     sent = message.get("id")
     if isinstance(sent, str):
         try:

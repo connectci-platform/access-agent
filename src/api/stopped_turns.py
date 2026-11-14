@@ -288,14 +288,24 @@ async def drop_unanswered_turn(checkpointer: Any, thread_id: str) -> None:
         await graph.aupdate_state(config, {"messages": removals}, as_node=_AS_NODE)
 
 
-async def _thread_end(checkpointer: Any, thread_id: str) -> Any:
-    """The id of the thread's last message as this run begins, or None."""
+async def _thread_end(checkpointer: Any, thread_id: str) -> tuple[Any, set[str]]:
+    """The id of the thread's last message as this run begins (None for an
+    empty thread), and the ids of all its messages."""
     if checkpointer is None:
-        return UNKNOWN_START
+        return UNKNOWN_START, set()
     graph = create_checkpointed_graph(checkpointer)
     state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
     messages = (state.values or {}).get("messages", [])
-    return messages[-1].id if messages else None
+    return (messages[-1].id if messages else None), {m.id for m in messages if m.id}
+
+
+def _ensure_new_id(question: HumanMessage, ids: set[str], thread_id: str) -> None:
+    """Give the question a fresh id when the client sent one the thread already
+    holds. add_messages would otherwise replace that message in place, say a
+    tool result, leaving its call unanswered and the question mid-thread."""
+    if question.id in ids:
+        logger.warning("Question id already in thread %s; using a new one", thread_id)
+        question.id = str(uuid.uuid4())
 
 
 def answer_delivered(final_state: dict[str, Any]) -> bool:
@@ -345,7 +355,10 @@ async def keeping_cut_off_turn(
 ) -> AsyncGenerator[T, None]:
     """``events``, one run's stream, keeping its turn in the thread when it ends
     before its answer was delivered. ``question`` is the HumanMessage the run
-    asks, with the id it was given (see human_turn). The caller fills
+    asks, with the id it was given (see human_turn). If the thread already
+    holds that id, it gets a new one here, before ``events`` is first read, so
+    an ``events`` that reads ``question.id`` when it starts asks under it. The
+    caller fills
     ``final_state`` and ``streamed`` (answer chunks by message id) and
     ``tool_messages`` (the "tool_messages" events stream_agent sends) as it
     reads the events.
@@ -376,7 +389,9 @@ async def keeping_cut_off_turn(
         if replace_stopped_turn:
             # Retry or Edit: the question asked again replaces its stopped turn.
             await drop_unanswered_turn(checkpointer, thread_id)
-        start = await _thread_end(checkpointer, thread_id)
+        start, ids = await _thread_end(checkpointer, thread_id)
+        # Before ``events`` starts, so the run asks under the final id.
+        _ensure_new_id(question, ids, thread_id)
         async for event in events:
             yield event
     except (asyncio.CancelledError, GeneratorExit):

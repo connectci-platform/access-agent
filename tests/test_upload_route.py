@@ -624,3 +624,80 @@ async def test_a_failed_cleanup_after_a_stop_is_logged_not_raised(monkeypatch, c
     done.set_result("a" * 32)
     await _discard("t-x", [done])
     assert "Couldn't delete the uploads of a stopped run" in caplog.text
+
+
+async def _ask_on_saved_thread(thread_id: str, msg_id: str, prior: list[Any]):
+    """Run a question on a saved thread; the fake saves it as the graph would."""
+    get_thread_owner_store().claim_thread(thread_id, "me@x")
+    saver = InMemorySaver()
+    graph = create_checkpointed_graph(saver)
+    config = {"configurable": {"thread_id": thread_id}}
+    await graph.aupdate_state(config, {"messages": prior}, as_node="suggest_follow_ups")
+    asked: list[str] = []
+
+    async def _fake(**kwargs):
+        asked.append(kwargs["message_id"])
+        question = human_turn(kwargs["query"], message_id=kwargs["message_id"])
+        await graph.aupdate_state(config, {"messages": [question]}, as_node="suggest_follow_ups")
+        yield "updates", {"tool_calling_loop": {"final_answer": "ok"}}
+
+    task, _ = await _start(thread_id, "next question", saver, _fake, msg_id=msg_id)
+    await task
+    return asked, (await graph.aget_state(config)).values["messages"]
+
+
+async def test_a_reused_message_id_gets_a_new_one_and_the_thread_is_kept():
+    from langchain_core.messages import ToolMessage
+
+    tool_id = str(uuid.uuid4())
+    call = AIMessage(
+        content="",
+        id="c-msg",
+        tool_calls=[{"name": "search_resources", "args": {}, "id": "c1", "type": "tool_call"}],
+    )
+    result = ToolMessage(content="found", tool_call_id="c1", name="search_resources", id=tool_id)
+    prior = [HumanMessage("q0", id="h0"), call, result, AIMessage("a0", id="a0")]
+
+    asked, messages = await _ask_on_saved_thread("t-reuse", tool_id, prior)
+
+    assert asked[0] != tool_id
+    assert str(uuid.UUID(asked[0])) == asked[0]
+    assert [m.id for m in messages] == ["h0", "c-msg", tool_id, "a0", asked[0]]
+    assert messages[2].content == "found"
+    assert messages[-1].content == "next question"
+
+
+async def test_a_fresh_message_id_is_kept_on_a_saved_thread():
+    mine = str(uuid.uuid4())
+    asked, messages = await _ask_on_saved_thread(
+        "t-fresh", mine, [HumanMessage("q0", id="h0"), AIMessage("a0", id="a0")]
+    )
+    assert asked == [mine]
+    assert [m.id for m in messages] == ["h0", "a0", mine]
+
+
+async def test_a_stop_after_a_reused_id_saves_the_question_under_its_new_id():
+    from src.api.stopped_turns import is_stopped
+
+    get_thread_owner_store().claim_thread("t-reuse-stop", "me@x")
+    saver = InMemorySaver()
+    graph = create_checkpointed_graph(saver)
+    config = {"configurable": {"thread_id": "t-reuse-stop"}}
+    old = str(uuid.uuid4())
+    prior = [HumanMessage("q0", id=old), AIMessage("a0", id="a0")]
+    await graph.aupdate_state(config, {"messages": prior}, as_node="suggest_follow_ups")
+    started = asyncio.Event()
+
+    async def _wait(**_kwargs):
+        started.set()
+        await asyncio.sleep(10)
+        yield "updates", {}
+
+    task, _ = await _start("t-reuse-stop", "again", saver, _wait, msg_id=old)
+    await started.wait()
+    await _cancel("t-reuse-stop", task)
+
+    messages = (await graph.aget_state(config)).values["messages"]
+    assert [m.content for m in messages] == ["q0", "a0", "again", ""]
+    assert messages[0].id == old and messages[2].id not in (old, None)
+    assert is_stopped(messages[-1])
