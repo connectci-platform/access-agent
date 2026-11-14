@@ -376,6 +376,8 @@ def _block_name(block: dict[str, Any]) -> str:
 def _upload_kind(block: dict[str, Any]) -> tuple[Literal["image", "pdf", "text"], str] | None:
     """The upload kind and declared mime type for an allow-listed block."""
     mime = block.get("mimeType")
+    if not isinstance(mime, str):
+        return None
     if block.get("type") == "image" and mime in _IMAGE_TYPES:
         return "image", mime
     if block.get("type") == "file" and mime == "application/pdf":
@@ -426,17 +428,31 @@ def _upload_limits(anonymous: bool) -> tuple[int, int, dict[str, int]]:
 
 
 def _over_message_limit(
-    taken: list[IncomingUpload], upload: IncomingUpload, max_files: int, max_total: int
+    parsed: ParsedMessage, upload: IncomingUpload, max_files: int, max_total: int
 ) -> str | None:
     """The sentence for why one more upload doesn't fit in this message, if it doesn't."""
-    if len(taken) >= max_files:
+    if len(parsed.uploads) + len(parsed.ref_ids) >= max_files:
         return f"{upload.name} was left out: at most {max_files} files per message."
-    if sum(len(u.data) for u in taken) + len(upload.data) > max_total:
+    if sum(len(u.data) for u in parsed.uploads) + len(upload.data) > max_total:
         return (
             f"{upload.name} was left out: files can total at most "
             f"{_size_label(max_total)} per message."
         )
     return None
+
+
+def _take_ref(parsed: ParsedMessage, ref: Any, max_files: int) -> None:
+    """Add a stored-attachment reference to the message, or note why it was left out."""
+    if not isinstance(ref, str) or not _REF_ID.fullmatch(ref):
+        parsed.dropped.append("A file shared earlier couldn't be found.")
+    elif ref in parsed.ref_ids:
+        return
+    elif len(parsed.uploads) + len(parsed.ref_ids) >= max_files:
+        parsed.dropped.append(
+            f"A file shared earlier was left out: at most {max_files} files per message."
+        )
+    else:
+        parsed.ref_ids.append(ref)
 
 
 def parse_message(content: Any, *, anonymous: bool) -> ParsedMessage:
@@ -456,26 +472,24 @@ def parse_message(content: Any, *, anonymous: bool) -> ParsedMessage:
     texts: list[str] = []
     for block in content:
         if not isinstance(block, dict):
+            parsed.dropped.append("Part of the message couldn't be read and was left out.")
             continue
         btype = block.get("type")
         if btype == "text":
             texts.append(block["text"] if isinstance(block.get("text"), str) else "")
         elif btype == "attachment":
-            ref = block.get("id")
-            if isinstance(ref, str) and _REF_ID.fullmatch(ref):
-                parsed.ref_ids.append(ref)
+            _take_ref(parsed, block.get("id"), max_files)
         elif btype != "confirm":
             result = _read_upload(block, kind_max)
             if isinstance(result, str):
                 parsed.dropped.append(result)
             else:
-                refusal = _over_message_limit(parsed.uploads, result, max_files, max_total)
+                refusal = _over_message_limit(parsed, result, max_files, max_total)
                 if refusal:
                     parsed.dropped.append(refusal)
                 else:
                     parsed.uploads.append(result)
     parsed.text = " ".join(t for t in texts if t)
-    parsed.ref_ids = list(dict.fromkeys(parsed.ref_ids))
     return parsed
 
 

@@ -65,7 +65,6 @@ def test_image_url_and_unknown_blocks_are_dropped():
             "metadata": {"name": "a.svg"},
         },
         {"type": "image", "mimeType": "image/png", "url": "http://example.com/x.png"},
-        "not a block",
     ]
     parsed = parse_message(content, anonymous=False)
     assert parsed.uploads == []
@@ -76,6 +75,34 @@ def test_image_url_and_unknown_blocks_are_dropped():
         "a.svg was left out: that kind of file isn't supported.",
         "a file was left out: that kind of file isn't supported.",
     ]
+
+
+def test_non_string_mime_types_are_dropped_not_raised():
+    content = [
+        {"type": "image", "mimeType": ["x"], "data": "AA=="},
+        {"type": "image", "mimeType": {"a": 1}, "data": "AA=="},
+        {"type": "file", "mimeType": ["application/pdf"], "data": "AA=="},
+        {"type": "file", "mimeType": None, "data": "AA=="},
+        {"type": ["image"], "mimeType": "image/png", "data": "AA=="},
+    ]
+    parsed = parse_message(content, anonymous=False)
+    assert parsed.uploads == []
+    assert len(parsed.dropped) == 5
+
+
+def test_extract_text_content_survives_malformed_blocks():
+    content = [
+        {"type": "text", "text": "typed"},
+        {"type": "image", "mimeType": ["x"], "data": "AA=="},
+        {"type": "file", "mimeType": {"a": 1}, "data": "AA=="},
+    ]
+    assert _extract_text_content(content) == "typed"
+
+
+def test_non_dict_blocks_are_noted():
+    parsed = parse_message(["nope", 3, {"type": "text", "text": "hi"}], anonymous=False)
+    assert parsed.text == "hi"
+    assert parsed.dropped == ["Part of the message couldn't be read and was left out."] * 2
 
 
 def test_names_are_cleaned_and_blank_names_fall_back():
@@ -171,7 +198,32 @@ def test_reference_ids_are_validated_and_deduplicated():
     ]
     parsed = parse_message(content, anonymous=False)
     assert parsed.ref_ids == [REF]
-    assert parsed.uploads == [] and parsed.dropped == []
+    assert parsed.uploads == []
+    assert parsed.dropped == ["A file shared earlier couldn't be found."] * 4
+
+
+def test_references_count_toward_the_file_limit_in_order():
+    other = "f" * 32
+    third = "e" * 32
+    content = [
+        {"type": "attachment", "id": REF},
+        {"type": "attachment", "id": other},
+        _image("new.png"),
+        {"type": "attachment", "id": third},
+    ]
+    parsed = parse_message(content, anonymous=True)
+    assert parsed.ref_ids == [REF, other]
+    assert parsed.uploads == []
+    assert parsed.dropped == [
+        "new.png was left out: at most 2 files per message.",
+        "A file shared earlier was left out: at most 2 files per message.",
+    ]
+
+
+def test_a_new_image_after_references_does_not_use_byte_budget():
+    content = [{"type": "attachment", "id": REF}, _image("new.png", b"x" * (5 * 1024 * 1024))]
+    parsed = parse_message(content, anonymous=True)
+    assert [u.name for u in parsed.uploads] == ["new.png"]
 
 
 def test_confirm_ids_are_still_extracted():
