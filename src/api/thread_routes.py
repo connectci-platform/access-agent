@@ -6,13 +6,16 @@ src/api/thread_access.py, which is where access is decided.
 """
 
 import asyncio
+import base64
 import gzip
 import logging
+import re
 import time
 import uuid
 from collections.abc import AsyncGenerator, Callable, Coroutine
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, HTTPException, Request
@@ -33,6 +36,7 @@ from ..config import settings
 from ..tool_attachments import get_tool_attachment_store, referenced_ids
 from ..turn_reporter import _hash_user, get_turn_reporter
 from ..turnstile import NOT_CHARGED, charge_query, check_turnstile
+from ..uploads.process import clean_filename
 from .answer_tokens import ANSWER_MODEL_NODE, is_answer_token
 from .handoff_tokens import (
     DEFAULT_TTL_SECONDS,
@@ -332,24 +336,156 @@ async def _run_events(
     yield format_sse_event("values", {"messages": final_messages})
 
 
+_REF_ID = re.compile(r"[0-9a-f]{32}")
+_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+
+
+@dataclass
+class IncomingUpload:
+    kind: Literal["image", "pdf", "text"]
+    mime_type: str
+    name: str
+    data: bytes
+
+
+@dataclass
+class ParsedMessage:
+    text: str = ""
+    uploads: list[IncomingUpload] = field(default_factory=list)
+    ref_ids: list[str] = field(default_factory=list)
+    confirm_ids: list[str] = field(default_factory=list)
+    dropped: list[str] = field(default_factory=list)
+
+
+def _size_label(nbytes: int) -> str:
+    if nbytes >= 1024 * 1024:
+        return f"{nbytes // (1024 * 1024)} MB"
+    return f"{nbytes // 1024} KB"
+
+
+def _block_name(block: dict[str, Any]) -> str:
+    meta = block.get("metadata")
+    if isinstance(meta, dict):
+        for key in ("name", "filename"):
+            value = meta.get(key)
+            if isinstance(value, str) and value.strip():
+                return clean_filename(value)
+    return "a file"
+
+
+def _upload_kind(block: dict[str, Any]) -> tuple[Literal["image", "pdf", "text"], str] | None:
+    """The upload kind and declared mime type for an allow-listed block."""
+    mime = block.get("mimeType")
+    if block.get("type") == "image" and mime in _IMAGE_TYPES:
+        return "image", mime
+    if block.get("type") == "file" and mime == "application/pdf":
+        return "pdf", mime
+    if block.get("type") == "file" and mime == "text/plain":
+        return "text", mime
+    return None
+
+
+_KIND_LABEL = {"image": "images", "pdf": "PDFs", "text": "text files"}
+
+
+def _read_upload(block: dict[str, Any], kind_max: dict[str, int]) -> IncomingUpload | str:
+    """Decode one image or file block, or return the sentence for why it was left out."""
+    name = _block_name(block)
+    found = _upload_kind(block)
+    data = block.get("data")
+    if found is None or not isinstance(data, str):
+        return f"{name} was left out: that kind of file isn't supported."
+    kind, mime = found
+    limit = kind_max[kind]
+    too_big = f"{name} was left out: {_KIND_LABEL[kind]} can be at most {_size_label(limit)}."
+    # Base64 is 4 characters per 3 bytes, so an oversized claim is refused before decoding.
+    if len(data) // 4 * 3 > limit + 3:
+        return too_big
+    try:
+        raw = base64.b64decode(data, validate=True)
+    except ValueError:
+        return f"{name} was left out: it couldn't be read."
+    if len(raw) > limit:
+        return too_big
+    return IncomingUpload(kind, mime, name, raw)
+
+
+def _upload_limits(anonymous: bool) -> tuple[int, int, dict[str, int]]:
+    """Files per message, total bytes per message, and bytes per file by kind."""
+    sfx = "_ANON" if anonymous else ""
+    kind_max = {
+        "image": getattr(settings, f"UPLOAD_MAX_IMAGE_BYTES{sfx}"),
+        "pdf": getattr(settings, f"UPLOAD_MAX_PDF_BYTES{sfx}"),
+        "text": getattr(settings, f"UPLOAD_MAX_TEXT_BYTES{sfx}"),
+    }
+    return (
+        getattr(settings, f"UPLOAD_MAX_FILES{sfx}"),
+        getattr(settings, f"UPLOAD_MAX_TOTAL_BYTES{sfx}"),
+        kind_max,
+    )
+
+
+def _over_message_limit(
+    taken: list[IncomingUpload], upload: IncomingUpload, max_files: int, max_total: int
+) -> str | None:
+    """The sentence for why one more upload doesn't fit in this message, if it doesn't."""
+    if len(taken) >= max_files:
+        return f"{upload.name} was left out: at most {max_files} files per message."
+    if sum(len(u.data) for u in taken) + len(upload.data) > max_total:
+        return (
+            f"{upload.name} was left out: files can total at most "
+            f"{_size_label(max_total)} per message."
+        )
+    return None
+
+
+def parse_message(content: Any, *, anonymous: bool) -> ParsedMessage:
+    """Split a run request's message content into typed parts.
+
+    Client input: nothing here raises. Blocks that are off the allow-list or
+    over a limit are left out and named in ``dropped``. Limits are checked on
+    the decoded byte length.
+    """
+    if isinstance(content, str):
+        return ParsedMessage(text=content)
+    if not isinstance(content, list):
+        return ParsedMessage()
+
+    max_files, max_total, kind_max = _upload_limits(anonymous)
+    parsed = ParsedMessage(confirm_ids=extract_confirm_ids(content))
+    texts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            texts.append(block["text"] if isinstance(block.get("text"), str) else "")
+        elif btype == "attachment":
+            ref = block.get("id")
+            if isinstance(ref, str) and _REF_ID.fullmatch(ref):
+                parsed.ref_ids.append(ref)
+        elif btype != "confirm":
+            result = _read_upload(block, kind_max)
+            if isinstance(result, str):
+                parsed.dropped.append(result)
+            else:
+                refusal = _over_message_limit(parsed.uploads, result, max_files, max_total)
+                if refusal:
+                    parsed.dropped.append(refusal)
+                else:
+                    parsed.uploads.append(result)
+    parsed.text = " ".join(t for t in texts if t)
+    parsed.ref_ids = list(dict.fromkeys(parsed.ref_ids))
+    return parsed
+
+
 def _extract_text_content(content: Any) -> str:
     """Render a message's ``content`` field as plain text.
 
-    Callers send content as either a plain string or a LangChain-style list of
-    content blocks (``[{"type": "text", "text": "..."}, ...]``). Join the text
-    of each text block; non-text blocks (images, etc.) are ignored. Anything
-    else (None, a dict, ...) yields "" rather than a stringified repr.
+    Callers send a plain string or a LangChain-style list of content blocks.
+    Only the text blocks count; anything else yields "".
     """
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = [
-            block.get("text", "")
-            for block in content
-            if isinstance(block, dict) and block.get("type") == "text"
-        ]
-        return " ".join(part for part in parts if part)
-    return ""
+    return parse_message(content, anonymous=True).text
 
 
 def extract_confirm_ids(content: Any) -> list[str]:
