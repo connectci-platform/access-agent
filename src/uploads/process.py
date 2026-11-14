@@ -13,9 +13,10 @@ import contextlib
 import json
 import re
 import sys
+from collections.abc import Coroutine
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from src.agent.upload_window import fit_file_text
 from src.config import settings
@@ -60,14 +61,32 @@ async def process_upload(
 ) -> Processed | Rejected:
     name = clean_filename(name)
     if kind == "image":
-        async with _semaphore:
-            return await _process_image(name, data)
+        return await _in_slot(name, _process_image(name, data))
     if kind == "pdf":
-        async with _semaphore:
-            return await _process_pdf(name, data)
+        return await _in_slot(name, _process_pdf(name, data))
     if kind == "text":
         return _process_text(name, data)
     return Rejected(name, "isn't a supported file type")
+
+
+BUSY = "wasn't read because the service is busy. Try sharing it again in a moment"
+
+
+async def _in_slot(
+    name: str, work: Coroutine[Any, Any, Processed | Rejected]
+) -> Processed | Rejected:
+    """Run ``work`` in a decode slot, or refuse the file when none frees up
+    within ``UPLOAD_DECODE_WAIT_S``."""
+    try:
+        async with asyncio.timeout(settings.UPLOAD_DECODE_WAIT_S):
+            await _semaphore.acquire()
+    except TimeoutError:
+        work.close()
+        return Rejected(name, BUSY)
+    try:
+        return await work
+    finally:
+        _semaphore.release()
 
 
 class _ChildError(Exception):

@@ -608,3 +608,19 @@ def test_decode_in_process_applies_exif_orientation():
     result = _decoded(_rotated_jpeg())
 
     assert (result["width"], result["height"]) == (20, 40)
+
+
+@pytest.mark.parametrize(("kind", "name"), [("image", "a.png"), ("pdf", "a.pdf")])
+async def test_a_file_waiting_too_long_for_a_slot_is_refused(monkeypatch, kind, name):
+    monkeypatch.setattr(process, "_semaphore", asyncio.Semaphore(1))
+    monkeypatch.setattr(settings, "UPLOAD_DECODE_WAIT_S", 0.05)
+    await process._semaphore.acquire()  # someone else's decode
+
+    result = await process_upload(kind, "", name, b"x")
+
+    assert result == Rejected(name, process.BUSY)
+    assert result.reason == (
+        "wasn't read because the service is busy. Try sharing it again in a moment"
+    )
+    process._semaphore.release()
+    assert process._semaphore._value == 1  # the refused wait took no slot
