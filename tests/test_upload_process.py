@@ -350,7 +350,15 @@ def test_image_decoder_runs_as_isolated_script():
     import subprocess
 
     done = subprocess.run(
-        [sys.executable, "-I", str(process.IMAGE_EXTRACT_PATH), "100", "1600", "1000000", "1"],
+        [
+            sys.executable,
+            "-I",
+            str(process.IMAGE_EXTRACT_PATH),
+            "100",
+            "1600",
+            "1000000",
+            str(settings.UPLOAD_IMAGE_RLIMIT_AS),
+        ],
         input=_png(Image.new("RGB", (20, 10), "red")),
         capture_output=True,
         check=True,
