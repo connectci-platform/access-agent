@@ -229,6 +229,8 @@ async def _stream_run_events(
     turn's ``upload_label`` goes into ``final_state`` for its report.
     """
     shared = await _sweep_then_share(thread_id, checkpointer, parsed, caller_key)
+    # Stored or refused, the files' bytes aren't needed for the rest of the run.
+    parsed.uploads.clear()
     final_state["upload_label"] = shared.label()
     if shared.notes or shared.not_read:
         dropped = bounded_notes(shared.notes + shared.not_read)
@@ -1028,6 +1030,26 @@ async def _sweep_then_share(
             del _sharing[caller_key]
 
 
+def _run_options(body: RunRequest, request: Request) -> dict[str, Any]:
+    """The run's settings from the request beyond its message. It also lets
+    go of the raw body and parsed JSON Starlette caches on the request, which
+    lives until the response ends: the route has read both."""
+    for cached in ("_body", "_json"):
+        request.__dict__.pop(cached, None)
+    # Client-supplied UI hint, not server state: LangGraph SDK convention puts
+    # per-run values under config.configurable; context is the newer top-level
+    # alternative. Absent on both → None (accepted context-loss, per spec).
+    cfg = (body.config or {}).get("configurable", {}) if body.config else {}
+    context = body.context or {}
+    return {
+        "resource_context": cfg.get("resource_context") or context.get("resource_context"),
+        # The browser's zone, for event times. See _time_zone_from.
+        "time_zone": _time_zone_from(body.context),
+        "replace_stopped_turn": context.get("replace_stopped_turn") is True,
+        "checkpointer": getattr(request.app.state, "checkpointer", None),
+    }
+
+
 @dataclass
 class _Turn:
     parsed: ParsedMessage
@@ -1098,11 +1120,11 @@ async def thread_run_stream(
         return turn
     query = turn.parsed.text
 
-    # Client-supplied UI hint, not server state: LangGraph SDK convention puts
-    # per-run values under config.configurable; context is the newer top-level
-    # alternative. Absent on both → None (accepted context-loss, per spec).
-    cfg = (body.config or {}).get("configurable", {}) if body.config else {}
-    resource_context = cfg.get("resource_context") or (body.context or {}).get("resource_context")
+    # The run below can wait minutes on the model. It must not keep the
+    # request's uploads alive that long: ``_gen`` reads none of ``body`` or
+    # ``raw_request``, only what is taken from them here, and the request's
+    # cached copies are let go.
+    options = _run_options(body, raw_request)
 
     # 3. + 4. Acquire the per-thread run lock in the handler so a busy thread is a
     #    real 409 status, not an event flushed after a 200.
@@ -1149,14 +1171,10 @@ async def thread_run_stream(
                     parsed=turn.parsed,
                     message_id=turn.message_id,
                     context=AgentContext.from_identity(identity, thread_run=True),
-                    resource_context=resource_context,
                     profile=profile,
-                    # The browser's zone, for event times. See _time_zone_from.
-                    time_zone=_time_zone_from(body.context),
-                    checkpointer=getattr(raw_request.app.state, "checkpointer", None),
                     final_state=final_state,
                     caller_key=_caller_key(caller, claim_key, thread_id),
-                    replace_stopped_turn=(body.context or {}).get("replace_stopped_turn") is True,
+                    **options,
                 ):
                     yield event
                 success = True

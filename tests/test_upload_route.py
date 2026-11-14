@@ -1011,3 +1011,38 @@ def test_upload_bytes_without_a_database_is_zero(monkeypatch):
 
     monkeypatch.setattr(ToolAttachmentStore, "_sessions", lambda self: None)
     assert get_tool_attachment_store().upload_bytes("t-a") == 0
+
+
+# ---------------------------------------------------------------------------
+# A running turn holds no upload bytes
+# ---------------------------------------------------------------------------
+
+
+async def test_a_running_turn_holds_no_upload_bytes(client, monkeypatch):
+    import gc
+
+    from src.api.thread_routes import IncomingUpload, RunRequest
+
+    raw = b"log line\n" * 10_000  # under the anonymous cap
+    block = _file("big.log", raw)
+    held: dict[str, Any] = {}
+
+    async def _fake(**_kwargs):
+        gc.collect()
+        objects = gc.get_objects()
+        held["requests"] = [o for o in objects if isinstance(o, RunRequest)]
+        held["uploads"] = [o for o in objects if isinstance(o, IncomingUpload)]
+        held["blocks"] = [
+            o
+            for o in objects
+            if isinstance(o, dict) and o is not block and o.get("data") == block["data"]
+        ]
+        yield "updates", {"tool_calling_loop": {"final_answer": "ok"}}
+
+    monkeypatch.setattr("src.api.thread_routes.stream_agent", _fake)
+    r = await _run(client, "t-mem", [_text("x"), block])
+
+    assert "event: values" in r.text
+    assert _dropped(r.text) == []
+    assert len(get_tool_attachment_store().ids_for("t-mem")) == 1  # it was shared
+    assert held == {"requests": [], "uploads": [], "blocks": []}
