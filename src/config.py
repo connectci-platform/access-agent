@@ -352,6 +352,7 @@ class Settings(BaseSettings):
     UPLOAD_MESSAGE_MAX_TOKENS: int = 24_000  # one message's files, per model call
     UPLOAD_DECODE_CONCURRENCY: int = 2  # across the whole agent
     UPLOAD_DECODE_WAIT_S: int = 20  # the longest a file waits for a decode slot
+    UPLOAD_SHARE_TIMEOUT_S: int = 60  # a run's sweep and file storing, together
     UPLOAD_RETENTION_DAYS: int = 30
     UPLOAD_WINDOW_TURNS: int = 2
     # Content blocks in one message, checked before any is read. The client

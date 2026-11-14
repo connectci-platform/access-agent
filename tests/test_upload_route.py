@@ -774,3 +774,73 @@ async def test_the_notes_are_deduplicated_and_bounded(client, seen):
     note = seen[0]["content_blocks"][-1]["text"]
     assert note.count("[Not shared: ") == 11
     assert note.endswith("[Not shared: And 21 more.]")
+
+
+# ---------------------------------------------------------------------------
+# The share phase's deadline
+# ---------------------------------------------------------------------------
+
+
+async def test_files_not_done_by_the_deadline_are_refused_and_the_turn_runs(
+    client, seen, monkeypatch
+):
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "UPLOAD_SHARE_TIMEOUT_S", 0.3)
+    finished: list[str] = []
+
+    async def _process(kind, mime_type, name, data):
+        if name == "slow.pdf":
+            await asyncio.sleep(10)
+            finished.append(name)
+        return Processed(kind="text", name=name, mime_type="text/plain", data=data, text="x")
+
+    monkeypatch.setattr("src.api.thread_routes.process_upload", _process)
+    content = [_text("x"), _file("fast.txt", b"x"), _file("slow.pdf", b"%PDF", "application/pdf")]
+    r = await _run(client, "t-late", content)
+
+    reason = "slow.pdf couldn't be shared: it took too long to read."
+    assert _dropped(r.text) == [[reason]]
+    [ref] = [b for b in seen[0]["content_blocks"] if b["type"] == "attachment"]
+    assert ref["name"] == "fast.txt"
+    assert get_tool_attachment_store().ids_for("t-late") == {ref["id"]}
+    assert finished == []
+
+
+async def test_a_file_whose_write_runs_past_the_deadline_is_deleted(client, seen, monkeypatch):
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "UPLOAD_SHARE_TIMEOUT_S", 0.2)
+    store = get_tool_attachment_store()
+    real_put = store.put
+
+    def _slow_put(thread_id, kind, payload):
+        time.sleep(0.5)
+        return real_put(thread_id, kind, payload)
+
+    monkeypatch.setattr(store, "put", _slow_put)
+    r = await _run(client, "t-slow-db", [_text("x"), _file("a.txt", b"x")])
+
+    assert _dropped(r.text) == [["a.txt couldn't be shared: it took too long to read."]]
+    assert store.ids_for("t-slow-db") == set()
+
+
+async def test_the_sweep_counts_against_the_deadline(monkeypatch):
+    from src.api import thread_routes
+    from src.api.thread_routes import ParsedMessage, _sweep_then_share
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "UPLOAD_SHARE_TIMEOUT_S", 0.1)
+
+    async def _slow_sweep(*_args, **_kwargs):
+        await asyncio.sleep(0.2)
+
+    monkeypatch.setattr(thread_routes, "_sweep_attachments", _slow_sweep)
+    parsed = ParsedMessage(
+        uploads=[thread_routes.IncomingUpload("text", "text/plain", "a.txt", b"x")]
+    )
+
+    shared = await _sweep_then_share("t-any", None, parsed)
+
+    assert shared.notes == ["a.txt couldn't be shared: it took too long to read."]
+    assert shared.references == []

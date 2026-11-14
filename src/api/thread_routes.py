@@ -12,7 +12,7 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import AsyncGenerator, Callable, Coroutine, Iterable
+from collections.abc import AsyncGenerator, Callable, Coroutine, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
@@ -426,6 +426,8 @@ def _upload_kind(block: dict[str, Any]) -> tuple[Literal["image", "pdf", "text"]
 
 _KIND_LABEL = {"image": "images", "pdf": "PDFs", "text": "text files"}
 REF_NOT_FOUND = "A file shared earlier couldn't be found."
+# Why a file not stored by the share phase's deadline was refused.
+LATE = "took too long to read"
 
 
 def _read_upload(block: dict[str, Any], kind_max: dict[str, int]) -> IncomingUpload | str:
@@ -656,13 +658,15 @@ def _upload_payload(upload: Processed) -> dict[str, Any]:
     }
 
 
-async def _share_files(thread_id: str, parsed: ParsedMessage) -> SharedFiles:
+async def _share_files(thread_id: str, parsed: ParsedMessage, deadline: float) -> SharedFiles:
     """Check the message's references and store its new uploads.
 
     A reference counts only when it names an upload stored for this thread,
     and its block is rebuilt from that row, never taken from the client. A
-    failure is a note, never an error. Cancelled, as a Stop during a slow PDF
-    is, it deletes what it had stored for the message before re-raising.
+    failure is a note, never an error. A file not stored by ``deadline``, on
+    the loop's clock, is refused with a note. Cancelled, as a Stop during a
+    slow PDF is, it deletes what it had stored for the message before
+    re-raising.
     """
     store = get_tool_attachment_store()
     shared = SharedFiles(notes=list(parsed.dropped))
@@ -674,12 +678,12 @@ async def _share_files(thread_id: str, parsed: ParsedMessage) -> SharedFiles:
             shared.references.append(upload_reference(ref_id, payload))
 
     # Files are processed side by side but written one at a time. Each write
-    # runs to the end even when the run is cancelled, so its id is known and
+    # runs to the end even when its file is cancelled, so its id is known and
     # the row can be deleted.
-    puts: list[asyncio.Future[str | None]] = []
+    puts: dict[int, asyncio.Future[str | None]] = {}
     writing = asyncio.Lock()
 
-    async def _share(upload: IncomingUpload) -> dict[str, Any] | str:
+    async def _share(index: int, upload: IncomingUpload) -> dict[str, Any] | str:
         result = await process_upload(upload.kind, upload.mime_type, upload.name, upload.data)
         if isinstance(result, Rejected):
             return f"{result.name} couldn't be shared: it {result.reason}."
@@ -688,18 +692,32 @@ async def _share_files(thread_id: str, parsed: ParsedMessage) -> SharedFiles:
             put = asyncio.ensure_future(
                 asyncio.to_thread(store.put, thread_id, UPLOAD_KIND, payload)
             )
-            puts.append(put)
+            puts[index] = put
             attachment_id = await asyncio.shield(put)
         if attachment_id is None:
             return f"{result.name} couldn't be shared: it couldn't be saved."
         return upload_reference(attachment_id, payload)
 
+    tasks = [asyncio.ensure_future(_share(i, u)) for i, u in enumerate(parsed.uploads)]
+    late: list[int] = []
     try:
-        results = await asyncio.gather(*(_share(u) for u in parsed.uploads))
+        if tasks:
+            remaining = max(deadline - asyncio.get_running_loop().time(), 0)
+            await asyncio.wait(tasks, timeout=remaining)
+        late = [i for i, task in enumerate(tasks) if not task.done()]
+        await _cancel_and_discard(
+            thread_id, [tasks[i] for i in late], [puts[i] for i in late if i in puts]
+        )
     except BaseException:
-        await asyncio.shield(asyncio.ensure_future(_discard(thread_id, puts)))
+        await asyncio.shield(
+            asyncio.ensure_future(_cancel_and_discard(thread_id, tasks, list(puts.values())))
+        )
         raise
-    for result in results:
+    for index, task in enumerate(tasks):
+        if index in late:
+            shared.notes.append(f"{parsed.uploads[index].name} couldn't be shared: it {LATE}.")
+            continue
+        result = task.result()
         if isinstance(result, str):
             shared.notes.append(result)
         else:
@@ -718,6 +736,18 @@ def not_read_note(ref: dict[str, Any]) -> str:
         f"{file_name(ref)} won't be read with this message: together the files are "
         "more than the assistant can read at once. Send it in its own message."
     )
+
+
+async def _cancel_and_discard(
+    thread_id: str,
+    tasks: Sequence[asyncio.Future[Any]],
+    puts: list[asyncio.Future[str | None]],
+) -> None:
+    """Cancel these files' work, wait for it to end, and delete what it stored."""
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    await _discard(thread_id, puts)
 
 
 async def _discard(thread_id: str, puts: list[asyncio.Future[str | None]]) -> None:
@@ -937,9 +967,15 @@ async def _sweep_then_share(
     thread_id: str, checkpointer: Any, parsed: ParsedMessage
 ) -> SharedFiles:
     """The sweep, then the message's files. In this order the sweep can't
-    delete what this run stores, and it keeps the references the run resends."""
+    delete what this run stores, and it keeps the references the run resends.
+
+    Both together have ``UPLOAD_SHARE_TIMEOUT_S``: files not stored by then
+    are refused and the turn runs. The sweep itself is never cut short, since
+    a delete still running after the files were stored could take them too.
+    """
+    deadline = asyncio.get_running_loop().time() + settings.UPLOAD_SHARE_TIMEOUT_S
     await _sweep_attachments(thread_id, checkpointer, keep=parsed.ref_ids)
-    return await _share_files(thread_id, parsed)
+    return await _share_files(thread_id, parsed, deadline)
 
 
 @dataclass
