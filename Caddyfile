@@ -21,6 +21,18 @@ access-agent.elytra.net qa.access-ci.org {
     @internal_catalog path /api/v1/catalog /api/v1/catalog/* /api/v1/tools /api/v1/tools/*
     respond @internal_catalog 404
 
+    # Request body caps. request_body directives stack and the smallest wins,
+    # so the two matchers are mutually exclusive. The stream route carries chat
+    # uploads: 20MB raw is about 27MB as base64, under 32MB.
+    @upload path /api/v1/threads/*/runs/stream
+    request_body @upload {
+        max_size 32MB
+    }
+    @other not path /api/v1/threads/*/runs/stream
+    request_body @other {
+        max_size 1MB
+    }
+
     # Proxy all requests to FastAPI backend
     reverse_proxy access-agent:8000 {
         flush_interval -1
