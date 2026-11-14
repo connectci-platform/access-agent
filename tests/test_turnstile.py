@@ -63,6 +63,20 @@ class TestTurnstileGuard:
         # 4th query should require challenge
         assert guard.requires_challenge(session_id) is True
 
+    def test_require_verified_skips_the_free_queries(self, guard, monkeypatch):
+        """An anonymous run that shares files is never one of the free queries."""
+        monkeypatch.setattr(settings, "TURNSTILE_MODE", "deferred")
+        monkeypatch.setattr(settings, "TURNSTILE_FREE_QUERIES", 3)
+        monkeypatch.setattr(settings, "TURNSTILE_SESSION_TTL", 3600)
+
+        assert guard.requires_challenge("files", require_verified=True) is True
+        assert guard.requires_challenge("files") is False
+        guard.mark_verified("files")
+        assert guard.requires_challenge("files", require_verified=True) is False
+
+    def test_require_verified_with_turnstile_off_never_challenges(self):
+        assert TurnstileGuard().requires_challenge("files", require_verified=True) is False
+
     def test_immediate_mode_challenges_first_query(self, guard, monkeypatch):
         """In immediate mode, the first query requires a challenge."""
         monkeypatch.setattr(settings, "TURNSTILE_MODE", "immediate")
@@ -324,6 +338,16 @@ class TestCheckTurnstile:
         monkeypatch.setattr(settings, "TURNSTILE_FREE_QUERIES", 3)
         result = await check_turnstile(None, "sess-2", None)
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_anon_caller_sharing_files_is_challenged_with_free_queries_left(
+        self, _enable_turnstile, monkeypatch
+    ):
+        monkeypatch.setattr(settings, "TURNSTILE_MODE", "deferred")
+        monkeypatch.setattr(settings, "TURNSTILE_FREE_QUERIES", 3)
+        result = await check_turnstile(None, "sess-files", None, require_verified=True)
+        assert result is not None
+        assert result.body == (b'{"requires_turnstile":true,"site_key":"test-site-key"}')
 
     @pytest.mark.asyncio
     async def test_anon_caller_requiring_challenge_with_no_token_is_challenged(

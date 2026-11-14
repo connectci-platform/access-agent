@@ -23,6 +23,14 @@ from src.api.stopped_turns import (
 CONFIG = {"configurable": {"thread_id": "t"}}
 
 
+def _q(text: str = "q", id: str = "h") -> HumanMessage:
+    """This run's question, with the id the route minted for it."""
+    return HumanMessage(content=text, id=id)
+
+
+Q = _q()
+
+
 def _stopped(text: str = "part", id: str = "a2") -> AIMessage:
     return AIMessage(content=text, id=id, response_metadata={"stopped": True})
 
@@ -50,7 +58,7 @@ def test_stopped_messages_follow_a_saved_question():
         "r2": AIMessageChunk(content="  ", id="r2"),
         "": AIMessageChunk(content="no id", id=None),
     }
-    out = stopped_messages(saved, "q", streamed)
+    out = stopped_messages(saved, Q, streamed)
     # A chunk with no id still keeps its text, under an id of its own.
     assert [m.content for m in out] == ["Here is", "no id"]
     assert out[0].id == "r1"
@@ -60,7 +68,7 @@ def test_stopped_messages_follow_a_saved_question():
 
 
 def test_stopped_messages_with_no_text_is_an_empty_stopped_answer():
-    out = stopped_messages([HumanMessage(content="q", id="h")], "q", {})
+    out = stopped_messages([HumanMessage(content="q", id="h")], Q, {})
     assert len(out) == 1
     assert out[0].content == ""
     assert is_stopped(out[0])
@@ -68,11 +76,25 @@ def test_stopped_messages_with_no_text_is_an_empty_stopped_answer():
 
 def test_stopped_messages_add_the_question_when_it_wasnt_saved():
     saved = [HumanMessage(content="old", id="h0"), AIMessage(content="old answer", id="a0")]
-    out = stopped_messages(saved, "new", {"r1": AIMessageChunk(content="x", id="r1")})
+    out = stopped_messages(saved, _q("new", "h1"), {"r1": AIMessageChunk(content="x", id="r1")})
     assert isinstance(out[0], HumanMessage)
-    assert out[0].content == "new"
+    assert (out[0].id, out[0].content) == ("h1", "new")
     assert out[1].id == "r1"
-    assert stopped_messages([], "new", {})[0].content == "new"
+    assert stopped_messages([], _q("new", "h1"), {})[0].content == "new"
+
+
+def test_a_question_with_files_is_rebuilt_with_its_blocks_and_id():
+    from src.agent.state import human_turn
+
+    blocks = [{"type": "attachment", "id": "a" * 32, "kind": "image", "name": "x.png"}]
+    question = human_turn("", ["c" * 32], content=blocks, message_id="m-1")
+    saved = [HumanMessage(content="old", id="h0"), AIMessage(content="a", id="a0")]
+    out = stopped_messages(saved, question, {"r1": AIMessageChunk(content="It", id="r1")})
+    assert (out[0].id, out[0].content) == ("m-1", blocks)
+    assert out[0].additional_kwargs == {"confirm": ["c" * 32]}
+    # Saved under its id, it isn't added again, whatever its text reads as.
+    again = stopped_messages([*saved, question], question, {})
+    assert len(again) == 1 and isinstance(again[0], AIMessage)
 
 
 def test_unanswered_turn():
@@ -88,7 +110,7 @@ def test_unanswered_turn():
 async def test_keep_stopped_turn_saves_the_partial_answer_after_the_question():
     saver = InMemorySaver()
     await _seed(saver, [HumanMessage(content="q", id="h")])
-    keep_stopped_turn(saver, "t", "q", {"r1": AIMessageChunk(content="Here is", id="r1")})
+    keep_stopped_turn(saver, "t", Q, {"r1": AIMessageChunk(content="Here is", id="r1")})
     await stopped_turn_saved("t")
     thread = await _thread(saver)
     assert [m.id for m in thread] == ["h", "r1"]
@@ -100,7 +122,7 @@ async def test_keep_stopped_turn_saves_the_partial_answer_after_the_question():
 
 
 async def test_keep_stopped_turn_without_a_checkpointer_does_nothing():
-    keep_stopped_turn(None, "t", "q", {})
+    keep_stopped_turn(None, "t", Q, {})
     assert "t" not in stopped_turns._pending
     await stopped_turn_saved("t")
 
@@ -110,7 +132,7 @@ async def test_a_failed_save_is_logged_not_raised(caplog):
         def __getattr__(self, name):
             raise RuntimeError("db down")
 
-    keep_stopped_turn(Broken(), "t", "q", {})
+    keep_stopped_turn(Broken(), "t", Q, {})
     await stopped_turn_saved("t")
     assert "Saving a stopped turn failed" in caplog.text
 
@@ -125,11 +147,11 @@ async def test_a_later_save_on_the_thread_stays_pending_when_an_earlier_one_ends
         await real(*args)
 
     stopped_turns._pending.clear()
-    keep_stopped_turn(saver, "t", "q", {})
+    keep_stopped_turn(saver, "t", Q, {})
     first = stopped_turns._pending["t"]
     stopped_turns._save = _slow  # type: ignore[assignment]
     try:
-        keep_stopped_turn(saver, "t", "q2", {})
+        keep_stopped_turn(saver, "t", _q("q2", "h2"), {})
         second = stopped_turns._pending["t"]
         await first
         assert stopped_turns._pending.get("t") is second
@@ -164,18 +186,19 @@ async def test_drop_unanswered_turn_keeps_an_answered_thread():
 
 
 def test_stopped_messages_carry_the_reason():
-    out = stopped_messages([HumanMessage(content="q", id="h")], "q", {}, "timeout")
+    out = stopped_messages([HumanMessage(content="q", id="h")], Q, {}, "timeout")
     assert out[0].response_metadata == {"stopped": True, "reason": "timeout"}
 
 
 def test_a_different_question_left_at_the_end_isnt_taken_for_this_one():
-    """A failed run before this fix left its question unanswered at the end."""
-    saved = [HumanMessage(content="old question", id="h0")]
-    out = stopped_messages(saved, "new question", {})
+    """A failed run left its question unanswered at the end. It is matched by
+    id, so the same words asked again are still a question of their own."""
+    saved = [HumanMessage(content="new question", id="h0")]
+    out = stopped_messages(saved, _q("new question", "h1"), {})
     assert isinstance(out[0], HumanMessage)
-    assert out[0].content == "new question"
-    # The same text is this run's question, saved when it started.
-    assert len(stopped_messages([HumanMessage(content=" q ", id="h")], "q", {})) == 1
+    assert out[0].id == "h1"
+    # This run's question, saved when it started.
+    assert len(stopped_messages([HumanMessage(content="other", id="h")], Q, {})) == 1
 
 
 async def test_waiting_for_a_save_is_bounded(caplog):
@@ -219,7 +242,7 @@ async def _drive(events, saver, final_state=None, **kw):
         events,
         checkpointer=saver,
         thread_id="t",
-        query="q",
+        question=Q,
         final_state=final_state if final_state is not None else {},
         streamed=streamed,
         **kw,
@@ -328,14 +351,15 @@ def test_still_this_turn():
     h0, a0 = HumanMessage(content="old", id="h0"), AIMessage(content="a", id="a0")
     q = HumanMessage(content="q", id="h1")
     later = [HumanMessage(content="q2", id="h2"), AIMessage(content="a2", id="a2")]
-    assert still_this_turn([h0, a0], "q", "a0")
-    assert still_this_turn([h0, a0, q], "q", "a0")
-    assert still_this_turn([], "q", None)
-    assert still_this_turn([q], "q", None)
-    assert not still_this_turn([h0, a0, q, *later], "q", "a0")
-    assert not still_this_turn([h0, a0, *later], "q", "a0")
-    assert not still_this_turn([HumanMessage(content="x", id="hx")], "q", "a0")
-    assert still_this_turn([h0, a0, *later], "q", UNKNOWN_START)
+    assert still_this_turn([h0, a0], q, "a0")
+    assert still_this_turn([h0, a0, q], q, "a0")
+    assert still_this_turn([], q, None)
+    assert still_this_turn([q], q, None)
+    assert not still_this_turn([h0, a0, q, *later], q, "a0")
+    assert not still_this_turn([h0, a0, *later], q, "a0")
+    assert not still_this_turn([HumanMessage(content="x", id="hx")], q, "a0")
+    assert not still_this_turn([h0, a0, HumanMessage(content="q", id="h9")], q, "a0")
+    assert still_this_turn([h0, a0, *later], q, UNKNOWN_START)
 
 
 async def test_a_late_save_after_the_next_run_is_skipped(caplog):
@@ -351,7 +375,10 @@ async def test_a_late_save_after_the_next_run_is_skipped(caplog):
             AIMessage(content="a2", id="a2"),
         ],
     )
-    keep_stopped_turn(saver, "t", "q", {"r1": AIMessageChunk(content="Half", id="r1")}, start="a0")
+    question = _q("q", "h1")
+    keep_stopped_turn(
+        saver, "t", question, {"r1": AIMessageChunk(content="Half", id="r1")}, start="a0"
+    )
     await stopped_turn_saved("t")
     assert [m.id for m in await _thread(saver)] == ["h0", "a0", "h1", "h2", "a2"]
     assert "a later run has written the thread" in caplog.text
@@ -455,14 +482,14 @@ def test_stopped_messages_put_the_writes_before_the_stopped_text():
         "r2": AIMessageChunk(content="Done, it is", id="r2"),
     }
     saved = [HumanMessage(content="q", id="h")]
-    out = stopped_messages(saved, "q", streamed, "user", [call, result])
+    out = stopped_messages(saved, Q, streamed, "user", [call, result])
     assert [m.id for m in out[:2]] == [call.id, result.id]
     assert out[1].tool_call_id == "c2"
     # The call's own text isn't repeated as stopped text.
     assert [(m.id, m.content) for m in out[2:]] == [("r2", "Done, it is")]
     assert is_stopped(out[-1]) and not is_stopped(out[0])
     # With the question not yet saved, it comes first.
-    out = stopped_messages([], "q", {}, "user", [call, result])
+    out = stopped_messages([], Q, {}, "user", [call, result])
     assert isinstance(out[0], HumanMessage)
     assert out[1].tool_calls
 

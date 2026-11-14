@@ -1789,13 +1789,14 @@ async def test_stop_mid_answer_saves_the_partial_answer_as_stopped(bearer_for, s
     saver = InMemorySaver()
     graph = create_checkpointed_graph(saver)
     config = {"configurable": {"thread_id": "t-stop"}}
-    # As the graph saves it when the run starts.
-    await graph.aupdate_state(
-        config, {"messages": [HumanMessage("hi", id="h")]}, as_node="suggest_follow_ups"
-    )
     streaming = asyncio.Event()
+    asked: list[str] = []
 
-    async def _part_then_wait(**_kwargs):
+    async def _part_then_wait(**kwargs):
+        # As the graph saves the question when the run starts, under its id.
+        asked.append(kwargs["message_id"])
+        question = HumanMessage("hi", id=kwargs["message_id"])
+        await graph.aupdate_state(config, {"messages": [question]}, as_node="suggest_follow_ups")
         yield (
             "messages",
             (AIMessageChunk(content="Half an", id="r1"), {"langgraph_node": "model"}),
@@ -1826,7 +1827,7 @@ async def test_stop_mid_answer_saves_the_partial_answer_as_stopped(bearer_for, s
 
     assert any('event: error\ndata: {"error": "cancelled"}' in c for c in collected)
     messages = (await graph.aget_state(config)).values["messages"]
-    assert [(m.id, m.content) for m in messages] == [("h", "hi"), ("r1", "Half an")]
+    assert [(m.id, m.content) for m in messages] == [(asked[0], "hi"), ("r1", "Half an")]
     assert is_stopped(messages[-1])
 
 
@@ -1933,11 +1934,10 @@ async def test_stop_after_a_write_keeps_the_write_for_retry(bearer_for, seed_own
     result = ToolMessage(content="created", tool_call_id="c1", name="create_announcement", id="t1")
     wrote = asyncio.Event()
 
-    async def _write_then_wait(**_kwargs):
-        # As the graph saves the question when the run starts.
-        await graph.aupdate_state(
-            config, {"messages": [HumanMessage("post it", id="h")]}, as_node="suggest_follow_ups"
-        )
+    async def _write_then_wait(**kwargs):
+        # As the graph saves the question when the run starts, under its id.
+        question = HumanMessage("post it", id=kwargs["message_id"])
+        await graph.aupdate_state(config, {"messages": [question]}, as_node="suggest_follow_ups")
         yield "tool_messages", [call, result]
         wrote.set()
         await asyncio.sleep(10)
@@ -1964,5 +1964,6 @@ async def test_stop_after_a_write_keeps_the_write_for_retry(bearer_for, seed_own
     await stopped_turn_saved("t-write")
 
     messages = (await graph.aget_state(config)).values["messages"]
-    assert [m.id for m in messages[:3]] == ["h", "m1", "t1"]
+    assert len(messages) == 4 and isinstance(messages[0], HumanMessage)
+    assert [m.id for m in messages[1:3]] == ["m1", "t1"]
     assert messages[3].response_metadata["stopped"] is True

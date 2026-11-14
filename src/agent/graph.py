@@ -55,8 +55,14 @@ def _new_builder() -> _Builder:
 
 
 def _route_turn(state: AgentState) -> str:
-    """Send a capability question to the registry, everything else to the loop."""
-    if is_capability_question(state.get("query") or ""):
+    """Send a capability question to the registry, everything else to the loop.
+
+    A question with list content shares files (or says why some were left
+    out), which only the model can read, so it always goes to the loop.
+    """
+    messages = state.get("messages") or []
+    shares_files = bool(messages) and isinstance(getattr(messages[-1], "content", None), list)
+    if not shares_files and is_capability_question(state.get("query") or ""):
         return "capability_discovery"
     return "tool_calling_loop"
 
@@ -303,8 +309,15 @@ async def stream_agent(
     use_checkpointing: bool = False,
     db_uri: str | None = None,
     confirm_ids: list[str] | None = None,
+    content_blocks: list[dict[str, Any]] | None = None,
+    message_id: str | None = None,
+    upload_label: str | None = None,
 ) -> AsyncGenerator[tuple[str, Any], None]:
     """Stream agent execution, yielding events as they occur.
+
+    ``content_blocks``, ``message_id`` and ``upload_label`` are the thread run
+    route's: the question's blocks when it shares files, its minted id, and
+    its label (see create_initial_state). Omitted, the question is ``query``.
 
     Yields ``(stream_type, data)`` tuples where ``stream_type`` is one of:
       - ``"custom"``: Status messages from nodes via ``get_stream_writer()``
@@ -313,7 +326,7 @@ async def stream_agent(
         (nested updates are dropped, see ``_flatten_subgraph_events``)
       - ``"tool_messages"``: the model's tool calls and their results, as they happen
     """
-    from .state import create_initial_state, human_turn
+    from .state import create_initial_state
 
     tracer = get_tracer("access-agent")
 
@@ -335,7 +348,12 @@ async def stream_agent(
             profile=profile,
             time_zone=time_zone,
             confirm_ids=confirm_ids,
+            content_blocks=content_blocks,
+            message_id=message_id,
+            upload_label=upload_label,
         )
+        # The turn's question, the same message on every path below.
+        question = initial_state["messages"][-1]
 
         stream_mode = ["custom", "messages", "updates"]
 
@@ -346,7 +364,7 @@ async def stream_agent(
             previous_state = await graph.aget_state(config)
             if previous_state.values:
                 existing_messages = previous_state.values.get("messages", [])
-                initial_state["messages"] = [*existing_messages, human_turn(query, confirm_ids)]
+                initial_state["messages"] = [*existing_messages, question]
                 logger.info(
                     f"Resuming conversation with {len(existing_messages)} previous messages"
                 )
@@ -366,7 +384,7 @@ async def stream_agent(
                 previous_state = await graph.aget_state(config)
                 if previous_state.values:
                     existing_messages = previous_state.values.get("messages", [])
-                    initial_state["messages"] = [*existing_messages, human_turn(query, confirm_ids)]
+                    initial_state["messages"] = [*existing_messages, question]
                     logger.info(
                         f"Resuming conversation with {len(existing_messages)} previous messages"
                     )

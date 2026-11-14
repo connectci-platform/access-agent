@@ -22,6 +22,10 @@ messages no longer refer to (``keep_only``). That one rule covers a turn that
 was stopped and replaced, retried or edited, and one that compaction folded
 into a summary, along with any path added later.
 
+Files a user shares in chat (D8-3086) are stored here too, as kind
+``upload``. The question keeps only ``upload_reference``'s small block, and
+uploads are deleted after ``UPLOAD_RETENTION_DAYS`` whatever refers to them.
+
 The table has its own metadata, created on first use, so a failure to make it
 (a permissions error, say) can only lose tables: the thread-owner tables, and
 every access check that reads them, never depend on it. It shares the owner
@@ -52,6 +56,8 @@ logger = logging.getLogger(__name__)
 # structuredContent keys stored here; anything else stays on the message.
 STORED_KINDS = ("table",)
 REF_SUFFIX = "_ref"
+# A file the user shared in chat, referenced from the question's content.
+UPLOAD_KIND = "upload"
 
 
 AttachmentBase = declarative_base()
@@ -75,10 +81,53 @@ def reference_for(kind: str, attachment_id: str, payload: dict[str, Any]) -> dic
     return ref
 
 
+def _decoded_size(b64: str) -> int:
+    """The byte length base64 text decodes to, without decoding it."""
+    return len(b64) * 3 // 4 - b64[-2:].count("=")
+
+
+def upload_reference(attachment_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """The block a question carries for a stored upload, built only from the
+    stored payload: never the file's bytes or text, only what the client shows
+    and the model's window needs to plan with."""
+    # Imported here: src.agent imports this module through its tools.
+    from .agent.token_estimate import estimate_text
+
+    ref: dict[str, Any] = {
+        "type": "attachment",
+        "id": attachment_id,
+        "kind": payload["kind"],
+        "name": payload["name"],
+    }
+    if payload["kind"] == "image":
+        ref.update(mime_type=payload["mime_type"], width=payload["width"], height=payload["height"])
+        return ref
+    ref["size"] = _decoded_size(payload["base64"])
+    if payload["kind"] == "pdf":
+        ref["pages"] = payload["pages"]
+    ref["est_tokens"] = estimate_text(payload["text"])
+    return ref
+
+
+def _content_ids(content: Any) -> set[str]:
+    """Ids of the ``attachment`` blocks in a message's list content."""
+    if not isinstance(content, list):
+        return set()
+    return {
+        block["id"]
+        for block in content
+        if isinstance(block, dict)
+        and block.get("type") == "attachment"
+        and isinstance(block.get("id"), str)
+    }
+
+
 def referenced_ids(messages: Iterable[Any]) -> set[str]:
-    """The stored attachment ids a thread's messages still refer to."""
+    """The stored attachment ids a thread's messages still refer to: tool
+    tables in artifacts, and uploads in message content."""
     ids: set[str] = set()
     for message in messages:
+        ids |= _content_ids(getattr(message, "content", None))
         artifact = getattr(message, "artifact", None)
         content = artifact.get("structured_content") if isinstance(artifact, dict) else None
         if not isinstance(content, dict):
@@ -150,6 +199,26 @@ class ToolAttachmentStore:
             logger.warning("couldn't read an attachment", exc_info=True)
             return None
 
+    def get_payload(self, thread_id: str, attachment_id: str) -> dict[str, Any] | None:
+        """A stored upload's payload, only when it is an upload of this thread.
+        A database error reads as not found, as in ``get``."""
+        try:
+            sessions = self._sessions()
+            if sessions is None:
+                return None
+            with sessions() as session:
+                text = session.execute(
+                    select(ToolAttachmentRow.payload).where(
+                        ToolAttachmentRow.id == attachment_id,
+                        ToolAttachmentRow.thread_id == thread_id,
+                        ToolAttachmentRow.kind == UPLOAD_KIND,
+                    )
+                ).scalar_one_or_none()
+            return json.loads(text) if text is not None else None
+        except Exception:
+            logger.warning("couldn't read an upload", exc_info=True)
+            return None
+
     def ids_for(self, thread_id: str) -> set[str]:
         """This thread's stored ids; none on a database error, so the cleanup skips."""
         try:
@@ -175,6 +244,34 @@ class ToolAttachmentStore:
             if keep:
                 statement = statement.where(ToolAttachmentRow.id.not_in(keep))
             result = session.execute(statement)
+            return int(getattr(result, "rowcount", 0) or 0)
+
+    def delete_ids(self, thread_id: str, ids: set[str]) -> int:
+        """Delete these of this thread's attachments. Returns how many went."""
+        sessions = self._sessions()
+        if sessions is None or not ids:
+            return 0
+        with sessions() as session, session.begin():
+            result = session.execute(
+                delete(ToolAttachmentRow).where(
+                    ToolAttachmentRow.thread_id == thread_id, ToolAttachmentRow.id.in_(ids)
+                )
+            )
+            return int(getattr(result, "rowcount", 0) or 0)
+
+    def delete_expired_uploads(self, older_than: datetime) -> int:
+        """Delete every thread's uploads stored before ``older_than``. Other
+        kinds stay until no message refers to them. Returns how many went."""
+        sessions = self._sessions()
+        if sessions is None:
+            return 0
+        with sessions() as session, session.begin():
+            result = session.execute(
+                delete(ToolAttachmentRow).where(
+                    ToolAttachmentRow.kind == UPLOAD_KIND,
+                    ToolAttachmentRow.created_at < older_than,  # type: ignore[arg-type]
+                )
+            )
             return int(getattr(result, "rowcount", 0) or 0)
 
 

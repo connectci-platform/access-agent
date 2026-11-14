@@ -62,6 +62,9 @@ class TurnReport(TurnReportBase):  # type: ignore[valid-type,misc]
     turn_index = Column(Integer)
     question_id = Column(String(100), index=True)
     query_text = Column(Text, nullable=False)
+    # "Shared Screenshot.png" or "Shared 3 files" when the question shared
+    # files; titles the thread when query_text is empty. Never file content.
+    upload_label = Column(String(128))
 
     origin = Column(String(16), default="real", index=True)  # real | battery | redteam
     battery_id = Column(String(64))
@@ -271,6 +274,7 @@ def _assemble_turn_report(
     origin: str = "real",
     battery_id: str | None = None,
     battery_run_id: str | None = None,
+    upload_label: str | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Turn final_state + ids into a (turn_report dict, tool_call dicts) pair.
 
@@ -302,6 +306,7 @@ def _assemble_turn_report(
         "turn_index": turn_index,
         "question_id": question_id,
         "query_text": query_text,
+        "upload_label": upload_label,
         "origin": origin,
         "battery_id": battery_id,
         "battery_run_id": battery_run_id,
@@ -408,6 +413,7 @@ class TurnReporter:
             "trace_id": "VARCHAR(32)",
             "permission_refusal": "VARCHAR(32)",
             "message_id": "VARCHAR(128)",
+            "upload_label": "VARCHAR(128)",
         }
         # Each ALTER runs in its own transaction with its own guard: a failure
         # (insufficient DB privileges, transient error) degrades that one column
@@ -484,7 +490,8 @@ class TurnReporter:
         """Sidebar read: one row per session_id owned by ``user_hash``.
 
         Single round trip, no N+1: a window function computes the per-session
-        label (earliest available query_text) in the same query that groups by
+        label (earliest available query_text, or its upload_label when the
+        question was only files) in the same query that groups by
         session_id, rather than a per-session follow-up lookup. NULLS LAST is
         explicit on turn_index so a failed first turn (NULL turn_index) never
         sorts ahead of a real turn_index=1 row when picking the label — this
@@ -498,7 +505,13 @@ class TurnReporter:
         session = self._session_factory()
         try:
             label = (
-                func.first_value(TurnReport.query_text)
+                func.first_value(
+                    func.coalesce(
+                        func.nullif(TurnReport.query_text, ""),
+                        TurnReport.upload_label,
+                        TurnReport.query_text,
+                    )
+                )
                 .over(
                     partition_by=TurnReport.session_id,
                     order_by=(

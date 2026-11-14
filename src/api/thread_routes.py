@@ -12,9 +12,9 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import AsyncGenerator, Callable, Coroutine
+from collections.abc import AsyncGenerator, Callable, Coroutine, Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -31,12 +31,18 @@ from ..agent.middleware.write_gate import MAX_CONFIRM_IDS, clean_confirm_ids
 from ..agent.nodes.capability_discovery import is_capability_question
 from ..agent.profile import UserProfile
 from ..agent.profile_source import allocated_profile_for
+from ..agent.state import human_turn
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..config import settings
-from ..tool_attachments import get_tool_attachment_store, referenced_ids
+from ..tool_attachments import (
+    UPLOAD_KIND,
+    get_tool_attachment_store,
+    referenced_ids,
+    upload_reference,
+)
 from ..turn_reporter import _hash_user, get_turn_reporter
 from ..turnstile import NOT_CHARGED, charge_query, check_turnstile
-from ..uploads.process import clean_filename
+from ..uploads.process import Processed, Rejected, clean_filename, process_upload
 from .answer_tokens import ANSWER_MODEL_NODE, is_answer_token
 from .handoff_tokens import (
     DEFAULT_TTL_SECONDS,
@@ -175,6 +181,7 @@ async def _write_turn_report(
             resources=resources,
             turn_capture=get_turn_capture(),
             judge=None,
+            upload_label=final_state.get("upload_label"),
         )
     except Exception:
         logger.exception("Turn report write failed")
@@ -203,37 +210,57 @@ def _report_if_delivered(
 async def _stream_run_events(
     *,
     thread_id: str,
-    query: str,
+    parsed: "ParsedMessage",
+    message_id: str,
     checkpointer: Any,
     final_state: dict[str, Any],
     replace_stopped_turn: bool = False,
     **run: Any,
 ) -> AsyncGenerator[str, None]:
     """``_run_events`` for one run, keeping the turn in the thread when it ends
-    before its answer was delivered (see stopped_turns.keeping_cut_off_turn)."""
-    await _sweep_attachments(thread_id, checkpointer)
+    before its answer was delivered (see stopped_turns.keeping_cut_off_turn).
+
+    The sweep and the message's files come first, before the turn's timer
+    starts, so a slow PDF doesn't eat the turn's time. What was left out goes
+    to the client as one ``upload_dropped`` event before the answer. The
+    turn's ``upload_label`` goes into ``final_state`` for its report.
+    """
+    shared = await _sweep_then_share(thread_id, checkpointer, parsed)
+    final_state["upload_label"] = shared.label()
+    if shared.notes:
+        yield format_sse_event("custom", {"type": "upload_dropped", "files": shared.notes})
     streamed: dict[str, AIMessageChunk] = {}
     tool_messages: list[Any] = []
+    content_blocks = shared.content(parsed.text)
+    # The question as stream_agent builds it, which a cut-off turn saves.
+    question = human_turn(
+        parsed.text, parsed.confirm_ids, content=content_blocks, message_id=message_id
+    )
     events = _run_events(
         thread_id=thread_id,
-        query=query,
+        query=parsed.text,
+        confirm_ids=parsed.confirm_ids,
+        content_blocks=content_blocks,
+        message_id=message_id,
+        upload_label=final_state["upload_label"],
         checkpointer=checkpointer,
         final_state=final_state,
         streamed=streamed,
         tool_messages=tool_messages,
         **run,
     )
-    async for event in keeping_cut_off_turn(
-        events,
-        checkpointer=checkpointer,
-        thread_id=thread_id,
-        query=query,
-        final_state=final_state,
-        streamed=streamed,
-        tool_messages=tool_messages,
-        replace_stopped_turn=replace_stopped_turn,
-    ):
-        yield event
+    async with run_with_timeout(settings.AGENT_TURN_TIMEOUT_S):
+        async for event in keeping_cut_off_turn(
+            events,
+            checkpointer=checkpointer,
+            thread_id=thread_id,
+            question=question,
+            final_state=final_state,
+            streamed=streamed,
+            tool_messages=tool_messages,
+            replace_stopped_turn=replace_stopped_turn,
+        ):
+            yield event
 
 
 async def _run_events(
@@ -250,6 +277,9 @@ async def _run_events(
     streamed: dict[str, AIMessageChunk],
     tool_messages: list[Any],
     confirm_ids: list[str],
+    content_blocks: list[dict[str, Any]] | None,
+    message_id: str,
+    upload_label: str | None,
 ) -> AsyncGenerator[str, None]:
     """The messages/custom/values SSE sequence for one run, mutating
     ``final_state`` in place (mirrors turn_capture's in-place-mutation pattern)
@@ -281,6 +311,9 @@ async def _run_events(
             time_zone=time_zone,
             checkpointer=checkpointer,
             confirm_ids=confirm_ids,
+            content_blocks=content_blocks,
+            message_id=message_id,
+            upload_label=upload_label,
         ),
     ):
         if stream_type == "custom":
@@ -388,6 +421,7 @@ def _upload_kind(block: dict[str, Any]) -> tuple[Literal["image", "pdf", "text"]
 
 
 _KIND_LABEL = {"image": "images", "pdf": "PDFs", "text": "text files"}
+REF_NOT_FOUND = "A file shared earlier couldn't be found."
 
 
 def _read_upload(block: dict[str, Any], kind_max: dict[str, int]) -> IncomingUpload | str:
@@ -444,7 +478,7 @@ def _over_message_limit(
 def _take_ref(parsed: ParsedMessage, ref: Any, max_files: int) -> None:
     """Add a stored-attachment reference to the message, or note why it was left out."""
     if not isinstance(ref, str) or not _REF_ID.fullmatch(ref):
-        parsed.dropped.append("A file shared earlier couldn't be found.")
+        parsed.dropped.append(REF_NOT_FOUND)
     elif ref in parsed.ref_ids:
         return
     elif len(parsed.uploads) + len(parsed.ref_ids) >= max_files:
@@ -519,11 +553,161 @@ def extract_confirm_ids(content: Any) -> list[str]:
     return ids[:MAX_CONFIRM_IDS]
 
 
+def _last_user_message(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    users = (m for m in reversed(messages) if m.get("type") == "human" or m.get("role") == "user")
+    return next(users, {})
+
+
 def _last_user_content(messages: list[dict[str, Any]]) -> Any:
-    for msg in reversed(messages):
-        if msg.get("type") == "human" or msg.get("role") == "user":
-            return msg.get("content", "")
-    return ""
+    return _last_user_message(messages).get("content", "")
+
+
+def _message_id(message: dict[str, Any]) -> str:
+    """The id the turn's question is saved under: the client's, when it is a
+    UUID in canonical form, otherwise a new one. A stopped turn finds its
+    question by this id."""
+    sent = message.get("id")
+    if isinstance(sent, str):
+        try:
+            if str(uuid.UUID(sent)) == sent:
+                return sent
+        except ValueError:
+            pass
+    return str(uuid.uuid4())
+
+
+def _shares_files(content: Any) -> bool:
+    """Whether the message has any block but typed text and a Confirm click,
+    including ones parse_message will leave out."""
+    return isinstance(content, list) and any(
+        not (isinstance(block, dict) and block.get("type") in ("text", "confirm"))
+        for block in content
+    )
+
+
+@dataclass
+class SharedFiles:
+    """What a run's message shares: a reference per file now stored for the
+    thread, in the order the question lists them, and a sentence for each
+    file that was left out."""
+
+    references: list[dict[str, Any]] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    def content(self, text: str) -> list[dict[str, Any]] | None:
+        """The question's blocks: the typed text, the references, then the
+        notes, so the model can tell the user what it didn't get. None when
+        nothing was shared, and the question is the text alone."""
+        if not self.references and not self.notes:
+            return None
+        blocks: list[dict[str, Any]] = [{"type": "text", "text": text}] if text else []
+        blocks.extend(self.references)
+        if self.notes:
+            notes = "\n".join(f"[Not shared: {note}]" for note in self.notes)
+            blocks.append({"type": "text", "text": notes})
+        return blocks
+
+    def label(self) -> str | None:
+        """The question's title when it shares files, such as "Shared
+        Screenshot.png" or "Shared 3 files". None when it shares none."""
+        if not self.references:
+            return None
+        if len(self.references) == 1:
+            return f"Shared {self.references[0]['name']}"
+        return f"Shared {len(self.references)} files"
+
+
+def _upload_payload(upload: Processed) -> dict[str, Any]:
+    """The stored row for a processed upload. PDFs and text files keep their
+    original bytes, for attaching to a ticket later."""
+    b64 = base64.b64encode(upload.data).decode()
+    if upload.kind == "image":
+        return {
+            "kind": "image",
+            "mime_type": upload.mime_type,
+            "name": upload.name,
+            "base64": b64,
+            "width": upload.width,
+            "height": upload.height,
+        }
+    if upload.kind == "pdf":
+        return {
+            "kind": "pdf",
+            "name": upload.name,
+            "base64": b64,
+            "pages": upload.pages,
+            "text": upload.text,
+            "text_truncated": upload.text_truncated,
+            "no_text": upload.no_text,
+        }
+    return {
+        "kind": "text",
+        "name": upload.name,
+        "base64": b64,
+        "text": upload.text,
+        "text_truncated": upload.text_truncated,
+    }
+
+
+async def _share_files(thread_id: str, parsed: ParsedMessage) -> SharedFiles:
+    """Check the message's references and store its new uploads.
+
+    A reference counts only when it names an upload stored for this thread,
+    and its block is rebuilt from that row, never taken from the client. A
+    failure is a note, never an error. Cancelled, as a Stop during a slow PDF
+    is, it deletes what it had stored for the message before re-raising.
+    """
+    store = get_tool_attachment_store()
+    shared = SharedFiles(notes=list(parsed.dropped))
+    for ref_id in parsed.ref_ids:
+        payload = await asyncio.to_thread(store.get_payload, thread_id, ref_id)
+        if payload is None:
+            shared.notes.append(REF_NOT_FOUND)
+        else:
+            shared.references.append(upload_reference(ref_id, payload))
+
+    # Files are processed side by side but written one at a time. Each write
+    # runs to the end even when the run is cancelled, so its id is known and
+    # the row can be deleted.
+    puts: list[asyncio.Future[str | None]] = []
+    writing = asyncio.Lock()
+
+    async def _share(upload: IncomingUpload) -> dict[str, Any] | str:
+        result = await process_upload(upload.kind, upload.mime_type, upload.name, upload.data)
+        if isinstance(result, Rejected):
+            return f"{result.name} couldn't be shared: it {result.reason}."
+        payload = _upload_payload(result)
+        async with writing:
+            put = asyncio.ensure_future(
+                asyncio.to_thread(store.put, thread_id, UPLOAD_KIND, payload)
+            )
+            puts.append(put)
+            attachment_id = await asyncio.shield(put)
+        if attachment_id is None:
+            return f"{result.name} couldn't be shared: it couldn't be saved."
+        return upload_reference(attachment_id, payload)
+
+    try:
+        results = await asyncio.gather(*(_share(u) for u in parsed.uploads))
+    except BaseException:
+        await asyncio.shield(asyncio.ensure_future(_discard(thread_id, puts)))
+        raise
+    for result in results:
+        if isinstance(result, str):
+            shared.notes.append(result)
+        else:
+            shared.references.append(result)
+    return shared
+
+
+async def _discard(thread_id: str, puts: list[asyncio.Future[str | None]]) -> None:
+    """Delete the rows these writes stored. Never raises."""
+    try:
+        ids = {i for i in await asyncio.gather(*puts) if i}
+        if ids:
+            await asyncio.to_thread(get_tool_attachment_store().delete_ids, thread_id, ids)
+    except Exception:
+        logger.warning("Couldn't delete the uploads of a stopped run on %s", thread_id)
 
 
 def _last_user_text(messages: list[dict[str, Any]]) -> str:
@@ -688,14 +872,43 @@ async def exchange_handoff(body: ExchangeRequest, identity: Identity) -> dict[st
     return {"thread_id": thread_id}
 
 
-async def _sweep_attachments(thread_id: str, checkpointer: Any) -> None:
+# When this process last deleted expired uploads, on the monotonic clock.
+_last_expiry: float | None = None
+_EXPIRY_INTERVAL_S = 3600
+_monotonic = time.monotonic
+
+
+async def _expire_uploads() -> None:
+    """Delete every thread's uploads past their retention, at most once an
+    hour per process. Never raises; a failure waits for the next hour."""
+    global _last_expiry
+    now = _monotonic()
+    if _last_expiry is not None and now - _last_expiry < _EXPIRY_INTERVAL_S:
+        return
+    _last_expiry = now
+    older_than = datetime.now(UTC) - timedelta(days=settings.UPLOAD_RETENTION_DAYS)
+    try:
+        deleted = await asyncio.to_thread(
+            get_tool_attachment_store().delete_expired_uploads, older_than
+        )
+        if deleted:
+            logger.info("Deleted %d expired uploads", deleted)
+    except Exception:
+        logger.warning("Couldn't delete expired uploads", exc_info=True)
+
+
+async def _sweep_attachments(thread_id: str, checkpointer: Any, keep: Iterable[str] = ()) -> None:
     """Delete this thread's stored attachments that its messages no longer
     refer to: a turn stopped and replaced, retried or edited, or folded into a
-    summary by compaction. Never raises; whatever is missed goes next run.
+    summary by compaction. ``keep`` adds the references the run's own message
+    resends, as a Retry does after its stopped turn is dropped. Never raises;
+    whatever is missed goes next run.
 
     Runs at the start of a run, holding its thread lock, before the run stores
     anything: a run's own tables are never swept before their messages save,
-    and no run is cut short by a cleanup after it."""
+    and no run is cut short by a cleanup after it. Expired uploads go first,
+    from every thread."""
+    await _expire_uploads()
     if checkpointer is None:
         return
     store = get_tool_attachment_store()
@@ -707,12 +920,52 @@ async def _sweep_attachments(thread_id: str, checkpointer: Any) -> None:
             return  # its turn may yet refer to one
         graph = create_checkpointed_graph(checkpointer)
         state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
-        keep = referenced_ids((state.values or {}).get("messages", []))
-        deleted = await asyncio.to_thread(store.keep_only, thread_id, keep)
+        kept = referenced_ids((state.values or {}).get("messages", [])) | set(keep)
+        deleted = await asyncio.to_thread(store.keep_only, thread_id, kept)
         if deleted:
             logger.info("Deleted %d attachments no message refers to on %s", deleted, thread_id)
     except Exception:
         logger.warning("Couldn't sweep attachments on %s", thread_id, exc_info=True)
+
+
+async def _sweep_then_share(
+    thread_id: str, checkpointer: Any, parsed: ParsedMessage
+) -> SharedFiles:
+    """The sweep, then the message's files. In this order the sweep can't
+    delete what this run stores, and it keeps the references the run resends."""
+    await _sweep_attachments(thread_id, checkpointer, keep=parsed.ref_ids)
+    return await _share_files(thread_id, parsed)
+
+
+@dataclass
+class _Turn:
+    parsed: ParsedMessage
+    message_id: str
+    shares_files: bool
+
+
+async def _read_turn(body: RunRequest, thread_id: str, caller: str | None) -> _Turn | JSONResponse:
+    """The run's question, or the Turnstile challenge that has to come first.
+
+    A message that shares files never rides the free-query allowance: an
+    anonymous caller must have passed the challenge, which is the same
+    response the allowance running out gets, so the client's restore and
+    resend handles it. Then the message is decoded, once and off the event
+    loop. Its files are only checked here; the run processes and stores them.
+    """
+    message = _last_user_message(body.input.messages)
+    content = message.get("content", "")
+    shares_files = _shares_files(content)
+    challenge = await check_turnstile(
+        caller,
+        thread_id,
+        body.turnstile_token or (body.context or {}).get("turnstile_token"),
+        require_verified=shares_files,
+    )
+    if challenge is not None:
+        return challenge
+    parsed = await asyncio.to_thread(parse_message, content, anonymous=caller is None)
+    return _Turn(parsed, _message_id(message), shares_files)
 
 
 @thread_router.post("/threads/{thread_id}/runs/stream", response_model=None)
@@ -746,13 +999,10 @@ async def thread_run_stream(
     # always exists (it's in the URL path), so the guard always has a key to
     # track. Placed AFTER the ownership gate and BEFORE acquire_thread_run so a
     # challenged request never acquires the run lock.
-    turnstile_response = await check_turnstile(
-        caller, thread_id, body.turnstile_token or (body.context or {}).get("turnstile_token")
-    )
-    if turnstile_response is not None:
-        return turnstile_response
-
-    query = _last_user_text(body.input.messages)
+    turn = await _read_turn(body, thread_id, caller)
+    if isinstance(turn, JSONResponse):
+        return turn
+    query = turn.parsed.text
 
     # Client-supplied UI hint, not server state: LangGraph SDK convention puts
     # per-run values under config.configurable; context is the newer top-level
@@ -766,8 +1016,10 @@ async def thread_run_stream(
     acquire_thread_run(thread_id, run_id)
     # Same guard and key as /query, where session_id == thread_id, so a handed-off
     # conversation keeps its count. A capability question is answered from the
-    # registry, not the model, so it is free here as it is on /query.
-    charge = NOT_CHARGED if is_capability_question(query) else charge_query(caller, thread_id)
+    # registry, not the model, so it is free here as it is on /query, unless
+    # it shares files, which only the model can read.
+    free = not turn.shares_files and is_capability_question(query)
+    charge = NOT_CHARGED if free else charge_query(caller, thread_id)
 
     async def _gen() -> AsyncGenerator[str, None]:
         start_time = time.time()
@@ -796,24 +1048,23 @@ async def thread_run_stream(
             try:
                 yield format_sse_event("metadata", {"run_id": run_id, "attempt": 1})
                 profile = await lookup
-                async with run_with_timeout(settings.AGENT_TURN_TIMEOUT_S):
-                    async for event in _stream_run_events(
-                        thread_id=thread_id,
-                        run_id=run_id,
-                        query=query,
-                        confirm_ids=extract_confirm_ids(_last_user_content(body.input.messages)),
-                        context=AgentContext.from_identity(identity, thread_run=True),
-                        resource_context=resource_context,
-                        profile=profile,
-                        # The browser's zone, for event times. See _time_zone_from.
-                        time_zone=_time_zone_from(body.context),
-                        checkpointer=getattr(raw_request.app.state, "checkpointer", None),
-                        final_state=final_state,
-                        replace_stopped_turn=(body.context or {}).get("replace_stopped_turn")
-                        is True,
-                    ):
-                        yield event
-                    success = True
+                # The turn's timer starts inside, after the files are stored.
+                async for event in _stream_run_events(
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    parsed=turn.parsed,
+                    message_id=turn.message_id,
+                    context=AgentContext.from_identity(identity, thread_run=True),
+                    resource_context=resource_context,
+                    profile=profile,
+                    # The browser's zone, for event times. See _time_zone_from.
+                    time_zone=_time_zone_from(body.context),
+                    checkpointer=getattr(raw_request.app.state, "checkpointer", None),
+                    final_state=final_state,
+                    replace_stopped_turn=(body.context or {}).get("replace_stopped_turn") is True,
+                ):
+                    yield event
+                success = True
             except asyncio.CancelledError:
                 # Real cancel (client disconnect / cancel_run). Propagate so the
                 # task truly cancels; held_run's finally still releases.
