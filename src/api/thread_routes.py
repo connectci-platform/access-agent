@@ -990,14 +990,16 @@ CALLER_BUSY = (
 )
 
 
-def _caller_key(caller: str | None, claim_key: str | None, thread_id: str) -> str:
+def _caller_key(caller: str | None, claim_key: str | None) -> str:
     """Who a run's share phase counts against: the signed-in account, else the
-    browser's claim key, else the thread."""
+    browser's claim key, else every anonymous caller without one."""
     if caller:
         return f"user:{caller}"
     if claim_key:
         return f"key:{claim_key}"
-    return f"thread:{thread_id}"
+    # No address is trusted behind Cloudflare and Caddy, and a thread is free
+    # to make, so keyless anonymous callers share one count.
+    return "anon:keyless"
 
 
 async def _sweep_then_share(
@@ -1199,7 +1201,7 @@ async def thread_run_stream(
                     context=AgentContext.from_identity(identity, thread_run=True),
                     profile=profile,
                     final_state=final_state,
-                    caller_key=_caller_key(caller, claim_key, thread_id),
+                    caller_key=_caller_key(caller, claim_key),
                     **options,
                 ):
                     yield event

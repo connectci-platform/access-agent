@@ -916,12 +916,13 @@ async def test_a_cancelled_share_phase_frees_its_place(monkeypatch):
     assert thread_routes._sharing == {}
 
 
-def test_a_caller_is_known_by_account_then_claim_key_then_thread():
+def test_a_caller_is_known_by_account_then_claim_key():
     from src.api.thread_routes import _caller_key
 
-    assert _caller_key("me@x", CLAIM_KEY, "t") == "user:me@x"
-    assert _caller_key(None, CLAIM_KEY, "t") == f"key:{CLAIM_KEY}"
-    assert _caller_key(None, None, "t") == "thread:t"
+    assert _caller_key("me@x", CLAIM_KEY) == "user:me@x"
+    assert _caller_key(None, CLAIM_KEY) == f"key:{CLAIM_KEY}"
+    # Anonymous with no claim key: one shared count, whatever the thread.
+    assert _caller_key(None, None) == "anon:keyless"
 
 
 async def test_the_route_counts_share_phases_by_caller(client, seen, monkeypatch, agent_tokens):
