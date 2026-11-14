@@ -8,9 +8,7 @@ import asyncio
 import io
 import json
 import re
-import resource
 import sys
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -62,14 +60,26 @@ async def process_upload(
     data: bytes,
 ) -> Processed | Rejected:
     name = clean_filename(name)
-    async with _semaphore:
-        if kind == "image":
-            return await asyncio.to_thread(_process_image, name, data)
-        if kind == "pdf":
+    if kind == "image":
+        return await _decode_in_thread(name, data)
+    if kind == "pdf":
+        async with _semaphore:
             return await _process_pdf(name, data)
-        if kind == "text":
-            return _process_text(name, data)
+    if kind == "text":
+        return _process_text(name, data)
     return Rejected(name, "isn't a supported file type")
+
+
+async def _decode_in_thread(name: str, data: bytes) -> Processed | Rejected:
+    """Hold a decode slot until the worker thread ends, even if the caller is cancelled.
+
+    A cancelled await does not stop a running thread. Releasing the slot at
+    cancellation would let dropped connections stack up decodes without limit.
+    """
+    await _semaphore.acquire()
+    task = asyncio.ensure_future(asyncio.to_thread(_process_image, name, data))
+    task.add_done_callback(lambda _: _semaphore.release())
+    return await asyncio.shield(task)
 
 
 def _flatten_to_8bit(im: Image.Image) -> Image.Image:
@@ -94,21 +104,27 @@ def _encode(im: Image.Image) -> tuple[bytes, str]:
     return out.getvalue(), "image/jpeg"
 
 
+def _too_many_pixels(name: str) -> Rejected:
+    millions = settings.UPLOAD_MAX_PIXELS // 1_000_000
+    return Rejected(name, f"is over {millions} million pixels")
+
+
 def _process_image(name: str, data: bytes) -> Processed | Rejected:
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-            # open() checks im.size against MAX_IMAGE_PIXELS before any decoding.
-            opened = Image.open(io.BytesIO(data), formats=_IMAGE_FORMATS)
+        # Pillow only warns between 1x and 2x the cap and raises above 2x. A
+        # warnings filter is process-global and unsafe with parallel decodes, so
+        # the cap is enforced here, on the header size, before load().
+        opened = Image.open(io.BytesIO(data), formats=_IMAGE_FORMATS)
+        if opened.width * opened.height > settings.UPLOAD_MAX_PIXELS:
+            return _too_many_pixels(name)
         opened.seek(0)
         opened.load()
         im = _flatten_to_8bit(opened)
         edge = settings.UPLOAD_IMAGE_MAX_EDGE
         im.thumbnail((edge, edge))
         encoded, mime = _encode(im)
-    except (Image.DecompressionBombWarning, Image.DecompressionBombError):
-        millions = settings.UPLOAD_MAX_PIXELS // 1_000_000
-        return Rejected(name, f"is over {millions} million pixels")
+    except Image.DecompressionBombError:
+        return _too_many_pixels(name)
     except Exception:
         return Rejected(name, "couldn't be read as an image")
     return Processed(
@@ -121,33 +137,30 @@ def _process_image(name: str, data: bytes) -> Processed | Rejected:
     )
 
 
-def _limit_memory() -> None:
-    """Runs in the extractor's child process before exec."""
-    try:
-        limit = settings.UPLOAD_PDF_RLIMIT_AS
-        resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
-    except (ValueError, OSError):
-        pass  # macOS can refuse RLIMIT_AS; the timeout still applies
-
-
 async def _process_pdf(name: str, data: bytes) -> Processed | Rejected:
-    proc = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-I",
-        str(PDF_EXTRACT_PATH),
-        str(settings.UPLOAD_PDF_MAX_PAGES),
-        str(settings.UPLOAD_TEXT_MAX_CHARS),
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-        preexec_fn=_limit_memory,
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-I",
+            str(PDF_EXTRACT_PATH),
+            str(settings.UPLOAD_PDF_MAX_PAGES),
+            str(settings.UPLOAD_TEXT_MAX_CHARS),
+            str(settings.UPLOAD_PDF_RLIMIT_AS),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except OSError:  # fork or exec failed (EAGAIN, ENOMEM)
+        return Rejected(name, "couldn't be read as a PDF")
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(data), settings.UPLOAD_PDF_TIMEOUT_S)
     except TimeoutError:
-        proc.kill()
-        await proc.wait()
         return Rejected(name, "took too long to read")
+    finally:
+        # Timeout, cancellation or any other error: never leave the child running.
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
     if proc.returncode != 0:
         return Rejected(name, "couldn't be read as a PDF")
     try:

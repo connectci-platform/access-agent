@@ -5,6 +5,7 @@ import io
 import json
 import os
 import sys
+import threading
 
 import pytest
 from PIL import Image
@@ -247,7 +248,7 @@ def test_extractor_runs_as_isolated_script():
     import subprocess
 
     done = subprocess.run(
-        [sys.executable, "-I", str(process.PDF_EXTRACT_PATH), "30", "100"],
+        [sys.executable, "-I", str(process.PDF_EXTRACT_PATH), "30", "100", "1000000000"],
         input=_pdf(["Hello"]),
         capture_output=True,
         check=True,
@@ -263,23 +264,100 @@ def test_extract_main_writes_json():
     assert json.loads(out.getvalue())["text"] == "Hi"
 
 
-def test_memory_limit_is_set_in_child(monkeypatch):
+def test_memory_limit_is_set(monkeypatch):
     calls = []
-    monkeypatch.setattr(process.resource, "setrlimit", lambda *a: calls.append(a))
+    monkeypatch.setattr(pdf_extract.resource, "setrlimit", lambda *a: calls.append(a))
 
-    process._limit_memory()
+    pdf_extract.limit_memory(123)
 
-    limit = settings.UPLOAD_PDF_RLIMIT_AS
-    assert calls == [(process.resource.RLIMIT_AS, (limit, limit))]
+    assert calls == [(pdf_extract.resource.RLIMIT_AS, (123, 123))]
 
 
-def test_memory_limit_refusal_is_tolerated(monkeypatch):
-    def refuse(*_args):
-        raise ValueError("current limit exceeds maximum limit")
+def _refuse(*_args):
+    raise ValueError("current limit exceeds maximum limit")
 
-    monkeypatch.setattr(process.resource, "setrlimit", refuse)
 
-    process._limit_memory()
+def test_memory_limit_refusal_tolerated_on_macos(monkeypatch):
+    monkeypatch.setattr(pdf_extract.resource, "setrlimit", _refuse)
+    monkeypatch.setattr(pdf_extract.sys, "platform", "darwin")
+
+    pdf_extract.limit_memory(123)
+
+
+def test_memory_limit_refusal_fails_on_linux(monkeypatch):
+    monkeypatch.setattr(pdf_extract.resource, "setrlimit", _refuse)
+    monkeypatch.setattr(pdf_extract.sys, "platform", "linux")
+
+    with pytest.raises(ValueError):
+        pdf_extract.limit_memory(123)
+
+
+async def test_pixel_cap_does_not_depend_on_pillow_warning(monkeypatch):
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", None)  # Pillow stays silent
+    result = await process_upload(
+        "image", "image/png", "big.png", _png(Image.new("L", (6000, 5000)))
+    )
+
+    assert result == Rejected("big.png", "is over 25 million pixels")
+
+
+async def test_cancelled_decode_keeps_its_slot_until_the_thread_ends(monkeypatch):
+    monkeypatch.setattr(process, "_semaphore", asyncio.Semaphore(1))
+    gate = threading.Event()
+    started: list[str] = []
+
+    def slow(name, _data):
+        started.append(name)
+        gate.wait(5)
+        return Rejected(name, "x")
+
+    monkeypatch.setattr(process, "_process_image", slow)
+    first = asyncio.create_task(process_upload("image", "", "a", b""))
+    while not started:
+        await asyncio.sleep(0.01)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    second = asyncio.create_task(process_upload("image", "", "b", b""))
+    await asyncio.sleep(0.1)
+    assert started == ["a"]  # the cancelled decode still holds the only slot
+
+    gate.set()
+    assert await second == Rejected("b", "x")
+    assert started == ["a", "b"]
+
+
+async def test_cancelled_pdf_extraction_kills_the_child(tmp_path, monkeypatch):
+    script = tmp_path / "sleeper.py"
+    script.write_text("import time\ntime.sleep(60)\n")
+    monkeypatch.setattr(process, "PDF_EXTRACT_PATH", script)
+    procs = []
+    real = asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        procs.append(await real(*args, **kwargs))
+        return procs[-1]
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
+    task = asyncio.create_task(process_upload("pdf", "", "x.pdf", b"x"))
+    while not procs:
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert procs[0].returncode is not None
+
+
+async def test_subprocess_spawn_failure_is_rejected(monkeypatch):
+    async def fail(*_args, **_kwargs):
+        raise OSError("fork: Cannot allocate memory")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fail)
+
+    result = await process_upload("pdf", "", "x.pdf", b"x")
+
+    assert result == Rejected("x.pdf", "couldn't be read as a PDF")
 
 
 async def test_latin1_text_decodes_with_replacement():
