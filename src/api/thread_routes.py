@@ -15,14 +15,15 @@ import uuid
 from collections.abc import AsyncGenerator, Callable, Coroutine, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langgraph.graph.message import add_messages
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from starlette.responses import StreamingResponse
 
 from ..agent.context import AgentContext
@@ -1068,9 +1069,6 @@ async def _read_turn(body: RunRequest, thread_id: str, caller: str | None) -> _T
     """
     message = _last_user_message(body.input.messages)
     content = message.get("content", "")
-    # Before anything walks the blocks: notes and work grow with their number.
-    if isinstance(content, list) and len(content) > settings.UPLOAD_MAX_BLOCKS:
-        return JSONResponse(status_code=400, content={"detail": "Too many parts in one message"})
     shares_files = _shares_files(content)
     challenge = await check_turnstile(
         caller,
@@ -1084,10 +1082,38 @@ async def _read_turn(body: RunRequest, thread_id: str, caller: str | None) -> _T
     return _Turn(parsed, _message_id(message), shares_files)
 
 
+def _bad_body(detail: str) -> HTTPException:
+    return HTTPException(status_code=400, detail=detail)
+
+
+async def run_body(request: Request) -> RunRequest:
+    """The run request, read and checked before the route claims a thread.
+
+    The body can be 32MB, and parsed JSON costs many times its size in Python
+    objects, so its shape is checked on the raw bytes first: real messages
+    have few brackets, base64 none. Then it is parsed once, straight from the
+    bytes, and its message and block counts are checked before anything walks
+    them.
+    """
+    raw = await request.body()
+    if raw.count(b"{") + raw.count(b"[") > settings.RUN_BODY_MAX_BRACKETS:
+        raise _bad_body("Request body too deeply structured")
+    try:
+        body = RunRequest.model_validate_json(raw)
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors(include_url=False)) from None
+    if len(body.input.messages) > settings.RUN_MAX_MESSAGES:
+        raise _bad_body("Too many messages")
+    content = _last_user_message(body.input.messages).get("content")
+    if isinstance(content, list) and len(content) > settings.UPLOAD_MAX_BLOCKS:
+        raise _bad_body("Too many parts in one message")
+    return body
+
+
 @thread_router.post("/threads/{thread_id}/runs/stream", response_model=None)
 async def thread_run_stream(
     thread_id: str,
-    body: RunRequest,
+    body: Annotated[RunRequest, Depends(run_body)],
     raw_request: Request,
     identity: Identity,
     claim_key: ClaimKey = None,

@@ -363,6 +363,12 @@ class Settings(BaseSettings):
     # Content blocks in one message, checked before any is read. The client
     # sends the text, at most five files and a Confirm click.
     UPLOAD_MAX_BLOCKS: int = 50
+    # A run request's "{" and "[" together, counted on the raw body before it
+    # is parsed: 10 million empty blocks fit in 32MB and parse to about 650MB.
+    # Base64 has none; the headroom is for a long typed question holding JSON.
+    RUN_BODY_MAX_BRACKETS: int = 20_000
+    # Messages in a run request. The client sends only the new question.
+    RUN_MAX_MESSAGES: int = 50
 
     # Per-thread run turn bound (src/api/thread_runs.py run_with_timeout)
     # Bounded by check_agent_token_config (src/agent_token.py).

@@ -1046,3 +1046,86 @@ async def test_a_running_turn_holds_no_upload_bytes(client, monkeypatch):
     assert _dropped(r.text) == []
     assert len(get_tool_attachment_store().ids_for("t-mem")) == 1  # it was shared
     assert held == {"requests": [], "uploads": [], "blocks": []}
+
+
+# ---------------------------------------------------------------------------
+# The body's shape is checked before it is parsed or the thread is claimed
+# ---------------------------------------------------------------------------
+
+
+def _never_parsed(monkeypatch) -> None:
+    from src.api.thread_routes import RunRequest
+
+    def _parse(*_args, **_kwargs):
+        raise AssertionError("the body was parsed")
+
+    monkeypatch.setattr(RunRequest, "model_validate_json", _parse)
+
+
+async def _post_raw(client, thread_id: str, raw: bytes):
+    return await client.post(
+        f"/api/v1/threads/{thread_id}/runs/stream",
+        headers={CLAIM_KEY_HEADER: CLAIM_KEY, "content-type": "application/json"},
+        content=raw,
+    )
+
+
+async def test_a_body_of_many_empty_blocks_is_refused_unparsed(client, seen, monkeypatch):
+    _never_parsed(monkeypatch)
+    raw = (
+        b'{"input":{"messages":[{"type":"human","content":['
+        + b",".join([b"{}"] * 200_000)
+        + b"]}]}}"
+    )
+
+    r = await _post_raw(client, "t-braces", raw)
+
+    assert r.status_code == 400
+    assert seen == []
+    assert get_thread_owner_store().access("t-braces", None, CLAIM_KEY).name == "NEW"
+
+
+async def test_a_body_at_the_bracket_limit_is_parsed(client, seen, monkeypatch):
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "RUN_BODY_MAX_BRACKETS", 8)
+    raw = b'{"input":{"messages":[{"type":"human","content":[{"type":"text","text":"{[{}]}"}]}]}}'
+    assert raw.count(b"{") + raw.count(b"[") == 9
+
+    assert (await _post_raw(client, "t-over", raw)).status_code == 400
+    monkeypatch.setattr(settings, "RUN_BODY_MAX_BRACKETS", 9)
+    r = await _post_raw(client, "t-at", raw)
+
+    assert r.status_code == 200
+    assert seen[0]["query"] == "{[{}]}"
+
+
+async def test_too_many_input_messages_are_refused(client, seen, monkeypatch):
+    from src.config import settings
+
+    padding = [{"type": "ai", "content": "x"}] * settings.RUN_MAX_MESSAGES
+    r = await client.post(
+        "/api/v1/threads/t-pad/runs/stream",
+        headers={CLAIM_KEY_HEADER: CLAIM_KEY},
+        json={"input": {"messages": [*padding, {"type": "human", "content": "hi"}]}},
+    )
+
+    assert r.status_code == 400
+    assert seen == []
+
+
+async def test_too_many_blocks_claims_no_thread(client, seen):
+    from src.config import settings
+
+    r = await _run(client, "t-unclaimed", [{"type": "junk"}] * (settings.UPLOAD_MAX_BLOCKS + 1))
+
+    assert r.status_code == 400
+    assert get_thread_owner_store().access("t-unclaimed", None, CLAIM_KEY).name == "NEW"
+
+
+@pytest.mark.parametrize("raw", [b'{"input": {"messages": 5}}', b"", b"not json"])
+async def test_an_invalid_body_is_a_validation_error(client, seen, raw):
+    r = await _post_raw(client, "t-bad", raw)
+
+    assert r.status_code == 422
+    assert seen == []
