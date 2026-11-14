@@ -25,10 +25,10 @@ from src.agent.upload_window import (
     NO_MESSAGE_NOTE,
     earlier_note,
     file_block,
+    left_out_note,
     missing_note,
     reference_tokens,
     references_tokens,
-    too_large_note,
 )
 from src.config import settings
 from tests.agent_runtime import run_loop
@@ -279,20 +279,27 @@ async def test_another_threads_row_is_missing(store):
 
 
 async def test_a_message_over_the_cap_leaves_later_files_out(store, monkeypatch):
+    """Three files each over a third of the cap: only the first is read, and
+    the model is told to say it didn't read the other two."""
     monkeypatch.setattr(settings, "UPLOAD_MESSAGE_MAX_TOKENS", 24_000)
-    first = text_ref("1" * 32, est_tokens=20_000, name="big.log")
-    second = text_ref("2" * 32, est_tokens=20_000, name="bigger.log")
-    store.rows[first["id"]] = text_row("first")
-    store.rows[second["id"]] = text_row("second")
+    refs = [text_ref(str(i) * 32, est_tokens=13_700, name=f"job{i}.log") for i in (1, 2, 3)]
+    for ref in refs:
+        store.rows[ref["id"]] = text_row(ref["name"])
 
-    seen = await _model_sees(UploadsMiddleware(thread_id=THREAD), [question("q1", first, second)])
+    asked = question("q1", *refs)
+
+    seen = await _model_sees(UploadsMiddleware(thread_id=THREAD), [asked])
 
     assert _texts(seen[0]) == [
         "what is this?",
-        file_block("big.log", "first"),
-        "[File left out: bigger.log is too large to read with this message.]",
+        file_block("job1.log", "job1.log"),
+        left_out_note(refs[1]),
+        left_out_note(refs[2]),
     ]
-    assert store.reads == [(THREAD, first["id"])]
+    assert store.reads == [(THREAD, refs[0]["id"])]
+    assert references_tokens(asked, frozenset({"q1"})) == reference_tokens(refs[0]) + sum(
+        estimate_text(left_out_note(ref)) for ref in refs[1:]
+    )
 
 
 async def test_an_image_only_message_gets_the_placeholder(store):
@@ -378,7 +385,7 @@ async def test_a_thread_without_references_passes_through(store):
 
 
 async def test_the_view_and_the_estimate_agree_on_which_files_are_shown(store, monkeypatch):
-    """The budget counts what the model will see: in full, too large, or earlier."""
+    """The budget counts what the model will see: in full, left out, or earlier."""
     monkeypatch.setattr(settings, "UPLOAD_MESSAGE_MAX_TOKENS", 2000)
     big = text_ref("1" * 32, est_tokens=1800, name="big.log")
     small = text_ref("2" * 32, est_tokens=10, name="small.log")
@@ -401,18 +408,20 @@ async def test_the_view_and_the_estimate_agree_on_which_files_are_shown(store, m
     assert _blocks(seen[2])[1]["type"] == "image_url"
     assert _texts(seen[4])[1:] == [
         file_block("big.log", "x"),
-        too_large_note(image_ref("d" * 32)),
+        left_out_note(image_ref("d" * 32)),
         file_block("small.log", "x"),
     ]
     window = frozenset({"q2", "q3"})
     assert references_tokens(messages[4], window) == (
-        reference_tokens(big) + estimate_text(too_large_note(image_ref())) + reference_tokens(small)
+        reference_tokens(big) + estimate_text(left_out_note(image_ref())) + reference_tokens(small)
     )
 
 
-def test_the_too_large_note_uses_the_agreed_copy():
-    assert too_large_note(text_ref(name="huge.log")) == (
-        "[File left out: huge.log is too large to read with this message.]"
+def test_the_left_out_note_uses_the_agreed_copy():
+    assert left_out_note(text_ref(name="huge.log")) == (
+        "[File not read: huge.log. Together with the other files in this message it was "
+        "more than you can read at once. Tell the user you didn't read it and suggest "
+        "sending it in its own message.]"
     )
 
 

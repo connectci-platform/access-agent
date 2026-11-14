@@ -22,7 +22,9 @@ from PIL import Image
 
 from src.agent.graph import create_checkpointed_graph
 from src.agent.state import human_turn
+from src.agent.upload_window import reference_tokens
 from src.api.identity import CLAIM_KEY_HEADER
+from src.api.thread_routes import not_read_note
 from src.main import app
 from src.thread_owners import get_thread_owner_store
 from src.tool_attachments import get_tool_attachment_store, upload_reference
@@ -379,6 +381,31 @@ async def test_a_text_message_has_no_blocks_and_no_event(client, seen):
     assert _dropped(r.text) == []
     assert seen[0]["content_blocks"] is None
     assert seen[0]["upload_label"] is None
+
+
+async def test_files_past_the_message_cap_are_named_to_the_user(
+    client, seen, monkeypatch, agent_tokens
+):
+    """Three logs that don't fit together: the first is read, and the event
+    names the other two. The question itself carries no note for them, since
+    the uploads middleware tells the model."""
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "UPLOAD_MESSAGE_MAX_TOKENS", 2_000)
+    log = "".join(f"error: job failed at step {i}\n" for i in range(100)).encode()
+    names = ["job1.log", "job2.log", "job3.log"]
+    content = [_text("why?"), *(_file(n, log) for n in names)]
+    r = await _run(client, "t-cap", content, headers=agent_tokens.headers("me@x"))
+
+    refs = seen[0]["content_blocks"][1:]
+    assert [ref["name"] for ref in refs] == names
+    assert all(1_000 < reference_tokens(ref) <= 2_000 for ref in refs)
+    assert _dropped(r.text) == [[not_read_note(refs[1]), not_read_note(refs[2])]]
+    assert not_read_note(refs[1]) == (
+        "job2.log won't be read with this message: together the files are more than "
+        "the assistant can read at once. Send it in its own message."
+    )
+    assert seen[0]["upload_label"] == "Shared 3 files"
 
 
 async def test_the_dropped_event_goes_out_before_the_answer(client, monkeypatch):

@@ -8,7 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 import src.agent.graph as graph_mod
 from src.agent.context import AgentContext
-from src.api.thread_routes import _last_user_text, extract_confirm_ids
+from src.api.thread_routes import extract_confirm_ids, parse_message
 
 A = "a" * 32
 B = "0123456789abcdef" * 2
@@ -66,8 +66,7 @@ def test_ids_are_capped_at_ten():
 
 
 def test_confirm_block_does_not_disturb_the_question():
-    msgs = [{"type": "human", "content": _confirm(A)}]
-    assert _last_user_text(msgs) == "Confirm"
+    assert parse_message(_confirm(A), anonymous=False).text == "Confirm"
 
 
 class _Graph:

@@ -33,10 +33,10 @@ from ..upload_window import (
     file_name,
     has_typed_text,
     is_reference,
+    left_out_note,
     missing_note,
     references,
     shown_in_full,
-    too_large_note,
     upload_window,
 )
 
@@ -114,7 +114,7 @@ class UploadsMiddleware(AgentMiddleware):
             elif not in_window:
                 blocks.append(_text(earlier_note(block)))
             elif not next(full):
-                blocks.append(_text(too_large_note(block)))
+                blocks.append(_text(left_out_note(block)))
             else:
                 blocks.append(await self._block(block))
         return message.model_copy(update={"content": blocks})

@@ -15,11 +15,11 @@ from src.agent.upload_window import (
     cut_note,
     earlier_note,
     file_block,
+    left_out_note,
     missing_note,
     reference_tokens,
     references_tokens,
     shown_in_full,
-    too_large_note,
     upload_window,
 )
 from src.config import settings
@@ -210,7 +210,7 @@ def test_references_inside_the_window_cost_in_full_up_to_the_cap(monkeypatch):
 
     assert references_tokens(message, frozenset({"q1"})) == reference_tokens(
         refs[0]
-    ) + estimate_text(too_large_note(refs[1]))
+    ) + estimate_text(left_out_note(refs[1]))
 
 
 def test_references_outside_the_window_cost_their_notes():

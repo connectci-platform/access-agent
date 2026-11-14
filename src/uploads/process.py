@@ -5,6 +5,7 @@ bytes. Per-kind byte limits are enforced at ingress, before this runs.
 """
 
 import asyncio
+import contextlib
 import io
 import json
 import re
@@ -159,7 +160,8 @@ async def _process_pdf(name: str, data: bytes) -> Processed | Rejected:
     finally:
         # Timeout, cancellation or any other error: never leave the child running.
         if proc.returncode is None:
-            proc.kill()
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
             await proc.wait()
     if proc.returncode != 0:
         return Rejected(name, "couldn't be read as a PDF")

@@ -3,7 +3,7 @@
 import base64
 from typing import Any
 
-from src.api.thread_routes import IncomingUpload, _extract_text_content, parse_message
+from src.api.thread_routes import IncomingUpload, parse_message
 
 REF = "0123456789abcdef" * 2
 
@@ -90,13 +90,13 @@ def test_non_string_mime_types_are_dropped_not_raised():
     assert len(parsed.dropped) == 5
 
 
-def test_extract_text_content_survives_malformed_blocks():
+def test_the_text_survives_malformed_blocks():
     content = [
         {"type": "text", "text": "typed"},
         {"type": "image", "mimeType": ["x"], "data": "AA=="},
         {"type": "file", "mimeType": {"a": 1}, "data": "AA=="},
     ]
-    assert _extract_text_content(content) == "typed"
+    assert parse_message(content, anonymous=True).text == "typed"
 
 
 def test_non_dict_blocks_are_noted():
@@ -235,7 +235,3 @@ def test_confirm_ids_are_still_extracted():
     assert parsed.confirm_ids == [REF]
     assert parsed.text == "Confirm"
     assert parsed.dropped == []
-
-
-def test_extract_text_content_is_the_parsed_text():
-    assert _extract_text_content([{"type": "text", "text": "a"}, _image()]) == "a"

@@ -110,10 +110,15 @@ def earlier_note(ref: Mapping[str, Any]) -> str:
     )
 
 
-def too_large_note(ref: Mapping[str, Any]) -> str:
+def left_out_note(ref: Mapping[str, Any]) -> str:
     """What the model sees for a file in the window that is past the message's
-    cap. Sharing it again would hit the same cap, so it doesn't ask for that."""
-    return f"[File left out: {file_name(ref)} is too large to read with this message.]"
+    cap. The file fits on its own, so the model is told to say it didn't read
+    it and suggest sending it in its own message."""
+    return (
+        f"[File not read: {file_name(ref)}. Together with the other files in this "
+        "message it was more than you can read at once. Tell the user you didn't "
+        "read it and suggest sending it in its own message.]"
+    )
 
 
 def missing_note(ref: Mapping[str, Any]) -> str:
@@ -165,7 +170,7 @@ def reference_tokens(ref: Mapping[str, Any]) -> int:
 def shown_in_full(refs: Sequence[Mapping[str, Any]]) -> list[bool]:
     """For each of one message's references in the window, in order, whether it
     is shown in full. One that would take the message's files past
-    ``UPLOAD_MESSAGE_MAX_TOKENS`` is shown as its too-large note instead, and
+    ``UPLOAD_MESSAGE_MAX_TOKENS`` is shown as its left-out note instead, and
     later, smaller ones can still fit."""
     room = settings.UPLOAD_MESSAGE_MAX_TOKENS
     shown: list[bool] = []
@@ -188,5 +193,5 @@ def references_tokens(message: BaseMessage, window: frozenset[str]) -> int:
     if message.id not in window:
         return total + sum(estimate_text(earlier_note(ref)) for ref in refs)
     for ref, shown in zip(refs, shown_in_full(refs), strict=True):
-        total += reference_tokens(ref) if shown else estimate_text(too_large_note(ref))
+        total += reference_tokens(ref) if shown else estimate_text(left_out_note(ref))
     return total

@@ -33,6 +33,7 @@ from ..agent.profile import UserProfile
 from ..agent.profile_source import allocated_profile_for
 from ..agent.state import human_turn
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
+from ..agent.upload_window import file_name, shown_in_full
 from ..config import settings
 from ..tool_attachments import (
     UPLOAD_KIND,
@@ -227,8 +228,9 @@ async def _stream_run_events(
     """
     shared = await _sweep_then_share(thread_id, checkpointer, parsed)
     final_state["upload_label"] = shared.label()
-    if shared.notes:
-        yield format_sse_event("custom", {"type": "upload_dropped", "files": shared.notes})
+    if shared.notes or shared.not_read:
+        dropped = shared.notes + shared.not_read
+        yield format_sse_event("custom", {"type": "upload_dropped", "files": dropped})
     streamed: dict[str, AIMessageChunk] = {}
     tool_messages: list[Any] = []
     content_blocks = shared.content(parsed.text)
@@ -529,15 +531,6 @@ def parse_message(content: Any, *, anonymous: bool) -> ParsedMessage:
     return parsed
 
 
-def _extract_text_content(content: Any) -> str:
-    """Render a message's ``content`` field as plain text.
-
-    Callers send a plain string or a LangChain-style list of content blocks.
-    Only the text blocks count; anything else yields "".
-    """
-    return parse_message(content, anonymous=True).text
-
-
 def extract_confirm_ids(content: Any) -> list[str]:
     """Preview ids from a Confirm click's ``confirm`` block.
 
@@ -558,10 +551,6 @@ def extract_confirm_ids(content: Any) -> list[str]:
 def _last_user_message(messages: list[dict[str, Any]]) -> dict[str, Any]:
     users = (m for m in reversed(messages) if m.get("type") == "human" or m.get("role") == "user")
     return next(users, {})
-
-
-def _last_user_content(messages: list[dict[str, Any]]) -> Any:
-    return _last_user_message(messages).get("content", "")
 
 
 def _message_id(message: dict[str, Any]) -> str:
@@ -591,11 +580,14 @@ def _shares_files(content: Any) -> bool:
 @dataclass
 class SharedFiles:
     """What a run's message shares: a reference per file now stored for the
-    thread, in the order the question lists them, and a sentence for each
-    file that was left out."""
+    thread, in the order the question lists them, a sentence for each file
+    that was left out, and one for each shared file past the message's cap.
+    Only ``notes`` go into the question: the model learns of the files it
+    won't read from the uploads middleware's note."""
 
     references: list[dict[str, Any]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    not_read: list[str] = field(default_factory=list)
 
     def content(self, text: str) -> list[dict[str, Any]] | None:
         """The question's blocks: the typed text, the references, then the
@@ -700,7 +692,20 @@ async def _share_files(thread_id: str, parsed: ParsedMessage) -> SharedFiles:
             shared.notes.append(result)
         else:
             shared.references.append(result)
+    # The question is always in the upload window, so these are the files the
+    # model won't see with this message.
+    for ref, shown in zip(shared.references, shown_in_full(shared.references), strict=True):
+        if not shown:
+            shared.not_read.append(not_read_note(ref))
     return shared
+
+
+def not_read_note(ref: dict[str, Any]) -> str:
+    """What the user is told about a shared file past the message's cap."""
+    return (
+        f"{file_name(ref)} won't be read with this message: together the files are "
+        "more than the assistant can read at once. Send it in its own message."
+    )
 
 
 async def _discard(thread_id: str, puts: list[asyncio.Future[str | None]]) -> None:
@@ -711,21 +716,6 @@ async def _discard(thread_id: str, puts: list[asyncio.Future[str | None]]) -> No
             await asyncio.to_thread(get_tool_attachment_store().delete_ids, thread_id, ids)
     except Exception:
         logger.warning("Couldn't delete the uploads of a stopped run on %s", thread_id)
-
-
-def _last_user_text(messages: list[dict[str, Any]]) -> str:
-    """The query the agent runs is the latest user turn in the run input.
-
-    Checkpoint resume rebuilds prior context from the thread; the run body only
-    needs to carry the new turn.
-
-    A message is a user turn if it has ``role: "user"`` (the widget's shape)
-    or ``type: "human"`` (the LangChain message shape the full-screen client
-    sends). Its ``content`` may be a plain string or a block-array (the
-    full-screen client sends ``[{"type": "text", "text": "..."}]``); only the
-    text blocks are extracted.
-    """
-    return _extract_text_content(_last_user_content(messages))
 
 
 @thread_router.post("/threads")
