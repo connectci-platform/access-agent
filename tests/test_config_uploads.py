@@ -13,6 +13,7 @@ _PAIRS = [
     ("UPLOAD_MAX_IMAGE_BYTES", 10 * MB, 5 * MB),
     ("UPLOAD_MAX_PDF_BYTES", 10 * MB, 5 * MB),
     ("UPLOAD_MAX_TEXT_BYTES", 200 * KB, 100 * KB),
+    ("UPLOAD_THREAD_MAX_BYTES", 100 * MB, 30 * MB),
 ]
 
 _SHARED = {

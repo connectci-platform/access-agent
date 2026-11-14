@@ -39,6 +39,7 @@ from ..tool_attachments import (
     UPLOAD_KIND,
     get_tool_attachment_store,
     referenced_ids,
+    stored_size,
     upload_reference,
 )
 from ..turn_reporter import _hash_user, get_turn_reporter
@@ -393,6 +394,7 @@ class ParsedMessage:
     ref_ids: list[str] = field(default_factory=list)
     confirm_ids: list[str] = field(default_factory=list)
     dropped: list[str] = field(default_factory=list)
+    anonymous: bool = True
 
 
 def _size_label(nbytes: int) -> str:
@@ -504,12 +506,12 @@ def parse_message(content: Any, *, anonymous: bool) -> ParsedMessage:
     the decoded byte length.
     """
     if isinstance(content, str):
-        return ParsedMessage(text=content)
+        return ParsedMessage(text=content, anonymous=anonymous)
     if not isinstance(content, list):
-        return ParsedMessage()
+        return ParsedMessage(anonymous=anonymous)
 
     max_files, max_total, kind_max = _upload_limits(anonymous)
-    parsed = ParsedMessage(confirm_ids=extract_confirm_ids(content))
+    parsed = ParsedMessage(confirm_ids=extract_confirm_ids(content), anonymous=anonymous)
     texts: list[str] = []
     for block in content:
         if not isinstance(block, dict):
@@ -683,6 +685,11 @@ async def _share_files(thread_id: str, parsed: ParsedMessage, deadline: float) -
     # the row can be deleted.
     puts: dict[int, asyncio.Future[str | None]] = {}
     writing = asyncio.Lock()
+    quota = (
+        settings.UPLOAD_THREAD_MAX_BYTES_ANON
+        if parsed.anonymous
+        else settings.UPLOAD_THREAD_MAX_BYTES
+    )
 
     async def _share(index: int, upload: IncomingUpload) -> dict[str, Any] | str:
         result = await process_upload(upload.kind, upload.mime_type, upload.name, upload.data)
@@ -690,6 +697,13 @@ async def _share_files(thread_id: str, parsed: ParsedMessage, deadline: float) -
             return f"{result.name} couldn't be shared: it {result.reason}."
         payload = _upload_payload(result)
         async with writing:
+            used = await asyncio.to_thread(store.upload_bytes, thread_id)
+            if used + stored_size(payload) > quota:
+                return (
+                    f"{result.name} couldn't be shared: it would take this conversation past "
+                    f"its {_size_label(quota)} of shared files. Start a new conversation to "
+                    "share more."
+                )
             put = asyncio.ensure_future(
                 asyncio.to_thread(store.put, thread_id, UPLOAD_KIND, payload)
             )

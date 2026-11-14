@@ -24,7 +24,7 @@ from src.agent.graph import create_checkpointed_graph
 from src.agent.state import human_turn
 from src.agent.upload_window import reference_tokens
 from src.api.identity import CLAIM_KEY_HEADER
-from src.api.thread_routes import not_read_note
+from src.api.thread_routes import _size_label, not_read_note
 from src.main import app
 from src.thread_owners import get_thread_owner_store
 from src.tool_attachments import get_tool_attachment_store, upload_reference
@@ -938,3 +938,76 @@ async def test_the_route_counts_share_phases_by_caller(client, seen, monkeypatch
     await _run(client, "t-who", [_text("x")], headers=agent_tokens.headers("me@x"))
 
     assert keys == ["user:me@x"]
+
+
+# ---------------------------------------------------------------------------
+# The thread's storage quota
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("signed_in", [False, True])
+async def test_a_file_past_the_threads_quota_is_refused(
+    client, seen, monkeypatch, agent_tokens, signed_in
+):
+    from src.config import settings
+
+    name = "UPLOAD_THREAD_MAX_BYTES" if signed_in else "UPLOAD_THREAD_MAX_BYTES_ANON"
+    headers = agent_tokens.headers("me@x") if signed_in else None
+    earlier = _stored_after_claim("t-full", IMAGE_ROW, signed_in)
+    used = get_tool_attachment_store().upload_bytes("t-full")
+    assert used > 0
+    monkeypatch.setattr(settings, name, used + 300)
+    monkeypatch.setattr(
+        settings,
+        "UPLOAD_THREAD_MAX_BYTES" if not signed_in else "UPLOAD_THREAD_MAX_BYTES_ANON",
+        10**9,
+    )
+
+    content = [_text("x"), _file("small.txt", b"hi"), _file("big.txt", b"x" * 400)]
+    r = await _run(client, "t-full", content, headers=headers)
+
+    reason = (
+        "big.txt couldn't be shared: it would take this conversation past its "
+        f"{_size_label(getattr(settings, name))} of shared files. Start a new "
+        "conversation to share more."
+    )
+    assert _dropped(r.text) == [[reason]]
+    names = [b["name"] for b in seen[0]["content_blocks"] if b["type"] == "attachment"]
+    assert names == ["small.txt"]
+    assert len(get_tool_attachment_store().ids_for("t-full") - {earlier}) == 1
+
+
+def _stored_after_claim(thread_id: str, payload: dict[str, Any], signed_in: bool) -> str:
+    get_thread_owner_store().claim_thread(thread_id, "me@x" if signed_in else None, CLAIM_KEY)
+    return _stored(thread_id, payload)
+
+
+def test_upload_bytes_counts_only_this_threads_uploads():
+    store = get_tool_attachment_store()
+    owners = get_thread_owner_store()
+    owners.claim_thread("t-a", None, CLAIM_KEY)
+    owners.claim_thread("t-b", None, CLAIM_KEY)
+    store.put("t-a", "upload", IMAGE_ROW)
+    store.put("t-a", "table", {"rows": [1] * 1000})
+    store.put("t-b", "upload", IMAGE_ROW)
+
+    size = len(json.dumps(IMAGE_ROW, separators=(",", ":")).encode())
+    assert store.upload_bytes("t-a") == size
+    assert store.upload_bytes("t-none") == 0
+
+
+def test_upload_bytes_reads_an_error_as_zero(monkeypatch):
+    from src.tool_attachments import ToolAttachmentStore
+
+    def broken(self):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(ToolAttachmentStore, "_sessions", broken)
+    assert get_tool_attachment_store().upload_bytes("t-a") == 0
+
+
+def test_upload_bytes_without_a_database_is_zero(monkeypatch):
+    from src.tool_attachments import ToolAttachmentStore
+
+    monkeypatch.setattr(ToolAttachmentStore, "_sessions", lambda self: None)
+    assert get_tool_attachment_store().upload_bytes("t-a") == 0

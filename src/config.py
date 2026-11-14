@@ -355,6 +355,9 @@ class Settings(BaseSettings):
     UPLOAD_SHARE_TIMEOUT_S: int = 60  # a run's sweep and file storing, together
     # Runs one caller may have storing new files at once, across their threads.
     UPLOAD_MAX_INFLIGHT_PER_CALLER: int = 2
+    # Stored upload bytes per thread (the rows' JSON, so base64 and text).
+    UPLOAD_THREAD_MAX_BYTES: int = 100 * 1024 * 1024
+    UPLOAD_THREAD_MAX_BYTES_ANON: int = 30 * 1024 * 1024
     UPLOAD_RETENTION_DAYS: int = 30
     UPLOAD_WINDOW_TURNS: int = 2
     # Content blocks in one message, checked before any is read. The client

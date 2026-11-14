@@ -40,7 +40,7 @@ import secrets
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Column, DateTime, Integer, String, Text, delete, select
+from sqlalchemy import Column, DateTime, Integer, String, Text, delete, func, select
 from sqlalchemy.orm import declarative_base
 
 from .thread_owners import get_thread_owner_store
@@ -79,6 +79,15 @@ def reference_for(kind: str, attachment_id: str, payload: dict[str, Any]) -> dic
     ref = {k: v for k, v in payload.items() if k != "rows"}
     ref.update(id=attachment_id, kind=kind)
     return ref
+
+
+def _serialized(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, separators=(",", ":"))
+
+
+def stored_size(payload: dict[str, Any]) -> int:
+    """The bytes ``put`` stores for ``payload``, as ``size_bytes`` counts them."""
+    return len(_serialized(payload).encode())
 
 
 def _decoded_size(b64: str) -> int:
@@ -163,7 +172,7 @@ class ToolAttachmentStore:
             sessions = self._sessions()
             if sessions is None or get_thread_owner_store().resolve_owner(thread_id) is None:
                 return None
-            text = json.dumps(payload, separators=(",", ":"))
+            text = _serialized(payload)
             attachment_id = secrets.token_hex(16)
             with sessions() as session, session.begin():
                 session.add(
@@ -218,6 +227,25 @@ class ToolAttachmentStore:
         except Exception:
             logger.warning("couldn't read an upload", exc_info=True)
             return None
+
+    def upload_bytes(self, thread_id: str) -> int:
+        """The stored size of this thread's uploads; 0 without a database or on
+        an error, when the write that follows fails too."""
+        try:
+            sessions = self._sessions()
+            if sessions is None:
+                return 0
+            with sessions() as session:
+                total: Any = session.execute(
+                    select(func.coalesce(func.sum(ToolAttachmentRow.size_bytes), 0)).where(
+                        ToolAttachmentRow.thread_id == thread_id,
+                        ToolAttachmentRow.kind == UPLOAD_KIND,
+                    )
+                ).scalar_one()
+            return int(total)
+        except Exception:
+            logger.warning("couldn't count a thread's uploads", exc_info=True)
+            return 0
 
     def ids_for(self, thread_id: str) -> set[str]:
         """This thread's stored ids; none on a database error, so the cleanup skips."""
