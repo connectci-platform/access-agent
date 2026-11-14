@@ -1,0 +1,326 @@
+"""Upload content checks and re-encoding (D8-3086)."""
+
+import asyncio
+import io
+import json
+import os
+import sys
+
+import pytest
+from PIL import Image
+
+from src.config import settings
+from src.uploads import pdf_extract, process
+from src.uploads.process import Processed, Rejected, clean_filename, process_upload
+
+
+def _png(im: Image.Image) -> bytes:
+    out = io.BytesIO()
+    im.save(out, "PNG")
+    return out.getvalue()
+
+
+def _open(data: bytes) -> Image.Image:
+    return Image.open(io.BytesIO(data))
+
+
+def _pdf(page_texts: list[str]) -> bytes:
+    """A minimal PDF with one Helvetica text line per page."""
+    objs: list[bytes] = [b"<< /Type /Catalog /Pages 2 0 R >>"]
+    kids = " ".join(f"{3 + 2 * i} 0 R" for i in range(len(page_texts)))
+    objs.append(f"<< /Type /Pages /Kids [{kids}] /Count {len(page_texts)} >>".encode())
+    font = 3 + 2 * len(page_texts)
+    for i, text in enumerate(page_texts):
+        stream = f"BT /F1 12 Tf 10 100 Td ({text}) Tj ET".encode() if text else b""
+        objs.append(
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] "
+            f"/Resources << /Font << /F1 {font} 0 R >> >> /Contents {4 + 2 * i} 0 R >>".encode()
+        )
+        objs.append(b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream")
+    objs.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for n, body in enumerate(objs, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % n + body + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1)
+    for off in offsets:
+        out += b"%010d 00000 n \n" % off
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(objs) + 1,
+        xref,
+    )
+    return bytes(out)
+
+
+async def _image(data: bytes, name: str = "a.png") -> Processed:
+    result = await process_upload("image", "image/png", name, data)
+    assert isinstance(result, Processed)
+    return result
+
+
+async def test_16bit_png_becomes_8bit():
+    im = Image.new("I;16", (4, 4))
+    for x in range(4):
+        for y in range(4):
+            im.putpixel((x, y), 40000)
+    assert _open(_png(im)).mode.startswith("I;16")
+
+    result = await _image(_png(im))
+
+    out = _open(result.data)
+    assert out.mode in ("L", "RGB")
+    assert out.getpixel((0, 0)) in (156, (156, 156, 156))  # 40000 / 256
+
+
+async def test_large_png_downscaled_to_1600():
+    result = await _image(_png(Image.new("RGB", (3200, 1000), "blue")))
+
+    assert (result.width, result.height) == (1600, 500)
+    assert _open(result.data).size == (1600, 500)
+    assert result.mime_type == "image/png"
+    assert result.kind == "image"
+
+
+async def test_over_pixel_cap_rejected():
+    result = await process_upload(
+        "image", "image/png", "big.png", _png(Image.new("L", (6000, 5000)))
+    )
+
+    assert result == Rejected("big.png", "is over 25 million pixels")
+
+
+async def test_decompression_bomb_error_rejected():
+    # More than twice the cap makes Pillow raise an error rather than warn.
+    result = await process_upload(
+        "image", "image/png", "bomb.png", _png(Image.new("1", (9000, 9000)))
+    )
+
+    assert isinstance(result, Rejected)
+    assert "million pixels" in result.reason
+
+
+async def test_eps_bytes_declared_png_rejected():
+    eps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 10 10\n"
+    result = await process_upload("image", "image/png", "x.png", eps)
+
+    assert result == Rejected("x.png", "couldn't be read as an image")
+
+
+async def test_tiff_bytes_declared_png_rejected():
+    out = io.BytesIO()
+    Image.new("RGB", (4, 4)).save(out, "TIFF")
+    result = await process_upload("image", "image/png", "x.png", out.getvalue())
+
+    assert result == Rejected("x.png", "couldn't be read as an image")
+
+
+async def test_gif_uses_first_frame():
+    frames = [Image.new("RGB", (8, 8), c) for c in ("red", "blue")]
+    out = io.BytesIO()
+    frames[0].save(out, "GIF", save_all=True, append_images=frames[1:])
+
+    result = await _image(out.getvalue(), "a.gif")
+
+    assert _open(result.data).convert("RGB").getpixel((0, 0)) == (255, 0, 0)
+
+
+async def test_exif_removed():
+    src = io.BytesIO()
+    exif = Image.Exif()
+    exif[0x010E] = "secret description"
+    Image.new("RGB", (8, 8), "red").save(src, "JPEG", exif=exif)
+    assert _open(src.getvalue()).getexif()
+
+    result = await _image(src.getvalue(), "a.jpg")
+
+    assert not _open(result.data).getexif()
+    assert b"secret description" not in result.data
+
+
+async def test_transparency_kept_as_rgba():
+    result = await _image(_png(Image.new("RGBA", (8, 8), (255, 0, 0, 0))))
+
+    assert _open(result.data).mode == "RGBA"
+    assert _open(result.data).getpixel((0, 0))[3] == 0
+
+
+@pytest.mark.parametrize("mode", ["RGB", "RGBA"])
+async def test_big_png_falls_back_to_jpeg(mode):
+    channels = len(mode)
+    noise = Image.frombytes(mode, (1000, 1000), os.urandom(1000 * 1000 * channels))
+    assert len(_png(noise)) > settings.UPLOAD_PNG_MAX_BYTES
+
+    result = await _image(_png(noise))
+
+    assert result.mime_type == "image/jpeg"
+    assert _open(result.data).format == "JPEG"
+
+
+async def test_unknown_kind_rejected():
+    result = await process_upload("video", "video/mp4", "a.mp4", b"x")
+
+    assert result == Rejected("a.mp4", "isn't a supported file type")
+
+
+async def test_pdf_text_extracted_and_capped_at_40000():
+    long_line = "A" * 30000
+    result = await process_upload("pdf", "application/pdf", "doc.pdf", _pdf([long_line, long_line]))
+
+    assert isinstance(result, Processed)
+    assert result.pages == 2
+    assert result.text is not None
+    assert len(result.text) == 40000
+    assert result.text.startswith("AAA")
+    assert result.text_truncated is True
+    assert result.no_text is False
+    assert result.mime_type == "application/pdf"
+
+
+async def test_pdf_short_text_not_truncated_and_keeps_original_bytes():
+    data = _pdf(["Hello ACCESS"])
+    result = await process_upload("pdf", "application/pdf", "doc.pdf", data)
+
+    assert isinstance(result, Processed)
+    assert result.text is not None and "Hello ACCESS" in result.text
+    assert result.text_truncated is False
+    assert result.data == data
+
+
+async def test_pdf_page_cap_truncates():
+    data = _pdf(["page"] * 31)
+    result = await process_upload("pdf", "application/pdf", "doc.pdf", data)
+
+    assert isinstance(result, Processed)
+    assert result.pages == 31
+    assert result.text_truncated is True
+    assert result.text is not None
+    assert result.text.count("page") == 30
+
+
+async def test_pdf_without_text_marks_no_text():
+    result = await process_upload("pdf", "application/pdf", "scan.pdf", _pdf([""]))
+
+    assert isinstance(result, Processed)
+    assert result.no_text is True
+    assert result.pages == 1
+
+
+async def test_garbage_pdf_rejected():
+    result = await process_upload("pdf", "application/pdf", "x.pdf", b"not a pdf")
+
+    assert result == Rejected("x.pdf", "couldn't be read as a PDF")
+
+
+async def test_extractor_output_missing_fields_rejected(tmp_path, monkeypatch):
+    script = tmp_path / "bad.py"
+    script.write_text("print('{}')")
+    monkeypatch.setattr(process, "PDF_EXTRACT_PATH", script)
+
+    result = await process_upload("pdf", "application/pdf", "x.pdf", b"x")
+
+    assert result == Rejected("x.pdf", "couldn't be read as a PDF")
+
+
+async def test_pdf_timeout_kills_extractor(tmp_path, monkeypatch):
+    script = tmp_path / "sleeper.py"
+    script.write_text("import time\ntime.sleep(60)\n")
+    monkeypatch.setattr(process, "PDF_EXTRACT_PATH", script)
+    monkeypatch.setattr(settings, "UPLOAD_PDF_TIMEOUT_S", 0.1)
+    procs = []
+    real = asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        procs.append(await real(*args, **kwargs))
+        return procs[-1]
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
+
+    result = await process_upload("pdf", "application/pdf", "x.pdf", b"x")
+
+    assert result == Rejected("x.pdf", "took too long to read")
+    assert procs[0].returncode is not None  # killed and reaped
+
+
+def test_extractor_runs_as_isolated_script():
+    import subprocess
+
+    done = subprocess.run(
+        [sys.executable, "-I", str(process.PDF_EXTRACT_PATH), "30", "100"],
+        input=_pdf(["Hello"]),
+        capture_output=True,
+        check=True,
+    )
+
+    assert json.loads(done.stdout) == {"pages": 1, "text": "Hello", "truncated": False}
+
+
+def test_extract_main_writes_json():
+    out = io.BytesIO()
+    pdf_extract.main(["x", "30", "100"], io.BytesIO(_pdf(["Hi"])), out)
+
+    assert json.loads(out.getvalue())["text"] == "Hi"
+
+
+def test_memory_limit_is_set_in_child(monkeypatch):
+    calls = []
+    monkeypatch.setattr(process.resource, "setrlimit", lambda *a: calls.append(a))
+
+    process._limit_memory()
+
+    limit = settings.UPLOAD_PDF_RLIMIT_AS
+    assert calls == [(process.resource.RLIMIT_AS, (limit, limit))]
+
+
+def test_memory_limit_refusal_is_tolerated(monkeypatch):
+    def refuse(*_args):
+        raise ValueError("current limit exceeds maximum limit")
+
+    monkeypatch.setattr(process.resource, "setrlimit", refuse)
+
+    process._limit_memory()
+
+
+async def test_latin1_text_decodes_with_replacement():
+    result = await process_upload("text", "text/plain", "a.log", b"caf\xe9 ok")
+
+    assert isinstance(result, Processed)
+    assert result.text == "caf� ok"
+    assert result.data == b"caf\xe9 ok"
+    assert result.text_truncated is False
+
+
+async def test_text_capped_at_40000():
+    result = await process_upload("text", "text/plain", "a.log", b"x" * 40001)
+
+    assert isinstance(result, Processed)
+    assert result.text is not None and len(result.text) == 40000
+    assert result.text_truncated is True
+
+
+async def test_nul_text_rejected():
+    result = await process_upload("text", "text/plain", "a.bin", b"ab\x00cd")
+
+    assert result == Rejected("a.bin", "isn't a text file")
+
+
+def test_clean_filename():
+    assert clean_filename("run_md.sh") == "run_md.sh"
+    assert clean_filename("My Report (1).pdf") == "My Report (1).pdf"
+    assert clean_filename("../etc/pa\nss<wd>") == ".._etc_pa_ss_wd_"
+    assert clean_filename("é.png") == "_.png"
+    assert clean_filename("") == "file"
+    assert len(clean_filename("a" * 300)) == 100
+
+
+async def test_concurrency_is_bounded():
+    assert process._semaphore._value == settings.UPLOAD_DECODE_CONCURRENCY
+
+
+def test_extract_stops_reading_pages_past_the_char_cap():
+    result = pdf_extract.extract(_pdf(["A" * 60, "B" * 60, "C" * 60]), 30, 100)
+
+    assert result["pages"] == 3
+    assert result["truncated"] is True
+    assert result["text"] == ("A" * 60 + "\n" + "B" * 60)[:100]
