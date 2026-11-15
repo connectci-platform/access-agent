@@ -69,6 +69,14 @@ services:
       - AGENT_TOKEN_JWKS_URL=${AGENT_TOKEN_JWKS_URL:-}
       - AGENT_TOKEN_AUDIENCE=${AGENT_TOKEN_AUDIENCE:-}
       - AGENT_TOKEN_ALLOWED_AZP=${AGENT_TOKEN_ALLOWED_AZP:-access-qa-bot}
+      # Turnstile bot check for signed-out users (src/turnstile.py). Off while
+      # TURNSTILE_SECRET_KEY is empty; the client takes the site key from the
+      # agent's challenge response.
+      - TURNSTILE_SITE_KEY=${TURNSTILE_SITE_KEY:-}
+      - TURNSTILE_SECRET_KEY=${TURNSTILE_SECRET_KEY:-}
+      - TURNSTILE_MODE=${TURNSTILE_MODE:-deferred}
+      - TURNSTILE_FREE_QUERIES=${TURNSTILE_FREE_QUERIES:-3}
+      - TURNSTILE_SESSION_TTL=${TURNSTILE_SESSION_TTL:-3600}
       # Acting-user tokens for the MCP tool servers (src/tools/mcp_token.py)
       - MCP_ACTING_USER_TOKEN=${MCP_ACTING_USER_TOKEN:-off}
       - TOKEN_EXCHANGE_CLIENT_ID=${TOKEN_EXCHANGE_CLIENT_ID:-access-assistant}
