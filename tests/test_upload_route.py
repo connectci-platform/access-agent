@@ -24,7 +24,7 @@ from src.agent.graph import create_checkpointed_graph
 from src.agent.state import human_turn
 from src.agent.upload_window import reference_tokens
 from src.api.identity import CLAIM_KEY_HEADER
-from src.api.thread_routes import _size_label, not_read_note
+from src.api.thread_routes import _size_label, _typed_chars, not_read_note
 from src.main import app
 from src.thread_owners import get_thread_owner_store
 from src.tool_attachments import get_tool_attachment_store, upload_reference
@@ -1130,6 +1130,19 @@ async def test_a_question_over_the_length_limit_is_refused_unclaimed(
     assert "10" in r.json()["detail"]
     assert seen == []
     assert get_thread_owner_store().access("t-long", None, CLAIM_KEY).name == "NEW"
+
+
+@pytest.mark.parametrize(
+    ("content", "chars"),
+    [
+        ("abc", 3),
+        (None, 0),
+        ({"type": "text", "text": "abc"}, 0),
+        ([_text("ab"), "cd", {"type": "text", "text": 5}, _file("a.txt", b"zz"), _text("e")], 3),
+    ],
+)
+def test_typed_chars_counts_only_typed_text(content, chars):
+    assert _typed_chars(content) == chars
 
 
 async def test_a_question_at_the_length_limit_runs(client, seen, monkeypatch):
