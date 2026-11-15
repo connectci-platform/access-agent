@@ -24,7 +24,7 @@ from src.agent.graph import create_checkpointed_graph
 from src.agent.state import human_turn
 from src.agent.upload_window import reference_tokens
 from src.api.identity import CLAIM_KEY_HEADER
-from src.api.thread_routes import _size_label, not_read_note
+from src.api.thread_routes import _size_label, _typed_chars, not_read_note
 from src.main import app
 from src.thread_owners import get_thread_owner_store
 from src.tool_attachments import get_tool_attachment_store, upload_reference
@@ -1113,6 +1113,49 @@ async def test_too_many_input_messages_are_refused(client, seen, monkeypatch):
 
     assert r.status_code == 400
     assert seen == []
+
+
+@pytest.mark.parametrize("as_blocks", [False, True])
+async def test_a_question_over_the_length_limit_is_refused_unclaimed(
+    client, seen, monkeypatch, as_blocks
+):
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "QUESTION_MAX_CHARS", 10)
+    long = [_text("x" * 6), _text("y" * 5)] if as_blocks else "x" * 11
+
+    r = await _run(client, "t-long", long)
+
+    assert r.status_code == 413
+    assert "10" in r.json()["detail"]
+    assert seen == []
+    assert get_thread_owner_store().access("t-long", None, CLAIM_KEY).name == "NEW"
+
+
+@pytest.mark.parametrize(
+    ("content", "chars"),
+    [
+        ("abc", 3),
+        (None, 0),
+        ({"type": "text", "text": "abc"}, 0),
+        ([_text("ab"), "cd", {"type": "text", "text": 5}, _file("a.txt", b"zz"), _text("e")], 3),
+    ],
+)
+def test_typed_chars_counts_only_typed_text(content, chars):
+    assert _typed_chars(content) == chars
+
+
+async def test_a_question_at_the_length_limit_runs(client, seen, monkeypatch):
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "QUESTION_MAX_CHARS", 10)
+
+    r = await _run(
+        client, "t-at-limit", [_text("x" * 5), _text("y" * 5), _file("a.txt", b"z" * 50)]
+    )
+
+    assert r.status_code == 200
+    assert seen
 
 
 async def test_too_many_blocks_claims_no_thread(client, seen):

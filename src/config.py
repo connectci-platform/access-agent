@@ -369,6 +369,11 @@ class Settings(BaseSettings):
     RUN_BODY_MAX_BRACKETS: int = 20_000
     # Messages in a run request. The client sends only the new question.
     RUN_MAX_MESSAGES: int = 50
+    # Characters in a question's typed text, on /query and the thread run
+    # route. Past this a question is refused before any model call, since the
+    # window can cut tool results but never the question itself. It matches
+    # what is read from one shared text file, so a longer paste can go as one.
+    QUESTION_MAX_CHARS: int = 40_000
 
     # Per-thread run turn bound (src/api/thread_runs.py run_with_timeout)
     # Bounded by check_agent_token_config (src/agent_token.py).
