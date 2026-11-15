@@ -1115,6 +1115,36 @@ async def test_too_many_input_messages_are_refused(client, seen, monkeypatch):
     assert seen == []
 
 
+@pytest.mark.parametrize("as_blocks", [False, True])
+async def test_a_question_over_the_length_limit_is_refused_unclaimed(
+    client, seen, monkeypatch, as_blocks
+):
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "QUESTION_MAX_CHARS", 10)
+    long = [_text("x" * 6), _text("y" * 5)] if as_blocks else "x" * 11
+
+    r = await _run(client, "t-long", long)
+
+    assert r.status_code == 413
+    assert "10" in r.json()["detail"]
+    assert seen == []
+    assert get_thread_owner_store().access("t-long", None, CLAIM_KEY).name == "NEW"
+
+
+async def test_a_question_at_the_length_limit_runs(client, seen, monkeypatch):
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "QUESTION_MAX_CHARS", 10)
+
+    r = await _run(
+        client, "t-at-limit", [_text("x" * 5), _text("y" * 5), _file("a.txt", b"z" * 50)]
+    )
+
+    assert r.status_code == 200
+    assert seen
+
+
 async def test_too_many_blocks_claims_no_thread(client, seen):
     from src.config import settings
 

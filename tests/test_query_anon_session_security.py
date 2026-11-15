@@ -239,3 +239,33 @@ async def test_query_failure_before_hand_off_refunds_the_question(client, fresh_
         await _post_query(client, {"query": "hi", "session_id": "no-hand-off"})
 
     assert _count("no-hand-off") == 0
+
+
+async def test_a_query_over_the_length_limit_is_refused(client, monkeypatch):
+    from unittest.mock import AsyncMock, patch
+
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "QUESTION_MAX_CHARS", 10)
+    calls: list[object] = []
+
+    async def _capture_stream(**kwargs: object):
+        calls.append(kwargs)
+        async for ev in fake_stream_agent(**kwargs):
+            yield ev
+
+    with (
+        patch("src.api.routes.stream_agent", side_effect=_capture_stream),
+        patch("src.api.routes.get_registry", new_callable=AsyncMock) as mock_reg,
+    ):
+        reg = AsyncMock()
+        reg.catalog = {"tools": [], "quick_lookup": {}}
+        mock_reg.return_value = reg
+
+        over = await _post_query(client, {"query": "x" * 11})
+        at = await _post_query(client, {"query": "x" * 10})
+
+    assert over.status_code == 413
+    assert "10" in over.json()["detail"]
+    assert at.status_code == 200
+    assert len(calls) == 1

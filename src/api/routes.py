@@ -30,6 +30,7 @@ from .rating_routes import MAX_FEEDBACK_BODY_CHARS, clean_feedback
 from .sse import format_sse_event as _format_sse_event
 from .stopped_turns import keeping_cut_off_turn, without_tool_messages
 from .thread_access import require_thread_access
+from .thread_routes import question_too_long
 from .thread_runs import acquire_thread_run, held_run, release_thread_run, run_with_timeout
 
 if TYPE_CHECKING:
@@ -573,6 +574,9 @@ async def query_agent(
             status_code=400,
             detail="session_id is required for anonymous queries",
         )
+    # Refused before any model call: the window can't cut a question.
+    if refusal := question_too_long(len(request.query)):
+        raise refusal
     # A server-minted session_id is the credential for an anon /query session
     # (see _query_may_continue in thread_access.py). It MUST be unguessable: a
     # `sess_{timestamp}` fallback let anyone who knew the approximate request

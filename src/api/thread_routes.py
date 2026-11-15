@@ -1088,6 +1088,35 @@ def _bad_body(detail: str) -> HTTPException:
     return HTTPException(status_code=400, detail=detail)
 
 
+def question_too_long(chars: int) -> HTTPException | None:
+    """The refusal for a question whose typed text is over QUESTION_MAX_CHARS."""
+    limit = settings.QUESTION_MAX_CHARS
+    if chars <= limit:
+        return None
+    return HTTPException(
+        status_code=413,
+        detail=(
+            f"The question is {chars:,} characters; the limit is {limit:,}. "
+            "Share long text as a file instead."
+        ),
+    )
+
+
+def _typed_chars(content: Any) -> int:
+    """Characters of a message's typed text: the string, or its text blocks."""
+    if isinstance(content, str):
+        return len(content)
+    if not isinstance(content, list):
+        return 0
+    return sum(
+        len(block["text"])
+        for block in content
+        if isinstance(block, dict)
+        and block.get("type") == "text"
+        and isinstance(block.get("text"), str)
+    )
+
+
 async def run_body(request: Request) -> RunRequest:
     """The run request, read and checked before the route claims a thread.
 
@@ -1109,6 +1138,8 @@ async def run_body(request: Request) -> RunRequest:
     content = _last_user_message(body.input.messages).get("content")
     if isinstance(content, list) and len(content) > settings.UPLOAD_MAX_BLOCKS:
         raise _bad_body("Too many parts in one message")
+    if refusal := question_too_long(_typed_chars(content)):
+        raise refusal
     return body
 
 
