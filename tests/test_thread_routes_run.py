@@ -1442,11 +1442,28 @@ def _capture_stream_agent(monkeypatch) -> dict[str, Any]:
     return captured
 
 
+def _with_lookup(monkeypatch, lookup):
+    """Route runs through the real consent gate with consent ``allow`` and
+    ``lookup`` standing in for the allocations profile."""
+    from unittest.mock import AsyncMock
+
+    from src.agent import personalization
+    from src.agent.consent import Consent
+
+    monkeypatch.setattr(
+        personalization, "consent_for", AsyncMock(return_value=Consent("allow", None))
+    )
+    monkeypatch.setattr(personalization, "allocated_profile_for", lookup)
+    monkeypatch.setattr(
+        "src.api.thread_routes.personalized_profile", personalization.personalized_profile
+    )
+
+
 def _stub_profile_lookup(monkeypatch, profile):
     from unittest.mock import AsyncMock
 
     lookup = AsyncMock(return_value=profile)
-    monkeypatch.setattr("src.api.thread_routes.allocated_profile_for", lookup)
+    _with_lookup(monkeypatch, lookup)
     return lookup
 
 
@@ -1473,9 +1490,7 @@ def _use_real_lookup(monkeypatch, result):
 
     monkeypatch.setattr(profile_source, "MCPClient", _MCP)
     monkeypatch.setattr(profile_source, "get_rp_cache", _Groups)
-    monkeypatch.setattr(
-        "src.api.thread_routes.allocated_profile_for", profile_source.allocated_profile_for
-    )
+    _with_lookup(monkeypatch, profile_source.allocated_profile_for)
     return calls
 
 
@@ -1626,7 +1641,7 @@ async def test_the_lookup_runs_before_the_turn_timer_starts(client, bearer, monk
         await asyncio.sleep(0.05)
         finished.append(time.monotonic())
 
-    monkeypatch.setattr("src.api.thread_routes.allocated_profile_for", _slow_lookup)
+    _with_lookup(monkeypatch, _slow_lookup)
     seen: dict[str, Any] = {}
 
     async def _fake(**kwargs):
@@ -1712,7 +1727,7 @@ async def test_metadata_goes_out_before_the_profile_lookup_finishes(seed_owner, 
         started.set()
         await release.wait()
 
-    monkeypatch.setattr("src.api.thread_routes.allocated_profile_for", _blocked_lookup)
+    _with_lookup(monkeypatch, _blocked_lookup)
     captured = _capture_stream_agent(monkeypatch)
     identity = AgentIdentity(
         sub="meta@x", scopes=frozenset({"agent:read"}), exp=int(time.time()) + 900
@@ -1754,7 +1769,7 @@ async def test_a_disconnect_during_the_lookup_cancels_it(seed_owner, monkeypatch
             cancelled.set()
             raise
 
-    monkeypatch.setattr("src.api.thread_routes.allocated_profile_for", _hanging_lookup)
+    _with_lookup(monkeypatch, _hanging_lookup)
     identity = AgentIdentity(
         sub="gone@x", scopes=frozenset({"agent:read"}), exp=int(time.time()) + 900
     )
@@ -1999,3 +2014,87 @@ async def test_stop_after_a_write_keeps_the_write_for_retry(bearer_for, seed_own
     assert len(messages) == 4 and isinstance(messages[0], HumanMessage)
     assert [m.id for m in messages[1:3]] == ["m1", "t1"]
     assert messages[3].response_metadata["stopped"] is True
+
+
+# ── Consent (D8-3124) ────────────────────────────────────────────────────
+
+
+def _consent_gate(monkeypatch, state):
+    """The real gate, with consent ``state`` and a lookup that returns Delta."""
+    from unittest.mock import AsyncMock
+
+    from src.agent import personalization
+    from src.agent.consent import Consent
+    from src.agent.profile import UserProfile
+
+    profile = UserProfile.model_validate(DELTA_PROFILE_DICT)
+    lookup = AsyncMock(return_value=profile)
+    monkeypatch.setattr(
+        personalization, "consent_for", AsyncMock(return_value=Consent(state, None))
+    )
+    monkeypatch.setattr(personalization, "allocated_profile_for", lookup)
+    monkeypatch.setattr(
+        "src.api.thread_routes.personalized_profile", personalization.personalized_profile
+    )
+    return lookup, profile
+
+
+@pytest.mark.parametrize("once", [False, True])
+async def test_deny_runs_without_allocations(client, bearer, monkeypatch, once):
+    lookup, _ = _consent_gate(monkeypatch, "deny")
+    captured = _capture_stream_agent(monkeypatch)
+
+    await _run(client, bearer, context={"personalize_once": once})
+
+    lookup.assert_not_awaited()
+    assert captured["profile"] is None
+
+
+async def test_unset_runs_without_allocations_unless_allowed_once(client, bearer, monkeypatch):
+    lookup, profile = _consent_gate(monkeypatch, "unset")
+    captured = _capture_stream_agent(monkeypatch)
+
+    await _run(client, bearer)
+    assert captured["profile"] is None
+    lookup.assert_not_awaited()
+
+    await _run(client, bearer, context={"personalize_once": True})
+    assert captured["profile"] == profile
+
+
+async def test_only_a_literal_true_allows_once(client, bearer, monkeypatch):
+    lookup, _ = _consent_gate(monkeypatch, "unset")
+    captured = _capture_stream_agent(monkeypatch)
+
+    await _run(client, bearer, context={"personalize_once": "true"})
+
+    lookup.assert_not_awaited()
+    assert captured["profile"] is None
+
+
+async def test_the_offer_is_sent_after_the_answer(client, bearer, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from src.agent.consent import Consent
+
+    _consent_gate(monkeypatch, "unset")
+    _capture_stream_agent(monkeypatch)
+    offer = AsyncMock(return_value=True)
+    monkeypatch.setattr("src.api.thread_routes.offer_after_turn", offer)
+
+    r = await _run(client, bearer)
+
+    assert '"type": "personalization_offer"' in r.text
+    args, kwargs = offer.await_args
+    assert args[0] == "runner@x"
+    assert args[1] == Consent("unset", None)
+    assert kwargs["once"] is False
+
+
+async def test_no_offer_event_when_not_offered(client, bearer, monkeypatch):
+    _consent_gate(monkeypatch, "unset")
+    _capture_stream_agent(monkeypatch)
+
+    r = await _run(client, bearer)
+
+    assert "personalization_offer" not in r.text
