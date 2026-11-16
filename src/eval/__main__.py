@@ -68,7 +68,9 @@ def _profile_from_args(profile_resource: list[str] | None) -> UserProfile | None
         name, sep, slug = entry.partition("=")
         # resource_id is always None: synthetic profiles carry no CiDeR id.
         resources.append(
-            AllocatedResource(name=name, rp_slug=slug if sep else None, resource_id=None)
+            AllocatedResource(
+                name=name, rp_slug=slug if sep else None, resource_id=None, login=None
+            )
         )
 
     slugs = {r.rp_slug for r in resources if r.rp_slug}

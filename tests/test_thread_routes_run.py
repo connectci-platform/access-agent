@@ -1557,6 +1557,38 @@ async def test_a_failed_lookup_runs_the_turn_without_a_profile(client, bearer, m
     assert captured["profile"] is None
 
 
+def _profile_present_reported() -> bool | None:
+    from src.turn_reporter import TurnReport, get_turn_reporter
+
+    session = get_turn_reporter()._session_factory()
+    try:
+        return session.query(TurnReport).filter_by(session_id="t-profile").one().profile_present
+    finally:
+        session.close()
+
+
+async def test_the_report_says_the_profile_was_in_the_prompt(client, bearer, monkeypatch):
+    from src.agent.profile import UserProfile
+
+    _stub_profile_lookup(monkeypatch, UserProfile.model_validate(DELTA_PROFILE_DICT))
+    _capture_stream_agent(monkeypatch)
+
+    _ = (await _run(client, bearer)).text
+
+    assert _profile_present_reported() is True
+
+
+async def test_the_report_says_a_signed_in_turn_ran_without_one(client, bearer, monkeypatch):
+    from src.tools.mcp_client import MCPToolResult
+
+    _use_real_lookup(monkeypatch, MCPToolResult(success=False, error="HTTP 503"))
+    _capture_stream_agent(monkeypatch)
+
+    _ = (await _run(client, bearer)).text
+
+    assert _profile_present_reported() is False
+
+
 async def test_a_syncing_lookup_runs_the_turn_without_a_profile(client, bearer, monkeypatch):
     _use_real_lookup(monkeypatch, _accounts_result([], state="syncing"))
     captured = _capture_stream_agent(monkeypatch)

@@ -1223,6 +1223,9 @@ async def thread_run_stream(
             try:
                 yield format_sse_event("metadata", {"run_id": run_id, "attempt": 1})
                 profile = await lookup
+                # Graph updates never carry the run's input, so the report
+                # learns from here whether the profile was in the prompt.
+                final_state["profile"] = profile.model_dump() if profile else None
                 # The turn's timer starts inside, after the files are stored.
                 async for event in _stream_run_events(
                     thread_id=thread_id,

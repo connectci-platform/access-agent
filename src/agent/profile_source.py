@@ -28,7 +28,15 @@ from typing import TYPE_CHECKING, Any
 
 from ..services.rp_cache import get_rp_cache
 from ..tools.mcp_client import MCPClient
-from .profile import NAME_RE, RESOURCE_ID_RE, RP_SLUG_RE, AllocatedResource, UserProfile
+from .profile import (
+    LOGIN_RE,
+    MAX_PROFILE_RESOURCES,
+    NAME_RE,
+    RESOURCE_ID_RE,
+    RP_SLUG_RE,
+    AllocatedResource,
+    UserProfile,
+)
 from .tools.access_documents import _normalize_rp_name
 
 if TYPE_CHECKING:
@@ -47,7 +55,7 @@ SUCCESS_TTL_S = 300.0
 # per user per window rather than one per message.
 FAILURE_TTL_S = 30.0
 MAX_CACHED_USERS = 1024
-MAX_RESOURCES = 32  # UserProfile.allocated_resources max_length
+MAX_RESOURCES = MAX_PROFILE_RESOURCES
 
 # States from Drupal's /api/1.0/rp-accounts that say what the user holds.
 # "syncing" (a cold first lookup) and anything else say nothing.
@@ -61,6 +69,10 @@ _RESOURCE_ID_RE = re.compile(RESOURCE_ID_RE)
 _RP_SLUG_RE = re.compile(RP_SLUG_RE)
 _RESOURCE_ID_MAX = 128
 _RP_SLUG_MAX = 32
+_LOGIN_RE = re.compile(LOGIN_RE)
+_LOGIN_MAX = 64
+# An account in any other state (closed, inactive) is not one the user can use.
+_ACTIVE = "active"
 
 _clock = time.monotonic
 
@@ -78,6 +90,18 @@ def _clean_resource_id(raw: object) -> str | None:
     if isinstance(raw, str) and len(raw) <= _RESOURCE_ID_MAX and _RESOURCE_ID_RE.match(raw):
         return raw
     return None
+
+
+def _clean_login(raw: object) -> str | None:
+    if isinstance(raw, str) and len(raw) <= _LOGIN_MAX and _LOGIN_RE.match(raw):
+        return raw
+    return None
+
+
+def _is_active(account: dict[str, Any]) -> bool:
+    """An account says it's active, or says nothing about its state."""
+    state = account.get("account_state")
+    return state is None or state == _ACTIVE
 
 
 def _slug_for(resource_id: str | None, slugs_for: Callable[[str], list[str]]) -> str | None:
@@ -107,15 +131,18 @@ def _resource_from_account(account: object) -> AllocatedResource | None:
     # Every field is already checked against its pattern and length, so this
     # can't raise; a row that couldn't be made valid was dropped above.
     return AllocatedResource(
-        name=name, rp_slug=None, resource_id=_clean_resource_id(account.get("resource_id"))
+        name=name,
+        rp_slug=None,
+        resource_id=_clean_resource_id(account.get("resource_id")),
+        login=_clean_login(account.get("rp_username")),
     )
 
 
 def resources_from_accounts(data: Any) -> list[AllocatedResource] | None:
     """Map a ``get_my_rp_accounts`` response to allocated resources, unslugged.
 
-    Returns ``[]`` only for a fresh, empty account list, and ``None`` when the
-    response can't say what the user holds. Rows that don't validate are
+    Returns ``[]`` for a fresh, empty account list or one whose accounts are
+    all closed, and ``None`` when the response can't say what the user holds. Rows that don't validate are
     dropped; if none survive, that is ``None`` too, not ``[]``.
     """
     if not isinstance(data, dict):
@@ -128,7 +155,11 @@ def resources_from_accounts(data: Any) -> list[AllocatedResource] | None:
         return [] if state == _STATE_NO_ROWS else None
     if state not in _STATES_WITH_ROWS:
         return None
-    resources = [r for a in accounts if (r := _resource_from_account(a)) is not None]
+    active = [a for a in accounts if not isinstance(a, dict) or _is_active(a)]
+    if not active:
+        # Every account is closed: the user holds nothing they can use.
+        return []
+    resources = [r for a in active if (r := _resource_from_account(a)) is not None]
     return resources[:MAX_RESOURCES] or None
 
 

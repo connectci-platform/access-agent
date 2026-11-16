@@ -203,6 +203,26 @@ class TestAssemble:
         assert report["user_hash"] is None
         assert report["invoked_write"] is False
 
+    def test_profile_present_says_whether_the_users_resources_were_in_the_prompt(self):
+        def report_for(state):
+            report, _ = _assemble_turn_report(
+                final_state={"tools_used": [], "tool_results": [], **state},
+                session_id="s",
+                turn_index=1,
+                question_id="q",
+                query_text="hi",
+                duration_ms=1.0,
+                acting_user="alice@access-ci.org",
+                success=True,
+                capabilities=[],
+            )
+            return report["profile_present"]
+
+        assert report_for({"profile": {"allocated_resources": []}}) is True
+        # Signed in, but the lookup timed out or was still syncing.
+        assert report_for({"profile": None}) is False
+        assert report_for({}) is False
+
     def test_rag_fields_and_payload_from_capture(self):
         cap = {
             "searched": True,

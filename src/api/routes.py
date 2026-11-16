@@ -286,6 +286,10 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
     acting_user = context.acting_user
     start_time = time.time()
     final_state: dict[str, Any] = {}
+    # As the loop reads it: a profile without a signed-in user is dropped.
+    # Graph updates never carry the run's input, so the report learns it here.
+    if request.profile is not None and acting_user is not None:
+        final_state["profile"] = request.profile.model_dump()
     reset_turn_capture()
     lock_run_id = run_id or str(uuid.uuid4())
     timed_out = False
