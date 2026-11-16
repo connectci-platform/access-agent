@@ -25,6 +25,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import declarative_base
 
 from .config import settings
+from .thread_lifecycle import mark_deleted, record_deleted_sync, settle, unmark_deleted
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -62,6 +63,17 @@ class ConversationDeletion(DeletionBase):  # type: ignore[valid-type,misc]
 
 class DeletionUnavailableError(RuntimeError):
     """No database is configured, so nothing can be found or deleted."""
+
+
+class ConversationBusyError(RuntimeError):
+    """A write on one of the threads didn't finish in time; nothing was deleted."""
+
+
+# How long a delete waits for writes already running on its threads: a turn
+# report or a stopped turn's save normally takes well under a second.
+SETTLE_TIMEOUT_S = 10.0
+# Ids per statement, well under Postgres's bind-parameter limit.
+_CHUNK = 1000
 
 
 _engine: sa.Engine | None = None
@@ -109,26 +121,44 @@ def owned_thread_ids(user: str) -> list[str]:
     return sorted(found)
 
 
+def _ensure_log_table(engine: sa.Engine) -> None:
+    # Outside the delete's transaction: two first-ever deletes at once may
+    # race to create it, and the loser must not roll back its delete.
+    if sa.inspect(engine).has_table("conversation_deletions"):
+        return
+    try:
+        DeletionBase.metadata.create_all(engine)
+    except sa.exc.SQLAlchemyError:
+        if not sa.inspect(engine).has_table("conversation_deletions"):
+            raise
+
+
+def _chunks(ids: Sequence[str]) -> list[list[str]]:
+    return [list(ids[i : i + _CHUNK]) for i in range(0, len(ids), _CHUNK)]
+
+
 def _delete_rows(thread_ids: Sequence[str], user: str | None, scope: Scope) -> None:
     engine = _get_engine()
+    _ensure_log_table(engine)
     ids: sa.BindParameter[list[str]] = sa.bindparam("ids", expanding=True)
     with engine.begin() as conn:
         tables = sa.inspect(conn)
-        if tables.has_table("report_tool_calls") and tables.has_table("turn_reports"):
-            conn.execute(
-                sa.text(
-                    "DELETE FROM report_tool_calls WHERE report_id IN "
-                    "(SELECT id FROM turn_reports WHERE session_id IN :ids)"
-                ).bindparams(ids),
-                {"ids": list(thread_ids)},
-            )
-        for table, column in _THREAD_TABLES:
-            if tables.has_table(table):
+        for chunk in _chunks(thread_ids):
+            if tables.has_table("report_tool_calls") and tables.has_table("turn_reports"):
                 conn.execute(
-                    sa.text(f"DELETE FROM {table} WHERE {column} IN :ids").bindparams(ids),
-                    {"ids": list(thread_ids)},
+                    sa.text(
+                        "DELETE FROM report_tool_calls WHERE report_id IN "
+                        "(SELECT id FROM turn_reports WHERE session_id IN :ids)"
+                    ).bindparams(ids),
+                    {"ids": chunk},
                 )
-        DeletionBase.metadata.create_all(conn)
+            for table, column in _THREAD_TABLES:
+                if tables.has_table(table):
+                    conn.execute(
+                        sa.text(f"DELETE FROM {table} WHERE {column} IN :ids").bindparams(ids),
+                        {"ids": chunk},
+                    )
+            record_deleted_sync(chunk, conn)
         conn.execute(
             sa.insert(ConversationDeletion.__table__).values(
                 user_hash=_hash_user(user),
@@ -150,13 +180,20 @@ async def delete_conversations(
 
     The caller has already checked that ``user`` may delete each thread
     (``None``: a signed-out caller holding the thread's claim key). The
-    checkpoints go first: if the row deletion then fails, the conversation
-    can't be reopened and the call can simply be repeated. Returns how many
-    conversations were deleted.
+    threads stay marked deleted from the start, so if a later step fails the
+    conversation can't be reopened or written to, and the call can simply be
+    repeated. Returns how many conversations were deleted.
     """
     if not thread_ids:
         return 0
     _get_engine()
+    # Mark first, so no write starts on these threads from here on, then wait
+    # for the writes already running (a turn report, a stopped turn's save,
+    # a rating) before removing anything they could write back.
+    mark_deleted(thread_ids)
+    if not await settle(thread_ids, timeout=SETTLE_TIMEOUT_S):
+        unmark_deleted(thread_ids)
+        raise ConversationBusyError("a write on the conversation is still running")
     if checkpointer is not None:
         for thread_id in thread_ids:
             await checkpointer.adelete_thread(thread_id)

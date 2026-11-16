@@ -9,6 +9,7 @@ tell which threads exist.
 from fastapi import HTTPException
 
 from .. import turn_reporter
+from ..thread_lifecycle import is_deleted
 from ..thread_owners import (
     ThreadAccess,
     get_thread_owner_store,
@@ -79,6 +80,9 @@ def require_thread_access(
     """
     store = get_thread_owner_store()
     access = store.access(thread_id, caller, claim_key)
+    # A deleted conversation's id is never a new conversation (D8-3126).
+    if access is ThreadAccess.NEW and is_deleted(thread_id):
+        raise refuse_thread()
     if create and access is ThreadAccess.NEW:
         if store.claim_thread(thread_id, caller, claim_key):
             return

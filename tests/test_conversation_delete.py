@@ -198,3 +198,49 @@ async def test_without_a_database_it_raises(monkeypatch):
         await delete_conversations([GONE], user=ALICE, scope="one", checkpointer=None)
     with pytest.raises(conversation_delete.DeletionUnavailableError):
         owned_thread_ids(ALICE)
+
+
+async def test_deleted_ids_are_recorded_so_they_cant_come_back(db):
+    _seed(db, GONE, ALICE)
+    await delete_conversations([GONE], user=ALICE, scope="one", checkpointer=None)
+
+    with db.connect() as conn:
+        ids = set(conn.execute(sa.text("SELECT thread_id FROM deleted_threads")).scalars())
+    assert ids == {GONE}
+
+
+async def test_many_threads_are_deleted_in_batches(db, monkeypatch):
+    monkeypatch.setattr(conversation_delete, "_CHUNK", 2)
+    for i in range(5):
+        _seed(db, f"t{i}", ALICE)
+
+    assert (
+        await delete_conversations(
+            [f"t{i}" for i in range(5)], user=ALICE, scope="all", checkpointer=None
+        )
+        == 5
+    )
+    assert _threads_in(db, "thread_owners", "thread_id") == set()
+
+
+async def test_a_second_delete_reuses_the_log_table(db):
+    _seed(db, GONE, ALICE)
+    _seed(db, KEPT, ALICE)
+    await delete_conversations([GONE], user=ALICE, scope="one", checkpointer=None)
+    await delete_conversations([KEPT], user=ALICE, scope="one", checkpointer=None)
+
+    with db.connect() as conn:
+        assert conn.execute(sa.text("SELECT COUNT(*) FROM conversation_deletions")).scalar() == 2
+
+
+def test_the_log_table_race_is_tolerated_only_if_the_table_exists(db, monkeypatch):
+    def racing(*a, **k):
+        raise sa.exc.ProgrammingError("CREATE TABLE", {}, Exception("exists"))
+
+    monkeypatch.setattr(conversation_delete.DeletionBase.metadata, "create_all", racing)
+    engine = conversation_delete._get_engine()
+    with pytest.raises(sa.exc.ProgrammingError):
+        conversation_delete._ensure_log_table(engine)
+    with engine.begin() as conn:
+        conn.execute(sa.text("CREATE TABLE conversation_deletions (id INTEGER)"))
+    conversation_delete._ensure_log_table(engine)

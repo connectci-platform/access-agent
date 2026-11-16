@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
 from src.api import delete_routes, thread_runs
-from src.conversation_delete import DeletionUnavailableError
+from src.conversation_delete import ConversationBusyError, DeletionUnavailableError
 from src.main import app
 
 
@@ -188,3 +188,31 @@ async def test_delete_all_without_a_database_is_503(client, bearer, monkeypatch)
     r = await client.delete("/api/v1/me/conversations", headers=bearer)
 
     assert r.status_code == 503
+
+
+async def test_a_write_that_wont_finish_is_409_for_one(client, bearer, monkeypatch, access):
+    allowed, _ = access
+    allowed.add("t1")
+    monkeypatch.setattr(
+        delete_routes,
+        "delete_conversations",
+        AsyncMock(side_effect=ConversationBusyError("busy")),
+    )
+
+    r = await client.delete("/api/v1/threads/t1", headers=bearer)
+
+    assert r.status_code == 409
+    assert "still being written" in r.json()["detail"]
+
+
+async def test_a_write_that_wont_finish_is_409_for_all(client, bearer, monkeypatch):
+    monkeypatch.setattr(delete_routes, "owned_thread_ids", lambda user: ["t1"])
+    monkeypatch.setattr(
+        delete_routes,
+        "delete_conversations",
+        AsyncMock(side_effect=ConversationBusyError("busy")),
+    )
+
+    r = await client.delete("/api/v1/me/conversations", headers=bearer)
+
+    assert r.status_code == 409

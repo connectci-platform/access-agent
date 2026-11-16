@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from ..agent.graph import create_checkpointed_graph
+from ..thread_lifecycle import ThreadDeletedError, writing
 from ..turn_reporter import get_turn_reporter, turn_answer_ids
 from .identity import ClaimKey, Identity
 from .thread_access import refuse_thread, require_thread_access
@@ -80,9 +81,14 @@ async def rate_answer(
     if not await _is_turn_answer(raw_request, thread_id, message_id):
         raise refuse_thread()
     feedback = clean_feedback(body.feedback) if body.rating == "not_helpful" else None
-    saved = await asyncio.to_thread(
-        get_turn_reporter().rate_answer, thread_id, message_id, body.rating, feedback
-    )
+    try:
+        # A delete that lands meanwhile marks the thread first (D8-3126).
+        async with writing(thread_id):
+            saved = await asyncio.to_thread(
+                get_turn_reporter().rate_answer, thread_id, message_id, body.rating, feedback
+            )
+    except ThreadDeletedError:
+        raise refuse_thread() from None
     if not saved:
         raise HTTPException(status_code=503, detail="Rating is unavailable")
     return {"message_id": message_id, "rating": body.rating}
