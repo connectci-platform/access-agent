@@ -97,6 +97,8 @@ async def test_a_signed_in_querys_profile_needs_consent(
     read.assert_awaited_once_with("A@access-ci.org")
     expected = UserProfile.model_validate(profile) if used else None
     assert mock_agent.call_args.kwargs["profile"] == expected
+    # The prompt's not-personalized rule reads this.
+    assert mock_agent.call_args.kwargs["consent"] == state
 
 
 async def test_query_without_profile_passes_none(client, mock_agent, mock_registry):

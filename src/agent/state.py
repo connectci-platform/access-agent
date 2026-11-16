@@ -189,6 +189,12 @@ class AgentState(TypedDict):
         "run's profile (None included), so a stale one is never read, and /history "
         "returns only messages, so it never reaches the client.",
     ]
+    consent: Annotated[
+        str | None,
+        "The signed-in user's personalization consent for this run: 'allow', 'deny' "
+        "or 'unset', or None when anonymous or unreadable (D8-3124). Each run "
+        "overwrites it, None included, like profile.",
+    ]
     time_zone: Annotated[
         str | None,
         "The user's IANA time zone (e.g. 'America/New_York'), already validated by "
@@ -291,6 +297,7 @@ def create_initial_state(
     profile: UserProfile | None = None,
     time_zone: str | None = None,
     confirm_ids: list[str] | None = None,
+    consent: str | None = None,
     content_blocks: list[dict[str, Any]] | None = None,
     message_id: str | None = None,
     upload_label: str | None = None,
@@ -325,6 +332,7 @@ def create_initial_state(
         tool_catalog=tool_catalog,
         resource_context=resource_context,
         profile=profile.model_dump() if profile else None,
+        consent=consent,
         time_zone=time_zone,
         upload_label=upload_label,
         # Read by consumers but not written on the current path — initialize empty/None.

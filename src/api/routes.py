@@ -346,6 +346,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                         context=context,
                         resource_context=request.resource_context,
                         profile=profile,
+                        consent=final_state.get("consent"),
                         confirm_ids=confirm_ids,
                         message_id=question.id,
                         checkpointer=checkpointer,

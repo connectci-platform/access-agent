@@ -2048,6 +2048,8 @@ async def test_deny_runs_without_allocations(client, bearer, monkeypatch, once):
 
     lookup.assert_not_awaited()
     assert captured["profile"] is None
+    # The prompt's not-personalized rule reads this.
+    assert captured["consent"] == "deny"
 
 
 async def test_unset_runs_without_allocations_unless_allowed_once(client, bearer, monkeypatch):
