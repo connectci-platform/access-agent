@@ -1,7 +1,8 @@
 """The signed-in user's personalization setting, for the full-screen client (D8-3124).
 
-GET reads it for the account menu's switch. POST records a choice from the
-switch or from the offer card: allow, deny, or not_now. Both act only for the
+GET reads it for the Settings switch. POST records a choice from the switch
+or from the offer card: allow or deny. "Not now" needs no call, because the
+agent records the ask itself before it offers. Both act only for the
 verified caller. The answer is stored in the user's ACCESS profile; this
 process's cached copy is replaced at once, so the next message follows it.
 """
@@ -23,7 +24,7 @@ PATH = "/me/assistant-consent"
 
 
 class ConsentChoice(BaseModel):
-    consent: Literal["allow", "deny", "not_now"]
+    consent: Literal["allow", "deny"]
 
 
 def _body(consent: Consent) -> dict[str, str | None]:

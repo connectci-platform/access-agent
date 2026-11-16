@@ -254,3 +254,16 @@ def test_the_report_records_a_profile_dropped_for_consent(reporter, monkeypatch,
     (report,) = _reports(reporter)
     assert report["final_state"].get("profile") is None
     assert report["final_state"]["consent"] == state
+
+
+def test_a_signed_in_turn_without_a_profile_still_records_consent(reporter, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from src.agent.consent import Consent
+
+    monkeypatch.setattr(routes, "consent_for", AsyncMock(return_value=Consent("deny", None)))
+    request = routes.QueryRequest(query="q", session_id="s1")
+    _drain_with(request, AgentContext.for_eval("alice@access-ci.org", allow_writes=False))
+
+    (report,) = _reports(reporter)
+    assert report["final_state"]["consent"] == "deny"

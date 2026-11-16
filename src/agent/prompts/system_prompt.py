@@ -601,6 +601,20 @@ def _event_times_section(time_zone: str | None) -> str:
     )
 
 
+# A signed-in user whose allocations aren't in the prompt: they haven't
+# opted in to personalized answers (D8-3124), or the lookup failed. Their own
+# account data is still theirs to ask for, but not to fetch on the model's
+# initiative for a general question.
+NOT_PERSONALIZED_SECTION = (
+    "## Personalized answers\n\n"
+    "The user hasn't turned on personalized answers. Call `get_my_rp_accounts` "
+    "or `get_rp_account` only when they ask about their own allocations, "
+    "accounts, balances or logins, never to tailor the answer to a general "
+    "question. If they ask you to answer from the resources they have, tell "
+    "them they can turn on Personalized answers in Settings."
+)
+
+
 def build_system_prompt(
     acting_user: str | None = None,
     *,
@@ -683,6 +697,8 @@ def build_system_prompt(
         profile_section = render_profile_section(profile, resource_context=resource_context)
         if profile_section:
             sections.append(profile_section)
+    elif acting_user is not None:
+        sections.append(NOT_PERSONALIZED_SECTION)
 
     # Tickets are writes too, so every session gets the rule.
     sections.append(WRITE_CONFIRM_SECTION)

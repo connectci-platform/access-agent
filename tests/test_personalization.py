@@ -87,7 +87,7 @@ def _state(*servers: str) -> dict[str, Any]:
 
 
 async def test_offers_after_a_resource_question_and_records_the_ask(lookups):
-    calls = lookups(None, recorded=_c("unset", NOW))
+    calls = lookups(_c("unset"), recorded=_c("unset", NOW))
     offered = await offer_after_turn(
         USER, _c("unset"), _state("compute-resources"), once=False, now=NOW
     )
@@ -97,7 +97,7 @@ async def test_offers_after_a_resource_question_and_records_the_ask(lookups):
 
 @pytest.mark.parametrize("server", ["compute-resources", "software-discovery"])
 async def test_resource_and_software_tools_count(lookups, server):
-    lookups(None, recorded=_c("unset", NOW))
+    lookups(_c("unset"), recorded=_c("unset", NOW))
     assert await offer_after_turn(USER, _c("unset"), _state(server), once=False, now=NOW)
 
 
@@ -114,13 +114,13 @@ async def test_resource_and_software_tools_count(lookups, server):
     ],
 )
 async def test_no_offer(lookups, consent, state, once):
-    calls = lookups(None, recorded=_c("unset", NOW))
+    calls = lookups(_c("unset"), recorded=_c("unset", NOW))
     assert await offer_after_turn(USER, consent, state, once=once, now=NOW) is False
     assert calls["record"] == []
 
 
 async def test_no_offer_when_the_ask_cant_be_recorded(lookups):
-    lookups(None, recorded=None)
+    lookups(_c("unset"), recorded=None)
     assert (
         await offer_after_turn(USER, _c("unset"), _state("compute-resources"), once=False, now=NOW)
         is False
@@ -128,7 +128,7 @@ async def test_no_offer_when_the_ask_cant_be_recorded(lookups):
 
 
 async def test_a_refused_call_doesnt_count(lookups):
-    lookups(None, recorded=_c("unset", NOW))
+    lookups(_c("unset"), recorded=_c("unset", NOW))
     state = {
         "tool_results": [
             {
@@ -141,3 +141,34 @@ async def test_a_refused_call_doesnt_count(lookups):
         ]
     }
     assert await offer_after_turn(USER, _c("unset"), state, once=False, now=NOW) is False
+
+
+async def test_two_turns_ending_together_offer_once(monkeypatch):
+    """Two tabs: the second re-reads under the lock and sees the first's ask."""
+    import asyncio
+
+    stored = {"consent": _c("unset")}
+    records: list[str] = []
+
+    async def consent_for(user):
+        await asyncio.sleep(0)
+        return stored["consent"]
+
+    async def record_consent(user, choice):
+        await asyncio.sleep(0.01)
+        records.append(choice)
+        stored["consent"] = _c("unset", NOW)
+        return stored["consent"]
+
+    monkeypatch.setattr(personalization, "consent_for", consent_for)
+    monkeypatch.setattr(personalization, "record_consent", record_consent)
+    monkeypatch.setattr(personalization, "_offer_locks", {})
+
+    results = await asyncio.gather(
+        *(
+            offer_after_turn(USER, _c("unset"), _state("compute-resources"), once=False, now=NOW)
+            for _ in range(2)
+        )
+    )
+    assert sorted(results) == [False, True]
+    assert records == ["not_now"]

@@ -75,3 +75,27 @@ def test_resource_context_with_empty_resources_has_no_dangling_override():
     assert "Allocated resources: none" in prompt
     assert "allocations listed here" not in prompt
     assert "ask which resource" not in prompt
+
+
+# ── Not opted in (D8-3124) ───────────────────────────────────────────────
+
+
+def test_a_signed_in_user_without_a_profile_gets_the_ask_first_rule():
+    from src.agent.prompts.system_prompt import NOT_PERSONALIZED_SECTION, build_system_prompt
+
+    prompt = build_system_prompt(acting_user="alice@access-ci.org", can_write=True, profile=None)
+
+    assert NOT_PERSONALIZED_SECTION in prompt
+    assert "only when they ask about their own allocations" in prompt
+    assert "Personalized answers in Settings" in prompt
+
+
+def test_the_rule_is_absent_with_a_profile_or_when_anonymous():
+    from src.agent.profile import AllocatedResource, UserProfile
+    from src.agent.prompts.system_prompt import NOT_PERSONALIZED_SECTION, build_system_prompt
+
+    profile = UserProfile(allocated_resources=[AllocatedResource(name="Delta GPU")])
+    assert NOT_PERSONALIZED_SECTION not in build_system_prompt(
+        acting_user="alice@access-ci.org", can_write=True, profile=profile
+    )
+    assert NOT_PERSONALIZED_SECTION not in build_system_prompt(acting_user=None, profile=None)

@@ -291,7 +291,7 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
     # so is one the user hasn't opted in to (D8-3124). Graph updates never
     # carry the run's input, so the report learns both here.
     profile = request.profile if acting_user is not None else None
-    if profile is not None:
+    if acting_user is not None:
         consent = await consent_for(acting_user)
         final_state["consent"] = consent.state if consent else None
         if consent is None or consent.state != "allow":

@@ -9,7 +9,7 @@ timeout, a reply it can't read. Callers treat that like "not allowed and don't
 ask": no profile and no offer. The state is cached per user briefly, and a
 write replaces the cached entry with Drupal's answer so the change applies on
 the user's next message in this process. The TTL is short because other
-worker processes keep their own entries.
+worker processes, and the Drupal profile form, change answers it doesn't see.
 """
 
 from __future__ import annotations
@@ -31,8 +31,11 @@ READ_TOOL = "get_assistant_consent"
 WRITE_TOOL = "set_assistant_consent"
 
 LOOKUP_TIMEOUT_S = 3.0
-SUCCESS_TTL_S = 60.0
-FAILURE_TTL_S = 15.0
+# Short, because a change on the Drupal profile form never reaches this
+# cache: it is the longest a turn can run on an old answer. A change through
+# this agent replaces the entry at once.
+SUCCESS_TTL_S = 10.0
+FAILURE_TTL_S = 10.0
 MAX_CACHED_USERS = 1024
 # After an offer or "Not now", the next offer waits this long.
 OFFER_INTERVAL = timedelta(days=30)

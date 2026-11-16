@@ -15,6 +15,7 @@ can't be recorded, no offer is made.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 from .consent import Consent, consent_for, record_consent, should_offer
@@ -26,6 +27,10 @@ if TYPE_CHECKING:
     from .profile import UserProfile
 
 OFFER_SERVERS = frozenset({"compute-resources", "software-discovery"})
+
+# Per user, never pruned: a few bytes each, one per signed-in user who was
+# ever offered personalization in this process.
+_offer_locks: dict[str, asyncio.Lock] = {}
 
 
 async def personalized_profile(
@@ -66,4 +71,11 @@ async def offer_after_turn(
         return False
     if not _used_resource_tools(final_state):
         return False
-    return await record_consent(user, "not_now") is not None
+    # One offer per user at a time: two tabs finishing together would both
+    # see the consent read before either recorded the ask. The second reads
+    # again under the lock and sees the first's ask.
+    lock = _offer_locks.setdefault(user, asyncio.Lock())
+    async with lock:
+        if not should_offer(await consent_for(user), now=now):
+            return False
+        return await record_consent(user, "not_now") is not None

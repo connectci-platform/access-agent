@@ -36,9 +36,9 @@ async def test_get_reads_the_callers_setting(client, bearer, monkeypatch):
     read.assert_awaited_once_with("runner@x")
 
 
-@pytest.mark.parametrize("choice", ["allow", "deny", "not_now"])
+@pytest.mark.parametrize("choice", ["allow", "deny"])
 async def test_post_records_the_callers_choice(client, bearer, monkeypatch, choice):
-    state = "unset" if choice == "not_now" else choice
+    state = choice
     write = AsyncMock(return_value=Consent(state, None))
     monkeypatch.setattr(consent_routes, "record_consent", write)
 
@@ -49,7 +49,9 @@ async def test_post_records_the_callers_choice(client, bearer, monkeypatch, choi
     write.assert_awaited_once_with("runner@x", choice)
 
 
-@pytest.mark.parametrize("body", [{"consent": "allow_once"}, {"consent": "yes"}, {}, {"x": 1}])
+@pytest.mark.parametrize(
+    "body", [{"consent": "not_now"}, {"consent": "allow_once"}, {"consent": "yes"}, {}, {"x": 1}]
+)
 async def test_post_rejects_anything_else(client, bearer, monkeypatch, body):
     write = AsyncMock()
     monkeypatch.setattr(consent_routes, "record_consent", write)
