@@ -35,6 +35,7 @@ from ..agent.auth_tools import ToolIdentityClass, tool_identity_class
 from ..agent.graph import create_checkpointed_graph
 from ..agent.stopped_replies import REASON, STOPPED, is_stopped
 from ..agent.turn_capture import get_turn_capture
+from ..thread_lifecycle import ThreadDeletedError, writing
 
 T = TypeVar("T")
 
@@ -207,18 +208,23 @@ async def _save(
     start: Any,
 ) -> None:
     try:
-        graph = create_checkpointed_graph(checkpointer)
-        config = {"configurable": {"thread_id": thread_id}}
-        state = await graph.aget_state(config)
-        saved = (state.values or {}).get("messages", [])
-        if not still_this_turn(saved, question, start):
-            logger.warning(
-                "Not saving the stopped turn on %s: a later run has written the thread",
-                thread_id,
-            )
-            return
-        update = stopped_messages(saved, question, streamed, reason, tool_messages)
-        await graph.aupdate_state(config, {"messages": update}, as_node=_AS_NODE)
+        # Runs after the run lock is released: a delete in between marks the
+        # thread first, and this then skips rather than writing it back.
+        async with writing(thread_id):
+            graph = create_checkpointed_graph(checkpointer)
+            config = {"configurable": {"thread_id": thread_id}}
+            state = await graph.aget_state(config)
+            saved = (state.values or {}).get("messages", [])
+            if not still_this_turn(saved, question, start):
+                logger.warning(
+                    "Not saving the stopped turn on %s: a later run has written the thread",
+                    thread_id,
+                )
+                return
+            update = stopped_messages(saved, question, streamed, reason, tool_messages)
+            await graph.aupdate_state(config, {"messages": update}, as_node=_AS_NODE)
+    except ThreadDeletedError:
+        logger.info("Not saving the stopped turn: the conversation was deleted")
     except Exception:
         logger.exception("Saving a stopped turn failed")
 
