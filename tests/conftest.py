@@ -223,3 +223,13 @@ def _no_allocations_profile_lookup(monkeypatch):
     monkeypatch.setattr("src.api.thread_routes.allocated_profile_for", AsyncMock(return_value=None))
     yield
     profile_source._reset_cache_for_test()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_thread_lifecycle():
+    """No deleted marks or in-flight writes carry over between tests (D8-3126)."""
+    from src import thread_lifecycle
+
+    thread_lifecycle._reset_memory_for_test()
+    yield
+    thread_lifecycle._reset_memory_for_test()

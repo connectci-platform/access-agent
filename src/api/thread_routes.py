@@ -36,6 +36,7 @@ from ..agent.state import human_turn
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..agent.upload_window import file_name, shown_in_full
 from ..config import settings
+from ..thread_lifecycle import ThreadDeletedError, is_deleted, writing
 from ..tool_attachments import (
     UPLOAD_KIND,
     get_tool_attachment_store,
@@ -162,30 +163,37 @@ async def _write_turn_report(
     run_with_timeout/held_run — see thread_run_stream's placement note.
     """
     try:
-        from ..agent.domains.capabilities import get_capability_registry as _cap_reg
-        from ..services.resource_matcher import resources_for_turn
-        from ..turn_reporter import get_turn_reporter
+        # Written after the run lock is released: a delete in between marks
+        # the thread first, and this then skips (D8-3126).
+        async with writing(thread_id):
+            from ..agent.domains.capabilities import get_capability_registry as _cap_reg
+            from ..services.resource_matcher import resources_for_turn
+            from ..turn_reporter import get_turn_reporter
 
-        reporter = get_turn_reporter()
-        prior_turns = await asyncio.to_thread(reporter.count_turns_for_session, thread_id)
-        turn_index = prior_turns + 1 if prior_turns is not None else None  # None on DB error → NULL
-        resources = await resources_for_turn(query, str(final_state.get("final_answer") or ""))
-        await asyncio.to_thread(
-            reporter.log_turn_report,
-            final_state=final_state,
-            session_id=thread_id,
-            turn_index=turn_index,
-            question_id=run_id,
-            query_text=query,
-            duration_ms=(time.time() - start_time) * 1000,
-            acting_user=caller,
-            success=success,
-            capabilities=_cap_reg().infer_capability_ids(final_state.get("tool_results", [])),
-            resources=resources,
-            turn_capture=get_turn_capture(),
-            judge=None,
-            upload_label=final_state.get("upload_label"),
-        )
+            reporter = get_turn_reporter()
+            prior_turns = await asyncio.to_thread(reporter.count_turns_for_session, thread_id)
+            turn_index = (
+                prior_turns + 1 if prior_turns is not None else None
+            )  # None on DB error → NULL
+            resources = await resources_for_turn(query, str(final_state.get("final_answer") or ""))
+            await asyncio.to_thread(
+                reporter.log_turn_report,
+                final_state=final_state,
+                session_id=thread_id,
+                turn_index=turn_index,
+                question_id=run_id,
+                query_text=query,
+                duration_ms=(time.time() - start_time) * 1000,
+                acting_user=caller,
+                success=success,
+                capabilities=_cap_reg().infer_capability_ids(final_state.get("tool_results", [])),
+                resources=resources,
+                turn_capture=get_turn_capture(),
+                judge=None,
+                upload_label=final_state.get("upload_label"),
+            )
+    except ThreadDeletedError:
+        logger.info("Turn report skipped: the conversation was deleted")
     except Exception:
         logger.exception("Turn report write failed")
 
@@ -1143,6 +1151,24 @@ async def run_body(request: Request) -> RunRequest:
     return body
 
 
+def _refuse_if_deleted(thread_id: str, run_id: str) -> None:
+    """404 a run whose conversation was deleted after its access check.
+
+    The check ran before the body was read; a delete that finished meanwhile
+    leaves the thread marked deleted (D8-3126). Called holding the run lock.
+    """
+    if is_deleted(thread_id):
+        release_thread_run(thread_id, run_id)
+        raise refuse_thread()
+
+
+def _note_profile(profile: UserProfile | None, final_state: dict[str, Any]) -> UserProfile | None:
+    """Record the run's profile for its report. Graph updates never carry the
+    run's input, so the report learns from here whether it was in the prompt."""
+    final_state["profile"] = profile.model_dump() if profile else None
+    return profile
+
+
 @thread_router.post("/threads/{thread_id}/runs/stream", response_model=None)
 async def thread_run_stream(
     thread_id: str,
@@ -1189,6 +1215,7 @@ async def thread_run_stream(
     #    real 409 status, not an event flushed after a 200.
     run_id = str(uuid.uuid4())
     acquire_thread_run(thread_id, run_id)
+    _refuse_if_deleted(thread_id, run_id)
     # Same guard and key as /query, where session_id == thread_id, so a handed-off
     # conversation keeps its count. A capability question is answered from the
     # registry, not the model, so it is free here as it is on /query, unless
@@ -1222,10 +1249,7 @@ async def thread_run_stream(
         async with held_run(thread_id, run_id):
             try:
                 yield format_sse_event("metadata", {"run_id": run_id, "attempt": 1})
-                profile = await lookup
-                # Graph updates never carry the run's input, so the report
-                # learns from here whether the profile was in the prompt.
-                final_state["profile"] = profile.model_dump() if profile else None
+                profile = _note_profile(await lookup, final_state)
                 # The turn's timer starts inside, after the files are stored.
                 async for event in _stream_run_events(
                     thread_id=thread_id,
