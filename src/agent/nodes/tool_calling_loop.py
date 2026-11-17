@@ -97,6 +97,7 @@ def _build_prompt_and_tools(
     profile: dict[str, Any] | None,
     time_zone: str | None = None,
     attachment_thread_id: str | None = None,
+    consent: str | None = None,
 ) -> tuple[str, list[BaseTool], bool]:
     """Assemble the loop's system prompt and tool list.
 
@@ -134,6 +135,7 @@ def _build_prompt_and_tools(
         resource_context=resource_context,
         profile=profile_model,
         time_zone=time_zone,
+        consent=consent,
     )
     return prompt, [*mcp_tools, search_access_documents], profile_used
 
@@ -787,6 +789,7 @@ async def tool_calling_loop_node(  # noqa: PLR0915
             can_write=context.can_write,
             resource_context=state.get("resource_context"),
             profile=state.get("profile"),
+            consent=state.get("consent"),
             time_zone=state.get("time_zone"),
             # Only the full-screen client reads stored attachments back.
             attachment_thread_id=state.get("session_id") if context.thread_run else None,

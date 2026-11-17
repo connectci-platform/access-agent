@@ -601,12 +601,34 @@ def _event_times_section(time_zone: str | None) -> str:
     )
 
 
+# A signed-in user who hasn't opted in to personalized answers (D8-3124).
+# Their own account data is still theirs to ask for, but not for the model to
+# fetch on its own initiative to tailor a general answer.
+_OWN_ACCOUNT_TOOLS_RULE = (
+    "Call `get_my_rp_accounts` or `get_rp_account` only when the user asks about "
+    "their own allocations, accounts, balances or logins, never to tailor the "
+    "answer to a general question."
+)
+NOT_PERSONALIZED_SECTION = (
+    "## Personalized answers\n\n"
+    "The user hasn't turned on personalized answers. "
+    + _OWN_ACCOUNT_TOOLS_RULE
+    + " If they ask you to answer from the resources they have, tell them they "
+    "can turn on personalized answers in the assistant's Settings or in their "
+    "ACCESS profile."
+)
+# Their choice couldn't be read: hold back the same way, but don't tell them
+# to turn on something that may already be on.
+CONSENT_UNKNOWN_SECTION = "## Personalized answers\n\n" + _OWN_ACCOUNT_TOOLS_RULE
+
+
 def build_system_prompt(
     acting_user: str | None = None,
     *,
     can_write: bool = False,
     resource_context: str | None = None,
     profile: UserProfile | None = None,
+    consent: str | None = None,
     time_zone: str | None = None,
 ) -> str:
     """Assemble the tool-calling loop's system prompt.
@@ -629,6 +651,9 @@ def build_system_prompt(
             Rendered as a `## User profile` section when it contributes at
             least one fact or instruction; holds no per-field knowledge
             itself — see render_profile_section.
+        consent: The signed-in user's personalization choice, 'allow', 'deny'
+            or 'unset', or None when it couldn't be read. Without a profile, it
+            decides whether the not-personalized section is added.
         time_zone: The user's IANA time zone, if the client sent a valid one.
             Named in the `## Event times` section, which says to quote the
             ``start_local`` / ``end_local`` fields LocalTimesMiddleware adds.
@@ -683,6 +708,12 @@ def build_system_prompt(
         profile_section = render_profile_section(profile, resource_context=resource_context)
         if profile_section:
             sections.append(profile_section)
+    elif acting_user is not None:
+        # Allowed, but the lookup failed: nothing to hold back.
+        if consent in ("deny", "unset"):
+            sections.append(NOT_PERSONALIZED_SECTION)
+        elif consent != "allow":
+            sections.append(CONSENT_UNKNOWN_SECTION)
 
     # Tickets are writes too, so every session gets the rule.
     sections.append(WRITE_CONFIRM_SECTION)

@@ -55,24 +55,50 @@ async def client():
         yield c
 
 
-async def test_query_accepts_profile_and_threads_to_stream_agent(client, mock_agent, mock_registry):
+async def test_an_anonymous_querys_profile_is_dropped(client, mock_agent, mock_registry):
     response = await client.post(
         "/api/v1/query",
         json={
             "query": "How do I add my SSH key to this cluster?",
-            "profile": {
-                "allocated_resources": [
-                    {"name": "Delta GPU", "rp_slug": "delta"},
-                ]
-            },
+            "profile": {"allocated_resources": [{"name": "Delta GPU", "rp_slug": "delta"}]},
         },
     )
 
     assert response.status_code == 200
     mock_agent.assert_called_once()
-    assert mock_agent.call_args.kwargs["profile"] == UserProfile(
-        allocated_resources=[{"name": "Delta GPU", "rp_slug": "delta"}]
+    assert mock_agent.call_args.kwargs["profile"] is None
+    assert mock_agent.call_args.kwargs["context"].acting_user is None
+
+
+@pytest.mark.parametrize(
+    ("state", "used"),
+    [("allow", True), ("unset", False), ("deny", False), (None, False)],
+)
+async def test_a_signed_in_querys_profile_needs_consent(
+    client, mock_agent, mock_registry, agent_tokens, monkeypatch, state, used
+):
+    """D8-3124: the body's profile reaches the prompt only for consent allow."""
+    from unittest.mock import AsyncMock
+
+    from src.agent.consent import Consent
+    from src.api import routes
+
+    read = AsyncMock(return_value=Consent(state, None) if state else None)
+    monkeypatch.setattr(routes, "consent_for", read)
+    profile = {"allocated_resources": [{"name": "Delta GPU", "rp_slug": "delta"}]}
+
+    response = await client.post(
+        "/api/v1/query",
+        json={"query": "test", "profile": profile},
+        headers=agent_tokens.headers("A@access-ci.org"),
     )
+
+    assert response.status_code == 200
+    read.assert_awaited_once_with("A@access-ci.org")
+    expected = UserProfile.model_validate(profile) if used else None
+    assert mock_agent.call_args.kwargs["profile"] == expected
+    # The prompt's not-personalized rule reads this.
+    assert mock_agent.call_args.kwargs["consent"] == state
 
 
 async def test_query_without_profile_passes_none(client, mock_agent, mock_registry):
