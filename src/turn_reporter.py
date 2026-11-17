@@ -82,6 +82,13 @@ class TurnReport(TurnReportBase):  # type: ignore[valid-type,misc]
     resources = Column(_JSONB)  # list[str] — RP slugs mentioned in the turn
     resource_context = Column(String(64), index=True)
     was_authenticated = Column(Boolean, default=False)
+    # Whether the signed-in user's resources were in the prompt. A signed-in
+    # turn can still run without them (lookup timed out, still syncing).
+    profile_present = Column(Boolean)
+    # The user's personalization answer for this turn: allow, deny or unset
+    # (D8-3124). NULL when anonymous or when it couldn't be read, in which
+    # case the turn ran without the profile.
+    consent_state = Column(String(8))
     user_hash = Column(String(16), index=True)
 
     success = Column(Boolean, default=True, index=True)
@@ -257,6 +264,10 @@ def _hinted_write_names(tool_catalog: Any) -> set[str]:
     }
 
 
+def _consent_state(value: Any) -> str | None:
+    return value if value in ("allow", "deny", "unset") else None
+
+
 def _assemble_turn_report(
     *,
     final_state: dict[str, Any],
@@ -318,6 +329,8 @@ def _assemble_turn_report(
         "resources": resources or [],
         "resource_context": final_state.get("resource_context"),
         "was_authenticated": acting_user is not None,
+        "profile_present": final_state.get("profile") is not None,
+        "consent_state": _consent_state(final_state.get("consent")),
         "user_hash": _hash_user(acting_user),
         "success": success,
         "duration_ms": duration_ms,
@@ -414,6 +427,8 @@ class TurnReporter:
             "permission_refusal": "VARCHAR(32)",
             "message_id": "VARCHAR(128)",
             "upload_label": "VARCHAR(128)",
+            "profile_present": "BOOLEAN",
+            "consent_state": "VARCHAR(8)",
         }
         # Each ALTER runs in its own transaction with its own guard: a failure
         # (insufficient DB privileges, transient error) degrades that one column

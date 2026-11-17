@@ -21,6 +21,10 @@ from pydantic import BaseModel, ConfigDict, Field
 RP_SLUG_RE = r"^[a-z0-9]+$"
 NAME_RE = r"^[A-Za-z0-9][A-Za-z0-9 .\-_/()]*$"
 RESOURCE_ID_RE = r"^[A-Za-z0-9.\-]+$"
+# A resource login as RPs issue them: x-apasquale, u.ap110387, tg882122, and
+# OSN's apasquale@access-ci.org.
+LOGIN_RE = r"^[A-Za-z0-9][A-Za-z0-9._@\-]*$"
+MAX_PROFILE_RESOURCES = 32
 
 
 class ProfileFragment(NamedTuple):
@@ -48,6 +52,8 @@ class AllocatedResource(BaseModel):
     name: str = Field(..., max_length=64, pattern=NAME_RE)
     rp_slug: str | None = Field(None, max_length=32, pattern=RP_SLUG_RE)
     resource_id: str | None = Field(None, max_length=128, pattern=RESOURCE_ID_RE)
+    # The user's login on this resource, which can differ from their ACCESS ID.
+    login: str | None = Field(None, max_length=64, pattern=LOGIN_RE)
 
 
 class UserProfile(BaseModel):
@@ -57,7 +63,9 @@ class UserProfile(BaseModel):
 
     # None means "not supplied" — distinct from an explicitly empty list, which
     # still renders the "none" fact. See render_allocated_resources.
-    allocated_resources: list[AllocatedResource] | None = Field(None, max_length=32)
+    allocated_resources: list[AllocatedResource] | None = Field(
+        None, max_length=MAX_PROFILE_RESOURCES
+    )
     # False when the resource-group list wasn't loaded, so a resource without
     # an rp_slug is of unknown grouping, not confirmed ungrouped, and must not
     # be described as having no scoped documentation.
@@ -65,9 +73,31 @@ class UserProfile(BaseModel):
 
 
 def _fact_name(resource: AllocatedResource) -> str:
+    details = []
+    if resource.login:
+        details.append(f"login {resource.login}")
     if resource.rp_slug:
-        return f"{resource.name} (rp_name='{resource.rp_slug}')"
-    return resource.name
+        details.append(f"rp_name='{resource.rp_slug}'")
+    return f"{resource.name} ({', '.join(details)})" if details else resource.name
+
+
+# Where the user's own access changes the answer. Without this the list only
+# resolves "this system", and a question like "which resources have GPUs?"
+# is answered as if the user had no accounts at all.
+_ACCESS_INSTRUCTION = (
+    "Use this list wherever the user's own access matters: for questions about "
+    "hardware or GPUs, where to run a workload, queues and job submission, or "
+    "software availability, lead with the listed resources that fit and say the "
+    "user already has access there, then mention other resources worth "
+    "considering. When a login is listed, use it in SSH commands and login "
+    "instructions for that resource. Don't mention these resources when the "
+    "question doesn't depend on which resources the user can use."
+)
+# Only true of a complete list; a profile cut at the cap may omit one.
+_NOT_LISTED_INSTRUCTION = (
+    "If the user asks about a resource that isn't listed, say they don't have "
+    "an allocation on it and that they can request one through ACCESS."
+)
 
 
 def render_allocated_resources(
@@ -88,7 +118,9 @@ def render_allocated_resources(
             fact="Allocated resources: none",
             instruction=(
                 'If the user asks about "this system" or their own cluster, '
-                "ask which resource they mean rather than assuming one."
+                "ask which resource they mean rather than assuming one. The user "
+                "has no allocations yet: when they ask where to run something, "
+                "say they'll need an allocation first."
             ),
             hint=None,
         )
@@ -128,6 +160,10 @@ def render_allocated_resources(
             f"No scoped documentation exists for {names}; answer about "
             f"{pronoun} from general ACCESS docs."
         )
+
+    clauses.append(_ACCESS_INSTRUCTION)
+    if len(resources) < MAX_PROFILE_RESOURCES:
+        clauses.append(_NOT_LISTED_INSTRUCTION)
 
     instruction = " ".join(clauses)
 

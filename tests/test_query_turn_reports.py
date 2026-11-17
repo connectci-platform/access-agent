@@ -191,3 +191,79 @@ def test_timed_out_turn_is_reported_after_the_thread_lock_is_released(reporter):
         release_thread_run("s1", "run-1")
 
     assert held_during_report == [False]
+
+
+def _drain_with(request, context) -> None:
+    async def go():
+        with (
+            patch.object(routes, "stream_agent", _answers),
+            patch.object(routes, "get_registry", _fake_registry),
+        ):
+            gen = routes._stream_events(
+                request,
+                context=context,
+                session_id="s1",
+                question_id="q1",
+                include_trace=False,
+                raw_request=_raw_request(),
+            )
+            async for _ in gen:
+                pass
+
+    asyncio.run(go())
+
+
+PROFILE = {"allocated_resources": [{"name": "Delta GPU", "rp_slug": "delta"}]}
+
+
+@pytest.mark.parametrize(
+    ("acting_user", "profile", "present"),
+    [
+        ("alice@access-ci.org", PROFILE, True),
+        ("alice@access-ci.org", None, False),
+        # The loop drops a profile sent without a signed-in user.
+        (None, PROFILE, False),
+    ],
+)
+def test_the_report_says_whether_the_profile_was_in_the_prompt(
+    reporter, acting_user, profile, present, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    from src.agent.consent import Consent
+
+    monkeypatch.setattr(routes, "consent_for", AsyncMock(return_value=Consent("allow", None)))
+    request = routes.QueryRequest(query="q", session_id="s1", profile=profile)
+    context = AgentContext.for_eval(acting_user, allow_writes=False)
+    _drain_with(request, context)
+
+    (report,) = _reports(reporter)
+    assert (report["final_state"].get("profile") is not None) is present
+
+
+@pytest.mark.parametrize("state", ["unset", "deny"])
+def test_the_report_records_a_profile_dropped_for_consent(reporter, monkeypatch, state):
+    from unittest.mock import AsyncMock
+
+    from src.agent.consent import Consent
+
+    monkeypatch.setattr(routes, "consent_for", AsyncMock(return_value=Consent(state, None)))
+    request = routes.QueryRequest(query="q", session_id="s1", profile=PROFILE)
+    _drain_with(request, AgentContext.for_eval("alice@access-ci.org", allow_writes=False))
+
+    (report,) = _reports(reporter)
+    assert report["final_state"].get("profile") is None
+    assert report["final_state"]["consent"] == state
+
+
+def test_a_signed_in_turn_without_a_profile_still_records_consent(reporter, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from src.agent.consent import Consent
+
+    monkeypatch.setattr(routes, "consent_for", AsyncMock(return_value=Consent("deny", None)))
+    request = routes.QueryRequest(query="q", session_id="s1")
+    _drain_with(request, AgentContext.for_eval("alice@access-ci.org", allow_writes=False))
+
+    (report,) = _reports(reporter)
+    assert report["final_state"]["consent"] == "deny"

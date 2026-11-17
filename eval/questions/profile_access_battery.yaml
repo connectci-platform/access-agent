@@ -1,0 +1,41 @@
+# Signed-in answers that start from the user's own resources (D8-3121).
+#
+# Run with a synthetic profile; the facts assume exactly these two resources:
+#
+#   python -m src.eval run --questions eval/questions/profile_access_battery.yaml \
+#     --acting-user eval-user@access-ci.org --no-allow-writes \
+#     --profile-resource "Delta GPU=delta" --profile-resource "Anvil CPU=anvil"
+#
+# Re-run eval/questions/student_authored_battery.yaml with the same flags to
+# check the wider instruction doesn't bring back the over-steering that
+# ce230ae fixed (general questions answered as if about Delta or Anvil).
+
+- id: pa-gpu-01
+  question: Which ACCESS resources have GPUs?
+  capability_area: compute_resources
+  battery: profile_access
+  expected_tool: search_resources
+  required_facts:
+  - Answer says the user already has access to Delta GPU, and does so near the start rather
+    than only inside a full list.
+  - Answer still names GPU resources other than the user's own, so it is not limited to Delta.
+
+- id: pa-noacct-01
+  question: Can I run jobs on Stampede3?
+  capability_area: compute_resources
+  battery: profile_access
+  expected_tool: null
+  required_facts:
+  - Answer says the user doesn't currently have an allocation or account on Stampede3.
+  - Answer says they can request one through ACCESS allocations.
+
+- id: pa-unrelated-01
+  question: What is an ACCESS ID and how do I get one?
+  capability_area: accounts
+  battery: profile_access
+  expected_tool: null
+  required_facts:
+  - Answer explains that an ACCESS ID is the account used to sign in to ACCESS services and how
+    to register for one.
+  - Answer does not mention Delta, Anvil, or the user's allocations, which have nothing to do
+    with the question.

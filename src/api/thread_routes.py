@@ -12,7 +12,7 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import AsyncGenerator, Callable, Coroutine, Iterable, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal, cast
@@ -26,12 +26,13 @@ from langgraph.graph.message import add_messages
 from pydantic import BaseModel, ValidationError
 from starlette.responses import StreamingResponse
 
+from ..agent.consent import Consent
 from ..agent.context import AgentContext
 from ..agent.graph import create_checkpointed_graph, stream_agent
 from ..agent.middleware.write_gate import MAX_CONFIRM_IDS, clean_confirm_ids
 from ..agent.nodes.capability_discovery import is_capability_question
+from ..agent.personalization import offer_after_turn, personalized_profile
 from ..agent.profile import UserProfile
-from ..agent.profile_source import allocated_profile_for
 from ..agent.state import human_turn
 from ..agent.turn_capture import get_turn_capture, reset_turn_capture
 from ..agent.upload_window import file_name, shown_in_full
@@ -286,6 +287,7 @@ async def _run_events(
     context: AgentContext,
     resource_context: str | None,
     profile: UserProfile | None,
+    consent: str | None,
     time_zone: str | None,
     checkpointer: Any,
     final_state: dict[str, Any],
@@ -323,6 +325,7 @@ async def _run_events(
             context=context,
             resource_context=resource_context,
             profile=profile,
+            consent=consent,
             time_zone=time_zone,
             checkpointer=checkpointer,
             confirm_ids=confirm_ids,
@@ -1061,6 +1064,15 @@ def _run_options(body: RunRequest, request: Request) -> dict[str, Any]:
     }
 
 
+def _allow_once(body: RunRequest) -> bool:
+    """``context.personalize_once``: the user chose Allow once in this conversation.
+
+    The browser's word is enough here because it only ever widens an unset
+    consent for the user's own data; a deny in Drupal still wins.
+    """
+    return (body.context or {}).get("personalize_once") is True
+
+
 @dataclass
 class _Turn:
     parsed: ParsedMessage
@@ -1162,6 +1174,39 @@ def _refuse_if_deleted(thread_id: str, run_id: str) -> None:
         raise refuse_thread()
 
 
+def _acquire_live_run(thread_id: str, run_id: str) -> None:
+    """The run lock (409 if busy), then a 404 if the thread was deleted meanwhile."""
+    acquire_thread_run(thread_id, run_id)
+    _refuse_if_deleted(thread_id, run_id)
+
+
+def _note_personalization(
+    looked_up: tuple[Consent | None, UserProfile | None], final_state: dict[str, Any]
+) -> tuple[Consent | None, UserProfile | None]:
+    """Record the run's consent and profile for its report. Graph updates never
+    carry the run's input, so the report learns from here whether the profile
+    was in the prompt and what the user had chosen."""
+    consent, profile = looked_up
+    final_state["profile"] = profile.model_dump() if profile else None
+    final_state["consent"] = consent.state if consent else None
+    return looked_up
+
+
+async def _offered_after(
+    events: AsyncIterator[str],
+    *,
+    caller: str | None,
+    consent: Consent | None,
+    final_state: dict[str, Any],
+    once: bool,
+) -> AsyncGenerator[str, None]:
+    """The turn's events, then the personalization offer when this turn earns one."""
+    async for event in events:
+        yield event
+    if await offer_after_turn(caller, consent, final_state, once=once, now=datetime.now(UTC)):
+        yield format_sse_event("custom", {"type": "personalization_offer"})
+
+
 @thread_router.post("/threads/{thread_id}/runs/stream", response_model=None)
 async def thread_run_stream(
     thread_id: str,
@@ -1202,13 +1247,13 @@ async def thread_run_stream(
     # request's uploads alive that long: ``_gen`` reads none of ``body`` or
     # ``raw_request``, only what is taken from them here, and the request's
     # cached copies are let go.
+    once = _allow_once(body)
     options = _run_options(body, raw_request)
 
     # 3. + 4. Acquire the per-thread run lock in the handler so a busy thread is a
     #    real 409 status, not an event flushed after a 200.
     run_id = str(uuid.uuid4())
-    acquire_thread_run(thread_id, run_id)
-    _refuse_if_deleted(thread_id, run_id)
+    _acquire_live_run(thread_id, run_id)
     # Same guard and key as /query, where session_id == thread_id, so a handed-off
     # conversation keeps its count. A capability question is answered from the
     # registry, not the model, so it is free here as it is on /query, unless
@@ -1238,22 +1283,29 @@ async def thread_run_stream(
         # awaited before the turn's timer starts so it can't eat the turn
         # budget. Bounded and cached; None for anonymous runs and any failure.
         # ``caller`` is the token's subject, the same user AgentContext acts for.
-        lookup = asyncio.ensure_future(allocated_profile_for(caller))
+        lookup = asyncio.ensure_future(personalized_profile(caller, once=once))
         async with held_run(thread_id, run_id):
             try:
                 yield format_sse_event("metadata", {"run_id": run_id, "attempt": 1})
-                profile = await lookup
+                consent, profile = _note_personalization(await lookup, final_state)
                 # The turn's timer starts inside, after the files are stored.
-                async for event in _stream_run_events(
-                    thread_id=thread_id,
-                    run_id=run_id,
-                    parsed=turn.parsed,
-                    message_id=turn.message_id,
-                    context=AgentContext.from_identity(identity, thread_run=True),
-                    profile=profile,
+                async for event in _offered_after(
+                    _stream_run_events(
+                        thread_id=thread_id,
+                        run_id=run_id,
+                        parsed=turn.parsed,
+                        message_id=turn.message_id,
+                        context=AgentContext.from_identity(identity, thread_run=True),
+                        profile=profile,
+                        consent=consent.state if consent else None,
+                        final_state=final_state,
+                        caller_key=_caller_key(caller, claim_key),
+                        **options,
+                    ),
+                    caller=caller,
+                    consent=consent,
                     final_state=final_state,
-                    caller_key=_caller_key(caller, claim_key),
-                    **options,
+                    once=once,
                 ):
                     yield event
                 success = True

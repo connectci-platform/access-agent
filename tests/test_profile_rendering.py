@@ -1,6 +1,11 @@
 """Tests for profile rendering — pure functions, no prompt assembly."""
 
-from src.agent.profile import AllocatedResource, render_allocated_resources, render_profile_section
+from src.agent.profile import (
+    AllocatedResource,
+    UserProfile,
+    render_allocated_resources,
+    render_profile_section,
+)
 
 DELTA_GPU = AllocatedResource(name="Delta GPU", rp_slug="delta")
 DELTA_STORAGE = AllocatedResource(name="Delta Storage")
@@ -63,8 +68,9 @@ def test_render_single_ungrouped_resource_grammar():
         "No scoped documentation exists for Delta Storage; answer about it "
         "from general ACCESS docs." in fragment.instruction
     )
-    assert " have " not in fragment.instruction
-    assert " has " not in fragment.instruction
+    clause = fragment.instruction.split("No scoped documentation", 1)[1].split(".", 1)[0]
+    assert " have " not in clause
+    assert " has " not in clause
 
 
 def test_render_all_resources_ungrouped_says_scoped_docs_unavailable():
@@ -192,8 +198,9 @@ def test_render_profile_section_within_token_budget():
     """Cap raised from 250 to 325: the explicit never-scoped-classes closing
     sentence plus the single-slug unscoped-retry instruction (see
     docs/superpowers/specs/2026-09-23-profile-ab-results.md) measure ~309
-    tokens (len/4) on the mixed worst case, up from ~198 before; 325 keeps a
-    small margin over the measured render."""
+    tokens (len/4) on the mixed worst case, up from ~198 before. D8-3121's
+    instruction to start from the user's own resources adds ~110, measuring
+    ~468; 500 keeps a small margin over the measured render."""
     from src.agent.profile import UserProfile
 
     single_slug = UserProfile(allocated_resources=[DELTA_GPU])
@@ -202,7 +209,7 @@ def test_render_profile_section_within_token_budget():
     )
     for profile in (single_slug, mixed_worst_case):
         rendered = render_profile_section(profile)
-        assert len(rendered) / 4 <= 325
+        assert len(rendered) / 4 <= 500
 
 
 def test_render_profile_section_resource_context_overrides_slug_instruction():
@@ -277,3 +284,54 @@ def test_a_resource_confirmed_in_no_group_keeps_the_no_scoped_docs_wording():
     profile = UserProfile(allocated_resources=[AllocatedResource(name="Delta Storage")])
     assert profile.groups_known is True
     assert "No scoped documentation exists for Delta Storage" in render_profile_section(profile)
+
+
+# ── D8-3121: start from the resources the user has ─────────────────────
+
+
+def test_a_login_is_shown_with_its_resource():
+    anvil = AllocatedResource(name="Anvil CPU", rp_slug="anvil", login="x-apasquale")
+    aces = AllocatedResource(name="ACES", login="u.ap110387")
+    fragment = render_allocated_resources([anvil, aces, DELTA_STORAGE])
+    assert fragment.fact == (
+        "Allocated resources: Anvil CPU (login x-apasquale, rp_name='anvil'), "
+        "ACES (login u.ap110387), Delta Storage"
+    )
+
+
+def test_resource_questions_start_from_the_users_resources():
+    fragment = render_allocated_resources([DELTA_GPU])
+    assert "hardware or GPUs" in fragment.instruction
+    assert "already has access" in fragment.instruction
+    assert "use it in SSH commands" in fragment.instruction
+    assert "Don't mention these resources" in fragment.instruction
+
+
+def test_a_resource_not_listed_is_one_they_have_no_allocation_on():
+    fragment = render_allocated_resources([DELTA_GPU])
+    assert "isn't listed, say they don't have an allocation on it" in fragment.instruction
+
+
+def test_a_list_cut_at_the_cap_does_not_claim_what_is_missing():
+    """A profile truncated at 32 may leave out a resource the user does have."""
+    full = [AllocatedResource(name=f"Resource {i}") for i in range(32)]
+    fragment = render_allocated_resources(full)
+    assert "isn't listed" not in fragment.instruction
+    assert "already has access" in fragment.instruction
+
+
+def test_no_allocations_says_one_is_needed_first():
+    fragment = render_allocated_resources([])
+    assert "need an allocation first" in fragment.instruction
+    assert "already has access" not in fragment.instruction
+
+
+def test_a_real_sized_profile_stays_small():
+    """About what a well-allocated staff account renders: 20 resources, each
+    with a login, most grouped."""
+    resources = [
+        AllocatedResource(name=f"Resource {i} GPU", rp_slug=f"group{i % 8}", login="x-apasquale")
+        for i in range(20)
+    ]
+    rendered = render_profile_section(UserProfile(allocated_resources=resources))
+    assert len(rendered) / 4 <= 700

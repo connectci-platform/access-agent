@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .agent.graph import create_pooled_checkpointer
 from .agent_token import AgentTokenVerifier, check_agent_token_config
 from .api import router
+from .api.consent_routes import consent_router
 from .api.delete_routes import delete_router
 from .api.rating_routes import rating_router
 from .api.stopped_turns import drain_stopped_turns
@@ -167,6 +168,7 @@ app.add_middleware(
 app.include_router(router, prefix="/api/v1")
 app.include_router(thread_router, prefix="/api/v1")
 app.include_router(delete_router, prefix="/api/v1")
+app.include_router(consent_router, prefix="/api/v1")
 app.include_router(rating_router, prefix="/api/v1")
 
 

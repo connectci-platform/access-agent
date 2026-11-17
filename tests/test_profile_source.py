@@ -53,7 +53,10 @@ def _payload(accounts: list[Any], state: str = "rows_fresh") -> dict[str, Any]:
 def test_maps_an_account_to_a_resource_with_its_group_slug():
     assert _map(_payload([_account()])) == [
         AllocatedResource(
-            name="NCSA Delta GPU", rp_slug="delta", resource_id="delta-gpu.ncsa.access-ci.org"
+            name="NCSA Delta GPU",
+            rp_slug="delta",
+            resource_id="delta-gpu.ncsa.access-ci.org",
+            login="alice",
         )
     ]
 
@@ -76,20 +79,26 @@ def test_a_hyphenated_group_slug_takes_the_form_the_doc_search_sends():
 )
 def test_an_unmappable_resource_keeps_its_name_without_a_slug(resource_id):
     (resource,) = _map(_payload([_account("Some Storage", resource_id)]))
-    assert resource == AllocatedResource(name="Some Storage", rp_slug=None, resource_id=resource_id)
+    assert resource == AllocatedResource(
+        name="Some Storage", rp_slug=None, resource_id=resource_id, login="alice"
+    )
 
 
 def test_the_slug_never_comes_from_the_display_name():
     """A name that would normalize to a real slug ('delta') gets none without
     a resource id that maps to the group."""
     (resource,) = _map(_payload([_account("Delta", None)]))
-    assert resource == AllocatedResource(name="Delta", rp_slug=None, resource_id=None)
+    assert resource == AllocatedResource(
+        name="Delta", rp_slug=None, resource_id=None, login="alice"
+    )
 
 
 @pytest.mark.parametrize("resource_id", ["bad id/with spaces", "x" * 129, 42, ""])
 def test_an_invalid_resource_id_is_dropped_and_so_is_the_slug(resource_id):
     (resource,) = _map(_payload([_account("Delta GPU", resource_id)]))
-    assert resource == AllocatedResource(name="Delta GPU", rp_slug=None, resource_id=None)
+    assert resource == AllocatedResource(
+        name="Delta GPU", rp_slug=None, resource_id=None, login="alice"
+    )
 
 
 @pytest.mark.parametrize(
@@ -130,6 +139,42 @@ def test_at_most_32_resources_are_kept():
     resources = _map(_payload(accounts))
     assert [r.name for r in resources] == [f"Resource {i}" for i in range(32)]
     UserProfile(allocated_resources=resources)  # still a valid profile
+
+
+@pytest.mark.parametrize(
+    "login", ["x-apasquale", "u.ap110387", "tg882122", "apasquale@access-ci.org"]
+)
+def test_the_resource_login_is_kept(login):
+    account = {**_account(), "rp_username": login}
+    (resource,) = _map(_payload([account]))
+    assert resource.login == login
+
+
+@pytest.mark.parametrize("login", [None, 7, "", "has space", "-leading", "x" * 65, "a;b"])
+def test_an_unusable_login_is_dropped_but_the_resource_kept(login):
+    account = {**_account(), "rp_username": login}
+    (resource,) = _map(_payload([account]))
+    assert resource.login is None
+    assert resource.name == "NCSA Delta GPU"
+
+
+def test_a_closed_account_is_left_out():
+    closed = {
+        **_account("NCSA Delta CPU", "delta-cpu.ncsa.access-ci.org"),
+        "account_state": "inactive",
+    }
+    assert [r.name for r in _map(_payload([closed, _account()]))] == ["NCSA Delta GPU"]
+
+
+def test_an_account_without_a_state_is_kept():
+    account = _account()
+    del account["account_state"]
+    assert [r.name for r in _map(_payload([account]))] == ["NCSA Delta GPU"]
+
+
+def test_only_closed_accounts_means_no_allocations():
+    closed = {**_account(), "account_state": "inactive"}
+    assert _map(_payload([closed])) == []
 
 
 def test_a_stale_list_still_counts():
@@ -235,7 +280,10 @@ def mcp(monkeypatch, rp_cache, clock):
 DELTA_PROFILE = UserProfile(
     allocated_resources=[
         AllocatedResource(
-            name="NCSA Delta GPU", rp_slug="delta", resource_id="delta-gpu.ncsa.access-ci.org"
+            name="NCSA Delta GPU",
+            rp_slug="delta",
+            resource_id="delta-gpu.ncsa.access-ci.org",
+            login="alice",
         )
     ]
 )
@@ -392,7 +440,9 @@ def real_rp_cache(monkeypatch):
 
 UNSLUGGED_DELTA = UserProfile(
     allocated_resources=[
-        AllocatedResource(name="NCSA Delta GPU", resource_id="delta-gpu.ncsa.access-ci.org")
+        AllocatedResource(
+            name="NCSA Delta GPU", resource_id="delta-gpu.ncsa.access-ci.org", login="alice"
+        )
     ],
     groups_known=False,
 )
