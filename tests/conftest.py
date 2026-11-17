@@ -220,7 +220,12 @@ def _no_allocations_profile_lookup(monkeypatch):
     from src.agent import profile_source
 
     profile_source._reset_cache_for_test()
-    monkeypatch.setattr("src.api.thread_routes.allocated_profile_for", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        "src.api.thread_routes.personalized_profile", AsyncMock(return_value=(None, None))
+    )
+    monkeypatch.setattr("src.api.thread_routes.offer_after_turn", AsyncMock(return_value=False))
+    # /query reads consent for every signed-in turn; off the network here too.
+    monkeypatch.setattr("src.api.routes.consent_for", AsyncMock(return_value=None))
     yield
     profile_source._reset_cache_for_test()
 

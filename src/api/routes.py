@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from starlette.datastructures import Headers
 from starlette.responses import StreamingResponse
 
+from ..agent.consent import consent_for
 from ..agent.context import AgentContext
 from ..agent.graph import stream_agent
 from ..agent.middleware.write_gate import clean_confirm_ids, turn_previews
@@ -286,10 +287,17 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
     acting_user = context.acting_user
     start_time = time.time()
     final_state: dict[str, Any] = {}
-    # As the loop reads it: a profile without a signed-in user is dropped.
-    # Graph updates never carry the run's input, so the report learns it here.
-    if request.profile is not None and acting_user is not None:
-        final_state["profile"] = request.profile.model_dump()
+    # As the loop reads it: a profile without a signed-in user is dropped, and
+    # so is one the user hasn't opted in to (D8-3124). Graph updates never
+    # carry the run's input, so the report learns both here.
+    profile = request.profile if acting_user is not None else None
+    if acting_user is not None:
+        consent = await consent_for(acting_user)
+        final_state["consent"] = consent.state if consent else None
+        if consent is None or consent.state != "allow":
+            profile = None
+    if profile is not None:
+        final_state["profile"] = profile.model_dump()
     reset_turn_capture()
     lock_run_id = run_id or str(uuid.uuid4())
     timed_out = False
@@ -337,7 +345,8 @@ async def _stream_events(  # noqa: PLR0912, PLR0915
                         tool_catalog=registry.catalog,
                         context=context,
                         resource_context=request.resource_context,
-                        profile=request.profile,
+                        profile=profile,
+                        consent=final_state.get("consent"),
                         confirm_ids=confirm_ids,
                         message_id=question.id,
                         checkpointer=checkpointer,
